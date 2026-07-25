@@ -143,11 +143,8 @@ struct SidebarView: View {
                         .foregroundStyle(.white)
                 )
                 .shadow(color: Theme.accent.opacity(0.4), radius: 4, y: 1)
-            Text("corral")
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(Theme.textPrimary)
             sessionMenu
-            Spacer()
+            Spacer(minLength: 6)
             Menu {
                 Button {
                     model.newTab()
@@ -466,6 +463,15 @@ private struct SidebarRowLabel<Trailing: View>: View {
     let focusedInHerdr: Bool
     @ViewBuilder var trailing: () -> Trailing
 
+    private var subtitleLine: Text {
+        let context = subtitle.trimmingCharacters(in: .whitespaces)
+        if status == .unknown {
+            return Text(context.isEmpty ? "—" : context).foregroundColor(Theme.textTertiary)
+        }
+        return Text(Theme.statusLabel(status)).foregroundColor(Theme.status(status))
+            + Text(context.isEmpty ? "" : "  ·  \(context)").foregroundColor(Theme.textTertiary)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             StatusDot(status: status)
@@ -481,8 +487,7 @@ private struct SidebarRowLabel<Trailing: View>: View {
                             .help("Focused in Herdr")
                     }
                 }
-                (Text(Theme.statusLabel(status)).foregroundColor(Theme.status(status))
-                    + Text(subtitle.isEmpty ? "" : "  ·  \(subtitle)").foregroundColor(Theme.textTertiary))
+                subtitleLine
                     .font(.system(size: 10.5, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
