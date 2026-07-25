@@ -85,6 +85,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             onPlainClick?()
         }
     }
+
 }
 
 /// A real interactive terminal for a herdr pane.
@@ -114,10 +115,10 @@ struct TerminalPaneView: NSViewRepresentable {
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = Self.font
         GhosttyTheme.apply(to: view)
-        // Prefer local text selection over mouse reporting: the attached TUIs
-        // (Claude/Codex) enable mouse tracking, which would otherwise send drags
-        // to the program instead of selecting. (Shift+drag still reports mouse.)
-        view.allowMouseReporting = false
+        // Keep mouse reporting ON (default) so wheel-driven TUIs (Claude/Codex)
+        // scroll. Text selection is Shift+drag, matching Ghostty — SwiftTerm's
+        // scrollWheel isn't `open`, so there's no way to have plain-drag-select
+        // AND wheel-scroll without patching the library.
         view.processDelegate = context.coordinator
         view.onPlainClick = context.coordinator.requestFocus
         context.coordinator.attach(view, terminalID: terminalID)
