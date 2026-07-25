@@ -88,9 +88,9 @@ struct SidebarView: View {
         }
         .background {
             ZStack {
-                VisualEffectView(material: .underWindowBackground)
-                Theme.sidebar.opacity(0.76)      // dark tint over the glass — subtle, readable
-                Theme.panelGradient.opacity(0.45)
+                VisualEffectView(material: .sidebar)
+                Theme.sidebar.opacity(0.58)      // dark tint over the glass — Raycast-ish
+                Theme.panelGradient.opacity(0.35)
             }
             .ignoresSafeArea()
         }

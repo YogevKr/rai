@@ -28,6 +28,7 @@ struct CorralRootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background(WindowConfigurator())
         .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
     }
