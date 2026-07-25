@@ -11,7 +11,8 @@ import SwiftUI
 enum GhosttyTheme {
     static let background: UInt32 = 0x212121
     static let foreground: UInt32 = 0xF8F8F2
-    static let cursor: UInt32 = 0xF8F8F2
+    static let cursor: UInt32 = 0xECEFF4       // Ghostty `cursor-color`
+    static let cursorText: UInt32 = 0x282828   // Ghostty `cursor-text` (block cursor)
     static let selectionBackground: UInt32 = 0xF8F8F2
     static let selectionForeground: UInt32 = 0x545454
     // ANSI 0–15 (normal then bright).
@@ -24,9 +25,13 @@ enum GhosttyTheme {
         view.nativeBackgroundColor = ns(background)
         view.nativeForegroundColor = ns(foreground)
         view.caretColor = ns(cursor)
+        view.caretTextColor = ns(cursorText)
         view.selectedTextBackgroundColor = ns(selectionBackground)
         view.selectedTextForegroundColor = ns(selectionForeground)
         view.installColors(palette.map(st))
+        // Ghostty `cursor-style = bar`, `cursor-style-blink = false`. This sets the
+        // default; programs can still override via DECSCUSR, exactly as Ghostty does.
+        view.getTerminal().setCursorStyle(.steadyBar)
     }
 
     private static func ns(_ hex: UInt32) -> NSColor {
