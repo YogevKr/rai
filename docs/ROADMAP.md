@@ -25,7 +25,7 @@ The daily cost at ~13 agents is *finding and acting on the right one*.
 - **Attention filter** — show only agents that need me (blocked).
 - Rename / close / reorder tabs & spaces.
 
-### Phase 2 — Never miss a blocked agent  ← current
+### Phase 2 — Never miss a blocked agent
 - Native macOS notifications on blocked → done; click → raise corral + focus pane.
 - Dock badge / menu-bar count of agents needing you.
 - Sound + persisted global mute; per-pane do-not-disturb remains a follow-up.
@@ -35,7 +35,7 @@ it to both SwiftUI's `StateObject` and the `NSApplicationDelegateAdaptor`
 delegate. The delegate and model then keep weak cross-references, avoiding a
 second model or a retain cycle while allowing cold-launch notification routing.
 
-### Phase 3 — Worktrees & the codexspin loop
+### Phase 3 — Worktrees & the codexspin loop  ← current
 - Create worktree (branch / base) → open as space; open existing; remove.
 - codexspin job → open its worktree (csws parity).
 

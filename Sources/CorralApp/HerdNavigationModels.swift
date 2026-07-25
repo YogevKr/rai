@@ -34,3 +34,40 @@ struct StatusExplanation: Identifiable, Equatable {
 
     var isLoading: Bool { text == nil }
 }
+
+struct WorktreeRepositoryContext: Equatable {
+    let repoName: String
+    let checkoutPath: String
+}
+
+struct WorktreeCreateRequest: Identifiable, Equatable {
+    let id = UUID()
+    let context: WorktreeRepositoryContext
+}
+
+struct WorktreeOpenRequest: Identifiable, Equatable {
+    let id: UUID
+    let context: WorktreeRepositoryContext
+    var worktrees: [HerdrWorktree]
+    var isLoading: Bool
+    var error: String?
+
+    init(context: WorktreeRepositoryContext) {
+        id = UUID()
+        self.context = context
+        worktrees = []
+        isLoading = true
+        error = nil
+    }
+}
+
+struct WorktreeAlert: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case confirmRemoval(Workspace)
+        case confirmForcedRemoval(Workspace)
+        case error(title: String, message: String)
+    }
+
+    let id = UUID()
+    let kind: Kind
+}

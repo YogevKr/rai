@@ -93,6 +93,12 @@ struct SidebarView: View {
         .sheet(item: $model.statusExplanation) { _ in
             StatusExplanationSheet(model: model)
         }
+        .sheet(item: $model.worktreeCreateRequest) { request in
+            NewWorktreeSheet(model: model, request: request)
+        }
+        .sheet(item: $model.worktreeOpenRequest) { _ in
+            OpenWorktreeSheet(model: model)
+        }
         .alert(item: $model.workspacePendingClose) { workspace in
             Alert(
                 title: Text("Close “\(workspace.label)”?"),
@@ -146,6 +152,23 @@ struct SidebarView: View {
                 } label: {
                     Label("New Space", systemImage: "square.stack.3d.up")
                 }
+                Divider()
+                Button {
+                    if let workspace = model.selectedWorkspace {
+                        model.beginCreateWorktree(from: workspace)
+                    }
+                } label: {
+                    Label("New Worktree…", systemImage: "arrow.triangle.branch")
+                }
+                .disabled(model.selectedWorkspace?.worktree == nil)
+                Button {
+                    if let workspace = model.selectedWorkspace {
+                        model.beginOpenWorktree(from: workspace)
+                    }
+                } label: {
+                    Label("Open Worktree…", systemImage: "folder.badge.plus")
+                }
+                .disabled(model.selectedWorkspace?.worktree == nil)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
@@ -156,7 +179,7 @@ struct SidebarView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("New tab or space")
+            .help("New tab, space, or worktree")
             Button {
                 model.onlyNeedsYou.toggle()
             } label: {
@@ -183,6 +206,9 @@ struct SidebarView: View {
         .padding(.leading, 78)
         .padding(.trailing, 14)
         .frame(height: 52)
+        .alert(item: $model.worktreeAlert) { alert in
+            worktreeAlert(alert)
+        }
     }
 
     private var attentionFooter: some View {
@@ -249,6 +275,43 @@ struct SidebarView: View {
         .padding(.horizontal, 14)
         .frame(height: 34)
     }
+
+    private func worktreeAlert(_ alert: WorktreeAlert) -> Alert {
+        switch alert.kind {
+        case .confirmRemoval(let workspace):
+            let path = workspace.worktree?.checkoutPath ?? workspace.label
+            return Alert(
+                title: Text("Remove Worktree?"),
+                message: Text(
+                    "This closes “\(workspace.label)” and deletes its checkout at \(path). "
+                        + "The Git branch is not deleted."
+                ),
+                primaryButton: .destructive(Text("Remove Worktree")) {
+                    model.confirmRemoveWorktree(workspace, force: false)
+                },
+                secondaryButton: .cancel()
+            )
+        case .confirmForcedRemoval(let workspace):
+            let path = workspace.worktree?.checkoutPath ?? workspace.label
+            return Alert(
+                title: Text("Worktree Has Local Changes"),
+                message: Text(
+                    "Herdr reports modified or untracked files at \(path). "
+                        + "Force removal permanently deletes those files."
+                ),
+                primaryButton: .destructive(Text("Force Remove")) {
+                    model.confirmRemoveWorktree(workspace, force: true)
+                },
+                secondaryButton: .cancel()
+            )
+        case .error(let title, let message):
+            return Alert(
+                title: Text(title),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
 }
 
 // Shared row chrome so workspace-rows and agent-rows are pixel-identical.
@@ -281,20 +344,26 @@ private struct SidebarRowChrome: ViewModifier {
     }
 }
 
-private struct RepoTag: View {
-    let repo: String
-    let linked: Bool
+private struct WorktreeTag: View {
+    let worktree: WorkspaceWorktree
 
     var body: some View {
         HStack(spacing: 3) {
-            if linked {
+            if worktree.isLinkedWorktree {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 8))
             }
-            Text(repo).lineLimit(1)
+            Text(identity).lineLimit(1)
         }
         .font(.system(size: 9.5, weight: .medium, design: .rounded))
         .foregroundStyle(Theme.textTertiary)
+        .help(worktree.checkoutPath)
+    }
+
+    private var identity: String {
+        guard worktree.isLinkedWorktree else { return worktree.repoName }
+        let checkoutName = URL(fileURLWithPath: worktree.checkoutPath).lastPathComponent
+        return checkoutName.isEmpty ? worktree.repoName : checkoutName
     }
 }
 
@@ -310,9 +379,10 @@ private struct WorkspaceRow: View {
     @State private var hovering = false
     @State private var paneDragTargeted = false
 
-    private var showRepo: Bool {
-        guard let repo = workspace.worktree?.repoName else { return false }
-        return repo.caseInsensitiveCompare(workspace.label) != .orderedSame
+    private var showWorktreeTag: Bool {
+        guard let worktree = workspace.worktree else { return false }
+        return worktree.isLinkedWorktree
+            || worktree.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame
     }
 
     var body: some View {
@@ -328,8 +398,8 @@ private struct WorkspaceRow: View {
                         .help("Focused in Herdr")
                 }
                 Spacer(minLength: 6)
-                if showRepo, let repo = workspace.worktree?.repoName {
-                    RepoTag(repo: repo, linked: workspace.worktree?.isLinkedWorktree == true)
+                if showWorktreeTag, let worktree = workspace.worktree {
+                    WorktreeTag(worktree: worktree)
                 }
             }
             .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
@@ -358,6 +428,20 @@ private struct WorkspaceRow: View {
                 model.requestClose(workspace: workspace)
             }
             Divider()
+            Button("New Worktree…") {
+                model.beginCreateWorktree(from: workspace)
+            }
+            .disabled(workspace.worktree == nil)
+            Button("Open Worktree…") {
+                model.beginOpenWorktree(from: workspace)
+            }
+            .disabled(workspace.worktree == nil)
+            if workspace.worktree?.isLinkedWorktree == true {
+                Button("Remove Worktree…", role: .destructive) {
+                    model.requestRemoveWorktree(workspace)
+                }
+            }
+            Divider()
             Button("Explain Status") { model.explainStatus(workspace: workspace) }
         }
         .help(workspace.worktree?.checkoutPath ?? workspace.label)
@@ -369,9 +453,10 @@ private struct WorkspaceHeader: View {
     let workspace: Workspace
     let focusedInHerdr: Bool
 
-    private var showRepo: Bool {
-        guard let repo = workspace.worktree?.repoName else { return false }
-        return repo.caseInsensitiveCompare(workspace.label) != .orderedSame
+    private var showWorktreeTag: Bool {
+        guard let worktree = workspace.worktree else { return false }
+        return worktree.isLinkedWorktree
+            || worktree.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame
     }
 
     var body: some View {
@@ -387,8 +472,8 @@ private struct WorkspaceHeader: View {
                     .help("Focused in Herdr")
             }
             Spacer(minLength: 4)
-            if showRepo, let repo = workspace.worktree?.repoName {
-                RepoTag(repo: repo, linked: workspace.worktree?.isLinkedWorktree == true)
+            if showWorktreeTag, let worktree = workspace.worktree {
+                WorktreeTag(worktree: worktree)
             } else {
                 Text("\(workspace.tabCount)")
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -418,6 +503,20 @@ private struct WorkspaceHeader: View {
             Button("Rename") { model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
+            }
+            Divider()
+            Button("New Worktree…") {
+                model.beginCreateWorktree(from: workspace)
+            }
+            .disabled(workspace.worktree == nil)
+            Button("Open Worktree…") {
+                model.beginOpenWorktree(from: workspace)
+            }
+            .disabled(workspace.worktree == nil)
+            if workspace.worktree?.isLinkedWorktree == true {
+                Button("Remove Worktree…", role: .destructive) {
+                    model.requestRemoveWorktree(workspace)
+                }
             }
             Divider()
             Button("Explain Status") { model.explainStatus(workspace: workspace) }
@@ -523,6 +622,198 @@ private struct RenameSheet: View {
 
     private func commit() {
         model.commitRename(request, label: label)
+    }
+}
+
+private struct NewWorktreeSheet: View {
+    @ObservedObject var model: CorralModel
+    let request: WorktreeCreateRequest
+
+    @State private var branch = ""
+    @State private var base = ""
+    @State private var label = ""
+    @FocusState private var branchFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("New Worktree")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(request.context.repoName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                Text(request.context.checkoutPath)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Branch name", text: $branch)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($branchFocused)
+                    .onSubmit(commit)
+                TextField("Base ref (current)", text: $base)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Space label (optional)", text: $label)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.worktreeCreateRequest = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create", action: commit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(
+                        branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+            }
+        }
+        .padding(22)
+        .frame(width: 430)
+        .background(Theme.raised)
+        .onAppear { branchFocused = true }
+        .onExitCommand { model.worktreeCreateRequest = nil }
+    }
+
+    private func commit() {
+        model.createWorktree(branch: branch, base: base, label: label)
+    }
+}
+
+private struct OpenWorktreeSheet: View {
+    @ObservedObject var model: CorralModel
+
+    @State private var selectedPath: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Open Worktree")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                if let request = model.worktreeOpenRequest {
+                    Text(request.context.repoName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    Text(request.context.checkoutPath)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Group {
+                if let request = model.worktreeOpenRequest {
+                    if request.isLoading {
+                        HStack(spacing: 9) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading Git worktrees…")
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let error = request.error {
+                        Text(error)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if request.worktrees.isEmpty {
+                        Text("No worktrees found for this repository.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List(request.worktrees, selection: $selectedPath) { worktree in
+                            WorktreePickerRow(worktree: worktree)
+                                .tag(worktree.path)
+                        }
+                        .listStyle(.inset)
+                    }
+                }
+            }
+            .frame(height: 280)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.worktreeOpenRequest = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Open") {
+                    if let selectedWorktree {
+                        model.openWorktree(selectedWorktree)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedWorktree == nil)
+            }
+        }
+        .padding(22)
+        .frame(width: 560)
+        .background(Theme.raised)
+        .onAppear { chooseFirstWorktree() }
+        .onChange(of: model.worktreeOpenRequest?.worktrees) { _, _ in
+            chooseFirstWorktree()
+        }
+        .onExitCommand { model.worktreeOpenRequest = nil }
+    }
+
+    private var selectedWorktree: HerdrWorktree? {
+        guard let selectedPath else { return nil }
+        return model.worktreeOpenRequest?.worktrees.first {
+            $0.path == selectedPath && !$0.isBare && !$0.isPrunable
+        }
+    }
+
+    private func chooseFirstWorktree() {
+        guard selectedWorktree == nil else { return }
+        selectedPath = model.worktreeOpenRequest?.worktrees.first {
+            !$0.isBare && !$0.isPrunable
+        }?.path
+    }
+}
+
+private struct WorktreePickerRow: View {
+    let worktree: HerdrWorktree
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(
+                systemName: worktree.isLinkedWorktree
+                    ? "point.3.connected.trianglepath.dotted"
+                    : "folder"
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.textTertiary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(worktree.branch ?? "Detached HEAD")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                    if worktree.openWorkspaceID != nil {
+                        Text("OPEN")
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    if worktree.isPrunable {
+                        Text("PRUNABLE")
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                Text(worktree.path)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 3)
+        .opacity(worktree.isBare || worktree.isPrunable ? 0.5 : 1)
     }
 }
 

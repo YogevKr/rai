@@ -43,6 +43,9 @@ final class CorralModel: ObservableObject {
     @Published var renameRequest: RenameRequest?
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
+    @Published var worktreeCreateRequest: WorktreeCreateRequest?
+    @Published var worktreeOpenRequest: WorktreeOpenRequest?
+    @Published var worktreeAlert: WorktreeAlert?
     // Live split ratio while a divider is being dragged (split id → ratio),
     // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
     @Published var dragRatios: [String: Double] = [:]
@@ -312,6 +315,204 @@ final class CorralModel: ObservableObject {
         guard let workspace = workspacePendingClose else { return }
         workspacePendingClose = nil
         close(workspace: workspace)
+    }
+
+    // MARK: - Worktrees
+
+    func beginCreateWorktree(from workspace: Workspace) {
+        guard let context = worktreeContext(for: workspace) else { return }
+        worktreeCreateRequest = WorktreeCreateRequest(context: context)
+    }
+
+    func createWorktree(branch: String, base: String, label: String) {
+        guard let request = worktreeCreateRequest else { return }
+        let branch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branch.isEmpty else { return }
+
+        worktreeCreateRequest = nil
+        let existingWorkspaceIDs = Set(snapshot?.workspaces.map(\.workspaceID) ?? [])
+        var arguments = [
+            "worktree", "create",
+            "--cwd", request.context.checkoutPath,
+            "--branch", branch,
+        ]
+        if !base.isEmpty {
+            arguments += ["--base", base]
+        }
+        if !label.isEmpty {
+            arguments += ["--label", label]
+        }
+        arguments.append("--no-focus")
+
+        Task {
+            let result = await runHerdrResult(arguments)
+            guard result.succeeded else {
+                showWorktreeError(
+                    title: "Couldn’t Create Worktree",
+                    output: result.errorOutput
+                )
+                return
+            }
+            await refreshSnapshot(keepSelection: true)
+            selectNewWorktreeWorkspace(
+                excluding: existingWorkspaceIDs,
+                repoName: request.context.repoName
+            )
+        }
+    }
+
+    func beginOpenWorktree(from workspace: Workspace) {
+        guard let context = worktreeContext(for: workspace) else { return }
+        var request = WorktreeOpenRequest(context: context)
+        worktreeOpenRequest = request
+
+        Task {
+            let result = await runHerdrResult([
+                "worktree", "list",
+                "--cwd", context.checkoutPath,
+                "--json",
+            ])
+            guard worktreeOpenRequest?.id == request.id else { return }
+
+            request.isLoading = false
+            if result.succeeded {
+                do {
+                    request.worktrees = try WorktreeListParser.parse(result.standardOutput)
+                } catch {
+                    request.error = "Herdr returned an unreadable worktree list."
+                }
+            } else {
+                request.error = result.errorOutput.isEmpty
+                    ? "Herdr couldn’t list worktrees for this repository."
+                    : result.errorOutput
+            }
+            worktreeOpenRequest = request
+        }
+    }
+
+    func openWorktree(_ worktree: HerdrWorktree) {
+        guard let request = worktreeOpenRequest else { return }
+        worktreeOpenRequest = nil
+        let existingWorkspaceIDs = Set(snapshot?.workspaces.map(\.workspaceID) ?? [])
+
+        Task {
+            let result = await runHerdrResult([
+                "worktree", "open",
+                "--cwd", request.context.checkoutPath,
+                "--path", worktree.path,
+                "--no-focus",
+            ])
+            guard result.succeeded else {
+                showWorktreeError(
+                    title: "Couldn’t Open Worktree",
+                    output: result.errorOutput
+                )
+                return
+            }
+            await refreshSnapshot(keepSelection: true)
+            if let workspaceID = worktree.openWorkspaceID,
+               selectWorkspace(id: workspaceID) {
+                return
+            }
+            if let workspace = snapshot?.workspaces.first(where: {
+                pathsMatch($0.worktree?.checkoutPath, worktree.path)
+            }) {
+                select(workspace: workspace)
+                return
+            }
+            selectNewWorktreeWorkspace(
+                excluding: existingWorkspaceIDs,
+                repoName: request.context.repoName
+            )
+        }
+    }
+
+    func requestRemoveWorktree(_ workspace: Workspace) {
+        guard workspace.worktree?.isLinkedWorktree == true else { return }
+        worktreeAlert = WorktreeAlert(kind: .confirmRemoval(workspace))
+    }
+
+    func confirmRemoveWorktree(_ workspace: Workspace, force: Bool) {
+        worktreeAlert = nil
+        Task {
+            var arguments = [
+                "worktree", "remove",
+                "--workspace", workspace.workspaceID,
+            ]
+            if force {
+                arguments.append("--force")
+            }
+            let result = await runHerdrResult(arguments)
+            guard result.succeeded else {
+                if !force, Self.isDirtyWorktreeError(result.errorOutput) {
+                    worktreeAlert = WorktreeAlert(kind: .confirmForcedRemoval(workspace))
+                } else {
+                    showWorktreeError(
+                        title: "Couldn’t Remove Worktree",
+                        output: result.errorOutput
+                    )
+                }
+                return
+            }
+            await refreshSnapshot(keepSelection: false)
+        }
+    }
+
+    private func worktreeContext(for workspace: Workspace) -> WorktreeRepositoryContext? {
+        guard let worktree = workspace.worktree else { return nil }
+        return WorktreeRepositoryContext(
+            repoName: worktree.repoName,
+            checkoutPath: worktree.checkoutPath
+        )
+    }
+
+    private func selectNewWorktreeWorkspace(
+        excluding workspaceIDs: Set<String>,
+        repoName: String
+    ) {
+        guard let workspace = snapshot?.workspaces.first(where: {
+            !workspaceIDs.contains($0.workspaceID)
+                && $0.worktree?.repoName == repoName
+                && $0.worktree?.isLinkedWorktree == true
+        }) else {
+            return
+        }
+        select(workspace: workspace)
+    }
+
+    @discardableResult
+    private func selectWorkspace(id workspaceID: String) -> Bool {
+        guard let workspace = snapshot?.workspaces.first(where: {
+            $0.workspaceID == workspaceID
+        }) else {
+            return false
+        }
+        select(workspace: workspace)
+        return true
+    }
+
+    private func pathsMatch(_ lhs: String?, _ rhs: String) -> Bool {
+        guard let lhs else { return false }
+        return URL(fileURLWithPath: lhs).standardizedFileURL.path
+            == URL(fileURLWithPath: rhs).standardizedFileURL.path
+    }
+
+    private func showWorktreeError(title: String, output: String) {
+        worktreeAlert = WorktreeAlert(
+            kind: .error(
+                title: title,
+                message: output.isEmpty ? "The Herdr command failed." : output
+            )
+        )
+    }
+
+    private static func isDirtyWorktreeError(_ output: String) -> Bool {
+        let output = output.lowercased()
+        return output.contains("dirty_worktree_requires_force")
+            || output.contains("modified or untracked files")
+            || output.contains("worktree is dirty")
     }
 
     func explainStatus(tab: HerdrTab) {
@@ -732,6 +933,54 @@ final class CorralModel: ObservableObject {
                 let string = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 continuation.resume(returning: string?.isEmpty == false ? string : nil)
+            }
+        }
+    }
+
+    private struct HerdrCommandResult {
+        let succeeded: Bool
+        let standardOutput: String
+        let standardError: String
+
+        var errorOutput: String {
+            let error = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !error.isEmpty {
+                return error
+            }
+            return standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func runHerdrResult(_ args: [String]) async -> HerdrCommandResult {
+        await withCheckedContinuation { continuation in
+            let process = configuredHerdrProcess(args)
+            let standardOutput = Pipe()
+            let standardError = Pipe()
+            process.standardOutput = standardOutput
+            process.standardError = standardError
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(
+                    returning: HerdrCommandResult(
+                        succeeded: false,
+                        standardOutput: "",
+                        standardError: error.localizedDescription
+                    )
+                )
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let outputData = standardOutput.fileHandleForReading.readDataToEndOfFile()
+                let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                continuation.resume(
+                    returning: HerdrCommandResult(
+                        succeeded: process.terminationStatus == 0,
+                        standardOutput: String(data: outputData, encoding: .utf8) ?? "",
+                        standardError: String(data: errorData, encoding: .utf8) ?? ""
+                    )
+                )
             }
         }
     }
