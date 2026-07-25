@@ -281,30 +281,32 @@ private struct PaneSurface: View {
             }
         }
         .background(Theme.terminalBG)
-        .clipShape(RoundedRectangle(cornerRadius: showChrome ? 8 : 0, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: showChrome ? 10 : 0, style: .continuous))
         .overlay {
             if showChrome {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(
-                        selected ? Theme.accent.opacity(0.85) : Theme.hairlineStrong,
-                        lineWidth: selected ? 1.5 : 1
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        selected ? Theme.accent.opacity(0.5) : Color.white.opacity(0.045),
+                        lineWidth: 1
                     )
             }
         }
+        .shadow(
+            color: .black.opacity(showChrome ? 0.28 : 0),
+            radius: selected ? 16 : 9,
+            y: 5
+        )
     }
 
     private var paneBar: some View {
         HStack(spacing: 8) {
             if let pane {
                 StatusDot(status: pane.agentStatus, size: 6)
-                Text(pane.terminalTitleStripped ?? pane.agent ?? pane.paneID)
+                Text(pane.terminalTitleStripped ?? pane.agent ?? "Terminal")
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(pane.paneID)
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
             } else {
-                Text(paneID)
+                Text("Terminal")
                 Spacer()
             }
 

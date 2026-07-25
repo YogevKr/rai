@@ -41,7 +41,7 @@ private struct PaneHeader: View {
             if let pane = model.selectedPane {
                 StatusDot(status: pane.agentStatus, size: 9)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(pane.terminalTitleStripped ?? pane.agent ?? pane.paneID)
+                    Text(title(for: pane))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
@@ -81,6 +81,15 @@ private struct PaneHeader: View {
 
     private var dot: some View {
         Text("·").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+    }
+
+    // Graceful title — never the raw pane id like "w1:p1".
+    private func title(for pane: Pane) -> String {
+        if let t = pane.terminalTitleStripped?.trimmingCharacters(in: .whitespaces), !t.isEmpty { return t }
+        if let a = pane.agent?.trimmingCharacters(in: .whitespaces), !a.isEmpty { return a }
+        if let label = model.selectedTab?.label.trimmingCharacters(in: .whitespaces),
+           !label.isEmpty, Int(label) == nil { return label }
+        return "Terminal"
     }
 }
 

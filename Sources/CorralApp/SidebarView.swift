@@ -430,24 +430,66 @@ private struct SidebarRowChrome: ViewModifier {
         content
             .padding(.leading, 11)
             .padding(.trailing, 10)
-            .frame(height: 34)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
                         selected
-                            ? Theme.accent.opacity(0.16)
-                            : (hovering ? Color.white.opacity(0.045) : .clear)
+                            ? Theme.accent.opacity(0.15)
+                            : (hovering ? Color.white.opacity(0.05) : .clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(selected ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1)
                     )
             }
             .overlay(alignment: .leading) {
                 if selected {
-                    RoundedRectangle(cornerRadius: 1.5)
+                    RoundedRectangle(cornerRadius: 2)
                         .fill(Theme.accent)
-                        .frame(width: 3, height: 16)
+                        .frame(width: 3, height: 20)
                         .padding(.leading, 1)
                 }
             }
+    }
+}
+
+// Shared two-line row content: a status dot, a title, and a muted
+// "status · context" subtitle — the mission-control row shape.
+private struct SidebarRowLabel<Trailing: View>: View {
+    let status: AgentStatus
+    let title: String
+    let subtitle: String
+    let selected: Bool
+    let focusedInHerdr: Bool
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            StatusDot(status: status)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if focusedInHerdr {
+                        Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                            .help("Focused in Herdr")
+                    }
+                }
+                (Text(Theme.statusLabel(status)).foregroundColor(Theme.status(status))
+                    + Text(subtitle.isEmpty ? "" : "  ·  \(subtitle)").foregroundColor(Theme.textTertiary))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            trailing()
+        }
     }
 }
 
@@ -486,27 +528,37 @@ private struct WorkspaceRow: View {
     @State private var hovering = false
     @State private var paneDragTargeted = false
 
-    private var showWorktreeTag: Bool {
-        guard let worktree = workspace.worktree else { return false }
-        return worktree.isLinkedWorktree
-            || worktree.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame
+    private var subtitleContext: String {
+        if let wt = workspace.worktree {
+            if wt.isLinkedWorktree {
+                let base = URL(fileURLWithPath: wt.checkoutPath).lastPathComponent
+                return base.isEmpty ? wt.repoName : base
+            }
+            if wt.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame {
+                return wt.repoName
+            }
+        }
+        if let tabID = tab?.tabID,
+           let cwd = model.snapshot?.panes.first(where: { $0.tabID == tabID })?.cwd {
+            let base = URL(fileURLWithPath: cwd).lastPathComponent
+            return base.caseInsensitiveCompare(workspace.label) == .orderedSame ? "" : base
+        }
+        return ""
     }
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 10) {
-                StatusDot(status: tab?.agentStatus ?? workspace.agentStatus)
-                Text(workspace.label)
-                    .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
-                    .lineLimit(1)
-                if focusedInHerdr {
-                    Circle().fill(Theme.accent).frame(width: 4, height: 4)
-                        .help("Focused in Herdr")
-                }
-                Spacer(minLength: 6)
-                if showWorktreeTag, let worktree = workspace.worktree {
-                    WorktreeTag(worktree: worktree)
+            SidebarRowLabel(
+                status: tab?.agentStatus ?? workspace.agentStatus,
+                title: workspace.label,
+                subtitle: subtitleContext,
+                selected: selected,
+                focusedInHerdr: focusedInHerdr
+            ) {
+                if workspace.worktree?.isLinkedWorktree == true {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
             .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
@@ -643,16 +695,22 @@ private struct AgentRow: View {
     @State private var hovering = false
     @State private var paneDragTargeted = false
 
+    private var subtitleContext: String {
+        guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
+            return ""
+        }
+        return URL(fileURLWithPath: cwd).lastPathComponent
+    }
+
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 10) {
-                StatusDot(status: tab.agentStatus)
-                Text(label)
-                    .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 4)
+            SidebarRowLabel(
+                status: tab.agentStatus,
+                title: label,
+                subtitle: subtitleContext,
+                selected: selected,
+                focusedInHerdr: false
+            ) {
                 if tab.paneCount > 1 {
                     HStack(spacing: 3) {
                         Image(systemName: "rectangle.split.2x1")
