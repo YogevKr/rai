@@ -18,4 +18,32 @@ public extension SessionSnapshot {
         }
         return trimmed.isEmpty ? "shell" : trimmed
     }
+
+    /// Pane-first naming for notifications and pane chrome.
+    func displayName(for pane: Pane) -> String {
+        if let title = pane.terminalTitleStripped?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        if let agent = pane.agent?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agent.isEmpty {
+            return agent
+        }
+        if let tab = tabs.first(where: { $0.tabID == pane.tabID }) {
+            let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty { return label }
+        }
+        return pane.paneID
+    }
+
+    func workspaceLabel(for pane: Pane) -> String {
+        guard let workspace = workspaces.first(where: {
+            $0.workspaceID == pane.workspaceID
+        }) else {
+            return pane.workspaceID
+        }
+        let label = workspace.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? "Space \(workspace.number)" : label
+    }
 }

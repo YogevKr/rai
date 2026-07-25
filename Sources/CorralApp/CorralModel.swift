@@ -2,6 +2,15 @@ import CorralCore
 import Foundation
 import SwiftUI
 
+@MainActor
+protocol CorralSnapshotObserver: AnyObject {
+    func corralModel(
+        _ model: CorralModel,
+        didRefresh snapshot: SessionSnapshot,
+        transitions: [PaneStatusTransition]
+    )
+}
+
 enum AgentLaunchKind: String {
     case claude
     case codex
@@ -20,6 +29,14 @@ final class CorralModel: ObservableObject {
     @Published var selectedPaneID: String?
     @Published var draggedPaneID: String?
     @Published var onlyNeedsYou = false
+    @Published var notificationsMuted: Bool {
+        didSet {
+            userDefaults.set(
+                notificationsMuted,
+                forKey: Self.notificationsMutedDefaultsKey
+            )
+        }
+    }
     @Published var isCommandPalettePresented = false
     @Published var paletteQuery = ""
     @Published var paletteSelectedID: String?
@@ -32,13 +49,25 @@ final class CorralModel: ObservableObject {
 
     let client: HerdrClient
 
+    weak var snapshotObserver: CorralSnapshotObserver?
+
+    private static let notificationsMutedDefaultsKey = "notificationsMuted"
+    private let userDefaults: UserDefaults
     private var started = false
     private var eventTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
+    private var lastObservedPaneStatuses: [String: AgentStatus]?
 
-    init(client: HerdrClient = HerdrClient()) {
+    init(
+        client: HerdrClient = HerdrClient(),
+        userDefaults: UserDefaults = .standard
+    ) {
         self.client = client
+        self.userDefaults = userDefaults
+        notificationsMuted = userDefaults.bool(
+            forKey: Self.notificationsMutedDefaultsKey
+        )
     }
 
     deinit {
@@ -48,6 +77,10 @@ final class CorralModel: ObservableObject {
 
     var selectedPane: Pane? {
         snapshot?.panes.first { $0.paneID == selectedPaneID }
+    }
+
+    var blockedAgentCount: Int {
+        snapshot?.panes.lazy.filter { $0.agentStatus == .blocked }.count ?? 0
     }
 
     var selectedTabID: String? {
@@ -464,6 +497,16 @@ final class CorralModel: ObservableObject {
     private func refreshSnapshot(keepSelection: Bool) async {
         do {
             let newSnapshot = try await client.snapshot()
+            let newStatuses = Dictionary(
+                uniqueKeysWithValues: newSnapshot.panes.map {
+                    ($0.paneID, $0.agentStatus)
+                }
+            )
+            let transitions = lastObservedPaneStatuses.map {
+                StatusTransitions.detect(from: $0, to: newStatuses)
+            } ?? []
+            lastObservedPaneStatuses = newStatuses
+
             snapshot = newSnapshot
             connectionState = .connected(
                 version: newSnapshot.version,
@@ -479,6 +522,12 @@ final class CorralModel: ObservableObject {
                     ?? newSnapshot.panes.first(where: \.focused)?.paneID
                     ?? newSnapshot.panes.first?.paneID
             }
+
+            snapshotObserver?.corralModel(
+                self,
+                didRefresh: newSnapshot,
+                transitions: transitions
+            )
         } catch {
             connectionState = .disconnected(error.localizedDescription)
         }

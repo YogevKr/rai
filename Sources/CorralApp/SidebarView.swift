@@ -83,6 +83,8 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity)
                 Spacer()
             }
+            Divider().overlay(Theme.hairline)
+            attentionFooter
         }
         .background(Theme.sidebar)
         .sheet(item: $model.renameRequest) { request in
@@ -181,6 +183,71 @@ struct SidebarView: View {
         .padding(.leading, 78)
         .padding(.trailing, 14)
         .frame(height: 52)
+    }
+
+    private var attentionFooter: some View {
+        HStack(spacing: 8) {
+            if model.blockedAgentCount > 0 {
+                Button {
+                    model.onlyNeedsYou = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Theme.status(.blocked))
+                            .frame(width: 6, height: 6)
+                        Text(
+                            model.blockedAgentCount == 1
+                                ? "1 needs you"
+                                : "\(model.blockedAgentCount) need you"
+                        )
+                        .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show only agents that need you")
+            }
+
+            Spacer()
+
+            Button {
+                model.notificationsMuted.toggle()
+            } label: {
+                Image(
+                    systemName: model.notificationsMuted
+                        ? "bell.slash.fill"
+                        : "bell.fill"
+                )
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(
+                    model.notificationsMuted
+                        ? Theme.textTertiary
+                        : Theme.textSecondary
+                )
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(
+                            model.notificationsMuted
+                                ? Color.white.opacity(0.035)
+                                : .clear
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+            .help(
+                model.notificationsMuted
+                    ? "Agent notifications are muted"
+                    : "Mute agent notifications"
+            )
+            .accessibilityLabel(
+                model.notificationsMuted
+                    ? "Unmute agent notifications"
+                    : "Mute agent notifications"
+            )
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 34)
     }
 }
 

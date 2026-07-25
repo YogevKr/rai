@@ -2,7 +2,10 @@ import SwiftUI
 
 @main
 struct CorralApp: App {
-    @StateObject private var model = CorralModel()
+    @MainActor static let sharedModel = CorralModel()
+
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var model = CorralApp.sharedModel
 
     var body: some Scene {
         WindowGroup {

@@ -114,6 +114,10 @@ struct TerminalPaneView: NSViewRepresentable {
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = Self.font
         GhosttyTheme.apply(to: view)
+        // Prefer local text selection over mouse reporting: the attached TUIs
+        // (Claude/Codex) enable mouse tracking, which would otherwise send drags
+        // to the program instead of selecting. (Shift+drag still reports mouse.)
+        view.allowMouseReporting = false
         view.processDelegate = context.coordinator
         view.onPlainClick = context.coordinator.requestFocus
         context.coordinator.attach(view, terminalID: terminalID)
