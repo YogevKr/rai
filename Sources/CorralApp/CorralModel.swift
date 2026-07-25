@@ -19,6 +19,11 @@ final class CorralModel: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
     @Published var draggedPaneID: String?
+    @Published var onlyNeedsYou = false
+    @Published var isCommandPalettePresented = false
+    @Published var renameRequest: RenameRequest?
+    @Published var workspacePendingClose: Workspace?
+    @Published var statusExplanation: StatusExplanation?
     // Live split ratio while a divider is being dragged (split id → ratio),
     // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
     @Published var dragRatios: [String: Double] = [:]
@@ -60,7 +65,7 @@ final class CorralModel: ObservableObject {
         guard let workspaceID = selectedWorkspace?.workspaceID else { return [] }
         return snapshot?.tabs
             .filter { $0.workspaceID == workspaceID }
-            .sorted { $0.number < $1.number } ?? []
+ ?? []
     }
 
     var selectedLayout: PaneLayoutSnapshot? {
@@ -78,6 +83,43 @@ final class CorralModel: ObservableObject {
         return panes.sorted {
             order[$0.paneID, default: .max] < order[$1.paneID, default: .max]
         }
+    }
+
+    var commandPaletteItems: [CommandPaletteItem] {
+        guard let snapshot else { return [] }
+        var items: [CommandPaletteItem] = []
+        for workspace in snapshot.workspaces {
+            let workspaceLabel = workspace.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayWorkspaceLabel = workspaceLabel.isEmpty
+                ? "Space \(workspace.number)"
+                : workspaceLabel
+            items.append(
+                CommandPaletteItem(
+                    id: "workspace:\(workspace.workspaceID)",
+                    label: displayWorkspaceLabel,
+                    workspaceLabel: displayWorkspaceLabel,
+                    status: workspace.agentStatus,
+                    destination: .workspace(workspace.workspaceID),
+                    isWorkspace: true
+                )
+            )
+
+            let tabs = snapshot.tabs
+                .filter { $0.workspaceID == workspace.workspaceID }
+                            items.append(
+                contentsOf: tabs.map { tab in
+                    CommandPaletteItem(
+                        id: "tab:\(tab.tabID)",
+                        label: snapshot.displayLabel(for: tab),
+                        workspaceLabel: displayWorkspaceLabel,
+                        status: tab.agentStatus,
+                        destination: .tab(tab.tabID),
+                        isWorkspace: false
+                    )
+                }
+            )
+        }
+        return items
     }
 
     func start() {
@@ -101,6 +143,15 @@ final class CorralModel: ObservableObject {
             return
         }
         select(paneID: pane.paneID, focusInHerdr: true)
+    }
+
+    func select(workspace: Workspace) {
+        guard let snapshot else { return }
+        let tabs = snapshot.tabs
+            .filter { $0.workspaceID == workspace.workspaceID }
+                    if let tab = tabs.first(where: { $0.tabID == workspace.activeTabID }) ?? tabs.first {
+            select(tab: tab)
+        }
     }
 
     /// Reveals a drag target tab locally. Herdr focus changes only if the pane is
@@ -127,6 +178,215 @@ final class CorralModel: ObservableObject {
 
     func refreshNow() {
         Task { await refreshSnapshot(keepSelection: true) }
+    }
+
+    // MARK: - Find and act
+
+    func toggleCommandPalette() {
+        isCommandPalettePresented.toggle()
+    }
+
+    func closeCommandPalette() {
+        isCommandPalettePresented = false
+    }
+
+    func jump(to item: CommandPaletteItem) {
+        guard let snapshot else { return }
+        closeCommandPalette()
+        switch item.destination {
+        case .tab(let tabID):
+            if let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) {
+                select(tab: tab)
+            }
+        case .workspace(let workspaceID):
+            if let workspace = snapshot.workspaces.first(where: {
+                $0.workspaceID == workspaceID
+            }) {
+                select(workspace: workspace)
+            }
+        }
+    }
+
+    func beginRename(tab: HerdrTab) {
+        guard let snapshot else { return }
+        renameRequest = RenameRequest(
+            target: .tab(tab.tabID),
+            title: "Rename Agent",
+            initialLabel: snapshot.displayLabel(for: tab)
+        )
+    }
+
+    func beginRename(workspace: Workspace) {
+        renameRequest = RenameRequest(
+            target: .workspace(workspace.workspaceID),
+            title: "Rename Space",
+            initialLabel: workspace.label
+        )
+    }
+
+    func commitRename(_ request: RenameRequest, label: String) {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        renameRequest = nil
+        guard !label.isEmpty, label != request.initialLabel else { return }
+        switch request.target {
+        case .tab(let tabID):
+            runAction(["tab", "rename", tabID, label], followFocus: false)
+        case .workspace(let workspaceID):
+            runAction(["workspace", "rename", workspaceID, label], followFocus: false)
+        }
+    }
+
+    func close(tab: HerdrTab) {
+        runAction(["tab", "close", tab.tabID])
+    }
+
+    func requestClose(workspace: Workspace) {
+        if workspace.tabCount > 1 {
+            workspacePendingClose = workspace
+        } else {
+            close(workspace: workspace)
+        }
+    }
+
+    func confirmCloseWorkspace() {
+        guard let workspace = workspacePendingClose else { return }
+        workspacePendingClose = nil
+        close(workspace: workspace)
+    }
+
+    func explainStatus(tab: HerdrTab) {
+        guard let snapshot,
+              let pane = preferredPane(in: tab, snapshot: snapshot) else {
+            showMissingExplanation(for: snapshot?.displayLabel(for: tab) ?? tab.label)
+            return
+        }
+        beginExplanation(
+            target: pane.terminalID.isEmpty ? pane.paneID : pane.terminalID,
+            title: "Why \(snapshot.displayLabel(for: tab)) is \(statusLabel(tab.agentStatus))"
+        )
+    }
+
+    func explainStatus(workspace: Workspace) {
+        guard let snapshot else {
+            showMissingExplanation(for: workspace.label)
+            return
+        }
+        let tabs = snapshot.tabs
+            .filter { $0.workspaceID == workspace.workspaceID }
+                    let activeTab = tabs.first(where: { $0.tabID == workspace.activeTabID })
+        let tab = activeTab?.agentStatus == workspace.agentStatus
+            ? activeTab
+            : tabs.first(where: { $0.agentStatus == workspace.agentStatus }) ?? activeTab
+        guard let tab = tab ?? tabs.first,
+              let pane = preferredPane(in: tab, snapshot: snapshot) else {
+            showMissingExplanation(for: workspace.label)
+            return
+        }
+        beginExplanation(
+            target: pane.terminalID.isEmpty ? pane.paneID : pane.terminalID,
+            title: "Why \(workspace.label) is \(statusLabel(workspace.agentStatus))"
+        )
+    }
+
+    func moveTab(sourceTabID: String, onto targetTabID: String) {
+        guard sourceTabID != targetTabID,
+              let snapshot,
+              let source = snapshot.tabs.first(where: { $0.tabID == sourceTabID }),
+              let target = snapshot.tabs.first(where: { $0.tabID == targetTabID }),
+              source.workspaceID == target.workspaceID else {
+            return
+        }
+        let tabs = snapshot.tabs.filter { $0.workspaceID == target.workspaceID }
+        guard let insertIndex = tabs.firstIndex(where: { $0.tabID == targetTabID }) else {
+            return
+        }
+        Task {
+            do {
+                try await client.moveTab(sourceTabID, insertIndex: insertIndex)
+                await refreshSnapshot(keepSelection: true)
+            } catch {
+                connectionState = .disconnected(error.localizedDescription)
+            }
+        }
+    }
+
+    func moveWorkspace(sourceWorkspaceID: String, onto targetWorkspaceID: String) {
+        guard sourceWorkspaceID != targetWorkspaceID, let snapshot else { return }
+        let workspaces = snapshot.workspaces
+        guard workspaces.contains(where: { $0.workspaceID == sourceWorkspaceID }),
+              let insertIndex = workspaces.firstIndex(where: {
+                  $0.workspaceID == targetWorkspaceID
+              }) else {
+            return
+        }
+        Task {
+            do {
+                try await client.moveWorkspace(sourceWorkspaceID, insertIndex: insertIndex)
+                await refreshSnapshot(keepSelection: true)
+            } catch {
+                connectionState = .disconnected(error.localizedDescription)
+            }
+        }
+    }
+
+    private func close(workspace: Workspace) {
+        runAction(["workspace", "close", workspace.workspaceID])
+    }
+
+    private func preferredPane(in tab: HerdrTab, snapshot: SessionSnapshot) -> Pane? {
+        let panes = snapshot.panes.filter { $0.tabID == tab.tabID }
+        let matchingStatus = panes.filter { $0.agentStatus == tab.agentStatus }
+        if let selectedPaneID,
+           let selected = matchingStatus.first(where: { $0.paneID == selectedPaneID }) {
+            return selected
+        }
+        let focusedPaneID = snapshot.layouts.first { $0.tabID == tab.tabID }?.focusedPaneID
+        return matchingStatus.first(where: { $0.paneID == focusedPaneID })
+            ?? matchingStatus.first
+            ?? panes.first(where: { $0.paneID == selectedPaneID })
+            ?? panes.first(where: { $0.paneID == focusedPaneID })
+            ?? panes.first(where: \.focused)
+            ?? panes.first
+    }
+
+    private func beginExplanation(target: String, title: String) {
+        let id = UUID()
+        statusExplanation = StatusExplanation(id: id, title: title, text: nil)
+        Task {
+            let output = await runHerdrCapture(["agent", "explain", target, "--json"])
+            guard statusExplanation?.id == id else { return }
+            statusExplanation = StatusExplanation(
+                id: id,
+                title: title,
+                text: output.map(Self.prettyPrintedJSON)
+                    ?? "Herdr could not explain this status."
+            )
+        }
+    }
+
+    private func showMissingExplanation(for label: String) {
+        statusExplanation = StatusExplanation(
+            id: UUID(),
+            title: "Explain \(label)",
+            text: "No pane is available for this agent or space."
+        )
+    }
+
+    private func statusLabel(_ status: AgentStatus) -> String {
+        status == .blocked ? "blocked" : status.rawValue
+    }
+
+    private static func prettyPrintedJSON(_ output: String) -> String {
+        guard let data = output.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let pretty = try? JSONSerialization.data(
+                  withJSONObject: object,
+                  options: [.prettyPrinted, .sortedKeys]
+              ),
+              let formatted = String(data: pretty, encoding: .utf8) else {
+            return output
+        }
+        return formatted
     }
 
     private func startEventLoop() {
@@ -225,14 +485,13 @@ final class CorralModel: ObservableObject {
 
     private func cycleWorkspace(_ delta: Int) {
         guard let snapshot else { return }
-        let spaces = snapshot.workspaces.sorted { $0.number < $1.number }
+        let spaces = snapshot.workspaces
         guard !spaces.isEmpty else { return }
         let index = spaces.firstIndex { $0.workspaceID == selectedWorkspace?.workspaceID } ?? 0
         let target = spaces[(index + delta + spaces.count) % spaces.count]
         let tabs = snapshot.tabs
             .filter { $0.workspaceID == target.workspaceID }
-            .sorted { $0.number < $1.number }
-        if let tab = tabs.first(where: { $0.tabID == target.activeTabID }) ?? tabs.first {
+                    if let tab = tabs.first(where: { $0.tabID == target.activeTabID }) ?? tabs.first {
             select(tab: tab)
         }
     }
@@ -362,16 +621,7 @@ final class CorralModel: ObservableObject {
 
     private func runHerdr(_ args: [String]) async -> Bool {
         await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
-            process.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            let path = env["PATH"] ?? ""
-            if !path.contains("/opt/homebrew/bin") {
-                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
-                    + (path.isEmpty ? "/usr/bin:/bin" : path)
-            }
-            process.environment = env
+            let process = configuredHerdrProcess(args)
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             process.terminationHandler = { proc in
@@ -379,5 +629,45 @@ final class CorralModel: ObservableObject {
             }
             do { try process.run() } catch { continuation.resume(returning: false) }
         }
+    }
+
+    private func runHerdrCapture(_ args: [String]) async -> String? {
+        await withCheckedContinuation { continuation in
+            let process = configuredHerdrProcess(args)
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(returning: nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let string = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                continuation.resume(returning: string?.isEmpty == false ? string : nil)
+            }
+        }
+    }
+
+    private func configuredHerdrProcess(_ args: [String]) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        let path = environment["PATH"] ?? ""
+        if !path.contains("/opt/homebrew/bin") {
+            environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
+                + (path.isEmpty ? "/usr/bin:/bin" : path)
+        }
+        process.environment = environment
+        return process
     }
 }

@@ -81,6 +81,9 @@ struct CorralApp: App {
             }
 
             CommandGroup(after: .toolbar) {
+                Button("Command Palette…") { model.toggleCommandPalette() }
+                    .keyboardShortcut("k", modifiers: .command)
+                Divider()
                 Button("Refresh") { model.refreshNow() }
                     .keyboardShortcut("r", modifiers: .command)
             }

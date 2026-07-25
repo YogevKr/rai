@@ -5,19 +5,31 @@ struct CorralRootView: View {
     @ObservedObject var model: CorralModel
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
-        } detail: {
-            VStack(spacing: 0) {
-                PaneHeader(model: model)
-                Divider().overlay(Theme.hairline)
-                PaneLayoutView(model: model)
+        ZStack {
+            NavigationSplitView {
+                SidebarView(model: model)
+                    .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
+            } detail: {
+                VStack(spacing: 0) {
+                    PaneHeader(model: model)
+                    Divider().overlay(Theme.hairline)
+                    PaneLayoutView(model: model)
+                }
+                .background(Theme.base)
             }
-            .background(Theme.base)
+
+            if model.isCommandPalettePresented {
+                Color.black.opacity(0.42)
+                    .ignoresSafeArea()
+                    .onTapGesture { model.closeCommandPalette() }
+                CommandPaletteView(model: model)
+                    .padding(.horizontal, 28)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .preferredColorScheme(.dark)
+        .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
     }
 }
 

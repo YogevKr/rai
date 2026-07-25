@@ -2,6 +2,11 @@ import CorralCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension UTType {
+    static let corralTab = UTType(exportedAs: "ai.sawmills.corral.tab")
+    static let corralWorkspace = UTType(exportedAs: "ai.sawmills.corral.workspace")
+}
+
 struct SidebarView: View {
     @ObservedObject var model: CorralModel
 
@@ -12,29 +17,40 @@ struct SidebarView: View {
             if let snapshot = model.snapshot {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                        ForEach(snapshot.workspaces.sorted { $0.number < $1.number }) { workspace in
-                            let tabs = tabs(in: snapshot, of: workspace)
+                        ForEach(snapshot.workspaces) { workspace in
+                            let allTabs = tabs(in: snapshot, of: workspace)
+                            let visibleTabs = allTabs.filter {
+                                AttentionFilter.includes(
+                                    status: $0.agentStatus,
+                                    id: $0.tabID,
+                                    selectedID: model.selectedTabID,
+                                    onlyNeedsYou: model.onlyNeedsYou
+                                )
+                            }
                             let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
-                            if tabs.count <= 1 {
+                            if allTabs.count <= 1,
+                               !model.onlyNeedsYou || !visibleTabs.isEmpty {
+                                let tab = visibleTabs.first ?? allTabs.first
                                 // A one-agent space: collapse header + lone tab into a single row.
                                 WorkspaceRow(
+                                    model: model,
                                     workspace: workspace,
-                                    tab: tabs.first,
+                                    tab: tab,
                                     focusedInHerdr: focused,
-                                    selected: model.selectedTabID == tabs.first?.tabID,
-                                    onSelect: { tabs.first.map { model.select(tab: $0) } },
+                                    selected: model.selectedTabID == tab?.tabID,
+                                    onSelect: { tab.map { model.select(tab: $0) } },
                                     onPaneDragHover: {
-                                        tabs.first.map { model.previewTabDuringPaneDrag($0) }
+                                        tab.map { model.previewTabDuringPaneDrag($0) }
                                     }
                                 )
                                 .padding(.top, 8)
-                            } else {
+                            } else if !visibleTabs.isEmpty {
                                 Section {
-                                    ForEach(tabs) { tab in
+                                    ForEach(visibleTabs) { tab in
                                         AgentRow(
-                                            label: displayName(for: tab, in: snapshot),
-                                            status: tab.agentStatus,
-                                            paneCount: tab.paneCount,
+                                            model: model,
+                                            tab: tab,
+                                            label: snapshot.displayLabel(for: tab),
                                             selected: model.selectedTabID == tab.tabID,
                                             onSelect: { model.select(tab: tab) },
                                             onPaneDragHover: {
@@ -43,7 +59,11 @@ struct SidebarView: View {
                                         )
                                     }
                                 } header: {
-                                    WorkspaceHeader(workspace: workspace, focusedInHerdr: focused)
+                                    WorkspaceHeader(
+                                        model: model,
+                                        workspace: workspace,
+                                        focusedInHerdr: focused
+                                    )
                                 }
                             }
                         }
@@ -65,29 +85,31 @@ struct SidebarView: View {
             }
         }
         .background(Theme.sidebar)
+        .sheet(item: $model.renameRequest) { request in
+            RenameSheet(model: model, request: request)
+        }
+        .sheet(item: $model.statusExplanation) { _ in
+            StatusExplanationSheet(model: model)
+        }
+        .alert(item: $model.workspacePendingClose) { workspace in
+            Alert(
+                title: Text("Close “\(workspace.label)”?"),
+                message: Text(
+                    "This space contains \(workspace.tabCount) agents. "
+                        + "Closing it will end every tab in the space."
+                ),
+                primaryButton: .destructive(Text("Close Space")) {
+                    model.confirmCloseWorkspace()
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
+    // herdr's canonical tab order is the snapshot array order (tab.move reorders
+    // the array, not the `number` field) — preserve it, don't re-sort by number.
     private func tabs(in snapshot: SessionSnapshot, of workspace: Workspace) -> [HerdrTab] {
-        snapshot.tabs
-            .filter { $0.workspaceID == workspace.workspaceID }
-            .sorted { $0.number < $1.number }
-    }
-
-    // A tab whose label is blank or just its number carries no real title yet;
-    // fall back to the pane's terminal title, then the agent kind, then "shell".
-    private func displayName(for tab: HerdrTab, in snapshot: SessionSnapshot) -> String {
-        let trimmed = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, Int(trimmed) == nil { return trimmed }
-        let panes = snapshot.panes.filter { $0.tabID == tab.tabID }
-        if let title = panes.compactMap(\.terminalTitleStripped)
-            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
-            return title
-        }
-        if let agent = panes.compactMap(\.agent)
-            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
-            return agent
-        }
-        return trimmed.isEmpty ? "shell" : trimmed
+        snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
     }
 
     private var header: some View {
@@ -111,6 +133,27 @@ struct SidebarView: View {
                 .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
+            Button {
+                model.onlyNeedsYou.toggle()
+            } label: {
+                Image(
+                    systemName: model.onlyNeedsYou
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease.circle"
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(
+                    model.onlyNeedsYou ? Theme.accent : Theme.textSecondary
+                )
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(model.onlyNeedsYou ? Theme.accent.opacity(0.12) : .clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Only needs-you")
+            .accessibilityLabel("Only needs-you")
             ConnectionPill(state: model.connectionState)
         }
         .padding(.leading, 78)
@@ -167,6 +210,7 @@ private struct RepoTag: View {
 }
 
 private struct WorkspaceRow: View {
+    @ObservedObject var model: CorralModel
     let workspace: Workspace
     let tab: HerdrTab?
     let focusedInHerdr: Bool
@@ -207,11 +251,32 @@ private struct WorkspaceRow: View {
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
+        .onDrag {
+            sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+        }
+        .onDrop(of: [.corralWorkspace], isTargeted: nil) { providers in
+            loadSidebarDrop(providers, type: .corralWorkspace) { sourceID in
+                model.moveWorkspace(
+                    sourceWorkspaceID: sourceID,
+                    onto: workspace.workspaceID
+                )
+            }
+        }
+        .contextMenu {
+            Button("Focus", action: onSelect)
+            Button("Rename") { model.beginRename(workspace: workspace) }
+            Button("Close", role: .destructive) {
+                model.requestClose(workspace: workspace)
+            }
+            Divider()
+            Button("Explain Status") { model.explainStatus(workspace: workspace) }
+        }
         .help(workspace.worktree?.checkoutPath ?? workspace.label)
     }
 }
 
 private struct WorkspaceHeader: View {
+    @ObservedObject var model: CorralModel
     let workspace: Workspace
     let focusedInHerdr: Bool
 
@@ -246,14 +311,36 @@ private struct WorkspaceHeader: View {
         .padding(.bottom, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.sidebar)
+        .contentShape(Rectangle())
+        .onTapGesture { model.select(workspace: workspace) }
+        .onDrag {
+            sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+        }
+        .onDrop(of: [.corralWorkspace], isTargeted: nil) { providers in
+            loadSidebarDrop(providers, type: .corralWorkspace) { sourceID in
+                model.moveWorkspace(
+                    sourceWorkspaceID: sourceID,
+                    onto: workspace.workspaceID
+                )
+            }
+        }
+        .contextMenu {
+            Button("Focus") { model.select(workspace: workspace) }
+            Button("Rename") { model.beginRename(workspace: workspace) }
+            Button("Close", role: .destructive) {
+                model.requestClose(workspace: workspace)
+            }
+            Divider()
+            Button("Explain Status") { model.explainStatus(workspace: workspace) }
+        }
         .help(workspace.worktree?.checkoutPath ?? workspace.label)
     }
 }
 
 private struct AgentRow: View {
+    @ObservedObject var model: CorralModel
+    let tab: HerdrTab
     let label: String
-    let status: AgentStatus
-    let paneCount: Int
     let selected: Bool
     let onSelect: () -> Void
     let onPaneDragHover: () -> Void
@@ -264,17 +351,17 @@ private struct AgentRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
-                StatusDot(status: status)
+                StatusDot(status: tab.agentStatus)
                 Text(label)
                     .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
                     .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 4)
-                if paneCount > 1 {
+                if tab.paneCount > 1 {
                     HStack(spacing: 3) {
                         Image(systemName: "rectangle.split.2x1")
-                        Text("\(paneCount)")
+                        Text("\(tab.paneCount)")
                     }
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(Theme.textTertiary)
@@ -288,7 +375,141 @@ private struct AgentRow: View {
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
+        .onDrag {
+            sidebarDragProvider(id: tab.tabID, type: .corralTab)
+        }
+        .onDrop(of: [.corralTab], isTargeted: nil) { providers in
+            loadSidebarDrop(providers, type: .corralTab) { sourceID in
+                model.moveTab(sourceTabID: sourceID, onto: tab.tabID)
+            }
+        }
+        .contextMenu {
+            Button("Focus", action: onSelect)
+            Button("Rename") { model.beginRename(tab: tab) }
+            Button("Close", role: .destructive) { model.close(tab: tab) }
+            Divider()
+            Button("Explain Status") { model.explainStatus(tab: tab) }
+        }
     }
+}
+
+private struct RenameSheet: View {
+    @ObservedObject var model: CorralModel
+    let request: RenameRequest
+
+    @State private var label: String
+    @FocusState private var labelFocused: Bool
+
+    init(model: CorralModel, request: RenameRequest) {
+        self.model = model
+        self.request = request
+        _label = State(initialValue: request.initialLabel)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(request.title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            TextField("Name", text: $label)
+                .textFieldStyle(.roundedBorder)
+                .focused($labelFocused)
+                .onSubmit(commit)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.renameRequest = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename", action: commit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 380)
+        .background(Theme.raised)
+        .onAppear { labelFocused = true }
+        .onExitCommand { model.renameRequest = nil }
+    }
+
+    private func commit() {
+        model.commitRename(request, label: label)
+    }
+}
+
+private struct StatusExplanationSheet: View {
+    @ObservedObject var model: CorralModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(model.statusExplanation?.title ?? "Explain Status")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Button {
+                    model.statusExplanation = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+
+            if let explanation = model.statusExplanation {
+                if explanation.isLoading {
+                    HStack(spacing: 9) {
+                        ProgressView().controlSize(.small)
+                        Text("Asking Herdr…")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        Text(explanation.text ?? "")
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(Theme.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: 560, height: 380)
+        .background(Theme.raised)
+        .onExitCommand { model.statusExplanation = nil }
+    }
+}
+
+private func sidebarDragProvider(id: String, type: UTType) -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.registerDataRepresentation(
+        forTypeIdentifier: type.identifier,
+        visibility: .ownProcess
+    ) { completion in
+        completion(id.data(using: .utf8), nil)
+        return nil
+    }
+    return provider
+}
+
+private func loadSidebarDrop(
+    _ providers: [NSItemProvider],
+    type: UTType,
+    action: @escaping (String) -> Void
+) -> Bool {
+    guard let provider = providers.first(where: {
+        $0.hasItemConformingToTypeIdentifier(type.identifier)
+    }) else {
+        return false
+    }
+    provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
+        guard let data, let id = String(data: data, encoding: .utf8) else { return }
+        Task { @MainActor in action(id) }
+    }
+    return true
 }
 
 private struct ConnectionPill: View {

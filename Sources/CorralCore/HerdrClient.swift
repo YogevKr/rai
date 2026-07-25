@@ -81,7 +81,9 @@ public actor HerdrClient {
         "pane.agent_status_changed",
         "pane.output_changed",
         "tab.closed",
+        "tab.moved",
         "workspace.focused",
+        "workspace.moved",
     ]
 
     public nonisolated let socketPath: String
@@ -165,6 +167,26 @@ public actor HerdrClient {
             params["amount"] = .number(amount)
         }
         let _: JSONValue = try call(method: "pane.resize", params: params)
+    }
+
+    public func moveTab(_ tabID: String, insertIndex: Int) throws {
+        let _: JSONValue = try call(
+            method: "tab.move",
+            params: [
+                "tab_id": .string(tabID),
+                "insert_index": .number(Double(insertIndex)),
+            ]
+        )
+    }
+
+    public func moveWorkspace(_ workspaceID: String, insertIndex: Int) throws {
+        let _: JSONValue = try call(
+            method: "workspace.move",
+            params: [
+                "workspace_id": .string(workspaceID),
+                "insert_index": .number(Double(insertIndex)),
+            ]
+        )
     }
 
     public nonisolated func events(
