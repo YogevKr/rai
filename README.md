@@ -87,8 +87,10 @@ bytes — see Ghostty's "Reconnectable Terminal" prototype, disc #12176) or
 - **P1 — MVP:** Swift window; sidebar from `session.snapshot`, kept live by
   `events.subscribe`; **one interactive pane** (type into it, see output) via
   SwiftTerm + `pane.send_input` + a content stream.
-- **P2:** tabs + splits (render `layout`, drive `set_split_ratio`), focus, agent
-  status glyphs, `pane.close`/`create`.
+- **P2 — current:** native tab bar; full nested split rendering from layout
+  snapshots and ratios; pane/tab focus; polished workspace sidebar and agent
+  status glyphs. Driving split ratios and pane lifecycle actions remains future
+  work.
 - **P3:** drag to move/split panes, workspace switching, agent actions
   (`agent.send/start/attach`), native notifications on `blocked`/`done`.
 - **P4 (stretch):** swap SwiftTerm → libghostty; remote herdr over SSH
@@ -127,10 +129,16 @@ swift run corral-probe --watch
 swift run corral-probe --send-smoke <pane-id>
 ```
 
-The app currently renders one selected pane at a time. Workspace/tab/pane
-creation, focus, movement, closure, and agent status updates arrive on the
-event connection and are coalesced before updating SwiftUI. Herdr protocol 16
-does not expose `pane.output_changed` as a subscribable event, so the selected
-pane uses `pane.updated` plus a 700 ms `pane.read` fallback poll. Protocol 16's
-`pane.resize` is directional split resizing rather than a terminal
-rows/columns report, so view resizing is intentionally not forwarded.
+The app renders every pane in the selected tab using the nested split geometry
+and ratios from `session.snapshot.layouts`. Workspace/tab/pane creation, focus,
+movement, closure, and agent status updates arrive on the event connection and
+are coalesced before updating SwiftUI. Herdr protocol 16 does not expose
+`pane.output_changed` as a subscribable event, so visible panes use
+`pane.updated` plus a 700 ms `pane.read` fallback poll.
+
+Terminal view sizes are intentionally not forwarded. Protocol 16's public
+`pane.resize` request is directional split resizing, not terminal rows/columns.
+The daemon's separate `herdr-client.sock` terminal-observer transport negotiates
+a fixed rows/columns size through an undocumented binary handshake and exposes
+no observer resize message in the JSON API. Corral keeps the documented
+`herdr.sock` RPC path rather than guessing that private protocol.

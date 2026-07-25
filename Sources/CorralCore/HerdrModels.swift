@@ -102,12 +102,111 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
     public let workspaces: [Workspace]
     public let tabs: [HerdrTab]
     public let panes: [Pane]
+    public let layouts: [PaneLayoutSnapshot]
 
     enum CodingKeys: String, CodingKey {
-        case version, `protocol`, workspaces, tabs, panes
+        case version, `protocol`, workspaces, tabs, panes, layouts
         case focusedWorkspaceID = "focused_workspace_id"
         case focusedTabID = "focused_tab_id"
         case focusedPaneID = "focused_pane_id"
+    }
+}
+
+public struct PaneLayoutRect: Codable, Hashable, Sendable {
+    public let x: Int
+    public let y: Int
+    public let width: Int
+    public let height: Int
+
+    public init(x: Int, y: Int, width: Int, height: Int) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    public func contains(_ other: PaneLayoutRect) -> Bool {
+        other.x >= x
+            && other.y >= y
+            && other.x + other.width <= x + width
+            && other.y + other.height <= y + height
+    }
+}
+
+public struct PaneLayoutPane: Codable, Sendable, Equatable {
+    public let paneID: String
+    public let focused: Bool
+    public let rect: PaneLayoutRect
+
+    public init(paneID: String, focused: Bool, rect: PaneLayoutRect) {
+        self.paneID = paneID
+        self.focused = focused
+        self.rect = rect
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case paneID = "pane_id"
+        case focused, rect
+    }
+}
+
+public enum SplitDirection: String, Codable, Sendable {
+    case right
+    case down
+}
+
+public struct PaneLayoutSplit: Codable, Sendable, Equatable {
+    public let id: String
+    public let direction: SplitDirection
+    public let ratio: Double
+    public let rect: PaneLayoutRect
+
+    public init(
+        id: String,
+        direction: SplitDirection,
+        ratio: Double,
+        rect: PaneLayoutRect
+    ) {
+        self.id = id
+        self.direction = direction
+        self.ratio = ratio
+        self.rect = rect
+    }
+}
+
+public struct PaneLayoutSnapshot: Codable, Sendable, Equatable {
+    public let workspaceID: String
+    public let tabID: String
+    public let zoomed: Bool
+    public let area: PaneLayoutRect
+    public let focusedPaneID: String
+    public let panes: [PaneLayoutPane]
+    public let splits: [PaneLayoutSplit]
+
+    public init(
+        workspaceID: String,
+        tabID: String,
+        zoomed: Bool,
+        area: PaneLayoutRect,
+        focusedPaneID: String,
+        panes: [PaneLayoutPane],
+        splits: [PaneLayoutSplit]
+    ) {
+        self.workspaceID = workspaceID
+        self.tabID = tabID
+        self.zoomed = zoomed
+        self.area = area
+        self.focusedPaneID = focusedPaneID
+        self.panes = panes
+        self.splits = splits
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workspaceID = "workspace_id"
+        case tabID = "tab_id"
+        case zoomed, area
+        case focusedPaneID = "focused_pane_id"
+        case panes, splits
     }
 }
 

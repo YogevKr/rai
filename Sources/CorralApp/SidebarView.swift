@@ -17,6 +17,10 @@ struct SidebarView: View {
                                 tabs: snapshot.tabs
                                     .filter { $0.workspaceID == workspace.workspaceID }
                                     .sorted(by: tabOrder),
+                                selected: model.selectedWorkspace?.workspaceID
+                                    == workspace.workspaceID,
+                                focusedInHerdr: snapshot.focusedWorkspaceID
+                                    == workspace.workspaceID,
                                 selectedTabID: model.selectedTabID,
                                 onSelect: model.select(tab:)
                             )
@@ -70,6 +74,8 @@ struct SidebarView: View {
 private struct WorkspaceSection: View {
     let workspace: Workspace
     let tabs: [HerdrTab]
+    let selected: Bool
+    let focusedInHerdr: Bool
     let selectedTabID: String?
     let onSelect: (HerdrTab) -> Void
 
@@ -79,22 +85,46 @@ private struct WorkspaceSection: View {
                 StatusGlyph(status: workspace.agentStatus, compact: true)
                 Text(workspace.label)
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(selected ? .primary : .secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 if let repo = workspace.worktree?.repoName {
-                    Text(repo)
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 4))
+                    HStack(spacing: 3) {
+                        if workspace.worktree?.isLinkedWorktree == true {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                        }
+                        Text(repo)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(selected ? .secondary : .tertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 4))
+                }
+                if focusedInHerdr {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 4, height: 4)
+                        .help("Focused in Herdr")
                 }
             }
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 8)
+            .frame(height: 25)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(selected ? Color.primary.opacity(0.055) : .clear)
+            }
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 2, height: 14)
+                }
+            }
+            .help(workspace.worktree?.checkoutPath ?? workspace.label)
 
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 ForEach(tabs) { tab in
                     Button {
                         onSelect(tab)
@@ -128,7 +158,7 @@ private struct TabRow: View {
             }
         }
         .padding(.horizontal, 9)
-        .frame(height: 30)
+        .frame(height: 29)
         .contentShape(Rectangle())
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)

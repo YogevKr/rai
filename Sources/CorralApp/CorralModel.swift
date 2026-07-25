@@ -18,7 +18,7 @@ final class CorralModel: ObservableObject {
     }
 
     @Published private(set) var snapshot: SessionSnapshot?
-    @Published private(set) var terminalFrame: TerminalFrame?
+    @Published private(set) var terminalFrames: [String: TerminalFrame] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
 
@@ -30,7 +30,7 @@ final class CorralModel: ObservableObject {
     private var flushTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
     private var frameSequence: UInt64 = 0
-    private var readInFlight = false
+    private var readsInFlight = Set<String>()
 
     init(client: HerdrClient = HerdrClient()) {
         self.client = client
@@ -50,6 +50,43 @@ final class CorralModel: ObservableObject {
         selectedPane?.tabID
     }
 
+    var selectedTab: HerdrTab? {
+        snapshot?.tabs.first { $0.tabID == selectedTabID }
+    }
+
+    var selectedWorkspace: Workspace? {
+        guard let workspaceID = selectedPane?.workspaceID else { return nil }
+        return snapshot?.workspaces.first { $0.workspaceID == workspaceID }
+    }
+
+    var selectedWorkspaceTabs: [HerdrTab] {
+        guard let workspaceID = selectedWorkspace?.workspaceID else { return [] }
+        return snapshot?.tabs
+            .filter { $0.workspaceID == workspaceID }
+            .sorted { $0.number < $1.number } ?? []
+    }
+
+    var selectedLayout: PaneLayoutSnapshot? {
+        guard let selectedTabID else { return nil }
+        return snapshot?.layouts.first { $0.tabID == selectedTabID }
+    }
+
+    var visiblePanes: [Pane] {
+        guard let snapshot, let selectedTabID else { return [] }
+        let panes = snapshot.panes.filter { $0.tabID == selectedTabID }
+        guard let layout = selectedLayout else { return panes }
+        let order = Dictionary(
+            uniqueKeysWithValues: layout.panes.enumerated().map { ($1.paneID, $0) }
+        )
+        return panes.sorted {
+            order[$0.paneID, default: .max] < order[$1.paneID, default: .max]
+        }
+    }
+
+    func terminalFrame(for paneID: String) -> TerminalFrame? {
+        terminalFrames[paneID]
+    }
+
     func start() {
         guard !started else { return }
         started = true
@@ -65,14 +102,20 @@ final class CorralModel: ObservableObject {
     func select(tab: HerdrTab) {
         guard let snapshot else { return }
         let candidates = snapshot.panes.filter { $0.tabID == tab.tabID }
-        guard let pane = candidates.first(where: \.focused) ?? candidates.first else { return }
+        let layoutFocus = snapshot.layouts.first { $0.tabID == tab.tabID }?.focusedPaneID
+        guard let pane = candidates.first(where: { $0.paneID == layoutFocus })
+            ?? candidates.first(where: \.focused)
+            ?? candidates.first else {
+            return
+        }
         select(paneID: pane.paneID, focusInHerdr: true)
     }
 
     func select(paneID: String, focusInHerdr: Bool) {
-        guard selectedPaneID != paneID || terminalFrame == nil else { return }
+        let previousTabID = selectedTabID
+        let nextTabID = snapshot?.panes.first { $0.paneID == paneID }?.tabID
+        let changed = selectedPaneID != paneID
         selectedPaneID = paneID
-        terminalFrame = nil
         Task {
             if focusInHerdr {
                 do {
@@ -81,14 +124,17 @@ final class CorralModel: ObservableObject {
                     connectionState = .disconnected(error.localizedDescription)
                 }
             }
-            await refreshPane(force: true)
+            if changed, previousTabID != nextTabID {
+                await refreshVisiblePanes(force: false)
+            } else if terminalFrames[paneID] == nil {
+                await refreshPane(paneID: paneID, force: true)
+            }
         }
     }
 
     func refreshNow() {
         Task {
             await refreshSnapshot(keepSelection: true)
-            await refreshPane(force: true)
         }
     }
 
@@ -119,7 +165,7 @@ final class CorralModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(700))
                 guard let self, self.selectedPaneID != nil else { continue }
-                await self.refreshPane(force: false)
+                await self.refreshVisiblePanes(force: false)
             }
         }
     }
@@ -140,17 +186,21 @@ final class CorralModel: ObservableObject {
         flushTask = nil
         guard !events.isEmpty else { return }
 
-        let selected = selectedPaneID
-        let outputChanged = events.contains {
-            $0.name == "pane.output_changed" && $0.paneID == selected
+        let visiblePaneIDs = Set(visiblePanes.map(\.paneID))
+        let changedOutputPaneIDs = Set(events.compactMap {
+            $0.name == "pane.output_changed" ? $0.paneID : nil
+        }).intersection(visiblePaneIDs)
+        let outputChanged = !changedOutputPaneIDs.isEmpty
+        let treeChanged = events.contains {
+            $0.name != "pane.output_changed"
         }
-        let treeChanged = events.contains { $0.name != "pane.output_changed" }
 
         if treeChanged {
             await refreshSnapshot(keepSelection: true)
-        }
-        if outputChanged || treeChanged {
-            await refreshPane(force: outputChanged)
+        } else if outputChanged {
+            for paneID in changedOutputPaneIDs {
+                await refreshPane(paneID: paneID, force: true)
+            }
         }
     }
 
@@ -158,6 +208,8 @@ final class CorralModel: ObservableObject {
         do {
             let newSnapshot = try await client.snapshot()
             snapshot = newSnapshot
+            let livePaneIDs = Set(newSnapshot.panes.map(\.paneID))
+            terminalFrames = terminalFrames.filter { livePaneIDs.contains($0.key) }
             connectionState = .connected(
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
@@ -166,39 +218,39 @@ final class CorralModel: ObservableObject {
             if keepSelection,
                let selectedPaneID,
                newSnapshot.panes.contains(where: { $0.paneID == selectedPaneID }) {
-                return
+                await refreshVisiblePanes(force: false)
+            } else {
+                selectedPaneID = newSnapshot.focusedPaneID
+                    ?? newSnapshot.panes.first(where: \.focused)?.paneID
+                    ?? newSnapshot.panes.first?.paneID
+                await refreshVisiblePanes(force: true)
             }
-
-            let preferred = newSnapshot.focusedPaneID
-                ?? newSnapshot.panes.first(where: \.focused)?.paneID
-                ?? newSnapshot.panes.first?.paneID
-            if preferred != selectedPaneID {
-                selectedPaneID = preferred
-                terminalFrame = nil
-            }
-            await refreshPane(force: true)
         } catch {
             connectionState = .disconnected(error.localizedDescription)
         }
     }
 
-    private func refreshPane(force: Bool) async {
-        guard let paneID = selectedPaneID, !readInFlight else { return }
-        readInFlight = true
-        defer { readInFlight = false }
+    private func refreshVisiblePanes(force: Bool) async {
+        for pane in visiblePanes {
+            await refreshPane(paneID: pane.paneID, force: force)
+        }
+    }
+
+    private func refreshPane(paneID: String, force: Bool) async {
+        guard !readsInFlight.contains(paneID) else { return }
+        readsInFlight.insert(paneID)
+        defer { readsInFlight.remove(paneID) }
 
         do {
             let read = try await client.readPane(paneID: paneID)
-            guard paneID == selectedPaneID else { return }
             if !force,
-               let terminalFrame,
-               terminalFrame.paneID == paneID,
-               terminalFrame.revision == read.revision,
-               terminalFrame.text == read.text {
+               let frame = terminalFrames[paneID],
+               frame.revision == read.revision,
+               frame.text == read.text {
                 return
             }
             frameSequence &+= 1
-            terminalFrame = TerminalFrame(
+            terminalFrames[paneID] = TerminalFrame(
                 paneID: paneID,
                 text: read.text,
                 revision: read.revision,

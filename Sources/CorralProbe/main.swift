@@ -6,10 +6,21 @@ struct CorralProbe {
     static func main() async {
         let client = HerdrClient()
         do {
+            try verifyLayoutBuilder()
             let snapshot = try await client.snapshot()
             print(
                 "herdr \(snapshot.version) · protocol \(snapshot.protocol) · "
                     + "\(snapshot.workspaces.count) workspaces"
+            )
+            print("")
+            let renderedLayouts = snapshot.layouts.filter {
+                PaneLayoutTreeBuilder.build(from: $0) != nil
+            }
+            guard renderedLayouts.count == snapshot.layouts.count else {
+                throw ProbeError.invalidLiveLayout
+            }
+            print(
+                "layouts: \(snapshot.layouts.count) live + nested split self-test passed"
             )
             print("")
 
@@ -103,15 +114,80 @@ struct CorralProbe {
         case .unknown: "?"
         }
     }
+
+    private static func verifyLayoutBuilder() throws {
+        let area = PaneLayoutRect(x: 4, y: 1, width: 145, height: 42)
+        let right = PaneLayoutRect(x: 77, y: 1, width: 72, height: 42)
+        let layout = PaneLayoutSnapshot(
+            workspaceID: "w1",
+            tabID: "w1:t1",
+            zoomed: false,
+            area: area,
+            focusedPaneID: "w1:p1",
+            panes: [
+                PaneLayoutPane(
+                    paneID: "w1:p1",
+                    focused: true,
+                    rect: PaneLayoutRect(x: 4, y: 1, width: 73, height: 42)
+                ),
+                PaneLayoutPane(
+                    paneID: "w1:p2",
+                    focused: false,
+                    rect: PaneLayoutRect(x: 77, y: 1, width: 72, height: 21)
+                ),
+                PaneLayoutPane(
+                    paneID: "w1:p3",
+                    focused: false,
+                    rect: PaneLayoutRect(x: 77, y: 22, width: 72, height: 21)
+                ),
+            ],
+            splits: [
+                PaneLayoutSplit(
+                    id: "root",
+                    direction: .right,
+                    ratio: 0.5,
+                    rect: area
+                ),
+                PaneLayoutSplit(
+                    id: "right",
+                    direction: .down,
+                    ratio: 0.5,
+                    rect: right
+                ),
+            ]
+        )
+        let expected = PaneLayoutNode.split(
+            id: "root",
+            direction: .right,
+            ratio: 0.5,
+            first: .pane("w1:p1"),
+            second: .split(
+                id: "right",
+                direction: .down,
+                ratio: 0.5,
+                first: .pane("w1:p2"),
+                second: .pane("w1:p3")
+            )
+        )
+        guard PaneLayoutTreeBuilder.build(from: layout) == expected else {
+            throw ProbeError.layoutSelfTestFailed
+        }
+    }
 }
 
 private enum ProbeError: LocalizedError {
     case smokeMarkerMissing(String)
+    case layoutSelfTestFailed
+    case invalidLiveLayout
 
     var errorDescription: String? {
         switch self {
         case .smokeMarkerMissing(let paneID):
             "pane.send_input completed, but \(paneID) did not render the smoke marker"
+        case .layoutSelfTestFailed:
+            "nested split layout self-test failed"
+        case .invalidLiveLayout:
+            "one or more live layouts could not be converted into a complete pane tree"
         }
     }
 }
