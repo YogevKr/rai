@@ -61,6 +61,32 @@ enum HerdrCLI {
     }()
 }
 
+/// Reports a completed click without intercepting SwiftTerm's mouse handling.
+/// SwiftTerm still receives every down/drag/up event, so selection, links, and
+/// terminal mouse-reporting behavior remain unchanged.
+final class FocusAwareTerminalView: LocalProcessTerminalView {
+    var onPlainClick: (() -> Void)?
+    private var draggedSinceMouseDown = false
+
+    override func mouseDown(with event: NSEvent) {
+        draggedSinceMouseDown = false
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        draggedSinceMouseDown = true
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let wasPlainClick = !draggedSinceMouseDown
+        super.mouseUp(with: event)
+        if wasPlainClick {
+            onPlainClick?()
+        }
+    }
+}
+
 /// A real interactive terminal for a herdr pane.
 ///
 /// Instead of polling `pane.read` snapshots (which can't type, select, or scroll),
@@ -74,23 +100,28 @@ enum HerdrCLI {
 struct TerminalPaneView: NSViewRepresentable {
     let terminalID: String
     let isFocused: Bool
+    let onPlainClick: () -> Void
 
     // Matches Ghostty: `font-family = Fira Code`, `font-size = 16`.
     static let font = NSFont(name: "Fira Code", size: 16)
         ?? NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPlainClick: onPlainClick)
+    }
 
-    func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(frame: .zero)
+    func makeNSView(context: Context) -> FocusAwareTerminalView {
+        let view = FocusAwareTerminalView(frame: .zero)
         view.font = Self.font
         GhosttyTheme.apply(to: view)
         view.processDelegate = context.coordinator
+        view.onPlainClick = context.coordinator.requestFocus
         context.coordinator.attach(view, terminalID: terminalID)
         return view
     }
 
-    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {
+    func updateNSView(_ view: FocusAwareTerminalView, context: Context) {
+        context.coordinator.onPlainClick = onPlainClick
         if isFocused, view.window?.firstResponder !== view {
             DispatchQueue.main.async { [weak view] in
                 view?.window?.makeFirstResponder(view)
@@ -98,17 +129,26 @@ struct TerminalPaneView: NSViewRepresentable {
         }
     }
 
-    static func dismantleNSView(_ view: LocalProcessTerminalView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: FocusAwareTerminalView, coordinator: Coordinator) {
         coordinator.detach(view)
     }
 
     final class Coordinator: NSObject, LocalProcessTerminalViewDelegate {
+        var onPlainClick: () -> Void
         private weak var view: LocalProcessTerminalView?
         private var terminalID = ""
         private var started = false
         private var intentionalStop = false
         private var retries = 0
         private let maxRetries = 5
+
+        init(onPlainClick: @escaping () -> Void) {
+            self.onPlainClick = onPlainClick
+        }
+
+        func requestFocus() {
+            onPlainClick()
+        }
 
         func attach(_ view: LocalProcessTerminalView, terminalID: String) {
             guard !started else { return }

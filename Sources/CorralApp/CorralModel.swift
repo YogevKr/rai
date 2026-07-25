@@ -2,6 +2,11 @@ import CorralCore
 import Foundation
 import SwiftUI
 
+enum AgentLaunchKind: String {
+    case claude
+    case codex
+}
+
 @MainActor
 final class CorralModel: ObservableObject {
     enum ConnectionState: Equatable {
@@ -13,6 +18,7 @@ final class CorralModel: ObservableObject {
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
+    @Published var draggedPaneID: String?
     // Live split ratio while a divider is being dragged (split id → ratio),
     // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
     @Published var dragRatios: [String: Double] = [:]
@@ -95,6 +101,16 @@ final class CorralModel: ObservableObject {
             return
         }
         select(paneID: pane.paneID, focusInHerdr: true)
+    }
+
+    /// Reveals a drag target tab locally. Herdr focus changes only if the pane is
+    /// actually dropped or the user explicitly selects a pane.
+    func previewTabDuringPaneDrag(_ tab: HerdrTab) {
+        guard draggedPaneID != nil, let snapshot else { return }
+        let candidates = snapshot.panes.filter { $0.tabID == tab.tabID }
+        let layoutFocus = snapshot.layouts.first { $0.tabID == tab.tabID }?.focusedPaneID
+        selectedPaneID = candidates.first(where: { $0.paneID == layoutFocus })?.paneID
+            ?? candidates.first?.paneID
     }
 
     func select(paneID: String, focusInHerdr: Bool) {
@@ -248,9 +264,67 @@ final class CorralModel: ObservableObject {
         guard let pane = selectedPaneID else { return }
         runAction(["pane", "focus", "--direction", direction, "--pane", pane])
     }
-    func zoomPane() {
-        guard let pane = selectedPaneID else { return }
+    func zoomPane(_ paneID: String? = nil) {
+        guard let pane = paneID ?? selectedPaneID else { return }
+        selectedPaneID = pane
         runAction(["pane", "zoom", pane, "--toggle"], followFocus: false)
+    }
+
+    func dropPane(
+        sourcePaneID: String,
+        onto targetPaneID: String,
+        moveDirection: SplitDirection
+    ) {
+        guard let source = snapshot?.panes.first(where: { $0.paneID == sourcePaneID }),
+              let target = snapshot?.panes.first(where: { $0.paneID == targetPaneID }),
+              let arguments = PaneActionPlanner.dropArguments(
+                  sourcePaneID: source.paneID,
+                  sourceTabID: source.tabID,
+                  targetPaneID: target.paneID,
+                  targetTabID: target.tabID,
+                  moveDirection: moveDirection
+              ) else {
+            return
+        }
+        runAction(arguments, followFocus: false)
+    }
+
+    func launchAgent(
+        _ kind: AgentLaunchKind,
+        direction: SplitDirection,
+        from paneID: String? = nil
+    ) {
+        guard let paneID = paneID ?? selectedPaneID,
+              let pane = snapshot?.panes.first(where: { $0.paneID == paneID }) else {
+            return
+        }
+        selectedPaneID = paneID
+        let name = Self.defaultAgentName(kind)
+
+        Task {
+            // agent start --split uses herdr's focused pane as the split source.
+            // Await focus so a pane-bar action cannot race and split the wrong pane.
+            do {
+                try await client.focusPane(paneID)
+            } catch {
+                connectionState = .disconnected(error.localizedDescription)
+                return
+            }
+            _ = await runHerdr(
+                PaneActionPlanner.agentStartArguments(
+                    name: name,
+                    executable: kind.rawValue,
+                    direction: direction,
+                    cwd: pane.cwd
+                )
+            )
+            await refreshSnapshot(keepSelection: true)
+        }
+    }
+
+    private static func defaultAgentName(_ kind: AgentLaunchKind) -> String {
+        let suffix = UUID().uuidString.prefix(6).lowercased()
+        return "\(kind.rawValue)-\(suffix)"
     }
 
     // Commit a divider drag. herdr's `pane resize --amount` is a positive delta on

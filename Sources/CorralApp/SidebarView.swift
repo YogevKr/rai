@@ -1,5 +1,6 @@
 import CorralCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject var model: CorralModel
@@ -21,7 +22,10 @@ struct SidebarView: View {
                                     tab: tabs.first,
                                     focusedInHerdr: focused,
                                     selected: model.selectedTabID == tabs.first?.tabID,
-                                    onSelect: { tabs.first.map { model.select(tab: $0) } }
+                                    onSelect: { tabs.first.map { model.select(tab: $0) } },
+                                    onPaneDragHover: {
+                                        tabs.first.map { model.previewTabDuringPaneDrag($0) }
+                                    }
                                 )
                                 .padding(.top, 8)
                             } else {
@@ -32,7 +36,10 @@ struct SidebarView: View {
                                             status: tab.agentStatus,
                                             paneCount: tab.paneCount,
                                             selected: model.selectedTabID == tab.tabID,
-                                            onSelect: { model.select(tab: tab) }
+                                            onSelect: { model.select(tab: tab) },
+                                            onPaneDragHover: {
+                                                model.previewTabDuringPaneDrag(tab)
+                                            }
                                         )
                                     }
                                 } header: {
@@ -165,8 +172,10 @@ private struct WorkspaceRow: View {
     let focusedInHerdr: Bool
     let selected: Bool
     let onSelect: () -> Void
+    let onPaneDragHover: () -> Void
 
     @State private var hovering = false
+    @State private var paneDragTargeted = false
 
     private var showRepo: Bool {
         guard let repo = workspace.worktree?.repoName else { return false }
@@ -194,6 +203,10 @@ private struct WorkspaceRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
+        .onChange(of: paneDragTargeted) { _, targeted in
+            if targeted { onPaneDragHover() }
+        }
         .help(workspace.worktree?.checkoutPath ?? workspace.label)
     }
 }
@@ -243,8 +256,10 @@ private struct AgentRow: View {
     let paneCount: Int
     let selected: Bool
     let onSelect: () -> Void
+    let onPaneDragHover: () -> Void
 
     @State private var hovering = false
+    @State private var paneDragTargeted = false
 
     var body: some View {
         Button(action: onSelect) {
@@ -269,6 +284,10 @@ private struct AgentRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
+        .onChange(of: paneDragTargeted) { _, targeted in
+            if targeted { onPaneDragHover() }
+        }
     }
 }
 

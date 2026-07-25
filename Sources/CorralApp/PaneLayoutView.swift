@@ -1,6 +1,11 @@
 import AppKit
 import CorralCore
 import SwiftUI
+import UniformTypeIdentifiers
+
+extension UTType {
+    static let corralPane = UTType(exportedAs: "ai.sawmills.corral.pane")
+}
 
 struct PaneLayoutView: View {
     @ObservedObject var model: CorralModel
@@ -14,14 +19,26 @@ struct PaneLayoutView: View {
             if let layout = model.selectedLayout,
                model.visiblePanes.isEmpty == false {
                 if let tree = PaneLayoutTreeBuilder.build(from: layout) {
-                    SplitNodeView(node: tree, model: model, showChrome: isSplit)
+                    SplitNodeView(
+                        node: tree,
+                        model: model,
+                        showChrome: isSplit
+                    )
                         .padding(isSplit ? 8 : 0)
                 } else {
-                    AbsolutePaneLayoutView(layout: layout, model: model, showChrome: isSplit)
+                    AbsolutePaneLayoutView(
+                        layout: layout,
+                        model: model,
+                        showChrome: isSplit
+                    )
                         .padding(isSplit ? 8 : 0)
                 }
             } else if let pane = model.visiblePanes.first {
-                PaneSurface(paneID: pane.paneID, model: model, showChrome: false)
+                PaneSurface(
+                    paneID: pane.paneID,
+                    model: model,
+                    showChrome: false
+                )
             } else {
                 EmptyPaneState()
             }
@@ -62,7 +79,13 @@ private struct SplitNodeView: View {
     private func nodeView(_ node: PaneLayoutNode) -> AnyView {
         switch node {
         case .pane(let paneID):
-            return AnyView(PaneSurface(paneID: paneID, model: model, showChrome: showChrome))
+            return AnyView(
+                PaneSurface(
+                    paneID: paneID,
+                    model: model,
+                    showChrome: showChrome
+                )
+            )
         case .split(let id, let direction, let ratio, let first, let second):
             return AnyView(
                 SplitContainer(
@@ -179,7 +202,11 @@ private struct AbsolutePaneLayoutView: View {
 
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes, id: \.paneID) { pane in
-                    PaneSurface(paneID: pane.paneID, model: model, showChrome: showChrome)
+                    PaneSurface(
+                        paneID: pane.paneID,
+                        model: model,
+                        showChrome: showChrome
+                    )
                         .frame(
                             width: CGFloat(pane.rect.width) * widthScale,
                             height: CGFloat(pane.rect.height) * heightScale
@@ -198,6 +225,7 @@ private struct PaneSurface: View {
     let paneID: String
     @ObservedObject var model: CorralModel
     let showChrome: Bool
+    @State private var dropIndicator: PaneDropIndicator?
 
     private var pane: Pane? {
         model.snapshot?.panes.first { $0.paneID == paneID }
@@ -207,7 +235,30 @@ private struct PaneSurface: View {
         model.selectedPaneID == paneID
     }
 
+    private var zoomed: Bool {
+        model.selectedLayout?.zoomed == true
+            && model.selectedLayout?.focusedPaneID == paneID
+    }
+
     var body: some View {
+        GeometryReader { geometry in
+            surface
+                .overlay { dropOverlay }
+                .onDrop(
+                    of: [UTType.corralPane],
+                    delegate: PaneDropDelegate(
+                        targetPaneID: paneID,
+                        targetSize: geometry.size,
+                        model: model,
+                        draggedPaneID: $model.draggedPaneID,
+                        indicator: $dropIndicator
+                    )
+                )
+                .animation(.easeOut(duration: 0.12), value: dropIndicator)
+        }
+    }
+
+    private var surface: some View {
         VStack(spacing: 0) {
             if showChrome {
                 paneBar
@@ -216,7 +267,13 @@ private struct PaneSurface: View {
             ZStack {
                 Theme.terminalBG
                 if let terminalID = pane?.terminalID {
-                    TerminalPaneView(terminalID: terminalID, isFocused: selected)
+                    TerminalPaneView(
+                        terminalID: terminalID,
+                        isFocused: selected,
+                        onPlainClick: {
+                            model.select(paneID: paneID, focusInHerdr: true)
+                        }
+                    )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .id(terminalID)
@@ -236,8 +293,6 @@ private struct PaneSurface: View {
         }
     }
 
-    // Click-to-focus lives on the split pane-bar only, so the terminal area is
-    // left entirely to SwiftTerm for text selection and mouse reporting.
     private var paneBar: some View {
         HStack(spacing: 8) {
             if let pane {
@@ -252,6 +307,17 @@ private struct PaneSurface: View {
                 Text(paneID)
                 Spacer()
             }
+
+            if zoomed {
+                Label("Zoomed", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.accent.opacity(0.13), in: Capsule())
+            }
+
+            agentLaunchMenu
         }
         .font(.system(size: 11, weight: selected ? .semibold : .medium))
         .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
@@ -259,6 +325,152 @@ private struct PaneSurface: View {
         .frame(height: 28)
         .background(selected ? Theme.accent.opacity(0.10) : Theme.bar)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.zoomPane(paneID) }
         .onTapGesture { model.select(paneID: paneID, focusInHerdr: true) }
+        .onDrag {
+            model.draggedPaneID = paneID
+            let provider = NSItemProvider()
+            provider.registerDataRepresentation(
+                forTypeIdentifier: UTType.corralPane.identifier,
+                visibility: .ownProcess
+            ) { completion in
+                completion(Data(paneID.utf8), nil)
+                return nil
+            }
+            return provider
+        }
+    }
+
+    private var agentLaunchMenu: some View {
+        Menu {
+            Button("Claude — Split Right") {
+                model.launchAgent(.claude, direction: .right, from: paneID)
+            }
+            Button("Claude — Split Down") {
+                model.launchAgent(.claude, direction: .down, from: paneID)
+            }
+            Divider()
+            Button("Codex — Split Right") {
+                model.launchAgent(.codex, direction: .right, from: paneID)
+            }
+            Button("Codex — Split Down") {
+                model.launchAgent(.codex, direction: .down, from: paneID)
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Split and launch an agent")
+    }
+
+    @ViewBuilder
+    private var dropOverlay: some View {
+        switch dropIndicator {
+        case .swap:
+            RoundedRectangle(cornerRadius: showChrome ? 8 : 0, style: .continuous)
+                .fill(Theme.accent.opacity(0.18))
+                .stroke(Theme.accent, lineWidth: 3)
+                .allowsHitTesting(false)
+        case .right:
+            ZStack(alignment: .trailing) {
+                RoundedRectangle(cornerRadius: showChrome ? 8 : 0, style: .continuous)
+                    .stroke(Theme.accent.opacity(0.8), lineWidth: 2)
+                Rectangle()
+                    .fill(Theme.accent)
+                    .frame(width: 6)
+                    .padding(.vertical, showChrome ? 5 : 0)
+            }
+            .allowsHitTesting(false)
+        case .down:
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: showChrome ? 8 : 0, style: .continuous)
+                    .stroke(Theme.accent.opacity(0.8), lineWidth: 2)
+                Rectangle()
+                    .fill(Theme.accent)
+                    .frame(height: 6)
+                    .padding(.horizontal, showChrome ? 5 : 0)
+            }
+            .allowsHitTesting(false)
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
+private enum PaneDropIndicator: Equatable {
+    case swap
+    case right
+    case down
+}
+
+private struct PaneDropDelegate: DropDelegate {
+    let targetPaneID: String
+    let targetSize: CGSize
+    @ObservedObject var model: CorralModel
+    @Binding var draggedPaneID: String?
+    @Binding var indicator: PaneDropIndicator?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard info.hasItemsConforming(to: [UTType.corralPane.identifier]),
+              let sourcePaneID = draggedPaneID else {
+            return false
+        }
+        return sourcePaneID != targetPaneID
+    }
+
+    func dropEntered(info: DropInfo) {
+        indicator = proposedIndicator(at: info.location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard validateDrop(info: info) else {
+            indicator = nil
+            return DropProposal(operation: .cancel)
+        }
+        indicator = proposedIndicator(at: info.location)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        indicator = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let sourcePaneID = draggedPaneID,
+              let proposed = proposedIndicator(at: info.location) else {
+            indicator = nil
+            return false
+        }
+        let direction: SplitDirection = proposed == .down ? .down : .right
+        model.dropPane(
+            sourcePaneID: sourcePaneID,
+            onto: targetPaneID,
+            moveDirection: direction
+        )
+        indicator = nil
+        draggedPaneID = nil
+        return true
+    }
+
+    private func proposedIndicator(at location: CGPoint) -> PaneDropIndicator? {
+        guard let sourcePaneID = draggedPaneID,
+              sourcePaneID != targetPaneID,
+              let source = model.snapshot?.panes.first(where: { $0.paneID == sourcePaneID }),
+              let target = model.snapshot?.panes.first(where: { $0.paneID == targetPaneID }) else {
+            return nil
+        }
+        if source.tabID == target.tabID {
+            return .swap
+        }
+
+        let distanceToRight = max(0, targetSize.width - location.x)
+        let distanceToBottom = max(0, targetSize.height - location.y)
+        return distanceToRight <= distanceToBottom ? .right : .down
     }
 }

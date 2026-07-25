@@ -45,6 +45,22 @@ struct CorralApp: App {
                 Button("Zoom Pane") { model.zoomPane() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()
+                Menu("Split and Launch Agent") {
+                    Button("Claude — Right") {
+                        model.launchAgent(.claude, direction: .right)
+                    }
+                    Button("Claude — Down") {
+                        model.launchAgent(.claude, direction: .down)
+                    }
+                    Divider()
+                    Button("Codex — Right") {
+                        model.launchAgent(.codex, direction: .right)
+                    }
+                    Button("Codex — Down") {
+                        model.launchAgent(.codex, direction: .down)
+                    }
+                }
+                Divider()
                 Button("Focus Left") { model.focusPane("left") }
                     .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
                 Button("Focus Right") { model.focusPane("right") }

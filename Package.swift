@@ -27,5 +27,9 @@ let package = Package(
             name: "CorralProbe",
             dependencies: ["CorralCore"]
         ),
+        .testTarget(
+            name: "CorralCoreTests",
+            dependencies: ["CorralCore"]
+        ),
     ]
 )
