@@ -1,5 +1,26 @@
+import AppKit
 import CorralCore
 import SwiftUI
+
+/// Native window vibrancy (NSVisualEffectView) — the translucent "glass" depth
+/// Raycast/Finder use. Rendered dark via a tint overlay at the call site.
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .underWindowBackground
+    var blending: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blending
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+        view.blendingMode = blending
+    }
+}
 
 // The corral design language: a single, deliberately-designed dark theme
 // (a terminal product should own its palette rather than inherit the system's).

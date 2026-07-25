@@ -86,7 +86,14 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
-        .background(Theme.panelGradient)
+        .background {
+            ZStack {
+                VisualEffectView(material: .underWindowBackground)
+                Theme.sidebar.opacity(0.76)      // dark tint over the glass — subtle, readable
+                Theme.panelGradient.opacity(0.45)
+            }
+            .ignoresSafeArea()
+        }
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.topHighlight).frame(height: 1).ignoresSafeArea()
         }
@@ -447,8 +454,11 @@ private struct SidebarRowChrome: ViewModifier {
                         .fill(Theme.accent)
                         .frame(width: 3, height: 22)
                         .shadow(color: Theme.accent.opacity(0.6), radius: 4)
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
+            .animation(.easeOut(duration: 0.16), value: selected)
+            .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
