@@ -2,13 +2,6 @@ import CorralCore
 import Foundation
 import SwiftUI
 
-struct TerminalFrame: Equatable {
-    let paneID: String
-    let text: String
-    let revision: UInt64
-    let sequence: UInt64
-}
-
 @MainActor
 final class CorralModel: ObservableObject {
     enum ConnectionState: Equatable {
@@ -18,19 +11,18 @@ final class CorralModel: ObservableObject {
     }
 
     @Published private(set) var snapshot: SessionSnapshot?
-    @Published private(set) var terminalFrames: [String: TerminalFrame] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
+    // Live split ratio while a divider is being dragged (split id → ratio),
+    // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
+    @Published var dragRatios: [String: Double] = [:]
 
     let client: HerdrClient
 
     private var started = false
     private var eventTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
-    private var frameSequence: UInt64 = 0
-    private var readsInFlight = Set<String>()
 
     init(client: HerdrClient = HerdrClient()) {
         self.client = client
@@ -38,7 +30,6 @@ final class CorralModel: ObservableObject {
 
     deinit {
         eventTask?.cancel()
-        pollTask?.cancel()
         flushTask?.cancel()
     }
 
@@ -83,10 +74,6 @@ final class CorralModel: ObservableObject {
         }
     }
 
-    func terminalFrame(for paneID: String) -> TerminalFrame? {
-        terminalFrames[paneID]
-    }
-
     func start() {
         guard !started else { return }
         started = true
@@ -95,7 +82,6 @@ final class CorralModel: ObservableObject {
         Task {
             await refreshSnapshot(keepSelection: false)
             startEventLoop()
-            startOutputFallback()
         }
     }
 
@@ -112,30 +98,19 @@ final class CorralModel: ObservableObject {
     }
 
     func select(paneID: String, focusInHerdr: Bool) {
-        let previousTabID = selectedTabID
-        let nextTabID = snapshot?.panes.first { $0.paneID == paneID }?.tabID
-        let changed = selectedPaneID != paneID
         selectedPaneID = paneID
+        guard focusInHerdr else { return }
         Task {
-            if focusInHerdr {
-                do {
-                    try await client.focusPane(paneID)
-                } catch {
-                    connectionState = .disconnected(error.localizedDescription)
-                }
-            }
-            if changed, previousTabID != nextTabID {
-                await refreshVisiblePanes(force: false)
-            } else if terminalFrames[paneID] == nil {
-                await refreshPane(paneID: paneID, force: true)
+            do {
+                try await client.focusPane(paneID)
+            } catch {
+                connectionState = .disconnected(error.localizedDescription)
             }
         }
     }
 
     func refreshNow() {
-        Task {
-            await refreshSnapshot(keepSelection: true)
-        }
+        Task { await refreshSnapshot(keepSelection: true) }
     }
 
     private func startEventLoop() {
@@ -159,22 +134,11 @@ final class CorralModel: ObservableObject {
         }
     }
 
-    private func startOutputFallback() {
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(700))
-                guard let self, self.selectedPaneID != nil else { continue }
-                await self.refreshVisiblePanes(force: false)
-            }
-        }
-    }
-
     private func queue(_ event: HerdrEvent) {
         pendingEvents.append(event)
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(90))
+            try? await Task.sleep(for: .milliseconds(120))
             guard let self, !Task.isCancelled else { return }
             await self.flushEvents()
         }
@@ -186,21 +150,12 @@ final class CorralModel: ObservableObject {
         flushTask = nil
         guard !events.isEmpty else { return }
 
-        let visiblePaneIDs = Set(visiblePanes.map(\.paneID))
-        let changedOutputPaneIDs = Set(events.compactMap {
-            $0.name == "pane.output_changed" ? $0.paneID : nil
-        }).intersection(visiblePaneIDs)
-        let outputChanged = !changedOutputPaneIDs.isEmpty
-        let treeChanged = events.contains {
-            $0.name != "pane.output_changed"
-        }
-
-        if treeChanged {
+        // The terminal content itself is rendered by each pane's attach process,
+        // so we only need to re-snapshot on structural changes (create/close/move/
+        // focus/status) — never on raw output.
+        let structural = events.contains { $0.name != "pane.output_changed" }
+        if structural {
             await refreshSnapshot(keepSelection: true)
-        } else if outputChanged {
-            for paneID in changedOutputPaneIDs {
-                await refreshPane(paneID: paneID, force: true)
-            }
         }
     }
 
@@ -208,62 +163,147 @@ final class CorralModel: ObservableObject {
         do {
             let newSnapshot = try await client.snapshot()
             snapshot = newSnapshot
-            let livePaneIDs = Set(newSnapshot.panes.map(\.paneID))
-            terminalFrames = terminalFrames.filter { livePaneIDs.contains($0.key) }
             connectionState = .connected(
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
             )
 
-            if keepSelection,
-               let selectedPaneID,
-               newSnapshot.panes.contains(where: { $0.paneID == selectedPaneID }) {
-                await refreshVisiblePanes(force: false)
-            } else {
+            let selectionStillValid = selectedPaneID.map { id in
+                newSnapshot.panes.contains { $0.paneID == id }
+            } ?? false
+
+            if !(keepSelection && selectionStillValid) {
                 selectedPaneID = newSnapshot.focusedPaneID
                     ?? newSnapshot.panes.first(where: \.focused)?.paneID
                     ?? newSnapshot.panes.first?.paneID
-                await refreshVisiblePanes(force: true)
             }
         } catch {
             connectionState = .disconnected(error.localizedDescription)
         }
     }
 
-    private func refreshVisiblePanes(force: Bool) async {
-        for pane in visiblePanes {
-            await refreshPane(paneID: pane.paneID, force: force)
+    // MARK: - Keyboard actions
+
+    // Pure navigation is resolved from the snapshot with no round-trip — instant.
+    func nextTab() { cycleTab(+1) }
+    func prevTab() { cycleTab(-1) }
+
+    private func cycleTab(_ delta: Int) {
+        let tabs = selectedWorkspaceTabs
+        guard !tabs.isEmpty else { return }
+        guard let current = selectedTabID,
+              let index = tabs.firstIndex(where: { $0.tabID == current }) else {
+            select(tab: tabs[0]); return
+        }
+        select(tab: tabs[(index + delta + tabs.count) % tabs.count])
+    }
+
+    func selectTab(index: Int) {
+        let tabs = selectedWorkspaceTabs
+        guard tabs.indices.contains(index) else { return }
+        select(tab: tabs[index])
+    }
+
+    func nextWorkspace() { cycleWorkspace(+1) }
+    func prevWorkspace() { cycleWorkspace(-1) }
+
+    private func cycleWorkspace(_ delta: Int) {
+        guard let snapshot else { return }
+        let spaces = snapshot.workspaces.sorted { $0.number < $1.number }
+        guard !spaces.isEmpty else { return }
+        let index = spaces.firstIndex { $0.workspaceID == selectedWorkspace?.workspaceID } ?? 0
+        let target = spaces[(index + delta + spaces.count) % spaces.count]
+        let tabs = snapshot.tabs
+            .filter { $0.workspaceID == target.workspaceID }
+            .sorted { $0.number < $1.number }
+        if let tab = tabs.first(where: { $0.tabID == target.activeTabID }) ?? tabs.first {
+            select(tab: tab)
         }
     }
 
-    private func refreshPane(paneID: String, force: Bool) async {
-        guard !readsInFlight.contains(paneID) else { return }
-        readsInFlight.insert(paneID)
-        defer { readsInFlight.remove(paneID) }
+    // Structural changes go through the herdr CLI (the binary corral already
+    // spawns for attach), then we adopt herdr's resulting focus.
+    func newTab() {
+        guard let workspace = selectedWorkspace?.workspaceID else { return }
+        runAction(["tab", "create", "--workspace", workspace, "--focus"])
+    }
+    func closeTab() {
+        guard let tab = selectedTabID else { return }
+        runAction(["tab", "close", tab])
+    }
+    func newWorkspace() {
+        runAction(["workspace", "create", "--focus"])
+    }
+    func splitRight() { splitPane("right") }
+    func splitDown() { splitPane("down") }
+    private func splitPane(_ direction: String) {
+        guard let pane = selectedPaneID else { return }
+        runAction(["pane", "split", pane, "--direction", direction, "--focus"])
+    }
+    func closePane() {
+        guard let pane = selectedPaneID else { return }
+        runAction(["pane", "close", pane])
+    }
+    func focusPane(_ direction: String) {
+        guard let pane = selectedPaneID else { return }
+        runAction(["pane", "focus", "--direction", direction, "--pane", pane])
+    }
+    func zoomPane() {
+        guard let pane = selectedPaneID else { return }
+        runAction(["pane", "zoom", pane, "--toggle"], followFocus: false)
+    }
 
-        do {
-            let read = try await client.readPane(paneID: paneID)
-            if !force,
-               let frame = terminalFrames[paneID],
-               frame.revision == read.revision,
-               frame.text == read.text {
-                return
+    // Commit a divider drag. herdr's `pane resize --amount` is a positive delta on
+    // the split ratio (negative amounts don't shrink), so grow-first resizes the
+    // first pane toward right/down; grow-second resizes the second pane toward
+    // left/up by the absolute delta.
+    func commitSplitRatio(
+        splitID: String,
+        direction: SplitDirection,
+        firstPaneID: String,
+        secondPaneID: String,
+        delta: Double
+    ) {
+        guard abs(delta) > 0.004 else {
+            dragRatios.removeValue(forKey: splitID)
+            return
+        }
+        let horizontal = direction == .right
+        let pane = delta >= 0 ? firstPaneID : secondPaneID
+        let dir = delta >= 0 ? (horizontal ? "right" : "down") : (horizontal ? "left" : "up")
+        let amount = String(format: "%.4f", abs(delta))
+        Task {
+            _ = await runHerdr(["pane", "resize", "--pane", pane, "--direction", dir, "--amount", amount])
+            await refreshSnapshot(keepSelection: true)
+            dragRatios.removeValue(forKey: splitID)
+        }
+    }
+
+    private func runAction(_ args: [String], followFocus: Bool = true) {
+        Task {
+            _ = await runHerdr(args)
+            await refreshSnapshot(keepSelection: !followFocus)
+        }
+    }
+
+    private func runHerdr(_ args: [String]) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+            process.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            let path = env["PATH"] ?? ""
+            if !path.contains("/opt/homebrew/bin") {
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
+                    + (path.isEmpty ? "/usr/bin:/bin" : path)
             }
-            frameSequence &+= 1
-            terminalFrames[paneID] = TerminalFrame(
-                paneID: paneID,
-                text: read.text,
-                revision: read.revision,
-                sequence: frameSequence
-            )
-            if case .disconnected = connectionState, let snapshot {
-                connectionState = .connected(
-                    version: snapshot.version,
-                    protocolVersion: snapshot.protocol
-                )
+            process.environment = env
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus == 0)
             }
-        } catch {
-            connectionState = .disconnected(error.localizedDescription)
+            do { try process.run() } catch { continuation.resume(returning: false) }
         }
     }
 }

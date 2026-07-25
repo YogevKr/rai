@@ -16,6 +16,7 @@ BIN=".build/release/${BIN_NAME}"
 STAGE="$(mktemp -d)/${APP_NAME}.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
+[ -f Resources/Corral.icns ] && cp Resources/Corral.icns "$STAGE/Contents/Resources/Corral.icns"
 
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,6 +27,7 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
   <key>CFBundleIdentifier</key><string>gr.krig.corral</string>
   <key>CFBundleExecutable</key><string>${BIN_NAME}</string>
+  <key>CFBundleIconFile</key><string>Corral</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>

@@ -7,73 +7,17 @@ struct CorralRootView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
+                .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
         } detail: {
             VStack(spacing: 0) {
                 PaneHeader(model: model)
-                Divider()
-                WorkspaceTabBar(model: model)
-                Divider()
+                Divider().overlay(Theme.hairline)
                 PaneLayoutView(model: model)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(Theme.base)
         }
         .navigationSplitViewStyle(.balanced)
-    }
-
-}
-
-private struct WorkspaceTabBar: View {
-    @ObservedObject var model: CorralModel
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 4) {
-                    ForEach(model.selectedWorkspaceTabs) { tab in
-                        Button {
-                            model.select(tab: tab)
-                        } label: {
-                            HStack(spacing: 7) {
-                                StatusGlyph(status: tab.agentStatus, compact: true)
-                                Text(tab.label)
-                                    .lineLimit(1)
-                                if tab.paneCount > 1 {
-                                    Text("\(tab.paneCount)")
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                            }
-                            .font(.system(size: 11.5, weight: tab.tabID == model.selectedTabID ? .semibold : .medium))
-                            .foregroundStyle(tab.tabID == model.selectedTabID ? .primary : .secondary)
-                            .padding(.horizontal, 10)
-                            .frame(height: 28)
-                            .background {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(
-                                        tab.tabID == model.selectedTabID
-                                            ? Color.accentColor.opacity(0.16)
-                                            : Color.clear
-                                    )
-                            }
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(
-                                        tab.tabID == model.selectedTabID
-                                            ? Color.accentColor.opacity(0.28)
-                                            : Color.clear
-                                    )
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
-            .scrollIndicators(.hidden)
-        }
-        .frame(height: 38)
-        .background(.bar)
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -81,78 +25,73 @@ private struct PaneHeader: View {
     @ObservedObject var model: CorralModel
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if let pane = model.selectedPane {
-                StatusGlyph(status: pane.agentStatus)
-                VStack(alignment: .leading, spacing: 1) {
+                StatusDot(status: pane.agentStatus, size: 9)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(pane.terminalTitleStripped ?? pane.agent ?? pane.paneID)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
-                    Text(pane.foregroundCWD ?? pane.cwd)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(Theme.statusLabel(pane.agentStatus))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.status(pane.agentStatus))
+                        if let workspace = model.selectedWorkspace {
+                            dot
+                            Text(workspace.label)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.textSecondary)
+                                .lineLimit(1)
+                        }
+                        dot
+                        Text(pane.foregroundCWD ?? pane.cwd)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
             } else {
+                Image(systemName: "square.stack.3d.up")
+                    .foregroundStyle(Theme.textTertiary)
                 Text("corral")
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.textSecondary)
             }
-            Spacer()
-            ConnectionBadge(state: model.connectionState)
-            Button {
-                model.refreshNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
-            .help("Refresh")
+            Spacer(minLength: 12)
+            HeaderButton(system: "arrow.clockwise", help: "Refresh") { model.refreshNow() }
         }
-        .padding(.horizontal, 14)
-        .frame(height: 48)
-        .background(.bar)
+        .padding(.horizontal, 18)
+        .frame(height: 56)
+        .background(Theme.bar)
+    }
+
+    private var dot: some View {
+        Text("·").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
     }
 }
 
-private struct ConnectionBadge: View {
-    let state: CorralModel.ConnectionState
+private struct HeaderButton: View {
+    let system: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(label)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(hovering ? Theme.textPrimary : Theme.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(hovering ? Color.white.opacity(0.06) : .clear)
+                )
         }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .help(help)
-    }
-
-    private var color: Color {
-        switch state {
-        case .connecting: .yellow
-        case .connected: .green
-        case .disconnected: .red
-        }
-    }
-
-    private var label: String {
-        switch state {
-        case .connecting: "Connecting"
-        case .connected: "Live"
-        case .disconnected: "Offline"
-        }
-    }
-
-    private var help: String {
-        switch state {
-        case .connecting:
-            "Connecting to Herdr"
-        case .connected(let version, let protocolVersion):
-            "Herdr \(version), protocol \(protocolVersion)"
-        case .disconnected(let message):
-            message
-        }
     }
 }
