@@ -133,6 +133,28 @@ struct SidebarView: View {
                 .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
+            Menu {
+                Button {
+                    model.newTab()
+                } label: {
+                    Label("New Tab", systemImage: "plus.rectangle")
+                }
+                Button {
+                    model.newWorkspace()
+                } label: {
+                    Label("New Space", systemImage: "square.stack.3d.up")
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("New tab or space")
             Button {
                 model.onlyNeedsYou.toggle()
             } label: {

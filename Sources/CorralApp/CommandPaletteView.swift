@@ -1,16 +1,14 @@
+import AppKit
 import CorralCore
 import SwiftUI
 
 struct CommandPaletteView: View {
     @ObservedObject var model: CorralModel
 
-    @State private var query = ""
-    @State private var selectedID: String?
     @FocusState private var searchFocused: Bool
+    @State private var keyMonitor: Any?
 
-    private var results: [CommandPaletteItem] {
-        FuzzyMatcher.ranked(model.commandPaletteItems, query: query, text: \.label)
-    }
+    private var results: [CommandPaletteItem] { model.paletteResults }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,12 +16,12 @@ struct CommandPaletteView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.textTertiary)
-                TextField("Find any agent or space…", text: $query)
+                TextField("Find any agent or space…", text: $model.paletteQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.textPrimary)
                     .focused($searchFocused)
-                    .onSubmit(selectCurrentResult)
+                    .onSubmit { model.paletteActivate() }
             }
             .padding(.horizontal, 17)
             .frame(height: 52)
@@ -45,15 +43,14 @@ struct CommandPaletteView: View {
                     } else {
                         LazyVStack(spacing: 3) {
                             ForEach(results) { item in
-                                resultRow(item)
-                                    .id(item.id)
+                                resultRow(item).id(item.id)
                             }
                         }
                         .padding(7)
                     }
                 }
                 .frame(maxHeight: 390)
-                .onChange(of: selectedID) { _, id in
+                .onChange(of: model.paletteSelectedID) { _, id in
                     guard let id else { return }
                     withAnimation(.easeOut(duration: 0.1)) {
                         proxy.scrollTo(id, anchor: .center)
@@ -85,31 +82,31 @@ struct CommandPaletteView: View {
                 .stroke(Theme.hairlineStrong, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .onAppear {
-            selectedID = results.first?.id
-        }
-        .task {
-            searchFocused = true
-        }
-        .onChange(of: query) { _, _ in
-            selectedID = results.first?.id
-        }
-        .onChange(of: model.commandPaletteItems) { _, _ in
-            if !results.contains(where: { $0.id == selectedID }) {
-                selectedID = results.first?.id
+        .task { searchFocused = true }
+        .onAppear(perform: installMonitor)
+        .onDisappear(perform: removeMonitor)
+    }
+
+    // A local keyDown monitor is the reliable way to drive a palette: the focused
+    // text field would otherwise swallow the arrow keys for cursor movement.
+    private func installMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event -> NSEvent? in
+            MainActor.assumeIsolated {
+                switch event.keyCode {
+                case 126: model.paletteMove(-1); return nil          // ↑
+                case 125: model.paletteMove(1); return nil           // ↓
+                case 36, 76: model.paletteActivate(); return nil     // return / enter
+                case 53: model.closeCommandPalette(); return nil     // esc
+                default: return event
+                }
             }
         }
-        .onKeyPress(.upArrow) {
-            moveSelection(by: -1)
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            moveSelection(by: 1)
-            return .handled
-        }
-        .onExitCommand {
-            model.closeCommandPalette()
-        }
+    }
+
+    private func removeMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
     }
 
     private func resultRow(_ item: CommandPaletteItem) -> some View {
@@ -139,7 +136,7 @@ struct CommandPaletteView: View {
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
-                        selectedID == item.id
+                        model.paletteSelectedID == item.id
                             ? Theme.accent.opacity(0.17)
                             : Color.clear
                     )
@@ -148,7 +145,7 @@ struct CommandPaletteView: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            if hovering { selectedID = item.id }
+            if hovering { model.paletteSelectedID = item.id }
         }
     }
 
@@ -166,21 +163,5 @@ struct CommandPaletteView: View {
         }
         .font(.system(size: 9.5))
         .foregroundStyle(Theme.textTertiary)
-    }
-
-    private func moveSelection(by delta: Int) {
-        guard !results.isEmpty else { return }
-        let current = selectedID.flatMap { id in
-            results.firstIndex(where: { $0.id == id })
-        } ?? 0
-        let next = min(max(current + delta, 0), results.count - 1)
-        selectedID = results[next].id
-    }
-
-    private func selectCurrentResult() {
-        guard let item = results.first(where: { $0.id == selectedID }) ?? results.first else {
-            return
-        }
-        model.jump(to: item)
     }
 }

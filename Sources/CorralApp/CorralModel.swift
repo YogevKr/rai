@@ -21,6 +21,8 @@ final class CorralModel: ObservableObject {
     @Published var draggedPaneID: String?
     @Published var onlyNeedsYou = false
     @Published var isCommandPalettePresented = false
+    @Published var paletteQuery = ""
+    @Published var paletteSelectedID: String?
     @Published var renameRequest: RenameRequest?
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
@@ -184,10 +186,34 @@ final class CorralModel: ObservableObject {
 
     func toggleCommandPalette() {
         isCommandPalettePresented.toggle()
+        if isCommandPalettePresented {
+            paletteQuery = ""
+            paletteSelectedID = paletteResults.first?.id
+        }
     }
 
     func closeCommandPalette() {
         isCommandPalettePresented = false
+    }
+
+    var paletteResults: [CommandPaletteItem] {
+        FuzzyMatcher.ranked(commandPaletteItems, query: paletteQuery, text: \.label)
+    }
+
+    func paletteMove(_ delta: Int) {
+        let results = paletteResults
+        guard !results.isEmpty else { return }
+        let current = paletteSelectedID.flatMap { id in
+            results.firstIndex { $0.id == id }
+        } ?? 0
+        paletteSelectedID = results[min(max(current + delta, 0), results.count - 1)].id
+    }
+
+    func paletteActivate() {
+        let results = paletteResults
+        if let item = results.first(where: { $0.id == paletteSelectedID }) ?? results.first {
+            jump(to: item)
+        }
     }
 
     func jump(to item: CommandPaletteItem) {
