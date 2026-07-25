@@ -88,123 +88,72 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
 }
 
-/// A real interactive terminal for a herdr pane.
+/// A lightweight host for a pooled, interactive herdr terminal.
 ///
-/// Instead of polling `pane.read` snapshots (which can't type, select, or scroll),
-/// this hosts `herdr terminal attach <terminal_id> --takeover` inside SwiftTerm's
-/// `LocalProcessTerminalView`. SwiftTerm owns keyboard input, selection,
-/// scrollback and resize on a real PTY; herdr's own attach client does the live
-/// remote bridging. We attach by TERMINAL id (not pane id) via `terminal attach`
-/// — `agent attach` only resolves panes that have a detected agent, so a bare
-/// shell (e.g. a fresh ⌘T tab) errors "agent not found". The view is keyed by
-/// terminal id upstream (`.id`), so switching agents tears this down and rebuilds.
+/// The container follows SwiftUI's lifecycle, while `TerminalPool` owns the
+/// SwiftTerm view and its live `herdr terminal attach` process. Moving the pooled
+/// view between containers preserves its terminal contents and process.
 struct TerminalPaneView: NSViewRepresentable {
     let terminalID: String
     let isFocused: Bool
+    let pool: TerminalPool
     let onPlainClick: () -> Void
 
     // Matches Ghostty: `font-family = Fira Code`, `font-size = 16`.
     static let font = NSFont(name: "Fira Code", size: 16)
         ?? NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onPlainClick: onPlainClick)
+    func makeNSView(context: Context) -> TerminalContainerView {
+        let container = TerminalContainerView(frame: .zero)
+        update(container)
+        return container
     }
 
-    func makeNSView(context: Context) -> FocusAwareTerminalView {
-        let view = FocusAwareTerminalView(frame: .zero)
-        view.font = Self.font
-        GhosttyTheme.apply(to: view)
-        // Keep mouse reporting ON (default) so wheel-driven TUIs (Claude/Codex)
-        // scroll. Text selection is Shift+drag, matching Ghostty — SwiftTerm's
-        // scrollWheel isn't `open`, so there's no way to have plain-drag-select
-        // AND wheel-scroll without patching the library.
-        view.processDelegate = context.coordinator
-        view.onPlainClick = context.coordinator.requestFocus
-        context.coordinator.attach(view, terminalID: terminalID)
-        return view
+    func updateNSView(_ container: TerminalContainerView, context: Context) {
+        update(container)
     }
 
-    func updateNSView(_ view: FocusAwareTerminalView, context: Context) {
-        context.coordinator.onPlainClick = onPlainClick
+    private func update(_ container: TerminalContainerView) {
+        let view = pool.view(for: terminalID)
+        view.onPlainClick = onPlainClick
+        container.install(view)
         if isFocused, view.window?.firstResponder !== view {
-            DispatchQueue.main.async { [weak view] in
-                view?.window?.makeFirstResponder(view)
+            DispatchQueue.main.async { [weak container, weak view] in
+                guard let container, let view, view.superview === container else { return }
+                view.window?.makeFirstResponder(view)
             }
         }
     }
 
-    static func dismantleNSView(_ view: FocusAwareTerminalView, coordinator: Coordinator) {
-        coordinator.detach(view)
+    static func dismantleNSView(_ container: TerminalContainerView, coordinator: Void) {
+        container.detach()
+    }
+}
+
+@MainActor
+final class TerminalContainerView: NSView {
+    private weak var terminalView: FocusAwareTerminalView?
+
+    func install(_ view: FocusAwareTerminalView) {
+        guard terminalView !== view || view.superview !== self else { return }
+        detach()
+        view.removeFromSuperview()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        terminalView = view
     }
 
-    final class Coordinator: NSObject, LocalProcessTerminalViewDelegate {
-        var onPlainClick: () -> Void
-        private weak var view: LocalProcessTerminalView?
-        private var terminalID = ""
-        private var started = false
-        private var intentionalStop = false
-        private var retries = 0
-        private let maxRetries = 5
-
-        init(onPlainClick: @escaping () -> Void) {
-            self.onPlainClick = onPlainClick
+    func detach() {
+        guard let terminalView else { return }
+        if terminalView.superview === self {
+            terminalView.removeFromSuperview()
         }
-
-        func requestFocus() {
-            onPlainClick()
-        }
-
-        func attach(_ view: LocalProcessTerminalView, terminalID: String) {
-            guard !started else { return }
-            started = true
-            self.view = view
-            self.terminalID = terminalID
-            launch()
-        }
-
-        private func launch() {
-            guard let view else { return }
-            var env = ProcessInfo.processInfo.environment
-            env["TERM"] = "xterm-256color"
-            let path = env["PATH"] ?? ""
-            if !path.contains("/opt/homebrew/bin") {
-                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
-                    + (path.isEmpty ? "/usr/bin:/bin" : path)
-            }
-            if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
-
-            view.startProcess(
-                executable: HerdrCLI.binaryPath,
-                args: ["terminal", "attach", terminalID, "--takeover"],
-                environment: env.map { "\($0.key)=\($0.value)" }
-            )
-        }
-
-        func detach(_ view: LocalProcessTerminalView) {
-            intentionalStop = true
-            view.terminate()
-        }
-
-        // If the attach client exits on its own (a startup race where the pane is
-        // mid-transition, a transient daemon hiccup), reconnect rather than leaving
-        // a frozen error frame. Backs off and gives up after a few tries so a
-        // genuinely-closed pane doesn't loop forever.
-        func processTerminated(source: TerminalView, exitCode: Int32?) {
-            guard !intentionalStop, retries < maxRetries else { return }
-            retries += 1
-            let delay = 0.4 * Double(retries)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, let view = self.view, !self.intentionalStop else { return }
-                view.getTerminal().resetToInitialState()
-                self.launch()
-            }
-        }
-
-        // Corral draws its own chrome; SwiftTerm forwards PTY resizes to the attach
-        // client automatically, which is how herdr learns the new size.
-        func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-        func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+        self.terminalView = nil
     }
 }

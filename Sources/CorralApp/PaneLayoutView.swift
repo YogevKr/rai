@@ -270,13 +270,13 @@ private struct PaneSurface: View {
                     TerminalPaneView(
                         terminalID: terminalID,
                         isFocused: selected,
+                        pool: model.terminalPool,
                         onPlainClick: {
                             model.select(paneID: paneID, focusInHerdr: true)
                         }
                     )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
-                        .id(terminalID)
                 }
             }
         }

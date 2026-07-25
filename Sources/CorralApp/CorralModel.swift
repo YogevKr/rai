@@ -48,6 +48,7 @@ final class CorralModel: ObservableObject {
     @Published var dragRatios: [String: Double] = [:]
 
     let client: HerdrClient
+    let terminalPool = TerminalPool()
 
     weak var snapshotObserver: CorralSnapshotObserver?
 
@@ -508,6 +509,9 @@ final class CorralModel: ObservableObject {
             lastObservedPaneStatuses = newStatuses
 
             snapshot = newSnapshot
+            terminalPool.retain(
+                terminalIDs: Set(newSnapshot.panes.map(\.terminalID))
+            )
             connectionState = .connected(
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
