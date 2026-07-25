@@ -35,14 +35,14 @@ it to both SwiftUI's `StateObject` and the `NSApplicationDelegateAdaptor`
 delegate. The delegate and model then keep weak cross-references, avoiding a
 second model or a retain cycle while allowing cold-launch notification routing.
 
-### Phase 3 — Worktrees & the codexspin loop  ← current
+### Phase 3 — Worktrees & the codexspin loop
 - Create worktree (branch / base) → open as space; open existing; remove.
 - codexspin job → open its worktree (csws parity).
 
-### Phase 4 — Sessions & remote herds (the differentiator)
-- Named-session switcher.
-- Remote herd over SSH (`herdr --remote <target>`) — a GUI for a remote daemon,
-  the thing cmux can't do.
+### Phase 4 — Sessions & remote herds (the differentiator)  ← current
+- Runtime local named-session switcher, including create/start/stop.
+- Remote herd over an SSH-forwarded Unix socket — reattach the full GUI and
+  terminal panes to a remote daemon, the thing cmux can't do.
 
 ### Phase 5 — Settings & ecosystem
 - Preferences (theme · font · keybindings), edit `config.toml` (toast / sound /

@@ -4,6 +4,7 @@ public enum HerdrClientError: LocalizedError {
     case invalidEnvelope
     case remote(code: String, message: String)
     case invalidEvent
+    case disconnected
 
     public var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ public enum HerdrClientError: LocalizedError {
             return "\(code): \(message)"
         case .invalidEvent:
             return "Herdr returned an invalid event envelope"
+        case .disconnected:
+            return "Disconnected from Herdr"
         }
     }
 }
@@ -71,6 +74,44 @@ private final class EventWorkerState: @unchecked Sendable {
     }
 }
 
+private final class RPCSocketState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var socket: UnixSocket?
+    private var stopped = false
+
+    var current: UnixSocket? {
+        lock.lock()
+        defer { lock.unlock() }
+        return socket
+    }
+
+    func install(_ socket: UnixSocket) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return false }
+        self.socket = socket
+        return true
+    }
+
+    func discard(_ socket: UnixSocket) {
+        lock.lock()
+        if self.socket === socket {
+            self.socket = nil
+        }
+        lock.unlock()
+        socket.close()
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        let socket = socket
+        self.socket = nil
+        lock.unlock()
+        socket?.close()
+    }
+}
+
 public actor HerdrClient {
     public static let defaultSubscriptions = [
         "layout.updated",
@@ -90,7 +131,7 @@ public actor HerdrClient {
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private var rpcSocket: UnixSocket?
+    private nonisolated let rpcSocketState = RPCSocketState()
     private var nextID = 1
 
     public init(socketPath: String = HerdrClient.defaultSocketPath()) {
@@ -101,6 +142,14 @@ public actor HerdrClient {
         let configured = ProcessInfo.processInfo.environment["HERDR_SOCKET_PATH"]
             ?? "~/.config/herdr/herdr.sock"
         return NSString(string: configured).expandingTildeInPath
+    }
+
+    /// Immediately closes the RPC transport, including a blocked read.
+    ///
+    /// A disconnected client is intentionally single-use. Runtime herd changes
+    /// build a fresh client so no request can leak across connection generations.
+    public nonisolated func disconnect() {
+        rpcSocketState.stop()
     }
 
     public func snapshot() async throws -> SessionSnapshot {
@@ -302,11 +351,14 @@ public actor HerdrClient {
         for _ in 0..<2 {
             do {
                 let socket: UnixSocket
-                if let existing = rpcSocket {
+                if let existing = rpcSocketState.current {
                     socket = existing
                 } else {
                     socket = try UnixSocket(path: socketPath)
-                    rpcSocket = socket
+                    guard rpcSocketState.install(socket) else {
+                        socket.close()
+                        throw HerdrClientError.disconnected
+                    }
                 }
                 try socket.writeLine(request)
 
@@ -330,8 +382,9 @@ public actor HerdrClient {
                 throw error
             } catch {
                 lastTransportError = error
-                rpcSocket?.close()
-                rpcSocket = nil
+                if let socket = rpcSocketState.current {
+                    rpcSocketState.discard(socket)
+                }
             }
         }
         throw lastTransportError ?? HerdrClientError.invalidEnvelope

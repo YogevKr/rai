@@ -55,6 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.shutdown()
+    }
+
     private func connect(to model: CorralModel) {
         self.model = model
         model.snapshotObserver = self

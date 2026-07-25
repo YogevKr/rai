@@ -16,9 +16,14 @@ final class TerminalPool {
 
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
+    private var socketPath: String
 
-    init(capacity: Int = 8) {
+    init(
+        capacity: Int = 8,
+        socketPath: String = HerdrClient.defaultSocketPath()
+    ) {
         recency = LRUTracker(capacity: capacity)
+        self.socketPath = socketPath
     }
 
     func view(for terminalID: String) -> FocusAwareTerminalView {
@@ -33,7 +38,10 @@ final class TerminalPool {
         // Keep SwiftTerm's default mouse reporting unchanged: wheel-driven TUIs
         // scroll, while text selection remains Shift+drag as in Ghostty.
 
-        let coordinator = TerminalProcessCoordinator(terminalID: terminalID)
+        let coordinator = TerminalProcessCoordinator(
+            terminalID: terminalID,
+            socketPath: socketPath
+        )
         view.processDelegate = coordinator
         entries[terminalID] = Entry(view: view, coordinator: coordinator)
         coordinator.attach(view)
@@ -53,6 +61,19 @@ final class TerminalPool {
         }
     }
 
+    /// Reaps every attach process before changing herd. New panes inherit the
+    /// new API socket when their coordinators are created.
+    func switchSocket(to socketPath: String) {
+        removeAll()
+        self.socketPath = socketPath
+    }
+
+    func removeAll() {
+        for terminalID in Array(entries.keys) {
+            evict(terminalID)
+        }
+    }
+
     private func evict(_ terminalID: String) {
         guard let entry = entries.removeValue(forKey: terminalID) else { return }
         recency.remove(terminalID)
@@ -68,13 +89,15 @@ private final class TerminalProcessCoordinator:
 {
     private weak var view: LocalProcessTerminalView?
     private let terminalID: String
+    private let socketPath: String
     private var started = false
     private var intentionalStop = false
     private var retries = 0
     private let maxRetries = 5
 
-    init(terminalID: String) {
+    init(terminalID: String, socketPath: String) {
         self.terminalID = terminalID
+        self.socketPath = socketPath
     }
 
     func attach(_ view: LocalProcessTerminalView) {
@@ -99,6 +122,7 @@ private final class TerminalProcessCoordinator:
                 + (path.isEmpty ? "/usr/bin:/bin" : path)
         }
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
+        env["HERDR_SOCKET_PATH"] = socketPath
 
         view.startProcess(
             executable: HerdrCLI.binaryPath,

@@ -99,6 +99,12 @@ struct SidebarView: View {
         .sheet(item: $model.worktreeOpenRequest) { _ in
             OpenWorktreeSheet(model: model)
         }
+        .sheet(item: $model.newSessionRequest) { _ in
+            NewSessionSheet(model: model)
+        }
+        .sheet(item: $model.remoteHerdRequest) { _ in
+            RemoteHerdSheet(model: model)
+        }
         .alert(item: $model.workspacePendingClose) { workspace in
             Alert(
                 title: Text("Close “\(workspace.label)”?"),
@@ -140,6 +146,7 @@ struct SidebarView: View {
             Text("corral")
                 .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.textPrimary)
+            sessionMenu
             Spacer()
             Menu {
                 Button {
@@ -208,6 +215,81 @@ struct SidebarView: View {
         .frame(height: 52)
         .alert(item: $model.worktreeAlert) { alert in
             worktreeAlert(alert)
+        }
+    }
+
+    private var sessionMenu: some View {
+        Menu {
+            Section("Local Sessions") {
+                ForEach(model.sessions) { session in
+                    Button {
+                        model.switchSession(session)
+                    } label: {
+                        Label(
+                            session.name,
+                            systemImage: model.isCurrentSession(session)
+                                ? "checkmark.circle.fill"
+                                : (session.isRunning ? "circle.fill" : "circle")
+                        )
+                    }
+                    .disabled(
+                        model.isCurrentSession(session) && session.isRunning
+                    )
+                }
+            }
+
+            if model.sessions.contains(where: \.isRunning) {
+                Menu("Stop Session") {
+                    ForEach(model.sessions.filter(\.isRunning)) { session in
+                        Button(session.name, role: .destructive) {
+                            model.requestStopSession(session)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            Button {
+                model.beginCreateSession()
+            } label: {
+                Label("New Session…", systemImage: "plus")
+            }
+            Button {
+                model.beginRemoteConnection()
+            } label: {
+                Label("Connect to Remote…", systemImage: "network")
+            }
+            if model.remoteTarget != nil {
+                Button(role: .destructive) {
+                    model.disconnectRemote()
+                } label: {
+                    Label("Disconnect Remote", systemImage: "xmark.circle")
+                }
+            }
+            Divider()
+            Button {
+                model.refreshSessions()
+            } label: {
+                Label("Refresh Sessions", systemImage: "arrow.clockwise")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: model.remoteTarget == nil ? "externaldrive" : "network")
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(model.currentSessionDisplayName)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+            }
+            .foregroundStyle(Theme.textSecondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Switch Herdr session")
+        .alert(item: $model.sessionAlert) { alert in
+            sessionAlert(alert)
         }
     }
 
@@ -301,6 +383,31 @@ struct SidebarView: View {
                 ),
                 primaryButton: .destructive(Text("Force Remove")) {
                     model.confirmRemoveWorktree(workspace, force: true)
+                },
+                secondaryButton: .cancel()
+            )
+        case .error(let title, let message):
+            return Alert(
+                title: Text(title),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    private func sessionAlert(_ alert: SessionAlert) -> Alert {
+        switch alert.kind {
+        case .confirmStop(let session, let isCurrent):
+            return Alert(
+                title: Text("Stop “\(session.name)”?"),
+                message: Text(
+                    isCurrent
+                        ? "You are viewing this session. Its panes will stop and corral "
+                            + "will disconnect from it."
+                        : "This stops every pane running in the session."
+                ),
+                primaryButton: .destructive(Text("Stop Session")) {
+                    model.confirmStopSession(session)
                 },
                 secondaryButton: .cancel()
             )
@@ -814,6 +921,111 @@ private struct WorktreePickerRow: View {
         }
         .padding(.vertical, 3)
         .opacity(worktree.isBare || worktree.isPrunable ? 0.5 : 1)
+    }
+}
+
+private struct NewSessionSheet: View {
+    @ObservedObject var model: CorralModel
+    @State private var name = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("New Herdr Session")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Name")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                TextField("review", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(create)
+            }
+
+            Text("Corral starts a headless Herdr server and switches to it.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    model.newSessionRequest = nil
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Create") {
+                    create()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
+        .background(Theme.raised)
+    }
+
+    private func create() {
+        model.createSession(named: name)
+    }
+}
+
+private struct RemoteHerdSheet: View {
+    @ObservedObject var model: CorralModel
+    @State private var target = ""
+    @State private var sessionName = "default"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Connect to Remote Herd")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("SSH target")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                TextField("user@host", text: $target)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Herdr session")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                TextField("default", text: $sessionName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(connect)
+            }
+
+            Text(
+                "Corral discovers the remote session socket, forwards it over SSH, "
+                    + "and attaches panes through the local forwarded socket."
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    model.remoteHerdRequest = nil
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Connect") {
+                    connect()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .background(Theme.raised)
+    }
+
+    private func connect() {
+        model.connectRemote(target: target, sessionName: sessionName)
     }
 }
 

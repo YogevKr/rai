@@ -46,12 +46,19 @@ final class CorralModel: ObservableObject {
     @Published var worktreeCreateRequest: WorktreeCreateRequest?
     @Published var worktreeOpenRequest: WorktreeOpenRequest?
     @Published var worktreeAlert: WorktreeAlert?
+    @Published private(set) var sessions: [HerdrSession] = []
+    @Published private(set) var activeSocketPath: String
+    @Published private(set) var currentSessionName: String
+    @Published private(set) var remoteTarget: String?
+    @Published var newSessionRequest: NewSessionRequest?
+    @Published var remoteHerdRequest: RemoteHerdRequest?
+    @Published var sessionAlert: SessionAlert?
     // Live split ratio while a divider is being dragged (split id → ratio),
     // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
     @Published var dragRatios: [String: Double] = [:]
 
-    let client: HerdrClient
-    let terminalPool = TerminalPool()
+    private(set) var client: HerdrClient
+    let terminalPool: TerminalPool
 
     weak var snapshotObserver: CorralSnapshotObserver?
 
@@ -62,12 +69,19 @@ final class CorralModel: ObservableObject {
     private var flushTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
     private var lastObservedPaneStatuses: [String: AgentStatus]?
+    private var connectionGeneration = UUID()
+    private var connectionAttemptID = UUID()
+    private var remoteConnection: RemoteConnection?
+    private var launchedSessionServers: [String: Process] = [:]
 
     init(
         client: HerdrClient = HerdrClient(),
         userDefaults: UserDefaults = .standard
     ) {
         self.client = client
+        activeSocketPath = client.socketPath
+        currentSessionName = Self.inferredSessionName(for: client.socketPath)
+        terminalPool = TerminalPool(socketPath: client.socketPath)
         self.userDefaults = userDefaults
         notificationsMuted = userDefaults.bool(
             forKey: Self.notificationsMutedDefaultsKey
@@ -77,6 +91,14 @@ final class CorralModel: ObservableObject {
     deinit {
         eventTask?.cancel()
         flushTask?.cancel()
+        client.disconnect()
+    }
+
+    var currentSessionDisplayName: String {
+        if let remoteTarget {
+            return "\(currentSessionName) @ \(remoteTarget)"
+        }
+        return currentSessionName
     }
 
     var selectedPane: Pane? {
@@ -164,12 +186,439 @@ final class CorralModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        connectionState = .connecting
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
 
         Task {
-            await refreshSnapshot(keepSelection: false)
-            startEventLoop()
+            guard attemptID == connectionAttemptID else { return }
+            await connect(
+                toSocket: activeSocketPath,
+                sessionName: currentSessionName,
+                remote: nil
+            )
+            await reloadSessions()
         }
+    }
+
+    func shutdown() {
+        tearDownCurrentConnection(stopRemote: true)
+    }
+
+    // MARK: - Herd sessions
+
+    /// Switches the complete herd-scoped runtime to a fresh client.
+    func connect(toSocket socketPath: String) {
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
+        Task {
+            guard attemptID == connectionAttemptID else { return }
+            await connect(
+                toSocket: socketPath,
+                sessionName: Self.inferredSessionName(for: socketPath),
+                remote: nil
+            )
+        }
+    }
+
+    func switchSession(_ session: HerdrSession) {
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
+        Task {
+            if session.isRunning {
+                guard attemptID == connectionAttemptID else { return }
+                await connect(
+                    toSocket: session.socketPath,
+                    sessionName: session.name,
+                    remote: nil
+                )
+                await reloadSessions()
+            } else {
+                await startSession(
+                    named: session.name,
+                    requireNew: false,
+                    attemptID: attemptID
+                )
+            }
+        }
+    }
+
+    func refreshSessions() {
+        Task { await reloadSessions() }
+    }
+
+    func beginCreateSession() {
+        newSessionRequest = NewSessionRequest()
+    }
+
+    func createSession(named rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidSessionName(name) else {
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Invalid Session Name",
+                    message: "Use letters, numbers, periods, underscores, or hyphens."
+                )
+            )
+            return
+        }
+        newSessionRequest = nil
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
+        Task {
+            await startSession(
+                named: name,
+                requireNew: true,
+                attemptID: attemptID
+            )
+        }
+    }
+
+    func requestStopSession(_ session: HerdrSession) {
+        sessionAlert = SessionAlert(
+            kind: .confirmStop(session, isCurrent: isViewing(session))
+        )
+    }
+
+    func isCurrentSession(_ session: HerdrSession) -> Bool {
+        isViewing(session)
+    }
+
+    func confirmStopSession(_ session: HerdrSession) {
+        sessionAlert = nil
+        Task {
+            let wasCurrent = isViewing(session)
+            let result = await runHerdrResult(
+                ["session", "stop", session.name],
+                usesActiveSocket: false
+            )
+            guard result.succeeded else {
+                showSessionError(
+                    title: "Couldn’t Stop Session",
+                    output: result.errorOutput
+                )
+                return
+            }
+            if wasCurrent {
+                disconnectCurrentHerd(
+                    message: "Session “\(session.name)” was stopped."
+                )
+            }
+            await reloadSessions()
+        }
+    }
+
+    func beginRemoteConnection() {
+        remoteHerdRequest = RemoteHerdRequest()
+    }
+
+    func connectRemote(target: String, sessionName: String) {
+        remoteHerdRequest = nil
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
+        Task {
+            do {
+                let discovered = try await RemoteConnection.discoverSocket(
+                    target: target,
+                    sessionName: sessionName
+                )
+                guard attemptID == connectionAttemptID else { return }
+                let tunnel = RemoteConnection(
+                    target: discovered.target,
+                    sessionName: discovered.sessionName,
+                    remoteSocketPath: discovered.socketPath
+                )
+                tunnel.onUnexpectedExit = { [weak self] id, message in
+                    self?.remoteTunnelDidExit(
+                        id: id,
+                        attemptID: attemptID,
+                        message: message
+                    )
+                }
+                try await tunnel.start()
+                guard attemptID == connectionAttemptID else {
+                    tunnel.stop()
+                    return
+                }
+                await connect(
+                    toSocket: tunnel.localSocketPath,
+                    sessionName: tunnel.sessionName,
+                    remote: tunnel
+                )
+            } catch {
+                if snapshot == nil {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
+                sessionAlert = SessionAlert(
+                    kind: .error(
+                        title: "Couldn’t Connect to Remote Herd",
+                        message: error.localizedDescription
+                    )
+                )
+            }
+        }
+    }
+
+    func disconnectRemote() {
+        guard remoteConnection != nil else { return }
+        connectionAttemptID = UUID()
+        disconnectCurrentHerd(message: "Disconnected from \(currentSessionDisplayName).")
+    }
+
+    private func connect(
+        toSocket rawSocketPath: String,
+        sessionName: String,
+        remote: RemoteConnection?
+    ) async {
+        let socketPath = NSString(string: rawSocketPath).expandingTildeInPath
+        tearDownCurrentConnection(stopRemote: true)
+
+        let generation = UUID()
+        connectionGeneration = generation
+        activeSocketPath = socketPath
+        currentSessionName = sessionName
+        remoteTarget = remote?.target
+        remoteConnection = remote
+        client = HerdrClient(socketPath: socketPath)
+        terminalPool.switchSocket(to: socketPath)
+        connectionState = .connecting
+
+        await refreshSnapshot(
+            keepSelection: false,
+            client: client,
+            generation: generation
+        )
+        guard generation == connectionGeneration else { return }
+        startEventLoop(client: client, generation: generation)
+    }
+
+    private func disconnectCurrentHerd(message: String) {
+        connectionAttemptID = UUID()
+        tearDownCurrentConnection(stopRemote: true)
+        connectionGeneration = UUID()
+        snapshot = nil
+        selectedPaneID = nil
+        lastObservedPaneStatuses = nil
+        connectionState = .disconnected(message)
+    }
+
+    private func tearDownCurrentConnection(stopRemote: Bool) {
+        connectionGeneration = UUID()
+        eventTask?.cancel()
+        eventTask = nil
+        flushTask?.cancel()
+        flushTask = nil
+        pendingEvents.removeAll(keepingCapacity: false)
+        client.disconnect()
+        terminalPool.removeAll()
+        if stopRemote {
+            remoteConnection?.stop()
+            remoteConnection = nil
+            remoteTarget = nil
+        }
+        snapshot = nil
+        selectedPaneID = nil
+        draggedPaneID = nil
+        dragRatios.removeAll()
+        lastObservedPaneStatuses = nil
+        isCommandPalettePresented = false
+        renameRequest = nil
+        workspacePendingClose = nil
+        statusExplanation = nil
+        worktreeCreateRequest = nil
+        worktreeOpenRequest = nil
+        worktreeAlert = nil
+    }
+
+    private func reloadSessions() async {
+        let result = await runHerdrResult(
+            ["session", "list", "--json"],
+            usesActiveSocket: false
+        )
+        guard result.succeeded else {
+            showSessionError(
+                title: "Couldn’t List Sessions",
+                output: result.errorOutput
+            )
+            return
+        }
+        do {
+            sessions = try SessionListParser.parse(result.standardOutput)
+            if remoteTarget == nil,
+               let current = sessions.first(where: {
+                   Self.pathsMatch($0.socketPath, activeSocketPath)
+               }) {
+                currentSessionName = current.name
+            }
+        } catch {
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Couldn’t List Sessions",
+                    message: "Herdr returned an unreadable session list."
+                )
+            )
+        }
+    }
+
+    private func startSession(
+        named name: String,
+        requireNew: Bool,
+        attemptID: UUID
+    ) async {
+        await reloadSessions()
+        guard attemptID == connectionAttemptID else { return }
+        let existing = sessions.first(where: { $0.name == name })
+        if requireNew, existing != nil {
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Session Already Exists",
+                    message: "Choose a different name for the new session."
+                )
+            )
+            return
+        }
+        if let existing, existing.isRunning {
+            await connect(
+                toSocket: existing.socketPath,
+                sessionName: existing.name,
+                remote: nil
+            )
+            return
+        }
+
+        let process = configuredHerdrProcess(
+            ["--session", name, "server"],
+            usesActiveSocket: false
+        )
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self, weak process] _ in
+            Task { @MainActor [weak self, weak process] in
+                guard let self, let process,
+                      self.launchedSessionServers[name] === process else {
+                    return
+                }
+                self.launchedSessionServers.removeValue(forKey: name)
+                await self.reloadSessions()
+            }
+        }
+        do {
+            try process.run()
+            launchedSessionServers[name] = process
+        } catch {
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Couldn’t Start Session",
+                    message: error.localizedDescription
+                )
+            )
+            return
+        }
+
+        let expectedSocket = existing?.socketPath ?? NSString(
+            string: "~/.config/herdr/sessions/\(name)/herdr.sock"
+        ).expandingTildeInPath
+        for _ in 0..<50 {
+            guard attemptID == connectionAttemptID else { return }
+            if FileManager.default.fileExists(atPath: expectedSocket) {
+                await reloadSessions()
+                guard attemptID == connectionAttemptID else { return }
+                if let session = sessions.first(where: {
+                    $0.name == name && $0.isRunning
+                }) {
+                    await connect(
+                        toSocket: session.socketPath,
+                        sessionName: session.name,
+                        remote: nil
+                    )
+                    return
+                }
+            }
+            if !process.isRunning { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        if process.isRunning {
+            process.terminate()
+        }
+        showSessionError(
+            title: "Couldn’t Start Session",
+            output: "The Herdr session server did not become ready."
+        )
+        await reloadSessions()
+    }
+
+    private func remoteTunnelDidExit(
+        id: UUID,
+        attemptID: UUID,
+        message: String
+    ) {
+        if remoteConnection?.id == id {
+            remoteConnection = nil
+            let label = currentSessionDisplayName
+            disconnectCurrentHerd(message: "SSH tunnel closed: \(message)")
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Remote Herd Disconnected",
+                    message: "\(label): \(message)"
+                )
+            )
+            return
+        }
+        guard attemptID == connectionAttemptID else { return }
+        connectionAttemptID = UUID()
+        sessionAlert = SessionAlert(
+            kind: .error(
+                title: "Remote Herd Disconnected",
+                message: message
+            )
+        )
+    }
+
+    private func isViewing(_ session: HerdrSession) -> Bool {
+        remoteTarget == nil && Self.pathsMatch(session.socketPath, activeSocketPath)
+    }
+
+    private func showSessionError(title: String, output: String) {
+        sessionAlert = SessionAlert(
+            kind: .error(
+                title: title,
+                message: output.isEmpty ? "The Herdr command failed." : output
+            )
+        )
+    }
+
+    private static func inferredSessionName(for socketPath: String) -> String {
+        let expanded = NSString(string: socketPath).expandingTildeInPath
+        if pathsMatch(expanded, defaultSocketPathWithoutEnvironment()) {
+            return "default"
+        }
+        let url = URL(fileURLWithPath: expanded)
+        if url.lastPathComponent == "herdr.sock",
+           url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+               == "sessions" {
+            return url.deletingLastPathComponent().lastPathComponent
+        }
+        return url.deletingPathExtension().lastPathComponent
+    }
+
+    private static func defaultSocketPathWithoutEnvironment() -> String {
+        NSString(string: "~/.config/herdr/herdr.sock").expandingTildeInPath
+    }
+
+    private static func pathsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        URL(fileURLWithPath: NSString(string: lhs).expandingTildeInPath)
+            .standardizedFileURL.path
+            == URL(fileURLWithPath: NSString(string: rhs).expandingTildeInPath)
+            .standardizedFileURL.path
+    }
+
+    private static func isValidSessionName(_ name: String) -> Bool {
+        !name.isEmpty
+            && name.unicodeScalars.allSatisfy {
+                CharacterSet.alphanumerics.contains($0)
+                    || "._-".unicodeScalars.contains($0)
+            }
     }
 
     func select(tab: HerdrTab) {
@@ -206,11 +655,15 @@ final class CorralModel: ObservableObject {
     func select(paneID: String, focusInHerdr: Bool) {
         selectedPaneID = paneID
         guard focusInHerdr else { return }
+        let client = client
+        let generation = connectionGeneration
         Task {
             do {
                 try await client.focusPane(paneID)
             } catch {
-                connectionState = .disconnected(error.localizedDescription)
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
             }
         }
     }
@@ -345,9 +798,11 @@ final class CorralModel: ObservableObject {
             arguments += ["--label", label]
         }
         arguments.append("--no-focus")
+        let generation = connectionGeneration
 
         Task {
             let result = await runHerdrResult(arguments)
+            guard generation == connectionGeneration else { return }
             guard result.succeeded else {
                 showWorktreeError(
                     title: "Couldn’t Create Worktree",
@@ -367,6 +822,7 @@ final class CorralModel: ObservableObject {
         guard let context = worktreeContext(for: workspace) else { return }
         var request = WorktreeOpenRequest(context: context)
         worktreeOpenRequest = request
+        let generation = connectionGeneration
 
         Task {
             let result = await runHerdrResult([
@@ -374,7 +830,10 @@ final class CorralModel: ObservableObject {
                 "--cwd", context.checkoutPath,
                 "--json",
             ])
-            guard worktreeOpenRequest?.id == request.id else { return }
+            guard generation == connectionGeneration,
+                  worktreeOpenRequest?.id == request.id else {
+                return
+            }
 
             request.isLoading = false
             if result.succeeded {
@@ -396,6 +855,7 @@ final class CorralModel: ObservableObject {
         guard let request = worktreeOpenRequest else { return }
         worktreeOpenRequest = nil
         let existingWorkspaceIDs = Set(snapshot?.workspaces.map(\.workspaceID) ?? [])
+        let generation = connectionGeneration
 
         Task {
             let result = await runHerdrResult([
@@ -404,6 +864,7 @@ final class CorralModel: ObservableObject {
                 "--path", worktree.path,
                 "--no-focus",
             ])
+            guard generation == connectionGeneration else { return }
             guard result.succeeded else {
                 showWorktreeError(
                     title: "Couldn’t Open Worktree",
@@ -436,6 +897,7 @@ final class CorralModel: ObservableObject {
 
     func confirmRemoveWorktree(_ workspace: Workspace, force: Bool) {
         worktreeAlert = nil
+        let generation = connectionGeneration
         Task {
             var arguments = [
                 "worktree", "remove",
@@ -445,6 +907,7 @@ final class CorralModel: ObservableObject {
                 arguments.append("--force")
             }
             let result = await runHerdrResult(arguments)
+            guard generation == connectionGeneration else { return }
             guard result.succeeded else {
                 if !force, Self.isDirtyWorktreeError(result.errorOutput) {
                     worktreeAlert = WorktreeAlert(kind: .confirmForcedRemoval(workspace))
@@ -561,12 +1024,17 @@ final class CorralModel: ObservableObject {
         guard let insertIndex = tabs.firstIndex(where: { $0.tabID == targetTabID }) else {
             return
         }
+        let client = client
+        let generation = connectionGeneration
         Task {
             do {
                 try await client.moveTab(sourceTabID, insertIndex: insertIndex)
+                guard generation == connectionGeneration else { return }
                 await refreshSnapshot(keepSelection: true)
             } catch {
-                connectionState = .disconnected(error.localizedDescription)
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
             }
         }
     }
@@ -580,12 +1048,17 @@ final class CorralModel: ObservableObject {
               }) else {
             return
         }
+        let client = client
+        let generation = connectionGeneration
         Task {
             do {
                 try await client.moveWorkspace(sourceWorkspaceID, insertIndex: insertIndex)
+                guard generation == connectionGeneration else { return }
                 await refreshSnapshot(keepSelection: true)
             } catch {
-                connectionState = .disconnected(error.localizedDescription)
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
             }
         }
     }
@@ -613,9 +1086,13 @@ final class CorralModel: ObservableObject {
     private func beginExplanation(target: String, title: String) {
         let id = UUID()
         statusExplanation = StatusExplanation(id: id, title: title, text: nil)
+        let generation = connectionGeneration
         Task {
             let output = await runHerdrCapture(["agent", "explain", target, "--json"])
-            guard statusExplanation?.id == id else { return }
+            guard generation == connectionGeneration,
+                  statusExplanation?.id == id else {
+                return
+            }
             statusExplanation = StatusExplanation(
                 id: id,
                 title: title,
@@ -650,38 +1127,41 @@ final class CorralModel: ObservableObject {
         return formatted
     }
 
-    private func startEventLoop() {
+    private func startEventLoop(client: HerdrClient, generation: UUID) {
         eventTask?.cancel()
         eventTask = Task { [weak self] in
             guard let self else { return }
-            while !Task.isCancelled {
+            while !Task.isCancelled, generation == connectionGeneration {
                 do {
                     let paneIDs = snapshot?.panes.map(\.paneID) ?? []
                     for try await event in client.events(paneIDs: paneIDs) {
-                        queue(event)
+                        guard generation == connectionGeneration else { break }
+                        queue(event, generation: generation)
                     }
                 } catch {
-                    if !Task.isCancelled {
+                    if !Task.isCancelled, generation == connectionGeneration {
                         connectionState = .disconnected(error.localizedDescription)
                     }
                 }
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, generation == connectionGeneration else { break }
                 try? await Task.sleep(for: .seconds(1))
             }
         }
     }
 
-    private func queue(_ event: HerdrEvent) {
+    private func queue(_ event: HerdrEvent, generation: UUID) {
+        guard generation == connectionGeneration else { return }
         pendingEvents.append(event)
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
             guard let self, !Task.isCancelled else { return }
-            await self.flushEvents()
+            await self.flushEvents(generation: generation)
         }
     }
 
-    private func flushEvents() async {
+    private func flushEvents(generation: UUID) async {
+        guard generation == connectionGeneration else { return }
         let events = pendingEvents
         pendingEvents.removeAll(keepingCapacity: true)
         flushTask = nil
@@ -697,8 +1177,21 @@ final class CorralModel: ObservableObject {
     }
 
     private func refreshSnapshot(keepSelection: Bool) async {
+        await refreshSnapshot(
+            keepSelection: keepSelection,
+            client: client,
+            generation: connectionGeneration
+        )
+    }
+
+    private func refreshSnapshot(
+        keepSelection: Bool,
+        client: HerdrClient,
+        generation: UUID
+    ) async {
         do {
             let newSnapshot = try await client.snapshot()
+            guard generation == connectionGeneration else { return }
             let newStatuses = Dictionary(
                 uniqueKeysWithValues: newSnapshot.panes.map {
                     ($0.paneID, $0.agentStatus)
@@ -734,7 +1227,9 @@ final class CorralModel: ObservableObject {
                 transitions: transitions
             )
         } catch {
-            connectionState = .disconnected(error.localizedDescription)
+            if generation == connectionGeneration {
+                connectionState = .disconnected(error.localizedDescription)
+            }
         }
     }
 
@@ -839,6 +1334,8 @@ final class CorralModel: ObservableObject {
         }
         selectedPaneID = paneID
         let name = Self.defaultAgentName(kind)
+        let client = client
+        let generation = connectionGeneration
 
         Task {
             // agent start --split uses herdr's focused pane as the split source.
@@ -846,9 +1343,12 @@ final class CorralModel: ObservableObject {
             do {
                 try await client.focusPane(paneID)
             } catch {
-                connectionState = .disconnected(error.localizedDescription)
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
                 return
             }
+            guard generation == connectionGeneration else { return }
             _ = await runHerdr(
                 PaneActionPlanner.agentStartArguments(
                     name: name,
@@ -857,6 +1357,7 @@ final class CorralModel: ObservableObject {
                     cwd: pane.cwd
                 )
             )
+            guard generation == connectionGeneration else { return }
             await refreshSnapshot(keepSelection: true)
         }
     }
@@ -885,16 +1386,20 @@ final class CorralModel: ObservableObject {
         let pane = delta >= 0 ? firstPaneID : secondPaneID
         let dir = delta >= 0 ? (horizontal ? "right" : "down") : (horizontal ? "left" : "up")
         let amount = String(format: "%.4f", abs(delta))
+        let generation = connectionGeneration
         Task {
             _ = await runHerdr(["pane", "resize", "--pane", pane, "--direction", dir, "--amount", amount])
+            guard generation == connectionGeneration else { return }
             await refreshSnapshot(keepSelection: true)
             dragRatios.removeValue(forKey: splitID)
         }
     }
 
     private func runAction(_ args: [String], followFocus: Bool = true) {
+        let generation = connectionGeneration
         Task {
             _ = await runHerdr(args)
+            guard generation == connectionGeneration else { return }
             await refreshSnapshot(keepSelection: !followFocus)
         }
     }
@@ -951,9 +1456,15 @@ final class CorralModel: ObservableObject {
         }
     }
 
-    private func runHerdrResult(_ args: [String]) async -> HerdrCommandResult {
+    private func runHerdrResult(
+        _ args: [String],
+        usesActiveSocket: Bool = true
+    ) async -> HerdrCommandResult {
         await withCheckedContinuation { continuation in
-            let process = configuredHerdrProcess(args)
+            let process = configuredHerdrProcess(
+                args,
+                usesActiveSocket: usesActiveSocket
+            )
             let standardOutput = Pipe()
             let standardError = Pipe()
             process.standardOutput = standardOutput
@@ -985,7 +1496,10 @@ final class CorralModel: ObservableObject {
         }
     }
 
-    private func configuredHerdrProcess(_ args: [String]) -> Process {
+    private func configuredHerdrProcess(
+        _ args: [String],
+        usesActiveSocket: Bool = true
+    ) -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
         process.arguments = args
@@ -994,6 +1508,11 @@ final class CorralModel: ObservableObject {
         if !path.contains("/opt/homebrew/bin") {
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
                 + (path.isEmpty ? "/usr/bin:/bin" : path)
+        }
+        if usesActiveSocket {
+            environment["HERDR_SOCKET_PATH"] = activeSocketPath
+        } else {
+            environment.removeValue(forKey: "HERDR_SOCKET_PATH")
         }
         process.environment = environment
         return process

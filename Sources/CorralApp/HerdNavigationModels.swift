@@ -71,3 +71,21 @@ struct WorktreeAlert: Identifiable, Equatable {
     let id = UUID()
     let kind: Kind
 }
+
+struct NewSessionRequest: Identifiable {
+    let id = UUID()
+}
+
+struct RemoteHerdRequest: Identifiable {
+    let id = UUID()
+}
+
+struct SessionAlert: Identifiable {
+    enum Kind {
+        case confirmStop(HerdrSession, isCurrent: Bool)
+        case error(title: String, message: String)
+    }
+
+    let id = UUID()
+    let kind: Kind
+}
