@@ -104,3 +104,33 @@ poc/herdr_client.py send  <pane_id> "echo hi\n"   # send input to a pane
 ```
 
 Requires a running herdr server (`herdr` / `herdr server`).
+
+## macOS MVP
+
+The SwiftPM package builds both the native app and a headless socket probe:
+
+```sh
+swift build
+swift run corral-probe
+swift run corral
+```
+
+`corral` targets macOS 14 or newer. It connects to
+`~/.config/herdr/herdr.sock` by default; set `HERDR_SOCKET_PATH` to override
+the path. The probe prints the live workspace → tab → pane tree, then reads the
+focused pane through the same `HerdrClient` used by the app.
+
+For explicit transport checks against a disposable or known-idle shell pane:
+
+```sh
+swift run corral-probe --watch
+swift run corral-probe --send-smoke <pane-id>
+```
+
+The app currently renders one selected pane at a time. Workspace/tab/pane
+creation, focus, movement, closure, and agent status updates arrive on the
+event connection and are coalesced before updating SwiftUI. Herdr protocol 16
+does not expose `pane.output_changed` as a subscribable event, so the selected
+pane uses `pane.updated` plus a 700 ms `pane.read` fallback poll. Protocol 16's
+`pane.resize` is directional split resizing rather than a terminal
+rows/columns report, so view resizing is intentionally not forwarded.
