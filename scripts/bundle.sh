@@ -34,6 +34,24 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.tab</string>
+      <key>UTTypeDescription</key><string>Corral Tab</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.workspace</string>
+      <key>UTTypeDescription</key><string>Corral Space</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.pane</string>
+      <key>UTTypeDescription</key><string>Corral Pane</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

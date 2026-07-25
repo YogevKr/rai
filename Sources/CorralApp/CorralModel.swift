@@ -28,6 +28,10 @@ final class CorralModel: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
     @Published var draggedPaneID: String?
+    // Sidebar reorder drag state (mirrors draggedPaneID) — read synchronously by
+    // the drop delegates rather than round-tripping through NSItemProvider.
+    @Published var draggedTabID: String?
+    @Published var draggedWorkspaceID: String?
     @Published var onlyNeedsYou = false
     @Published var notificationsMuted: Bool {
         didSet {

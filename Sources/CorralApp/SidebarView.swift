@@ -462,6 +462,26 @@ private struct SidebarRowChrome: ViewModifier {
     }
 }
 
+// A slim accent insertion line at a row's top edge while a reorder-drag hovers it.
+private struct SidebarDropIndicator: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if active {
+                    Capsule()
+                        .fill(Theme.accent)
+                        .frame(height: 2)
+                        .padding(.horizontal, 8)
+                        .shadow(color: Theme.accent.opacity(0.6), radius: 3)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.1), value: active)
+    }
+}
+
 // Shared two-line row content: a status dot, a title, and a muted
 // "status · context" subtitle — the mission-control row shape.
 private struct SidebarRowLabel<Trailing: View>: View {
@@ -541,6 +561,7 @@ private struct WorkspaceRow: View {
 
     @State private var hovering = false
     @State private var paneDragTargeted = false
+    @State private var dropTargeted = false
 
     private var subtitleContext: String {
         if let wt = workspace.worktree {
@@ -561,39 +582,47 @@ private struct WorkspaceRow: View {
     }
 
     var body: some View {
-        Button(action: onSelect) {
-            SidebarRowLabel(
-                status: tab?.agentStatus ?? workspace.agentStatus,
-                title: workspace.label,
-                subtitle: subtitleContext,
-                selected: selected,
-                focusedInHerdr: focusedInHerdr
-            ) {
-                if workspace.worktree?.isLinkedWorktree == true {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Theme.textTertiary)
-                }
+        SidebarRowLabel(
+            status: tab?.agentStatus ?? workspace.agentStatus,
+            title: workspace.label,
+            subtitle: subtitleContext,
+            selected: selected,
+            focusedInHerdr: focusedInHerdr
+        ) {
+            if workspace.worktree?.isLinkedWorktree == true {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.textTertiary)
             }
-            .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         }
-        .buttonStyle(.plain)
+        .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
+        .modifier(SidebarDropIndicator(active: dropTargeted))
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
+        // Row is a plain view (not a Button) so `.onDrag` can start a drag on
+        // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
         .onHover { hovering = $0 }
+        // Pane-drag onto a space previews that space's tab (returns false: never accepts).
         .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
         .onDrag {
-            sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+            model.draggedWorkspaceID = workspace.workspaceID
+            return sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
         }
-        .onDrop(of: [.corralWorkspace], isTargeted: nil) { providers in
-            loadSidebarDrop(providers, type: .corralWorkspace) { sourceID in
-                model.moveWorkspace(
-                    sourceWorkspaceID: sourceID,
-                    onto: workspace.workspaceID
-                )
-            }
-        }
+        .onDrop(
+            of: [.corralWorkspace],
+            delegate: SidebarReorderDropDelegate(
+                targetID: workspace.workspaceID,
+                type: .corralWorkspace,
+                model: model,
+                targeted: $dropTargeted
+            )
+        )
         .contextMenu {
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(workspace: workspace) }
@@ -625,6 +654,8 @@ private struct WorkspaceHeader: View {
     @ObservedObject var model: CorralModel
     let workspace: Workspace
     let focusedInHerdr: Bool
+
+    @State private var dropTargeted = false
 
     private var showWorktreeTag: Bool {
         guard let worktree = workspace.worktree else { return false }
@@ -658,19 +689,22 @@ private struct WorkspaceHeader: View {
         .padding(.bottom, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.sidebar)
+        .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
         .onTapGesture { model.select(workspace: workspace) }
         .onDrag {
-            sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+            model.draggedWorkspaceID = workspace.workspaceID
+            return sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
         }
-        .onDrop(of: [.corralWorkspace], isTargeted: nil) { providers in
-            loadSidebarDrop(providers, type: .corralWorkspace) { sourceID in
-                model.moveWorkspace(
-                    sourceWorkspaceID: sourceID,
-                    onto: workspace.workspaceID
-                )
-            }
-        }
+        .onDrop(
+            of: [.corralWorkspace],
+            delegate: SidebarReorderDropDelegate(
+                targetID: workspace.workspaceID,
+                type: .corralWorkspace,
+                model: model,
+                targeted: $dropTargeted
+            )
+        )
         .contextMenu {
             Button("Focus") { model.select(workspace: workspace) }
             Button("Rename") { model.beginRename(workspace: workspace) }
@@ -708,6 +742,7 @@ private struct AgentRow: View {
 
     @State private var hovering = false
     @State private var paneDragTargeted = false
+    @State private var dropTargeted = false
 
     private var subtitleContext: String {
         guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
@@ -717,39 +752,49 @@ private struct AgentRow: View {
     }
 
     var body: some View {
-        Button(action: onSelect) {
-            SidebarRowLabel(
-                status: tab.agentStatus,
-                title: label,
-                subtitle: subtitleContext,
-                selected: selected,
-                focusedInHerdr: false
-            ) {
-                if tab.paneCount > 1 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "rectangle.split.2x1")
-                        Text("\(tab.paneCount)")
-                    }
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(Theme.textTertiary)
+        SidebarRowLabel(
+            status: tab.agentStatus,
+            title: label,
+            subtitle: subtitleContext,
+            selected: selected,
+            focusedInHerdr: false
+        ) {
+            if tab.paneCount > 1 {
+                HStack(spacing: 3) {
+                    Image(systemName: "rectangle.split.2x1")
+                    Text("\(tab.paneCount)")
                 }
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
             }
-            .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         }
-        .buttonStyle(.plain)
+        .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
+        .modifier(SidebarDropIndicator(active: dropTargeted))
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
+        // Row is a plain view (not a Button) so `.onDrag` can start a drag on
+        // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
         .onHover { hovering = $0 }
         .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
         .onDrag {
-            sidebarDragProvider(id: tab.tabID, type: .corralTab)
+            model.draggedTabID = tab.tabID
+            return sidebarDragProvider(id: tab.tabID, type: .corralTab)
         }
-        .onDrop(of: [.corralTab], isTargeted: nil) { providers in
-            loadSidebarDrop(providers, type: .corralTab) { sourceID in
-                model.moveTab(sourceTabID: sourceID, onto: tab.tabID)
-            }
-        }
+        .onDrop(
+            of: [.corralTab],
+            delegate: SidebarReorderDropDelegate(
+                targetID: tab.tabID,
+                type: .corralTab,
+                model: model,
+                targeted: $dropTargeted
+            )
+        )
         .contextMenu {
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }
@@ -1159,21 +1204,65 @@ private func sidebarDragProvider(id: String, type: UTType) -> NSItemProvider {
     return provider
 }
 
-private func loadSidebarDrop(
-    _ providers: [NSItemProvider],
-    type: UTType,
-    action: @escaping (String) -> Void
-) -> Bool {
-    guard let provider = providers.first(where: {
-        $0.hasItemConformingToTypeIdentifier(type.identifier)
-    }) else {
-        return false
+// Reorders a sidebar row onto `targetID`. Reads the dragged id from the model
+// synchronously (like PaneDropDelegate) rather than round-tripping through
+// NSItemProvider's async load, and drives the drop-target highlight.
+private struct SidebarReorderDropDelegate: DropDelegate {
+    let targetID: String
+    let type: UTType
+    @ObservedObject var model: CorralModel
+    @Binding var targeted: Bool
+
+    private var draggedID: String? {
+        type == .corralTab ? model.draggedTabID : model.draggedWorkspaceID
     }
-    provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
-        guard let data, let id = String(data: data, encoding: .utf8) else { return }
-        Task { @MainActor in action(id) }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let src = draggedID, src != targetID,
+              info.hasItemsConforming(to: [type.identifier]) else {
+            return false
+        }
+        // Tabs only reorder within their own space — herdr's tab.move (and
+        // CorralModel.moveTab) reject cross-space moves, so don't advertise them.
+        if type == .corralTab {
+            guard let snapshot = model.snapshot,
+                  let source = snapshot.tabs.first(where: { $0.tabID == src }),
+                  let target = snapshot.tabs.first(where: { $0.tabID == targetID }),
+                  source.workspaceID == target.workspaceID else {
+                return false
+            }
+        }
+        return true
     }
-    return true
+
+    func dropEntered(info: DropInfo) {
+        targeted = validateDrop(info: info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        let ok = validateDrop(info: info)
+        targeted = ok
+        return DropProposal(operation: ok ? .move : .cancel)
+    }
+
+    func dropExited(info: DropInfo) {
+        targeted = false
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            targeted = false
+            model.draggedTabID = nil
+            model.draggedWorkspaceID = nil
+        }
+        guard let src = draggedID, src != targetID else { return false }
+        if type == .corralTab {
+            model.moveTab(sourceTabID: src, onto: targetID)
+        } else {
+            model.moveWorkspace(sourceWorkspaceID: src, onto: targetID)
+        }
+        return true
+    }
 }
 
 private struct ConnectionPill: View {
