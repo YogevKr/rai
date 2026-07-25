@@ -86,7 +86,10 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
-        .background(Theme.sidebar)
+        .background(Theme.panelGradient)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.topHighlight).frame(height: 1).ignoresSafeArea()
+        }
         .sheet(item: $model.renameRequest) { request in
             RenameSheet(model: model, request: request)
         }
@@ -434,20 +437,16 @@ private struct SidebarRowChrome: ViewModifier {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
                         selected
-                            ? Theme.accent.opacity(0.15)
-                            : (hovering ? Color.white.opacity(0.05) : .clear)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(selected ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1)
+                            ? Theme.accent.opacity(0.11)
+                            : (hovering ? Color.white.opacity(0.035) : .clear)
                     )
             }
             .overlay(alignment: .leading) {
                 if selected {
-                    RoundedRectangle(cornerRadius: 2)
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
                         .fill(Theme.accent)
-                        .frame(width: 3, height: 20)
-                        .padding(.leading, 1)
+                        .frame(width: 3, height: 22)
+                        .shadow(color: Theme.accent.opacity(0.6), radius: 4)
                 }
             }
     }
@@ -625,11 +624,11 @@ private struct WorkspaceHeader: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            StatusDot(status: workspace.agentStatus, size: 6)
-            Text(workspace.label)
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(Theme.textSecondary)
+            StatusDot(status: workspace.agentStatus, size: 5)
+            Text(workspace.label.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.9)
+                .foregroundStyle(Theme.textTertiary)
                 .lineLimit(1)
             if focusedInHerdr {
                 Circle().fill(Theme.accent).frame(width: 4, height: 4)

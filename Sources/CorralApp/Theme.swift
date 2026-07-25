@@ -5,33 +5,42 @@ import SwiftUI
 // (a terminal product should own its palette rather than inherit the system's).
 // One accent, a semantic status-color set, an 8pt spacing rhythm.
 enum Theme {
-    // Surfaces, deepest → most raised. Dracula-family greys so the whole app reads
-    // as one theme with the Dracula+ terminal (bg #212121).
-    static let base = Color(hex: 0x1B1C24)        // window / content backdrop
-    static let sidebar = Color(hex: 0x21222C)     // elevated sidebar (Dracula ANSI black)
-    static let raised = Color(hex: 0x343746)      // hover fills, chips (Dracula current-line-ish)
-    static let bar = Color(hex: 0x1B1C24)         // header bars
+    // Layered surfaces (deepest → raised). The content backdrop is the darkest
+    // "stage" the panes float on; the sidebar is a distinct panel; the terminal
+    // keeps the Ghostty Dracula+ bg. Depth (not flat grey) is what reads premium.
+    static let base = Color(hex: 0x0E0F13)        // window / content backdrop (deepest)
+    static let sidebar = Color(hex: 0x15161D)     // sidebar panel
+    static let raised = Color(hex: 0x23252F)      // hover fills, chips
+    static let bar = Color(hex: 0x121319)         // header bars
     static let terminalBG = Color(hex: 0x212121)  // Ghostty Dracula+ bg (matches SwiftTerm)
 
+    // A subtle top-lit gradient + hairline highlight for panels — "light from above".
+    static let panelGradient = LinearGradient(
+        colors: [Color(hex: 0x191A22), Color(hex: 0x131319)],
+        startPoint: .top, endPoint: .bottom
+    )
+    static let topHighlight = Color.white.opacity(0.05)
+
     // Hairlines.
-    static let hairline = Color.white.opacity(0.06)
-    static let hairlineStrong = Color.white.opacity(0.12)
+    static let hairline = Color.white.opacity(0.05)
+    static let hairlineStrong = Color.white.opacity(0.10)
 
-    // Text hierarchy (Dracula foreground / comment).
-    static let textPrimary = Color(hex: 0xF8F8F2)
-    static let textSecondary = Color(hex: 0xBBBDD0)
-    static let textTertiary = Color(hex: 0x6272A4)
+    // Text hierarchy.
+    static let textPrimary = Color(hex: 0xEDEEF3)
+    static let textSecondary = Color(hex: 0x9A9FB2)
+    static let textTertiary = Color(hex: 0x585D70)
 
-    // Dracula+ blue (your Ghostty palette[4]) — selection, focus, the live pulse.
+    // Refined accent (Dracula+ blue, matches your Ghostty) — selection, focus, pulse.
     static let accent = Color(hex: 0x82AAFF)
 
+    // Softened, less-neon status colors read more premium on a dark ground.
     static func status(_ s: AgentStatus) -> Color {
         switch s {
-        case .working: Color(hex: 0x8BE9FD)   // cyan
-        case .blocked: Color(hex: 0xFF5555)   // red
-        case .done: Color(hex: 0x50FA7B)      // green
-        case .idle: Color(hex: 0x6272A4)      // comment
-        case .unknown: Color(hex: 0x44475A)   // current line
+        case .working: Color(hex: 0x6FB6FF)   // soft blue
+        case .blocked: Color(hex: 0xFF7A88)   // coral (needs you)
+        case .done: Color(hex: 0x54D999)      // green
+        case .idle: Color(hex: 0x676C82)      // muted
+        case .unknown: Color(hex: 0x3C4054)
         }
     }
 
