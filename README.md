@@ -33,6 +33,27 @@ AppleScript-spawned real Ghostty tabs). corral renders panes *inside its own
 window* from the socket stream — one window, one process, no terminal-app
 puppetry.
 
+## Prior art: cmux (why not just use it?)
+
+[cmux](https://cmux.com) (manaflow-ai/cmux, GPL) is a native macOS Swift/AppKit
+terminal on **libghostty** with a vertical-tab sidebar, notification rings, split
+panes, an in-app browser, a Unix-socket API, and session restore — almost exactly
+this app's shape. **But cmux is its own multiplexer, not a herdr frontend**, and
+its persistence model is fundamentally weaker for the daemon/remote case:
+
+- **herdr = live daemon.** Detach and the processes *keep running*; reattach to
+  the same live, mid-flight process, locally or over SSH (`herdr --remote`).
+- **cmux = save + resume.** A GUI app: quit/reboot stops the processes, and on
+  relaunch cmux *rebuilds the layout and re-runs each agent's native resume*
+  (`claude --resume`, `codex resume`). Great "reopen and it's back" UX, but a
+  reconstruction, not a live daemon, and no remote-daemon-over-SSH.
+
+So corral exists to keep herdr's daemon-grade detach + remote + plugin/agent
+ecosystem, and add the GUI cmux has. The terminal-emulation itself is **reused,
+not built**: `libghostty-vt` (Ghostty's core, alpha C API, fed external/remote VT
+bytes — see Ghostty's "Reconnectable Terminal" prototype, disc #12176) or
+**SwiftTerm** for v1. Only the herdr-binding shell is new.
+
 ## Architecture
 
 ```
