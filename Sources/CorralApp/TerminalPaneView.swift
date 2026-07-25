@@ -7,6 +7,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let paneID: String
     let frame: TerminalFrame?
     let client: HerdrClient
+    let isFocused: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(client: client)
@@ -30,9 +31,6 @@ struct TerminalPaneView: NSViewRepresentable {
         )
         view.changeScrollback(5_000)
         context.coordinator.paneID = paneID
-        DispatchQueue.main.async {
-            view.window?.makeFirstResponder(view)
-        }
         return view
     }
 
@@ -42,6 +40,11 @@ struct TerminalPaneView: NSViewRepresentable {
             coordinator.paneID = paneID
             coordinator.lastSequence = nil
             view.getTerminal().resetToInitialState()
+        }
+        if isFocused, view.window?.firstResponder !== view {
+            DispatchQueue.main.async {
+                view.window?.makeFirstResponder(view)
+            }
         }
         guard let frame,
               frame.paneID == paneID,
@@ -74,8 +77,9 @@ struct TerminalPaneView: NSViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            // Herdr protocol 16's pane.resize is directional split resizing.
-            // Sending terminal dimensions here would mutate the layout or fail validation.
+            // Protocol 16 has no public JSON-RPC rows/columns call. pane.resize changes
+            // split geometry, while terminal-session observers negotiate a fixed size
+            // over an undocumented binary socket, so forwarding here would be unsafe.
         }
 
         func setTerminalTitle(source: TerminalView, title: String) {}

@@ -12,35 +12,68 @@ struct CorralRootView: View {
             VStack(spacing: 0) {
                 PaneHeader(model: model)
                 Divider()
-                terminalContent
+                WorkspaceTabBar(model: model)
+                Divider()
+                PaneLayoutView(model: model)
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .navigationSplitViewStyle(.balanced)
     }
 
-    @ViewBuilder
-    private var terminalContent: some View {
-        if let paneID = model.selectedPaneID {
-            ZStack {
-                Color(red: 0.055, green: 0.063, blue: 0.078)
-                TerminalPaneView(
-                    paneID: paneID,
-                    frame: model.terminalFrame,
-                    client: model.client
-                )
-                if model.terminalFrame == nil {
-                    ProgressView()
-                        .controlSize(.small)
+}
+
+private struct WorkspaceTabBar: View {
+    @ObservedObject var model: CorralModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(model.selectedWorkspaceTabs) { tab in
+                        Button {
+                            model.select(tab: tab)
+                        } label: {
+                            HStack(spacing: 7) {
+                                StatusGlyph(status: tab.agentStatus, compact: true)
+                                Text(tab.label)
+                                    .lineLimit(1)
+                                if tab.paneCount > 1 {
+                                    Text("\(tab.paneCount)")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .font(.system(size: 11.5, weight: tab.tabID == model.selectedTabID ? .semibold : .medium))
+                            .foregroundStyle(tab.tabID == model.selectedTabID ? .primary : .secondary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(
+                                        tab.tabID == model.selectedTabID
+                                            ? Color.accentColor.opacity(0.16)
+                                            : Color.clear
+                                    )
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(
+                                        tab.tabID == model.selectedTabID
+                                            ? Color.accentColor.opacity(0.28)
+                                            : Color.clear
+                                    )
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(.horizontal, 8)
             }
-        } else {
-            ContentUnavailableView(
-                "No pane selected",
-                systemImage: "rectangle.split.2x1",
-                description: Text("Choose a tab from the sidebar.")
-            )
+            .scrollIndicators(.hidden)
         }
+        .frame(height: 38)
+        .background(.bar)
     }
 }
 
