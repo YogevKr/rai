@@ -1881,6 +1881,14 @@ final class RaiModel: ObservableObject {
             case .claude: "claude --continue || exec claude"
             case .codex: "codex resume --last || exec codex"
             }
+            // `tab create` already gave the tab a default shell pane, and
+            // `agent start` puts the agent in a SECOND pane beside it. Capture
+            // that default pane up front and close it once the agent is running,
+            // so the reopened tab holds just the resumed agent — not a stray
+            // extra terminal.
+            let defaultPaneID = snapshot?.panes.first {
+                $0.tabID == reopenedTab.tabID
+            }?.paneID
             _ = await runHerdr([
                 "agent", "start", Self.defaultAgentName(agentKind),
                 "--tab", reopenedTab.tabID,
@@ -1889,6 +1897,9 @@ final class RaiModel: ObservableObject {
                 "--",
                 "/bin/sh", "-lc", resumeCommand,
             ])
+            if let defaultPaneID {
+                _ = await runHerdr(["pane", "close", defaultPaneID])
+            }
         } else {
             _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
         }
