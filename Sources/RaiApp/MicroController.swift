@@ -90,11 +90,14 @@ final class MicroController {
     // Wispr Flow dictation is triggered by SIMULATING its hands-free keyboard
     // shortcut, not the wispr-flow:// URL. The URL foregrounds Wispr's own window
     // so the transcript lands in Wispr's scratchpad instead of rai's focused
-    // pane. Set Wispr's hands-free shortcut to this chord — Control-Option-
-    // Command-Space — since Wispr's default (Fn+Space) can't be synthesized.
-    static let wisprShortcutKey: CGKeyCode = 49 // Space
-    static let wisprShortcutFlags: CGEventFlags = [
-        .maskControl, .maskAlternate, .maskCommand,
+    // pane. Set Wispr's hands-free shortcut to this chord — Control-Option-D.
+    // (Wispr's default Fn+Space can't be synthesized, Wispr caps shortcuts at
+    // three keys, and every two-modifier + Space combo is a macOS default.)
+    static let wisprShortcutKey: CGKeyCode = 0x02 // D
+    // Modifier (keycode, asserted flag) pairs, applied in order.
+    static let wisprShortcutModifiers: [(key: CGKeyCode, flag: CGEventFlags)] = [
+        (0x3B, .maskControl),   // Control
+        (0x3A, .maskAlternate), // Option
     ]
 
     private weak var model: RaiModel?
@@ -240,19 +243,21 @@ final class MicroController {
             event.post(tap: .cghidEventTap)
         }
 
-        // Press the modifiers, tap the key, release the modifiers — an explicit
-        // chord so both Carbon hot keys and NSEvent monitors register it.
-        let control: CGKeyCode = 0x3B
-        let option: CGKeyCode = 0x3A
-        let command: CGKeyCode = 0x37
-        post(control, keyDown: true, flags: [.maskControl])
-        post(option, keyDown: true, flags: [.maskControl, .maskAlternate])
-        post(command, keyDown: true, flags: Self.wisprShortcutFlags)
-        post(Self.wisprShortcutKey, keyDown: true, flags: Self.wisprShortcutFlags)
-        post(Self.wisprShortcutKey, keyDown: false, flags: Self.wisprShortcutFlags)
-        post(command, keyDown: false, flags: [.maskControl, .maskAlternate])
-        post(option, keyDown: false, flags: [.maskControl])
-        post(control, keyDown: false, flags: [])
+        // Press the modifiers (accumulating flags), tap the key, release the
+        // modifiers in reverse — an explicit chord so both Carbon hot keys and
+        // NSEvent monitors register it.
+        let modifiers = Self.wisprShortcutModifiers
+        var flags: CGEventFlags = []
+        for modifier in modifiers {
+            flags.insert(modifier.flag)
+            post(modifier.key, keyDown: true, flags: flags)
+        }
+        post(Self.wisprShortcutKey, keyDown: true, flags: flags)
+        post(Self.wisprShortcutKey, keyDown: false, flags: flags)
+        for modifier in modifiers.reversed() {
+            flags.remove(modifier.flag)
+            post(modifier.key, keyDown: false, flags: flags)
+        }
     }
 
     /// True when rai may post keyboard events other apps receive. When false it
