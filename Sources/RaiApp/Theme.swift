@@ -13,6 +13,8 @@ struct WindowConfigurator: NSViewRepresentable {
             window.isOpaque = true
             window.backgroundColor = NSColor(srgbRed: 0x1A / 255, green: 0x1A / 255, blue: 0x1A / 255, alpha: 1)
             window.titlebarAppearsTransparent = true
+            // Let content fill under the title bar so the panes reach the very top.
+            window.styleMask.insert(.fullSizeContentView)
         }
         return view
     }

@@ -14,6 +14,7 @@ struct RaiRootView: View {
                 // details (status · space · cwd) live in the sidebar tab row.
                 PaneLayoutView(model: model)
                     .background(Theme.base)
+                    .ignoresSafeArea(.container, edges: .top)
             }
 
             if model.isCommandPalettePresented {
