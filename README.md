@@ -19,6 +19,17 @@ per-pane terminals — driving the **unchanged** herdr daemon underneath.
 
 ---
 
+## The name
+
+**rai** comes from the Arabic **رَاعِي** (*rāʿī*) — a *shepherd*, one who tends
+and watches over a flock. It's built on the triliteral root **ر‑ع‑ي** (*r‑ʿ‑y*),
+which carries the sense of pasturing, guarding, and caring for; the same root
+gives **رِعَايَة** (*riʿāya*), "care" or "guardianship."
+
+The fit is deliberate: **herdr** keeps the *herd* of agents; **rai** is the
+shepherd that watches over them — a calm window from which you keep an eye on the
+flock and step in only when one needs you.
+
 ## Why
 
 herdr is a **live daemon**: detach and your agents keep running mid-flight;
@@ -142,17 +153,6 @@ scripts/bundle.sh  builds and installs Rai.app
 poc/               reference Python herdr socket client
 docs/ROADMAP.md    herdr API coverage + build plan
 ```
-
-## The name
-
-**rai** comes from the Arabic **رَاعِي** (*rāʿī*) — a *shepherd*, one who tends
-and watches over a flock. It's built on the triliteral root **ر‑ع‑ي** (*r‑ʿ‑y*),
-which carries the sense of pasturing, guarding, and caring for; the same root
-gives **رِعَايَة** (*riʿāya*), "care" or "guardianship."
-
-The fit is deliberate: **herdr** keeps the *herd* of agents; **rai** is the
-shepherd that watches over them — a calm window from which you keep an eye on the
-flock and step in only when one needs you.
 
 ## Credits
 
