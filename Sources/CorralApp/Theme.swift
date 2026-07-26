@@ -9,9 +9,9 @@ struct WindowConfigurator: NSViewRepresentable {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
-            // Linear is solid — opaque window on the near-black base (no vibrancy).
+            // Solid, opaque window on the Ghostty-grey base (no vibrancy).
             window.isOpaque = true
-            window.backgroundColor = NSColor(srgbRed: 0x0B / 255, green: 0x0B / 255, blue: 0x0D / 255, alpha: 1)
+            window.backgroundColor = NSColor(srgbRed: 0x1A / 255, green: 0x1A / 255, blue: 0x1A / 255, alpha: 1)
             window.titlebarAppearsTransparent = true
         }
         return view
@@ -23,14 +23,14 @@ struct WindowConfigurator: NSViewRepresentable {
 // (a terminal product should own its palette rather than inherit the system's).
 // One accent, a semantic status-color set, an 8pt spacing rhythm.
 enum Theme {
-    // "Linear" direction: a warm near-black owned palette. Regions are defined by
-    // hairline borders (not glow or gradient); one desaturated-indigo accent, used
-    // sparingly; a quiet semantic status set. Restraint and precision over effect.
-    static let base = Color(hex: 0x0B0B0D)        // window / content backdrop
-    static let sidebar = Color(hex: 0x0E0E11)     // sidebar panel
-    static let raised = Color(hex: 0x161619)      // hover fills, chips, sheets
-    static let bar = Color(hex: 0x0D0D10)         // header / pane bars
-    static let terminalBG = Color(hex: 0x101013)  // cohesive near-black (matches SwiftTerm bg)
+    // Colors match Yogev's Ghostty (Dracula+): neutral #212121-family surfaces,
+    // #f8f8f2 text, Dracula+ accent/status hues. The Linear *layout* stays —
+    // hairline-defined regions, tight radii, restraint — only the palette is Ghostty.
+    static let base = Color(hex: 0x1A1A1A)        // window / content backdrop
+    static let sidebar = Color(hex: 0x1F1F1F)     // sidebar panel
+    static let raised = Color(hex: 0x2C2C2E)      // hover fills, chips, sheets
+    static let bar = Color(hex: 0x1C1C1C)         // header / pane bars
+    static let terminalBG = Color(hex: 0x212121)  // Ghostty Dracula+ bg (matches SwiftTerm)
 
     // Corner radii — tight and consistent (Linear precision).
     static let radiusRow: CGFloat = 6
@@ -41,33 +41,33 @@ enum Theme {
     // hairline dividers) align exactly across the split.
     static let headerHeight: CGFloat = 56
 
-    // Nearly-flat panel wash — Linear surfaces are solid, so keep this whisper-subtle.
+    // Nearly-flat panel wash — surfaces are solid, so keep this whisper-subtle.
     static let panelGradient = LinearGradient(
-        colors: [Color(hex: 0x0E0E11), Color(hex: 0x0B0B0D)],
+        colors: [Color(hex: 0x1F1F1F), Color(hex: 0x1A1A1A)],
         startPoint: .top, endPoint: .bottom
     )
-    static let topHighlight = Color.white.opacity(0.035)
+    static let topHighlight = Color.white.opacity(0.04)
 
     // Hairlines — the primary region-defining device.
-    static let hairline = Color.white.opacity(0.065)
-    static let hairlineStrong = Color.white.opacity(0.10)
+    static let hairline = Color.white.opacity(0.07)
+    static let hairlineStrong = Color.white.opacity(0.11)
 
-    // Text hierarchy (slightly warm neutrals).
-    static let textPrimary = Color(hex: 0xEEEEF1)
-    static let textSecondary = Color(hex: 0x8B8B95)
-    static let textTertiary = Color(hex: 0x54545E)
+    // Text hierarchy: Ghostty foreground + Dracula muted.
+    static let textPrimary = Color(hex: 0xF8F8F2)   // Ghostty foreground
+    static let textSecondary = Color(hex: 0x9EA0AD)
+    static let textTertiary = Color(hex: 0x6272A4)  // Dracula comment
 
-    // Desaturated indigo accent — selection, focus, the working pulse.
-    static let accent = Color(hex: 0x7C86E0)
+    // Dracula+ purple accent (palette 5) — selection, focus, the working pulse.
+    static let accent = Color(hex: 0xC792EA)
 
-    // Quiet, desaturated status colors read more premium on a near-black ground.
+    // Dracula+ status colors.
     static func status(_ s: AgentStatus) -> Color {
         switch s {
-        case .working: Color(hex: 0x5B9BF0)   // muted blue
-        case .blocked: Color(hex: 0xE5636A)   // muted red (needs you)
-        case .done: Color(hex: 0x4BBF7B)      // green
-        case .idle: Color(hex: 0x63636D)      // muted grey
-        case .unknown: Color(hex: 0x3A3A42)
+        case .working: Color(hex: 0x82AAFF)   // Dracula+ blue
+        case .blocked: Color(hex: 0xFF5555)   // Dracula red (needs you)
+        case .done: Color(hex: 0x50FA7B)      // Dracula green
+        case .idle: Color(hex: 0x6272A4)      // Dracula comment
+        case .unknown: Color(hex: 0x44475A)   // Dracula current line
         }
     }
 
