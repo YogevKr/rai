@@ -294,6 +294,16 @@ struct SidebarView: View {
 
     private var attentionFooter: some View {
         HStack(spacing: 8) {
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+
             if model.blockedAgentCount > 0 {
                 Button {
                     model.onlyNeedsYou = true
