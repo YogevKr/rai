@@ -41,14 +41,34 @@ jobs:
       - name: Build universal Rai.app
         run: RAI_UNIVERSAL=1 RAI_VERSION="${{ steps.v.outputs.version }}" RAI_APP_DEST="$PWD/dist" ./scripts/bundle.sh
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Package (zip + dmg)
         working-directory: dist
         run: |
           VER="${{ steps.v.outputs.version }}"
           /usr/bin/ditto -c -k --keepParent Rai.app "Rai-${VER}-macos.zip"
-          mkdir dmg && cp -R Rai.app dmg/ && ln -s /Applications dmg/Applications
-          hdiutil create -volname "rai ${VER}" -srcfolder dmg -ov -format UDZO "Rai-${VER}-macos.dmg"
-          rm -rf dmg
+          mkdir dmgsrc && cp -R Rai.app dmgsrc/
+          # Styled installer window: app icon → Applications with a branded background.
+          create-dmg \
+            --volname "rai ${VER}" \
+            --background "${GITHUB_WORKSPACE}/assets/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 640 400 \
+            --icon-size 128 \
+            --icon "Rai.app" 168 175 \
+            --app-drop-link 472 175 \
+            --hide-extension "Rai.app" \
+            --no-internet-enable \
+            "Rai-${VER}-macos.dmg" dmgsrc \
+          || {
+            echo "create-dmg failed — falling back to a plain dmg"
+            rm -f "Rai-${VER}-macos.dmg"
+            ln -s /Applications dmgsrc/Applications
+            hdiutil create -volname "rai ${VER}" -srcfolder dmgsrc -ov -format UDZO "Rai-${VER}-macos.dmg"
+          }
+          rm -rf dmgsrc
           ls -lh Rai-*
 
       - name: Create GitHub Release
