@@ -6,8 +6,8 @@ import SwiftUI
 /// Resolves the `herdr` CLI, which rai spawns per pane to bridge the remote
 /// terminal. A GUI app launched via LaunchServices gets a minimal PATH, so we
 /// can't rely on `herdr` being resolvable by name.
-/// Mirrors Yogev's Ghostty theme (`theme = Dracula+`) so agent sessions render
-/// with identical colors in rai. Snapshot of the resolved Ghostty palette.
+/// Mirrors a Ghostty `Dracula+` theme so agent sessions render with identical
+/// colors in rai. Snapshot of the resolved Ghostty palette.
 enum GhosttyTheme {
     static let background: UInt32 = 0x212121
     static let foreground: UInt32 = 0xF8F8F2
@@ -78,7 +78,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // this on the focused terminal; returning true means we sent bytes to the PTY
     // and the monitor should swallow the event so SwiftTerm doesn't also handle it.
     func handleInterceptedKey(_ event: NSEvent) -> Bool {
-        // Ghostty line-editing parity — the same ⌘/⌥ combos Yogev's Ghostty sends,
+        // Ghostty line-editing parity — the same ⌘/⌥ combos Ghostty sends,
         // so muscle memory works in Claude/shell.
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         var bytes: [UInt8]?

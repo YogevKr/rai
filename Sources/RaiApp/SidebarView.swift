@@ -3,8 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let raiTab = UTType(exportedAs: "ai.sawmills.rai.tab")
-    static let raiWorkspace = UTType(exportedAs: "ai.sawmills.rai.workspace")
+    static let raiTab = UTType(exportedAs: "gr.krig.rai.tab")
+    static let raiWorkspace = UTType(exportedAs: "gr.krig.rai.workspace")
 }
 
 struct SidebarView: View {
@@ -1283,17 +1283,21 @@ private struct ConnectionPill: View {
     let state: RaiModel.ConnectionState
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7, height: 7)
-            .shadow(color: color.opacity(0.6), radius: 3)
-            .help(help)
+        // Only surface connection state when it's worth knowing — a healthy live
+        // link shows nothing (an always-on green dot is just noise).
+        if let color {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+                .shadow(color: color.opacity(0.6), radius: 3)
+                .help(help)
+        }
     }
 
-    private var color: Color {
+    private var color: Color? {
         switch state {
         case .connecting: Color(hex: 0xF0C33C)
-        case .connected: Color(hex: 0x46CE7C)
+        case .connected: nil
         case .disconnected: Color(hex: 0xFF6B5E)
         }
     }

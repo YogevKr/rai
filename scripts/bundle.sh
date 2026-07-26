@@ -37,17 +37,17 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.tab</string>
+      <key>UTTypeIdentifier</key><string>gr.krig.rai.tab</string>
       <key>UTTypeDescription</key><string>Rai Tab</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.workspace</string>
+      <key>UTTypeIdentifier</key><string>gr.krig.rai.workspace</string>
       <key>UTTypeDescription</key><string>Rai Space</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.pane</string>
+      <key>UTTypeIdentifier</key><string>gr.krig.rai.pane</string>
       <key>UTTypeDescription</key><string>Rai Pane</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>

@@ -25,7 +25,7 @@ struct WindowConfigurator: NSViewRepresentable {
 // (a terminal product should own its palette rather than inherit the system's).
 // One accent, a semantic status-color set, an 8pt spacing rhythm.
 enum Theme {
-    // Colors match Yogev's Ghostty (Dracula+): neutral #212121-family surfaces,
+    // Colors match a Ghostty Dracula+ theme: neutral #212121-family surfaces,
     // #f8f8f2 text, Dracula+ accent/status hues. The Linear *layout* stays —
     // hairline-defined regions, tight radii, restraint — only the palette is Ghostty.
     static let base = Color(hex: 0x1A1A1A)        // window / content backdrop

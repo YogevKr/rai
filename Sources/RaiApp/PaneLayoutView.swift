@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let raiPane = UTType(exportedAs: "ai.sawmills.rai.pane")
+    static let raiPane = UTType(exportedAs: "gr.krig.rai.pane")
 }
 
 struct PaneLayoutView: View {
