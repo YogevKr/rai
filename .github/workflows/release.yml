@@ -21,6 +21,11 @@ jobs:
       - name: Select newest Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
 
+      # SwiftTerm compiles a .metal shader; newer Xcode ships the Metal Toolchain
+      # as a separate component that isn't always present on the runner.
+      - name: Ensure Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain 2>/dev/null || true
+
       - name: Resolve version
         id: v
         run: |
