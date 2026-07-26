@@ -1062,9 +1062,11 @@ private extension View {
 /// (Karabiner seizes keyboards, and every node on this pad carries a Keyboard
 /// collection) looks identical to "not plugged in" without an explicit reason.
 private struct CodexMicroSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var status = MicroStatusCenter.shared
     @ObservedObject private var bindings = MicroStatusCenter.shared.bindings
     @State private var learningFrom: MicroControl?
+    @State private var presentedBindingEditor: String?
 
     var body: some View {
         ScrollView {
@@ -1128,19 +1130,8 @@ private struct CodexMicroSettingsView: View {
                     }
                     .font(.system(size: 10.5))
 
-                    ForEach(controlGroups, id: \.self) { group in
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(group)
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(Theme.textSecondary)
-                            ForEach(
-                                MicroControl.allCases.filter { $0.group == group },
-                                id: \.id
-                            ) { control in
-                                bindingRow(control)
-                            }
-                        }
-                    }
+                    visualPad
+                        .frame(maxWidth: .infinity)
                 }
             }
 
@@ -1170,62 +1161,183 @@ private struct CodexMicroSettingsView: View {
         }
     }
 
-    private let controlGroups = ["Agent keys", "Command keys", "Dial", "Joystick"]
+    private var visualPad: some View {
+        // ACT key positions are approximate until confirmed on hardware via learn mode.
+        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+            GridRow {
+                aggregateControl(
+                    title: "Joystick",
+                    controls: joystickControls,
+                    kind: .joystick
+                )
+                keyCell(.agentKey(0))
+                keyCell(.agentKey(1))
+                aggregateControl(
+                    title: "Dial",
+                    controls: dialControls,
+                    kind: .dial
+                )
+            }
+            GridRow {
+                keyCell(.agentKey(2))
+                keyCell(.agentKey(3))
+                keyCell(.agentKey(4))
+                keyCell(.agentKey(5))
+            }
+            GridRow {
+                keyCell(.commandKey("ACT06"))
+                keyCell(.commandKey("ACT07"))
+                keyCell(.commandKey("ACT08"))
+                keyCell(.commandKey("ACT09"))
+            }
+            GridRow {
+                keyCell(.commandKey("ACT10"))
+                keyCell(.commandKey("ACT11"))
+                keyCell(.commandKey("ACT12"))
+                spareCell
+            }
+        }
+        .padding(24)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(padBodyColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .inset(by: 1)
+                .stroke(padOutlineColor, lineWidth: 1)
+        )
+    }
 
     @ViewBuilder
-    private func bindingRow(_ control: MicroControl) -> some View {
+    private func keyCell(_ control: MicroControl) -> some View {
         let action = bindings[control]
+        Button {
+            presentedBindingEditor = control.id
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if action == .none {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().stroke(Theme.textTertiary, lineWidth: 1))
+                    } else {
+                        actionLabel(action)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Text(control.displayName)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+            }
+            .padding(7)
+            .frame(width: 76, height: 76)
+            .background(keyColor)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(cellBorder(highlighted: status.lastPressedControl == control))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: bindingEditorPresented(control.id)) {
+            bindingPopover(control)
+        }
+        .help("Configure \(control.displayName)")
+    }
+
+    private enum RoundControlKind: Equatable {
+        case joystick
+        case dial
+    }
+
+    private func aggregateControl(
+        title: String,
+        controls: [MicroControl],
+        kind: RoundControlKind
+    ) -> some View {
+        let highlighted = status.lastPressedControl.map(controls.contains) ?? false
+        return Button {
+            presentedBindingEditor = "group.\(title)"
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: kind == .joystick ? "move.3d" : "dial.medium")
+                    .font(.system(size: 19, weight: .medium))
+                Text(title)
+                    .font(.system(size: 9.5, weight: .medium))
+            }
+            .foregroundStyle(kind == .dial ? Color.white.opacity(0.88) : Theme.textSecondary)
+            .frame(width: 76, height: 76)
+            .background {
+                Circle()
+                    .fill(kind == .dial ? dialColor : keyColor)
+                if kind == .joystick {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.28), .clear],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+            }
+            .overlay(Circle().stroke(
+                highlighted ? Theme.accent : Theme.hairlineStrong,
+                lineWidth: highlighted ? 2 : 1
+            ))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: bindingEditorPresented("group.\(title)")) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                ForEach(controls, id: \.id) { control in
+                    compactBindingRow(control)
+                }
+            }
+            .padding(16)
+            .frame(width: 430)
+        }
+        .help("Configure \(title.lowercased()) controls")
+    }
+
+    private var spareCell: some View {
+        Circle()
+            .fill(keyColor.opacity(0.55))
+            .overlay(Circle().stroke(Theme.hairline, lineWidth: 1))
+            .frame(width: 76, height: 76)
+            .accessibilityHidden(true)
+    }
+
+    private func bindingPopover(_ control: MicroControl) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(control.displayName)
+                .font(.system(size: 13, weight: .semibold))
+            actionPicker(control)
+            customValueField(control)
+            learnButton(control)
+        }
+        .padding(16)
+        .frame(width: 330)
+    }
+
+    private func compactBindingRow(_ control: MicroControl) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Text(control.displayName)
-                    .frame(width: 128, alignment: .leading)
-                Picker("", selection: actionSelection(control)) {
-                    ForEach(actionGroups, id: \.self) { group in
-                        Section(group) {
-                            ForEach(
-                                MicroAction.catalog.filter { $0.group == group },
-                                id: \.catalogID
-                            ) { candidate in
-                                Text(candidate.displayName)
-                                    .tag(candidate.catalogID)
-                            }
-                        }
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity)
-                Button(learningFrom == control ? "Listening…" : "Set by pressing") {
-                    learningFrom = learningFrom == control ? nil : control
-                }
-                .font(.system(size: 10.5))
-                .help("Copy this action to the next physical control you press")
+                    .font(.system(size: 11.5))
+                    .frame(width: 120, alignment: .leading)
+                actionPicker(control)
+                learnButton(control)
             }
-
-            switch action {
-            case .customKeys(let value):
-                TextField(
-                    "herdr key name (for example C-c or Escape)",
-                    text: customValue(control, value: value, keys: true)
-                )
-                .textFieldStyle(.roundedBorder)
-                .padding(.leading, 138)
-            case .customText(let value):
-                TextField(
-                    "Text to send, followed by Return",
-                    text: customValue(control, value: value, keys: false)
-                )
-                .textFieldStyle(.roundedBorder)
-                .padding(.leading, 138)
-            default:
-                EmptyView()
-            }
+            customValueField(control)
+                .padding(.leading, 130)
         }
-        .font(.system(size: 11.5))
-        .foregroundStyle(Theme.textPrimary)
-        .padding(.vertical, 3)
-        .padding(.horizontal, 5)
+        .padding(6)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(
                     status.lastPressedControl == control
                         ? Theme.accent.opacity(0.12)
@@ -1234,9 +1346,111 @@ private struct CodexMicroSettingsView: View {
         )
     }
 
+    private func actionPicker(_ control: MicroControl) -> some View {
+        Picker("", selection: actionSelection(control)) {
+            ForEach(actionGroups, id: \.self) { group in
+                Section(group) {
+                    ForEach(
+                        MicroAction.catalog.filter { $0.group == group },
+                        id: \.catalogID
+                    ) { candidate in
+                        Text(candidate.displayName)
+                            .tag(candidate.catalogID)
+                    }
+                }
+            }
+        }
+        .labelsHidden()
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func customValueField(_ control: MicroControl) -> some View {
+        switch bindings[control] {
+        case .customKeys(let value):
+            TextField(
+                "herdr key name (for example C-c or Escape)",
+                text: customValue(control, value: value, keys: true)
+            )
+            .textFieldStyle(.roundedBorder)
+        case .customText(let value):
+            TextField(
+                "Text to send, followed by Return",
+                text: customValue(control, value: value, keys: false)
+            )
+            .textFieldStyle(.roundedBorder)
+        default:
+            EmptyView()
+        }
+    }
+
+    private func learnButton(_ control: MicroControl) -> some View {
+        Button(learningFrom == control ? "Listening…" : "Set by pressing") {
+            learningFrom = learningFrom == control ? nil : control
+        }
+        .font(.system(size: 10.5))
+        .help("Copy this action to the next physical control you press")
+    }
+
+    @ViewBuilder
+    private func actionLabel(_ action: MicroAction) -> some View {
+        switch action {
+        case .customKeys(let value), .customText(let value):
+            Text(value.isEmpty ? action.displayName : value)
+                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        default:
+            Text(action.displayName)
+                .font(.system(size: 9.5, weight: .medium))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func cellBorder(highlighted: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(
+                highlighted ? Theme.accent : Theme.hairlineStrong,
+                lineWidth: highlighted ? 2 : 1
+            )
+    }
+
+    private var padBodyColor: Color {
+        colorScheme == .dark ? Theme.raised.opacity(0.72) : Theme.base
+    }
+
+    private var padOutlineColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.75)
+    }
+
+    private var keyColor: Color {
+        colorScheme == .dark ? Theme.base.opacity(0.92) : Theme.raised
+    }
+
+    private var dialColor: Color {
+        colorScheme == .dark ? Color.black.opacity(0.72) : Color.black.opacity(0.70)
+    }
+
+    private let joystickControls = MicroJoystickDirection.allCases.map(MicroControl.joystick)
+    private let dialControls: [MicroControl] = [
+        .dialClockwise, .dialCounterClockwise, .dialPress,
+    ]
+
     private let actionGroups = [
         "To focused agent", "Navigate", "Tabs/spaces", "App",
     ]
+
+    private func bindingEditorPresented(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { presentedBindingEditor == id },
+            set: { isPresented in
+                if !isPresented, presentedBindingEditor == id {
+                    presentedBindingEditor = nil
+                }
+            }
+        )
+    }
 
     private func actionSelection(_ control: MicroControl) -> Binding<String> {
         Binding(
