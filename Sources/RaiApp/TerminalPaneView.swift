@@ -6,29 +6,30 @@ import SwiftUI
 /// Resolves the `herdr` CLI, which rai spawns per pane to bridge the remote
 /// terminal. A GUI app launched via LaunchServices gets a minimal PATH, so we
 /// can't rely on `herdr` being resolvable by name.
-/// Mirrors a Ghostty `Dracula+` theme so agent sessions render with identical
-/// colors in rai. Snapshot of the resolved Ghostty palette.
+/// Keeps SwiftTerm aligned with the active rai palette. Dark retains the exact
+/// Ghostty Dracula+ ANSI colors; Light uses a legible matching ANSI set.
+@MainActor
 enum GhosttyTheme {
-    static let background: UInt32 = 0x212121
-    static let foreground: UInt32 = 0xF8F8F2
-    static let cursor: UInt32 = 0xECEFF4       // Ghostty `cursor-color`
-    static let cursorText: UInt32 = 0x282828   // Ghostty `cursor-text` (block cursor)
-    static let selectionBackground: UInt32 = 0xF8F8F2
-    static let selectionForeground: UInt32 = 0x545454
-    // ANSI 0–15 (normal then bright).
-    static let palette: [UInt32] = [
+    private static let darkPalette: [UInt32] = [
         0x21222C, 0xFF5555, 0x50FA7B, 0xFFCB6B, 0x82AAFF, 0xC792EA, 0x8BE9FD, 0xF8F8F2,
         0x545454, 0xFF6E6E, 0x69FF94, 0xFFCB6B, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xF8F8F2,
     ]
+    private static let lightPalette: [UInt32] = [
+        0x30343B, 0xC9363E, 0x238636, 0x9A6700, 0x2563B9, 0x7651B2, 0x087F8C, 0xE8E8EC,
+        0x687386, 0xE0525B, 0x2DA44E, 0xB58407, 0x3B7DDD, 0x9067C6, 0x1597A5, 0xFFFFFF,
+    ]
 
     static func apply(to view: LocalProcessTerminalView) {
-        view.nativeBackgroundColor = ns(background)
-        view.nativeForegroundColor = ns(foreground)
-        view.caretColor = ns(cursor)
-        view.caretTextColor = ns(cursorText)
-        view.selectedTextBackgroundColor = ns(selectionBackground)
-        view.selectedTextForegroundColor = ns(selectionForeground)
-        view.installColors(palette.map(st))
+        let isDark = Theme.activeVariant == .dark
+        let background = Theme.nsColor(.terminalBG)
+        let foreground = Theme.nsColor(.textPrimary)
+        view.nativeBackgroundColor = background
+        view.nativeForegroundColor = foreground
+        view.caretColor = ns(isDark ? 0xECEFF4 : 0x7651B2)
+        view.caretTextColor = ns(isDark ? 0x282828 : 0xFAFAFC)
+        view.selectedTextBackgroundColor = ns(isDark ? 0xF8F8F2 : 0xD9D0EA)
+        view.selectedTextForegroundColor = ns(isDark ? 0x545454 : 0x202124)
+        view.installColors((isDark ? darkPalette : lightPalette).map(st))
         // Ghostty `cursor-style = bar`, `cursor-style-blink = false`. This sets the
         // default; programs can still override via DECSCUSR, exactly as Ghostty does.
         view.getTerminal().setCursorStyle(.steadyBar)

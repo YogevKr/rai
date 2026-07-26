@@ -346,7 +346,7 @@ struct SidebarView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(
                             model.notificationsMuted
-                                ? Color.white.opacity(0.035)
+                                ? Theme.interactionWash(opacity: 0.035)
                                 : .clear
                         )
                 )
@@ -447,7 +447,7 @@ private struct SidebarRowChrome: ViewModifier {
                     .fill(
                         selected
                             ? Theme.accent.opacity(0.14)
-                            : (hovering ? Color.white.opacity(0.04) : .clear)
+                            : (hovering ? Theme.interactionWash(opacity: 0.04) : .clear)
                     )
             }
             .overlay(alignment: .leading) {

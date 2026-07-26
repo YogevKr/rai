@@ -17,8 +17,36 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var appearanceMode: AppearanceMode {
+        didSet {
+            userDefaults.set(appearanceMode.rawValue, forKey: Self.appearanceModeKey)
+        }
+    }
+
+    @Published private(set) var colorOverrides: [ThemeVariant: [ThemeColorRole: RGBAColor]] {
+        didSet { persistColorOverrides() }
+    }
+
+    @Published var blockedNotificationSound: NotificationSoundChoice {
+        didSet {
+            userDefaults.set(blockedNotificationSound.rawValue, forKey: Self.blockedSoundKey)
+        }
+    }
+
+    @Published var doneNotificationSound: NotificationSoundChoice {
+        didSet {
+            userDefaults.set(doneNotificationSound.rawValue, forKey: Self.doneSoundKey)
+        }
+    }
+
+    @Published private(set) var systemThemeVariant: ThemeVariant
+
     private static let terminalFontFamilyKey = "terminalFontFamily"
     private static let terminalFontSizeKey = "terminalFontSize"
+    private static let appearanceModeKey = "appearanceMode"
+    private static let colorOverridesKey = "themeColorOverrides"
+    private static let blockedSoundKey = "blockedNotificationSound"
+    private static let doneSoundKey = "doneNotificationSound"
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -28,6 +56,81 @@ final class SettingsStore: ObservableObject {
 
         let savedSize = userDefaults.object(forKey: Self.terminalFontSizeKey) as? NSNumber
         terminalFontSize = min(max(savedSize?.doubleValue ?? 16, 9), 24)
+        appearanceMode = AppearanceMode(
+            rawValue: userDefaults.string(forKey: Self.appearanceModeKey) ?? ""
+        ) ?? .dark
+        blockedNotificationSound = NotificationSoundChoice(
+            rawValue: userDefaults.string(forKey: Self.blockedSoundKey) ?? ""
+        ) ?? .default
+        doneNotificationSound = NotificationSoundChoice(
+            rawValue: userDefaults.string(forKey: Self.doneSoundKey) ?? ""
+        ) ?? .default
+        colorOverrides = Self.loadColorOverrides(
+            from: userDefaults.data(forKey: Self.colorOverridesKey)
+        )
+        systemThemeVariant = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            == .darkAqua ? .dark : .light
+    }
+
+    var activeThemeVariant: ThemeVariant {
+        switch appearanceMode {
+        case .light: .light
+        case .dark: .dark
+        case .system: systemThemeVariant
+        }
+    }
+
+    func updateSystemColorScheme(_ colorScheme: ColorScheme) {
+        let variant: ThemeVariant = colorScheme == .dark ? .dark : .light
+        guard systemThemeVariant != variant else { return }
+        systemThemeVariant = variant
+    }
+
+    func resolvedColor(_ role: ThemeColorRole, for theme: ThemeVariant) -> RGBAColor {
+        colorOverrides[theme]?[role] ?? defaultPalette(for: theme)[role]
+    }
+
+    func setColor(_ color: Color, role: ThemeColorRole, for theme: ThemeVariant) {
+        guard let rgba = RGBAColor(color: color) else { return }
+        colorOverrides[theme, default: [:]][role] = rgba
+    }
+
+    func resetColors(for theme: ThemeVariant) {
+        colorOverrides[theme] = nil
+    }
+
+    private func defaultPalette(for theme: ThemeVariant) -> ThemePalette {
+        theme == .dark ? .dark : .light
+    }
+
+    private func persistColorOverrides() {
+        let encoded = colorOverrides.reduce(into: [String: [String: RGBAColor]]()) {
+            $0[$1.key.rawValue] = $1.value.reduce(into: [:]) {
+                $0[$1.key.rawValue] = $1.value
+            }
+        }
+        if let data = try? JSONEncoder().encode(encoded) {
+            userDefaults.set(data, forKey: Self.colorOverridesKey)
+        }
+    }
+
+    private static func loadColorOverrides(
+        from data: Data?
+    ) -> [ThemeVariant: [ThemeColorRole: RGBAColor]] {
+        guard let data,
+              let decoded = try? JSONDecoder().decode(
+                  [String: [String: RGBAColor]].self,
+                  from: data
+              ) else {
+            return [:]
+        }
+        return decoded.reduce(into: [:]) { themes, item in
+            guard let theme = ThemeVariant(rawValue: item.key) else { return }
+            themes[theme] = item.value.reduce(into: [:]) { roles, item in
+                guard let role = ThemeColorRole(rawValue: item.key) else { return }
+                roles[role] = item.value
+            }
+        }
     }
 
     var availableFontFamilies: [String] {
@@ -44,9 +147,66 @@ final class SettingsStore: ObservableObject {
     }
 }
 
+enum NotificationSoundChoice: RawRepresentable, Hashable {
+    case `default`
+    case none
+    case named(String)
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "default": self = .default
+        case "none": self = .none
+        default:
+            guard rawValue.hasPrefix("named:") else { return nil }
+            self = .named(String(rawValue.dropFirst(6)))
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .default: "default"
+        case .none: "none"
+        case let .named(name): "named:\(name)"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .default: "Default"
+        case .none: "None"
+        case let .named(name): name
+        }
+    }
+
+    static var available: [Self] {
+        let directory = URL(fileURLWithPath: "/System/Library/Sounds")
+        let names = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ))?
+            .filter { $0.pathExtension.lowercased() == "aiff" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .sorted()
+            ?? []
+        return [.default, .none] + names.map(Self.named)
+    }
+
+    func playSample() {
+        switch self {
+        case .none:
+            break
+        case .default:
+            NSSound.beep()
+        case let .named(name):
+            NSSound(named: NSSound.Name(name))?.play()
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: RaiModel
     @StateObject private var settings = SettingsStore.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         TabView {
@@ -78,68 +238,176 @@ struct SettingsView: View {
                     Label("Config", systemImage: "doc.text")
                 }
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 680, height: 640)
         .background(Theme.base)
+        .onAppear { settings.updateSystemColorScheme(colorScheme) }
+        .onChange(of: colorScheme) { _, value in
+            settings.updateSystemColorScheme(value)
+        }
     }
 }
 
 private struct AppearanceSettingsView: View {
     @ObservedObject var model: RaiModel
     @ObservedObject var settings: SettingsStore
+    @State private var customizedTheme: ThemeVariant = .dark
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(title: "Terminal") {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("Font family")
-                            .frame(width: 120, alignment: .leading)
-                        Picker("", selection: $settings.terminalFontFamily) {
-                            ForEach(settings.availableFontFamilies, id: \.self) { family in
-                                Text(family).tag(family)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Theme") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Picker("Mode", selection: $settings.appearanceMode) {
+                            ForEach(AppearanceMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
                             }
                         }
-                        .labelsHidden()
-                        .frame(maxWidth: 260)
-                    }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 360)
 
-                    HStack {
-                        Text("Font size")
-                            .frame(width: 120, alignment: .leading)
-                        Stepper(
-                            value: $settings.terminalFontSize,
-                            in: 9...24,
-                            step: 1
-                        ) {
-                            Text("\(Int(settings.terminalFontSize)) pt")
-                                .monospacedDigit()
-                                .frame(width: 48, alignment: .trailing)
+                        HStack {
+                            Picker("Customize", selection: $customizedTheme) {
+                                ForEach(ThemeVariant.allCases) { theme in
+                                    Text(theme.label).tag(theme)
+                                }
+                            }
+                            .frame(width: 220)
+                            Spacer()
+                            Button("Reset \(customizedTheme.label) to Defaults") {
+                                settings.resetColors(for: customizedTheme)
+                            }
                         }
-                        .frame(width: 118)
+
+                        HStack(alignment: .top, spacing: 28) {
+                            colorGroup(
+                                "Core",
+                                roles: [.accent, .base, .sidebar, .raised, .bar, .terminalBG]
+                            )
+                            colorGroup(
+                                "Text & Lines",
+                                roles: [.textPrimary, .textSecondary, .textTertiary, .hairline]
+                            )
+                            colorGroup(
+                                "Status",
+                                roles: [
+                                    .statusWorking, .statusBlocked, .statusDone,
+                                    .statusIdle, .statusUnknown,
+                                ]
+                            )
+                        }
                     }
-
-                    Text("Applies to new terminals.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textTertiary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
                 }
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.textPrimary)
-            }
 
-            SettingsSection(title: "Notification Defaults") {
-                VStack(alignment: .leading, spacing: 14) {
-                    Toggle("Mute notifications", isOn: $model.notificationsMuted)
-                    Toggle("Only needs-you by default", isOn: $model.onlyNeedsYou)
+                SettingsSection(title: "Terminal") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("Font family")
+                                .frame(width: 120, alignment: .leading)
+                            Picker("", selection: $settings.terminalFontFamily) {
+                                ForEach(settings.availableFontFamilies, id: \.self) { family in
+                                    Text(family).tag(family)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 260)
+                        }
+
+                        HStack {
+                            Text("Font size")
+                                .frame(width: 120, alignment: .leading)
+                            Stepper(
+                                value: $settings.terminalFontSize,
+                                in: 9...24,
+                                step: 1
+                            ) {
+                                Text("\(Int(settings.terminalFontSize)) pt")
+                                    .monospacedDigit()
+                                    .frame(width: 48, alignment: .trailing)
+                            }
+                            .frame(width: 118)
+                        }
+
+                        Text("Font changes apply to new terminals. Colors apply immediately.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
                 }
-                .toggleStyle(.switch)
-                .tint(Theme.accent)
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.textPrimary)
-            }
 
-            Spacer()
+                SettingsSection(title: "Notifications") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Toggle("Mute notifications", isOn: $model.notificationsMuted)
+                        Toggle("Only needs-you by default", isOn: $model.onlyNeedsYou)
+                        Divider().overlay(Theme.hairline)
+                        soundPicker(
+                            "Needs you",
+                            selection: $settings.blockedNotificationSound
+                        )
+                        soundPicker(
+                            "Done",
+                            selection: $settings.doneNotificationSound
+                        )
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.accent)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
+                }
+            }
+            .padding(22)
         }
-        .settingsTabBackground()
+        .background(Theme.base)
+    }
+
+    private func colorGroup(_ title: String, roles: [ThemeColorRole]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+            ForEach(roles) { role in
+                ColorPicker(
+                    role.label,
+                    selection: Binding(
+                        get: {
+                            settings.resolvedColor(role, for: customizedTheme).color
+                        },
+                        set: {
+                            settings.setColor($0, role: role, for: customizedTheme)
+                        }
+                    ),
+                    supportsOpacity: role == .hairline
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func soundPicker(
+        _ title: String,
+        selection: Binding<NotificationSoundChoice>
+    ) -> some View {
+        HStack {
+            Text(title)
+                .frame(width: 120, alignment: .leading)
+            Picker("", selection: selection) {
+                ForEach(NotificationSoundChoice.available, id: \.self) { sound in
+                    Text(sound.label).tag(sound)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 220)
+            Button {
+                selection.wrappedValue.playSample()
+            } label: {
+                Image(systemName: "play.fill")
+            }
+            .buttonStyle(.borderless)
+            .help("Play sample")
+            .disabled(selection.wrappedValue == .none)
+        }
     }
 }
 

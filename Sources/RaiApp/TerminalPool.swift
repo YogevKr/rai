@@ -29,6 +29,7 @@ final class TerminalPool {
     func view(for terminalID: String) -> FocusAwareTerminalView {
         if let entry = entries[terminalID] {
             recency.touch(terminalID)
+            GhosttyTheme.apply(to: entry.view)
             return entry.view
         }
 

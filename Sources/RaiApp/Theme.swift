@@ -2,84 +2,239 @@ import AppKit
 import RaiCore
 import SwiftUI
 
-/// Configures the window for the solid "Linear" look: opaque, near-black base,
-/// transparent titlebar (paired with the hidden title-bar window style).
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
+enum ThemeVariant: String, CaseIterable, Identifiable {
+    case light
+    case dark
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+}
+
+enum ThemeColorRole: String, CaseIterable, Identifiable {
+    case accent
+    case statusWorking
+    case statusBlocked
+    case statusDone
+    case statusIdle
+    case statusUnknown
+    case base
+    case sidebar
+    case raised
+    case bar
+    case terminalBG
+    case textPrimary
+    case textSecondary
+    case textTertiary
+    case hairline
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .accent: "Accent"
+        case .statusWorking: "Working"
+        case .statusBlocked: "Blocked"
+        case .statusDone: "Done"
+        case .statusIdle: "Idle"
+        case .statusUnknown: "Unknown"
+        case .base: "Base"
+        case .sidebar: "Sidebar"
+        case .raised: "Raised"
+        case .bar: "Bar"
+        case .terminalBG: "Terminal"
+        case .textPrimary: "Primary"
+        case .textSecondary: "Secondary"
+        case .textTertiary: "Tertiary"
+        case .hairline: "Hairline"
+        }
+    }
+}
+
+struct ThemePalette {
+    let colors: [ThemeColorRole: RGBAColor]
+
+    subscript(_ role: ThemeColorRole) -> RGBAColor {
+        colors[role]!
+    }
+
+    static let dark = ThemePalette(colors: [
+        .base: .hex(0x1A1A1A),
+        .sidebar: .hex(0x1F1F1F),
+        .raised: .hex(0x2C2C2E),
+        .bar: .hex(0x1C1C1C),
+        .terminalBG: .hex(0x212121),
+        .textPrimary: .hex(0xF8F8F2),
+        .textSecondary: .hex(0x9EA0AD),
+        .textTertiary: .hex(0x6272A4),
+        .accent: .hex(0xC792EA),
+        .statusWorking: .hex(0x82AAFF),
+        .statusBlocked: .hex(0xFF5555),
+        .statusDone: .hex(0x50FA7B),
+        .statusIdle: .hex(0x6272A4),
+        .statusUnknown: .hex(0x44475A),
+        .hairline: .white(opacity: 0.07),
+    ])
+
+    static let light = ThemePalette(colors: [
+        .base: .hex(0xF5F5F7),
+        .sidebar: .hex(0xECECF0),
+        .raised: .hex(0xFFFFFF),
+        .bar: .hex(0xF0F0F3),
+        .terminalBG: .hex(0xFAFAFC),
+        .textPrimary: .hex(0x202124),
+        .textSecondary: .hex(0x5F6368),
+        .textTertiary: .hex(0x7B8190),
+        .accent: .hex(0x7651B2),
+        .statusWorking: .hex(0x2563B9),
+        .statusBlocked: .hex(0xC9363E),
+        .statusDone: .hex(0x238636),
+        .statusIdle: .hex(0x687386),
+        .statusUnknown: .hex(0xA0A5AE),
+        .hairline: .black(opacity: 0.10),
+    ])
+}
+
+struct RGBAColor: Codable, Equatable {
+    let red: Double
+    let green: Double
+    let blue: Double
+    let alpha: Double
+
+    init(red: Double, green: Double, blue: Double, alpha: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
+
+    static func hex(_ hex: UInt32, alpha: Double = 1) -> Self {
+        Self(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+
+    static func white(opacity: Double) -> Self {
+        Self(red: 1, green: 1, blue: 1, alpha: opacity)
+    }
+
+    static func black(opacity: Double) -> Self {
+        Self(red: 0, green: 0, blue: 0, alpha: opacity)
+    }
+
+    var color: Color {
+        Color(.sRGB, red: red, green: green, blue: blue, opacity: alpha)
+    }
+
+    var nsColor: NSColor {
+        NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    init?(color: Color) {
+        guard let converted = NSColor(color).usingColorSpace(.sRGB) else { return nil }
+        red = converted.redComponent
+        green = converted.greenComponent
+        blue = converted.blueComponent
+        alpha = converted.alphaComponent
+    }
+}
+
+/// Configures the window for the solid, opaque theme surface.
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            // Solid, opaque window on the Ghostty-grey base (no vibrancy).
-            window.isOpaque = true
-            window.backgroundColor = NSColor(srgbRed: 0x1A / 255, green: 0x1A / 255, blue: 0x1A / 255, alpha: 1)
-            window.titlebarAppearsTransparent = true
-            // Let content fill under the title bar so the panes reach the very top.
-            window.styleMask.insert(.fullSizeContentView)
-        }
+        DispatchQueue.main.async { configure(view.window) }
         return view
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(nsView.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.isOpaque = true
+        window.backgroundColor = Theme.nsColor(.base)
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+    }
 }
 
-// The rai design language: a single, deliberately-designed dark theme
-// (a terminal product should own its palette rather than inherit the system's).
-// One accent, a semantic status-color set, an 8pt spacing rhythm.
+// Static computed accessors keep view call sites terse while SettingsStore
+// supplies the live, persisted palette.
+@MainActor
 enum Theme {
-    // Colors match a Ghostty Dracula+ theme: neutral #212121-family surfaces,
-    // #f8f8f2 text, Dracula+ accent/status hues. The Linear *layout* stays —
-    // hairline-defined regions, tight radii, restraint — only the palette is Ghostty.
-    static let base = Color(hex: 0x1A1A1A)        // window / content backdrop
-    static let sidebar = Color(hex: 0x1F1F1F)     // sidebar panel
-    static let raised = Color(hex: 0x2C2C2E)      // hover fills, chips, sheets
-    static let bar = Color(hex: 0x1C1C1C)         // header / pane bars
-    static let terminalBG = Color(hex: 0x212121)  // Ghostty Dracula+ bg (matches SwiftTerm)
-
-    // Corner radii — tight and consistent (Linear precision).
     static let radiusRow: CGFloat = 6
     static let radiusPane: CGFloat = 7
     static let radiusCard: CGFloat = 8
-
-    // Shared top-bar height so the sidebar header and the detail header (and their
-    // hairline dividers) align exactly across the split.
     static let headerHeight: CGFloat = 56
-
-    // A consistent top strip that clears the window controls (traffic lights +
-    // sidebar toggle, ~28pt) without the big dead title-bar strip. Applied to both
-    // columns so collapsing the sidebar only changes the main panel's width.
     static let contentTopInset: CGFloat = 30
 
-    // Nearly-flat panel wash — surfaces are solid, so keep this whisper-subtle.
-    static let panelGradient = LinearGradient(
-        colors: [Color(hex: 0x1F1F1F), Color(hex: 0x1A1A1A)],
-        startPoint: .top, endPoint: .bottom
-    )
-    static let topHighlight = Color.white.opacity(0.04)
-
-    // Hairlines — the primary region-defining device.
-    static let hairline = Color.white.opacity(0.07)
-    static let hairlineStrong = Color.white.opacity(0.11)
-
-    // Text hierarchy: Ghostty foreground + Dracula muted.
-    static let textPrimary = Color(hex: 0xF8F8F2)   // Ghostty foreground
-    static let textSecondary = Color(hex: 0x9EA0AD)
-    static let textTertiary = Color(hex: 0x6272A4)  // Dracula comment
-
-    // Dracula+ purple accent (palette 5) — selection, focus, the working pulse.
-    static let accent = Color(hex: 0xC792EA)
-
-    // Dracula+ status colors.
-    static func status(_ s: AgentStatus) -> Color {
-        switch s {
-        case .working: Color(hex: 0x82AAFF)   // Dracula+ blue
-        case .blocked: Color(hex: 0xFF5555)   // Dracula red (needs you)
-        case .done: Color(hex: 0x50FA7B)      // Dracula green
-        case .idle: Color(hex: 0x6272A4)      // Dracula comment
-        case .unknown: Color(hex: 0x44475A)   // Dracula current line
-        }
+    static var activeVariant: ThemeVariant {
+        SettingsStore.shared.activeThemeVariant
     }
 
-    static func statusLabel(_ s: AgentStatus) -> String {
-        switch s {
+    static func rgba(_ role: ThemeColorRole) -> RGBAColor {
+        SettingsStore.shared.resolvedColor(role, for: activeVariant)
+    }
+
+    static func nsColor(_ role: ThemeColorRole) -> NSColor {
+        rgba(role).nsColor
+    }
+
+    static var base: Color { rgba(.base).color }
+    static var sidebar: Color { rgba(.sidebar).color }
+    static var raised: Color { rgba(.raised).color }
+    static var bar: Color { rgba(.bar).color }
+    static var terminalBG: Color { rgba(.terminalBG).color }
+    static var textPrimary: Color { rgba(.textPrimary).color }
+    static var textSecondary: Color { rgba(.textSecondary).color }
+    static var textTertiary: Color { rgba(.textTertiary).color }
+    static var accent: Color { rgba(.accent).color }
+    static var hairline: Color { rgba(.hairline).color }
+    static var hairlineStrong: Color { rgba(.hairline).color.opacity(11.0 / 7.0) }
+    static var topHighlight: Color {
+        activeVariant == .dark ? Color.white.opacity(0.04) : Color.white.opacity(0.55)
+    }
+    static func interactionWash(opacity: Double) -> Color {
+        (activeVariant == .dark ? Color.white : Color.black).opacity(opacity)
+    }
+    static var panelGradient: LinearGradient {
+        LinearGradient(colors: [sidebar, base], startPoint: .top, endPoint: .bottom)
+    }
+
+    static func status(_ status: AgentStatus) -> Color {
+        let role: ThemeColorRole = switch status {
+        case .working: .statusWorking
+        case .blocked: .statusBlocked
+        case .done: .statusDone
+        case .idle: .statusIdle
+        case .unknown: .statusUnknown
+        }
+        return rgba(role).color
+    }
+
+    static func statusLabel(_ status: AgentStatus) -> String {
+        switch status {
         case .working: "Working"
         case .blocked: "Needs you"
         case .done: "Done"
@@ -91,18 +246,10 @@ enum Theme {
 
 extension Color {
     init(hex: UInt32, alpha: Double = 1) {
-        self.init(
-            .sRGB,
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255,
-            opacity: alpha
-        )
+        self = RGBAColor.hex(hex, alpha: alpha).color
     }
 }
 
-// A consistent status indicator: a hollow ring for idle/unknown (nothing
-// happening), a solid dot for done/blocked, and a breathing halo for working.
 struct StatusDot: View {
     let status: AgentStatus
     var size: CGFloat = 8

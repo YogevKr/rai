@@ -3,6 +3,8 @@ import SwiftUI
 
 struct RaiRootView: View {
     @ObservedObject var model: RaiModel
+    @ObservedObject private var settings = SettingsStore.shared
+    @Environment(\.colorScheme) private var colorScheme
     // Keep the sidebar shown by default (collapsing it would slide the panes under
     // the traffic lights / toggle).
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -37,8 +39,11 @@ struct RaiRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(WindowConfigurator())
-        .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
+        .onAppear { settings.updateSystemColorScheme(colorScheme) }
+        .onChange(of: colorScheme) { _, value in
+            settings.updateSystemColorScheme(value)
+        }
     }
 }
 
@@ -131,7 +136,7 @@ struct HeaderButton: View {
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(hovering ? Color.white.opacity(0.06) : .clear)
+                        .fill(hovering ? Theme.interactionWash(opacity: 0.06) : .clear)
                 )
         }
         .buttonStyle(.plain)

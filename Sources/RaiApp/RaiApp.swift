@@ -7,12 +7,13 @@ struct RaiApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = RaiApp.sharedModel
+    @StateObject private var settings = SettingsStore.shared
 
     var body: some Scene {
         WindowGroup {
             RaiRootView(model: model)
                 .frame(minWidth: 920, minHeight: 600)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
                     model.start()
                 }
@@ -107,7 +108,7 @@ struct RaiApp: App {
 
         Settings {
             SettingsView(model: RaiApp.sharedModel)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
         }
     }
 

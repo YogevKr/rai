@@ -145,7 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         content.title = snapshot.displayName(for: pane)
         content.body = transition.newStatus == .blocked ? "Needs you" : "Finished"
         content.subtitle = snapshot.workspaceLabel(for: pane)
-        content.sound = .default
+        let soundChoice = transition.newStatus == .blocked
+            ? SettingsStore.shared.blockedNotificationSound
+            : SettingsStore.shared.doneNotificationSound
+        content.sound = Self.notificationSound(for: soundChoice)
         content.categoryIdentifier = transition.newStatus == .blocked
             ? Category.attention
             : Category.completion
@@ -161,6 +164,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private static func notificationSound(
+        for choice: NotificationSoundChoice
+    ) -> UNNotificationSound? {
+        switch choice {
+        case .default:
+            .default
+        case .none:
+            nil
+        case let .named(name):
+            UNNotificationSound(named: UNNotificationSoundName(rawValue: "\(name).aiff"))
+        }
     }
 
     // The app icon PNG, rendered once. macOS shows the app icon on the left of a
