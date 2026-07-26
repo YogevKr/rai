@@ -67,6 +67,19 @@ terminal widget**.
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install --cask yogevkr/tap/rai
+```
+
+rai isn't notarized, so if Gatekeeper blocks the first launch, right-click
+**Rai.app → Open**, or install with `--no-quarantine`:
+
+```sh
+brew install --cask --no-quarantine yogevkr/tap/rai
+```
+
 ### Download
 
 Grab the latest `.dmg` from the
