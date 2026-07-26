@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -90,11 +91,35 @@ struct CorralApp: App {
                 Button("Refresh") { model.refreshNow() }
                     .keyboardShortcut("r", modifiers: .command)
             }
+
+            // Scrollback search: route the standard Find actions to whichever
+            // terminal pane is first responder — SwiftTerm's TerminalView
+            // implements performFindPanelAction: and shows its own find bar.
+            CommandGroup(after: .textEditing) {
+                Button("Find…") { Self.sendFindAction(.showFindPanel) }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("Find Next") { Self.sendFindAction(.next) }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button("Find Previous") { Self.sendFindAction(.previous) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+            }
         }
 
         Settings {
             SettingsView(model: CorralApp.sharedModel)
                 .preferredColorScheme(.dark)
         }
+    }
+
+    /// Sends a standard Find-panel action down the responder chain so it reaches
+    /// the focused SwiftTerm terminal view (which handles performFindPanelAction:).
+    private static func sendFindAction(_ action: NSFindPanelAction) {
+        let item = NSMenuItem()
+        item.tag = Int(action.rawValue)
+        NSApp.sendAction(
+            Selector(("performFindPanelAction:")),
+            to: nil,
+            from: item
+        )
     }
 }
