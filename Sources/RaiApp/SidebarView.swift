@@ -552,6 +552,7 @@ private struct SidebarRowLabel<Trailing: View>: View {
     var editing: Bool = false
     var onCommitRename: (String) -> Void = { _ in }
     var onCancelRename: () -> Void = {}
+    var onRename: () -> Void = {}
     @ViewBuilder var trailing: () -> Trailing
 
     private var subtitleLine: Text {
@@ -586,6 +587,12 @@ private struct SidebarRowLabel<Trailing: View>: View {
                             .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            // Double-click the name to rename. A *simultaneous*
+                            // gesture on the title doesn't consume the row's drag,
+                            // so tab/space reordering keeps working.
+                            .simultaneousGesture(
+                                TapGesture(count: 2).onEnded { onRename() }
+                            )
                         if focusedInHerdr {
                             Circle().fill(Theme.accent).frame(width: 4, height: 4)
                                 .help("Focused in Herdr")
@@ -667,7 +674,8 @@ private struct WorkspaceRow: View {
             isSpace: true,
             editing: model.inlineRename == .workspace(workspace.workspaceID),
             onCommitRename: { model.commitInlineRename(workspace: workspace, to: $0) },
-            onCancelRename: { model.cancelInlineRename() }
+            onCancelRename: { model.cancelInlineRename() },
+            onRename: { model.beginInlineRename(workspace: workspace) }
         ) {
             if workspace.worktree?.isLinkedWorktree == true {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
@@ -678,7 +686,6 @@ private struct WorkspaceRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.beginInlineRename(workspace: workspace) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
@@ -786,6 +793,10 @@ private struct WorkspaceHeader: View {
                     .tracking(1.1)
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
+                    .simultaneousGesture(
+                        TapGesture(count: 2)
+                            .onEnded { model.beginInlineRename(workspace: workspace) }
+                    )
                 if focusedInHerdr {
                     Circle().fill(Theme.accent).frame(width: 4, height: 4)
                         .help("Focused in Herdr")
@@ -819,7 +830,6 @@ private struct WorkspaceHeader: View {
         }
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.beginInlineRename(workspace: workspace) }
         .onTapGesture { model.select(workspace: workspace) }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
@@ -901,7 +911,8 @@ private struct AgentRow: View {
             focusedInHerdr: false,
             editing: model.inlineRename == .tab(tab.tabID),
             onCommitRename: { model.commitInlineRename(tab: tab, to: $0) },
-            onCancelRename: { model.cancelInlineRename() }
+            onCancelRename: { model.cancelInlineRename() },
+            onRename: { model.beginInlineRename(tab: tab) }
         ) {
             if tab.paneCount > 1 {
                 HStack(spacing: 3) {
@@ -928,7 +939,6 @@ private struct AgentRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: 14))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.beginInlineRename(tab: tab) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
