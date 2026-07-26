@@ -20,10 +20,6 @@ enum GhosttyTheme {
     ]
 
     static func apply(to view: LocalProcessTerminalView) {
-        // Ghostty parity: plain click-drag selects text (no Shift needed) and the
-        // wheel scrolls the local scrollback, instead of forwarding mouse events to
-        // programs that enable mouse reporting.
-        view.allowMouseReporting = false
         let isDark = Theme.activeVariant == .dark
         let background = Theme.nsColor(.terminalBG)
         let foreground = Theme.nsColor(.textPrimary)
@@ -159,19 +155,28 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         super.insertText(string, replacementRange: replacementRange)
     }
 
+    // Ghostty parity: plain click-drag selects text locally (no Shift needed).
+    // We suppress mouse reporting *only* around button events, leaving it on for
+    // scrollWheel so the wheel still reaches the program (Claude/TUIs scroll).
+    private func withoutMouseReporting(_ body: () -> Void) {
+        allowMouseReporting = false
+        body()
+        allowMouseReporting = true
+    }
+
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
-        super.mouseDown(with: event)
+        withoutMouseReporting { super.mouseDown(with: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
         draggedSinceMouseDown = true
-        super.mouseDragged(with: event)
+        withoutMouseReporting { super.mouseDragged(with: event) }
     }
 
     override func mouseUp(with event: NSEvent) {
         let wasPlainClick = !draggedSinceMouseDown
-        super.mouseUp(with: event)
+        withoutMouseReporting { super.mouseUp(with: event) }
         if wasPlainClick {
             onPlainClick?()
         }
