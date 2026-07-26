@@ -1,4 +1,4 @@
-import CorralCore
+import RaiCore
 import Darwin
 import Foundation
 
@@ -49,7 +49,7 @@ final class RemoteConnection {
         self.target = target
         self.sessionName = sessionName
         self.remoteSocketPath = remoteSocketPath
-        localSocketPath = "/tmp/corral-\(UUID().uuidString.prefix(12)).sock"
+        localSocketPath = "/tmp/rai-\(UUID().uuidString.prefix(12)).sock"
     }
 
     func start() async throws {

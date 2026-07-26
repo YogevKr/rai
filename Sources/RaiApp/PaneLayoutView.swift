@@ -1,14 +1,14 @@
 import AppKit
-import CorralCore
+import RaiCore
 import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let corralPane = UTType(exportedAs: "ai.sawmills.corral.pane")
+    static let raiPane = UTType(exportedAs: "ai.sawmills.rai.pane")
 }
 
 struct PaneLayoutView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     // Per-pane chrome only earns its space when a tab is split; a lone pane
     // is already fully described by the header above it.
@@ -69,7 +69,7 @@ private struct EmptyPaneState: View {
 
 private struct SplitNodeView: View {
     let node: PaneLayoutNode
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let showChrome: Bool
 
     var body: some View {
@@ -104,7 +104,7 @@ private struct SplitNodeView: View {
 }
 
 private struct SplitContainer: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let splitID: String
     let direction: SplitDirection
     let ratio: Double
@@ -192,7 +192,7 @@ private struct SplitContainer: View {
 
 private struct AbsolutePaneLayoutView: View {
     let layout: PaneLayoutSnapshot
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let showChrome: Bool
 
     var body: some View {
@@ -223,7 +223,7 @@ private struct AbsolutePaneLayoutView: View {
 
 private struct PaneSurface: View {
     let paneID: String
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let showChrome: Bool
     @State private var dropIndicator: PaneDropIndicator?
     @State private var renamePresented = false
@@ -247,7 +247,7 @@ private struct PaneSurface: View {
             surface
                 .overlay { dropOverlay }
                 .onDrop(
-                    of: [UTType.corralPane],
+                    of: [UTType.raiPane],
                     delegate: PaneDropDelegate(
                         targetPaneID: paneID,
                         targetSize: geometry.size,
@@ -355,7 +355,7 @@ private struct PaneSurface: View {
             model.draggedPaneID = paneID
             let provider = NSItemProvider()
             provider.registerDataRepresentation(
-                forTypeIdentifier: UTType.corralPane.identifier,
+                forTypeIdentifier: UTType.raiPane.identifier,
                 visibility: .ownProcess
             ) { completion in
                 completion(Data(paneID.utf8), nil)
@@ -428,14 +428,14 @@ private struct PaneSurface: View {
 }
 
 private struct PaneRenameSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let paneID: String
 
     @Environment(\.dismiss) private var dismiss
     @State private var label: String
     @FocusState private var labelFocused: Bool
 
-    init(model: CorralModel, paneID: String, initialLabel: String) {
+    init(model: RaiModel, paneID: String, initialLabel: String) {
         self.model = model
         self.paneID = paneID
         _label = State(initialValue: initialLabel)
@@ -479,7 +479,7 @@ private struct PaneRenameSheet: View {
 }
 
 private struct PaneProcessInfoSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let paneID: String
     let paneTitle: String
 
@@ -608,12 +608,12 @@ private enum PaneDropIndicator: Equatable {
 private struct PaneDropDelegate: DropDelegate {
     let targetPaneID: String
     let targetSize: CGSize
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @Binding var draggedPaneID: String?
     @Binding var indicator: PaneDropIndicator?
 
     func validateDrop(info: DropInfo) -> Bool {
-        guard info.hasItemsConforming(to: [UTType.corralPane.identifier]),
+        guard info.hasItemsConforming(to: [UTType.raiPane.identifier]),
               let sourcePaneID = draggedPaneID else {
             return false
         }

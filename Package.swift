@@ -3,33 +3,33 @@
 import PackageDescription
 
 let package = Package(
-    name: "corral",
+    name: "rai",
     platforms: [
         .macOS(.v14),
     ],
     products: [
-        .executable(name: "corral", targets: ["CorralApp"]),
-        .executable(name: "corral-probe", targets: ["CorralProbe"]),
+        .executable(name: "rai", targets: ["RaiApp"]),
+        .executable(name: "rai-probe", targets: ["RaiProbe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0"),
     ],
     targets: [
-        .target(name: "CorralCore"),
+        .target(name: "RaiCore"),
         .executableTarget(
-            name: "CorralApp",
+            name: "RaiApp",
             dependencies: [
-                "CorralCore",
+                "RaiCore",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ]
         ),
         .executableTarget(
-            name: "CorralProbe",
-            dependencies: ["CorralCore"]
+            name: "RaiProbe",
+            dependencies: ["RaiCore"]
         ),
         .testTarget(
-            name: "CorralCoreTests",
-            dependencies: ["CorralCore"]
+            name: "RaiCoreTests",
+            dependencies: ["RaiCore"]
         ),
     ]
 )

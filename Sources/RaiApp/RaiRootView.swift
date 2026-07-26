@@ -1,8 +1,8 @@
-import CorralCore
+import RaiCore
 import SwiftUI
 
-struct CorralRootView: View {
-    @ObservedObject var model: CorralModel
+struct RaiRootView: View {
+    @ObservedObject var model: RaiModel
 
     var body: some View {
         ZStack {
@@ -46,7 +46,7 @@ struct CorralRootView: View {
 }
 
 private struct PaneHeader: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @State private var broadcastPresented = false
 
     var body: some View {
@@ -76,7 +76,7 @@ private struct PaneHeader: View {
             } else {
                 Image(systemName: "square.stack.3d.up")
                     .foregroundStyle(Theme.textTertiary)
-                Text("corral")
+                Text("rai")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -100,7 +100,7 @@ private struct PaneHeader: View {
 }
 
 private struct BroadcastSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""

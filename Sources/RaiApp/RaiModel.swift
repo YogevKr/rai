@@ -1,11 +1,11 @@
-import CorralCore
+import RaiCore
 import Foundation
 import SwiftUI
 
 @MainActor
-protocol CorralSnapshotObserver: AnyObject {
-    func corralModel(
-        _ model: CorralModel,
+protocol RaiSnapshotObserver: AnyObject {
+    func raiModel(
+        _ model: RaiModel,
         didRefresh snapshot: SessionSnapshot,
         transitions: [PaneStatusTransition]
     )
@@ -55,7 +55,7 @@ private struct PaneProcessInfoResponse: Decodable {
 }
 
 @MainActor
-final class CorralModel: ObservableObject {
+final class RaiModel: ObservableObject {
     enum ConnectionState: Equatable {
         case connecting
         case connected(version: String, protocolVersion: Int)
@@ -102,7 +102,7 @@ final class CorralModel: ObservableObject {
     private(set) var client: HerdrClient
     let terminalPool: TerminalPool
 
-    weak var snapshotObserver: CorralSnapshotObserver?
+    weak var snapshotObserver: RaiSnapshotObserver?
 
     private static let notificationsMutedDefaultsKey = "notificationsMuted"
     private let userDefaults: UserDefaults
@@ -1282,7 +1282,7 @@ final class CorralModel: ObservableObject {
                     ?? newSnapshot.panes.first?.paneID
             }
 
-            snapshotObserver?.corralModel(
+            snapshotObserver?.raiModel(
                 self,
                 didRefresh: newSnapshot,
                 transitions: transitions
@@ -1332,7 +1332,7 @@ final class CorralModel: ObservableObject {
         }
     }
 
-    // Structural changes go through the herdr CLI (the binary corral already
+    // Structural changes go through the herdr CLI (the binary rai already
     // spawns for attach), then we adopt herdr's resulting focus.
     func newTab() {
         guard let workspace = selectedWorkspace?.workspaceID else { return }

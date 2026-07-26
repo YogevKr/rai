@@ -1,4 +1,4 @@
-import CorralCore
+import RaiCore
 import Foundation
 
 struct CommandPaletteItem: Identifiable, Equatable {

@@ -1,4 +1,4 @@
-import CorralCore
+import RaiCore
 import XCTest
 
 final class FuzzyMatchTests: XCTestCase {
@@ -13,8 +13,8 @@ final class FuzzyMatchTests: XCTestCase {
     }
 
     func testPrefixAndWordBoundaryBoosts() throws {
-        let prefix = try XCTUnwrap(FuzzyMatcher.score(query: "cor", candidate: "corral agent"))
-        let boundary = try XCTUnwrap(FuzzyMatcher.score(query: "cor", candidate: "my corral"))
+        let prefix = try XCTUnwrap(FuzzyMatcher.score(query: "cor", candidate: "rai agent"))
+        let boundary = try XCTUnwrap(FuzzyMatcher.score(query: "cor", candidate: "my rai"))
         let scattered = try XCTUnwrap(FuzzyMatcher.score(query: "cor", candidate: "echo orbit"))
 
         XCTAssertGreaterThan(prefix, boundary)
@@ -33,11 +33,11 @@ final class FuzzyMatchTests: XCTestCase {
     }
 
     func testRankedFiltersAndOrdersMatches() {
-        let values = ["my corral", "cobalt runner", "echo orbit", "unrelated"]
+        let values = ["my rai", "cobalt runner", "echo orbit", "unrelated"]
 
         XCTAssertEqual(
             FuzzyMatcher.ranked(values, query: "cor") { $0 },
-            ["cobalt runner", "my corral", "echo orbit"]
+            ["cobalt runner", "my rai", "echo orbit"]
         )
     }
 

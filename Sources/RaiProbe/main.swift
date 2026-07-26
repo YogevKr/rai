@@ -1,8 +1,8 @@
-import CorralCore
+import RaiCore
 import Foundation
 
 @main
-struct CorralProbe {
+struct RaiProbe {
     static func main() async {
         let client = HerdrClient()
         do {
@@ -74,7 +74,7 @@ struct CorralProbe {
                 CommandLine.arguments.indices.contains(flag + 1) {
                 let paneID = CommandLine.arguments[flag + 1]
                 let suffix = String(ProcessInfo.processInfo.globallyUniqueString.prefix(8))
-                let marker = "CORRAL_SOCKET_SMOKE_OK_\(suffix)"
+                let marker = "RAI_SOCKET_SMOKE_OK_\(suffix)"
                 let command = "printf '\(marker)\\n'"
                 try await client.sendInput(paneID: paneID, bytes: Array(command.utf8))
                 try await client.sendInput(paneID: paneID, bytes: [0x0D])
@@ -99,7 +99,7 @@ struct CorralProbe {
             }
         } catch {
             FileHandle.standardError.write(
-                Data("corral-probe: \(error.localizedDescription)\n".utf8)
+                Data("rai-probe: \(error.localizedDescription)\n".utf8)
             )
             Foundation.exit(1)
         }

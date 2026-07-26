@@ -1,9 +1,9 @@
 import AppKit
-import CorralCore
+import RaiCore
 import SwiftUI
 
 struct CommandPaletteView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @FocusState private var searchFocused: Bool
     @State private var keyMonitor: Any?

@@ -1,5 +1,5 @@
 import AppKit
-import CorralCore
+import RaiCore
 @preconcurrency import UserNotifications
 
 @MainActor
@@ -16,11 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         static let openAgent = "OPEN_AGENT"
     }
 
-    private weak var model: CorralModel?
+    private weak var model: RaiModel?
     private var pendingPaneID: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        connect(to: CorralApp.sharedModel)
+        connect(to: RaiApp.sharedModel)
         installTerminalKeyMonitor()
 
         let center = UNUserNotificationCenter.current()
@@ -75,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func connect(to model: CorralModel) {
+    private func connect(to model: RaiModel) {
         self.model = model
         model.snapshotObserver = self
         updateDockBadge(count: model.blockedAgentCount)
@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func focusPendingPane(
         in snapshot: SessionSnapshot,
-        model: CorralModel
+        model: RaiModel
     ) {
         guard let pendingPaneID else { return }
         self.pendingPaneID = nil
@@ -164,9 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
-extension AppDelegate: CorralSnapshotObserver {
-    func corralModel(
-        _ model: CorralModel,
+extension AppDelegate: RaiSnapshotObserver {
+    func raiModel(
+        _ model: RaiModel,
         didRefresh snapshot: SessionSnapshot,
         transitions: [PaneStatusTransition]
     ) {

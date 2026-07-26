@@ -2,15 +2,15 @@ import AppKit
 import SwiftUI
 
 @main
-struct CorralApp: App {
-    @MainActor static let sharedModel = CorralModel()
+struct RaiApp: App {
+    @MainActor static let sharedModel = RaiModel()
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = CorralApp.sharedModel
+    @StateObject private var model = RaiApp.sharedModel
 
     var body: some Scene {
         WindowGroup {
-            CorralRootView(model: model)
+            RaiRootView(model: model)
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(.dark)
                 .task {
@@ -106,7 +106,7 @@ struct CorralApp: App {
         }
 
         Settings {
-            SettingsView(model: CorralApp.sharedModel)
+            SettingsView(model: RaiApp.sharedModel)
                 .preferredColorScheme(.dark)
         }
     }

@@ -1,5 +1,5 @@
 import AppKit
-import CorralCore
+import RaiCore
 import SwiftUI
 
 /// Configures the window for the solid "Linear" look: opaque, near-black base,
@@ -19,7 +19,7 @@ struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-// The corral design language: a single, deliberately-designed dark theme
+// The rai design language: a single, deliberately-designed dark theme
 // (a terminal product should own its palette rather than inherit the system's).
 // One accent, a semantic status-color set, an 8pt spacing rhythm.
 enum Theme {

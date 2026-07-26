@@ -1,5 +1,5 @@
 import AppKit
-import CorralCore
+import RaiCore
 import SwiftTerm
 
 /// Owns attached terminal views independently of SwiftUI's view lifecycle.

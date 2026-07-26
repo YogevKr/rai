@@ -1,4 +1,4 @@
-import CorralCore
+import RaiCore
 import XCTest
 
 final class WorktreeListTests: XCTestCase {
@@ -9,25 +9,25 @@ final class WorktreeListTests: XCTestCase {
           "result": {
             "type": "worktree_list",
             "source": {
-              "repo_key": "/tmp/corral",
-              "repo_name": "corral",
-              "repo_root": "/tmp/corral",
-              "source_checkout_path": "/tmp/corral",
+              "repo_key": "/tmp/rai",
+              "repo_name": "rai",
+              "repo_root": "/tmp/rai",
+              "source_checkout_path": "/tmp/rai",
               "source_workspace_id": "w1"
             },
             "worktrees": [
               {
-                "path": "/tmp/corral",
+                "path": "/tmp/rai",
                 "branch": "main",
                 "is_bare": false,
                 "is_detached": false,
                 "is_prunable": false,
                 "is_linked_worktree": false,
-                "label": "corral",
+                "label": "rai",
                 "open_workspace_id": "w1"
               },
               {
-                "path": "/tmp/corral-feature",
+                "path": "/tmp/rai-feature",
                 "branch": "feat/worktrees",
                 "is_bare": false,
                 "is_detached": false,
@@ -45,7 +45,7 @@ final class WorktreeListTests: XCTestCase {
         XCTAssertEqual(worktrees.count, 2)
         XCTAssertEqual(worktrees[0].branch, "main")
         XCTAssertEqual(worktrees[0].openWorkspaceID, "w1")
-        XCTAssertEqual(worktrees[1].path, "/tmp/corral-feature")
+        XCTAssertEqual(worktrees[1].path, "/tmp/rai-feature")
         XCTAssertEqual(worktrees[1].branch, "feat/worktrees")
         XCTAssertTrue(worktrees[1].isLinkedWorktree)
         XCTAssertNil(worktrees[1].openWorkspaceID)

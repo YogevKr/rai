@@ -1,14 +1,14 @@
-import CorralCore
+import RaiCore
 import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let corralTab = UTType(exportedAs: "ai.sawmills.corral.tab")
-    static let corralWorkspace = UTType(exportedAs: "ai.sawmills.corral.workspace")
+    static let raiTab = UTType(exportedAs: "ai.sawmills.rai.tab")
+    static let raiWorkspace = UTType(exportedAs: "ai.sawmills.rai.workspace")
 }
 
 struct SidebarView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -407,7 +407,7 @@ struct SidebarView: View {
                 title: Text("Stop “\(session.name)”?"),
                 message: Text(
                     isCurrent
-                        ? "You are viewing this session. Its panes will stop and corral "
+                        ? "You are viewing this session. Its panes will stop and rai "
                             + "will disconnect from it."
                         : "This stops every pane running in the session."
                 ),
@@ -549,7 +549,7 @@ private struct WorktreeTag: View {
 }
 
 private struct WorkspaceRow: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let workspace: Workspace
     let tab: HerdrTab?
     let focusedInHerdr: Bool
@@ -604,19 +604,19 @@ private struct WorkspaceRow: View {
         .accessibilityAction { onSelect() }
         .onHover { hovering = $0 }
         // Pane-drag onto a space previews that space's tab (returns false: never accepts).
-        .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
+        .onDrop(of: [UTType.raiPane], isTargeted: $paneDragTargeted) { _ in false }
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
-            return sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+            return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
         }
         .onDrop(
-            of: [.corralWorkspace],
+            of: [.raiWorkspace],
             delegate: SidebarReorderDropDelegate(
                 targetID: workspace.workspaceID,
-                type: .corralWorkspace,
+                type: .raiWorkspace,
                 model: model,
                 targeted: $dropTargeted
             )
@@ -649,7 +649,7 @@ private struct WorkspaceRow: View {
 }
 
 private struct WorkspaceHeader: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let workspace: Workspace
     let focusedInHerdr: Bool
 
@@ -692,13 +692,13 @@ private struct WorkspaceHeader: View {
         .onTapGesture { model.select(workspace: workspace) }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
-            return sidebarDragProvider(id: workspace.workspaceID, type: .corralWorkspace)
+            return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
         }
         .onDrop(
-            of: [.corralWorkspace],
+            of: [.raiWorkspace],
             delegate: SidebarReorderDropDelegate(
                 targetID: workspace.workspaceID,
-                type: .corralWorkspace,
+                type: .raiWorkspace,
                 model: model,
                 targeted: $dropTargeted
             )
@@ -731,7 +731,7 @@ private struct WorkspaceHeader: View {
 }
 
 private struct AgentRow: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let tab: HerdrTab
     let label: String
     let selected: Bool
@@ -776,19 +776,19 @@ private struct AgentRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onSelect() }
         .onHover { hovering = $0 }
-        .onDrop(of: [UTType.corralPane], isTargeted: $paneDragTargeted) { _ in false }
+        .onDrop(of: [UTType.raiPane], isTargeted: $paneDragTargeted) { _ in false }
         .onChange(of: paneDragTargeted) { _, targeted in
             if targeted { onPaneDragHover() }
         }
         .onDrag {
             model.draggedTabID = tab.tabID
-            return sidebarDragProvider(id: tab.tabID, type: .corralTab)
+            return sidebarDragProvider(id: tab.tabID, type: .raiTab)
         }
         .onDrop(
-            of: [.corralTab],
+            of: [.raiTab],
             delegate: SidebarReorderDropDelegate(
                 targetID: tab.tabID,
-                type: .corralTab,
+                type: .raiTab,
                 model: model,
                 targeted: $dropTargeted
             )
@@ -804,13 +804,13 @@ private struct AgentRow: View {
 }
 
 private struct RenameSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let request: RenameRequest
 
     @State private var label: String
     @FocusState private var labelFocused: Bool
 
-    init(model: CorralModel, request: RenameRequest) {
+    init(model: RaiModel, request: RenameRequest) {
         self.model = model
         self.request = request
         _label = State(initialValue: request.initialLabel)
@@ -848,7 +848,7 @@ private struct RenameSheet: View {
 }
 
 private struct NewWorktreeSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let request: WorktreeCreateRequest
 
     @State private var branch = ""
@@ -907,7 +907,7 @@ private struct NewWorktreeSheet: View {
 }
 
 private struct OpenWorktreeSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @State private var selectedPath: String?
 
@@ -1040,7 +1040,7 @@ private struct WorktreePickerRow: View {
 }
 
 private struct NewSessionSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @State private var name = ""
 
     var body: some View {
@@ -1058,7 +1058,7 @@ private struct NewSessionSheet: View {
                     .onSubmit(create)
             }
 
-            Text("Corral starts a headless Herdr server and switches to it.")
+            Text("Rai starts a headless Herdr server and switches to it.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
 
@@ -1086,7 +1086,7 @@ private struct NewSessionSheet: View {
 }
 
 private struct RemoteHerdSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @State private var target = ""
     @State private var sessionName = "default"
 
@@ -1114,7 +1114,7 @@ private struct RemoteHerdSheet: View {
             }
 
             Text(
-                "Corral discovers the remote session socket, forwards it over SSH, "
+                "Rai discovers the remote session socket, forwards it over SSH, "
                     + "and attaches panes through the local forwarded socket."
             )
             .font(.system(size: 11))
@@ -1145,7 +1145,7 @@ private struct RemoteHerdSheet: View {
 }
 
 private struct StatusExplanationSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1208,11 +1208,11 @@ private func sidebarDragProvider(id: String, type: UTType) -> NSItemProvider {
 private struct SidebarReorderDropDelegate: DropDelegate {
     let targetID: String
     let type: UTType
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @Binding var targeted: Bool
 
     private var draggedID: String? {
-        type == .corralTab ? model.draggedTabID : model.draggedWorkspaceID
+        type == .raiTab ? model.draggedTabID : model.draggedWorkspaceID
     }
 
     func validateDrop(info: DropInfo) -> Bool {
@@ -1221,8 +1221,8 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             return false
         }
         // Tabs only reorder within their own space — herdr's tab.move (and
-        // CorralModel.moveTab) reject cross-space moves, so don't advertise them.
-        if type == .corralTab {
+        // RaiModel.moveTab) reject cross-space moves, so don't advertise them.
+        if type == .raiTab {
             guard let snapshot = model.snapshot,
                   let source = snapshot.tabs.first(where: { $0.tabID == src }),
                   let target = snapshot.tabs.first(where: { $0.tabID == targetID }),
@@ -1254,7 +1254,7 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             model.draggedWorkspaceID = nil
         }
         guard let src = draggedID, src != targetID else { return false }
-        if type == .corralTab {
+        if type == .raiTab {
             model.moveTab(sourceTabID: src, onto: targetID)
         } else {
             model.moveWorkspace(sourceWorkspaceID: src, onto: targetID)
@@ -1264,7 +1264,7 @@ private struct SidebarReorderDropDelegate: DropDelegate {
 }
 
 private struct ConnectionPill: View {
-    let state: CorralModel.ConnectionState
+    let state: RaiModel.ConnectionState
 
     var body: some View {
         Circle()

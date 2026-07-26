@@ -1,13 +1,13 @@
 import AppKit
-import CorralCore
+import RaiCore
 import SwiftTerm
 import SwiftUI
 
-/// Resolves the `herdr` CLI, which corral spawns per pane to bridge the remote
+/// Resolves the `herdr` CLI, which rai spawns per pane to bridge the remote
 /// terminal. A GUI app launched via LaunchServices gets a minimal PATH, so we
 /// can't rely on `herdr` being resolvable by name.
 /// Mirrors Yogev's Ghostty theme (`theme = Dracula+`) so agent sessions render
-/// with identical colors in corral. Snapshot of the resolved Ghostty palette.
+/// with identical colors in rai. Snapshot of the resolved Ghostty palette.
 enum GhosttyTheme {
     static let background: UInt32 = 0x212121
     static let foreground: UInt32 = 0xF8F8F2

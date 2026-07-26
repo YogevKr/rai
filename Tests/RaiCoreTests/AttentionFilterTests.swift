@@ -1,4 +1,4 @@
-import CorralCore
+import RaiCore
 import XCTest
 
 final class AttentionFilterTests: XCTestCase {

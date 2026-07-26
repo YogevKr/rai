@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build corral (release), wrap the SwiftPM executable in a proper Corral.app
+# Build rai (release), wrap the SwiftPM executable in a proper Rai.app
 # bundle (SwiftUI @main needs a bundle to present its window), ad-hoc sign it,
 # and install to /Applications (falls back to ~/Applications). Repeatable.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-APP_NAME="Corral"
-BIN_NAME="corral"
+APP_NAME="Rai"
+BIN_NAME="rai"
 
 echo "==> swift build -c release"
 swift build -c release
@@ -16,7 +16,7 @@ BIN=".build/release/${BIN_NAME}"
 STAGE="$(mktemp -d)/${APP_NAME}.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
-[ -f Resources/Corral.icns ] && cp Resources/Corral.icns "$STAGE/Contents/Resources/Corral.icns"
+[ -f Resources/Rai.icns ] && cp Resources/Rai.icns "$STAGE/Contents/Resources/Rai.icns"
 
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,9 +25,9 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
-  <key>CFBundleIdentifier</key><string>gr.krig.corral</string>
+  <key>CFBundleIdentifier</key><string>gr.krig.rai</string>
   <key>CFBundleExecutable</key><string>${BIN_NAME}</string>
-  <key>CFBundleIconFile</key><string>Corral</string>
+  <key>CFBundleIconFile</key><string>Rai</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -37,18 +37,18 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.tab</string>
-      <key>UTTypeDescription</key><string>Corral Tab</string>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.tab</string>
+      <key>UTTypeDescription</key><string>Rai Tab</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.workspace</string>
-      <key>UTTypeDescription</key><string>Corral Space</string>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.workspace</string>
+      <key>UTTypeDescription</key><string>Rai Space</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>
     <dict>
-      <key>UTTypeIdentifier</key><string>ai.sawmills.corral.pane</string>
-      <key>UTTypeDescription</key><string>Corral Pane</string>
+      <key>UTTypeIdentifier</key><string>ai.sawmills.rai.pane</string>
+      <key>UTTypeDescription</key><string>Rai Pane</string>
       <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     </dict>
   </array>

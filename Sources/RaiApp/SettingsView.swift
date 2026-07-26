@@ -45,7 +45,7 @@ final class SettingsStore: ObservableObject {
 }
 
 struct SettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @StateObject private var settings = SettingsStore.shared
 
     var body: some View {
@@ -84,7 +84,7 @@ struct SettingsView: View {
 }
 
 private struct AppearanceSettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     @ObservedObject var settings: SettingsStore
 
     var body: some View {
@@ -144,7 +144,7 @@ private struct AppearanceSettingsView: View {
 }
 
 private struct HerdrServerSettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @State private var output = "Loading server status…"
     @State private var isRunningAction = false
@@ -261,7 +261,7 @@ private struct PluginListResponse: Decodable {
 }
 
 private struct PluginsSettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @State private var plugins: [PluginListResponse.Plugin] = []
     @State private var isLoading = false
@@ -499,7 +499,7 @@ private struct PluginSettingsRow: View {
 }
 
 private struct PluginLogsSheet: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
     let plugin: PluginListResponse.Plugin
 
     @Environment(\.dismiss) private var dismiss
@@ -546,7 +546,7 @@ private struct PluginLogsSheet: View {
 }
 
 private struct IntegrationsSettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @State private var activeIntegration: String?
     @State private var status = "No integration command run yet."
@@ -629,7 +629,7 @@ private struct IntegrationsSettingsView: View {
 }
 
 private struct ConfigSettingsView: View {
-    @ObservedObject var model: CorralModel
+    @ObservedObject var model: RaiModel
 
     @State private var configText = ""
     @State private var status: String?
