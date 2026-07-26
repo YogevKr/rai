@@ -112,6 +112,10 @@ swift run rai
 `rai` connects to `~/.config/herdr/herdr.sock` by default. Set
 `HERDR_SOCKET_PATH` to point at a different socket (e.g. a named session).
 
+See [docs/TESTING.md](docs/TESTING.md) for the full local workflow: building,
+screenshotting the running app, and end-to-end verification against a live herdr
+daemon without disturbing your running agents.
+
 ## Usage
 
 Launch `rai` with a herdr server running and the sidebar populates with your live
@@ -180,6 +184,7 @@ Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
 Tests/RaiCoreTests unit tests
 scripts/bundle.sh  builds and installs Rai.app
 poc/               reference Python herdr socket client
+docs/TESTING.md    build, screenshot, and safe end-to-end verification workflow
 docs/ROADMAP.md    herdr API coverage + build plan
 ```
 
