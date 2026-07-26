@@ -547,6 +547,7 @@ private struct SidebarRowLabel<Trailing: View>: View {
     let subtitle: String
     let selected: Bool
     let focusedInHerdr: Bool
+    var isSpace: Bool = false
     var editing: Bool = false
     var onCommitRename: (String) -> Void = { _ in }
     var onCancelRename: () -> Void = {}
@@ -563,6 +564,11 @@ private struct SidebarRowLabel<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            if isSpace {
+                Image(systemName: "square.stack")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
             StatusDot(status: status)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -657,6 +663,7 @@ private struct WorkspaceRow: View {
             subtitle: subtitleContext,
             selected: selected,
             focusedInHerdr: focusedInHerdr,
+            isSpace: true,
             editing: model.inlineRename == .workspace(workspace.workspaceID),
             onCommitRename: { model.commitInlineRename(workspace: workspace, to: $0) },
             onCancelRename: { model.cancelInlineRename() }
@@ -928,6 +935,9 @@ private struct AgentRow: View {
             Divider()
             Button("Explain Status") { model.explainStatus(tab: tab) }
         }
+        // Indent tabs so they read as children of their space header — a
+        // top-level (un-indented) row is a space, an indented row is a tab.
+        .padding(.leading, 14)
     }
 }
 
