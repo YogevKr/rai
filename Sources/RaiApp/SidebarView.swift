@@ -610,6 +610,7 @@ private struct WorkspaceRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.beginRename(workspace: workspace) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
@@ -812,6 +813,7 @@ private struct AgentRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.beginRename(tab: tab) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
