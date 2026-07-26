@@ -89,13 +89,16 @@ final class MicroController {
     static let enabledDefaultsKey = "codexMicroEnabled"
     // Wispr Flow dictation is triggered by SIMULATING its hands-free shortcut,
     // not the wispr-flow:// URL (which foregrounds Wispr's window and drops the
-    // transcript into Wispr's scratchpad instead of rai's focused pane). This
-    // fakes Wispr's DEFAULT Fn+Space by posting Space with the secondary-Fn
-    // flag — no Wispr reconfig needed IF Wispr honors the synthetic flag. Some
-    // apps read the real hardware Fn state instead, in which case swap in a
-    // plain modifier chord (real modifier keycodes + their flags).
-    static let wisprShortcutKey: CGKeyCode = 49 // Space
-    static let wisprShortcutFlags: CGEventFlags = [.maskSecondaryFn]
+    // transcript into Wispr's scratchpad instead of rai's focused pane). Wispr
+    // ignores a synthetic secondary-Fn flag (it reads real hardware Fn), so this
+    // sends a plain modifier chord: Control-Option-Semicolon. Set Wispr's hands-
+    // free shortcut to match. (Semicolon dodges the Space combos macOS reserves
+    // and the letter combos apps grab.)
+    static let wisprShortcutKey: CGKeyCode = 0x29 // ;
+    static let wisprShortcutModifiers: [(key: CGKeyCode, flag: CGEventFlags)] = [
+        (0x3B, .maskControl),   // Control
+        (0x3A, .maskAlternate), // Option
+    ]
 
     private weak var model: RaiModel?
     private var worker: Worker?
@@ -232,18 +235,28 @@ final class MicroController {
         guard ensureAccessibilityTrusted() else { return }
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
 
-        func post(keyDown: Bool) {
+        func post(_ key: CGKeyCode, keyDown: Bool, flags: CGEventFlags) {
             guard let event = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: Self.wisprShortcutKey,
-                keyDown: keyDown
+                keyboardEventSource: source, virtualKey: key, keyDown: keyDown
             ) else { return }
-            event.flags = Self.wisprShortcutFlags
+            event.flags = flags
             event.post(tap: .cghidEventTap)
         }
-        // Tap the key with the shortcut's flags asserted.
-        post(keyDown: true)
-        post(keyDown: false)
+        // Press the modifiers (accumulating flags), tap the key, release the
+        // modifiers in reverse — an explicit chord so both Carbon hot keys and
+        // NSEvent monitors register it.
+        let modifiers = Self.wisprShortcutModifiers
+        var flags: CGEventFlags = []
+        for modifier in modifiers {
+            flags.insert(modifier.flag)
+            post(modifier.key, keyDown: true, flags: flags)
+        }
+        post(Self.wisprShortcutKey, keyDown: true, flags: flags)
+        post(Self.wisprShortcutKey, keyDown: false, flags: flags)
+        for modifier in modifiers.reversed() {
+            flags.remove(modifier.flag)
+            post(modifier.key, keyDown: false, flags: flags)
+        }
     }
 
     /// True when rai may post keyboard events other apps receive. When false it
