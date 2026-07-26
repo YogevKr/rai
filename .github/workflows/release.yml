@@ -18,13 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select newest Xcode
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
-
-      # SwiftTerm compiles a .metal shader; newer Xcode ships the Metal Toolchain
-      # as a separate component that isn't always present on the runner.
-      - name: Ensure Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain 2>/dev/null || true
+      # Pin to the newest Xcode 16.x: it bundles the Metal toolchain (SwiftTerm has
+      # a .metal shader) that newer Xcode ships as a separate, hard-to-use component.
+      - name: Select Xcode 16
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
 
       - name: Resolve version
         id: v
