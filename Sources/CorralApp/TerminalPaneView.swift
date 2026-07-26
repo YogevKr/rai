@@ -104,9 +104,18 @@ struct TerminalPaneView: NSViewRepresentable {
     let pool: TerminalPool
     let onPlainClick: () -> Void
 
-    // Matches Ghostty: `font-family = Fira Code`, `font-size = 16`.
-    static let font = NSFont(name: "Fira Code", size: 16)
-        ?? NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
+    static var font: NSFont {
+        let settings = SettingsStore.shared
+        let size = CGFloat(settings.terminalFontSize)
+        return NSFontManager.shared.font(
+            withFamily: settings.terminalFontFamily,
+            traits: [],
+            weight: 5,
+            size: size
+        )
+            ?? NSFont(name: settings.terminalFontFamily, size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
 
     func makeNSView(context: Context) -> TerminalContainerView {
         let container = TerminalContainerView(frame: .zero)

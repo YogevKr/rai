@@ -91,5 +91,10 @@ struct CorralApp: App {
                     .keyboardShortcut("r", modifiers: .command)
             }
         }
+
+        Settings {
+            SettingsView(model: CorralApp.sharedModel)
+                .preferredColorScheme(.dark)
+        }
     }
 }

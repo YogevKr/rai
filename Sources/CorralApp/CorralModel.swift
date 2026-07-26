@@ -1408,6 +1408,24 @@ final class CorralModel: ObservableObject {
         }
     }
 
+    func serverStatus() async -> String {
+        await runHerdrCapture(["status", "server"])
+            ?? "Unable to read the Herdr server status."
+    }
+
+    func reloadConfig() async -> Bool {
+        await runHerdr(["server", "reload-config"])
+    }
+
+    func updateHerdr() async -> String {
+        await runHerdrCapture(["update"])
+            ?? "Herdr update failed or returned no output."
+    }
+
+    func stopServer() async -> Bool {
+        await runHerdr(["server", "stop"])
+    }
+
     private func runHerdr(_ args: [String]) async -> Bool {
         await withCheckedContinuation { continuation in
             let process = configuredHerdrProcess(args)
