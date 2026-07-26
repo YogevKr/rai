@@ -47,7 +47,10 @@ final class TerminalPool {
     func view(for terminalID: String) -> FocusAwareTerminalView {
         if let entry = entries[terminalID] {
             recency.touch(terminalID)
-            GhosttyTheme.apply(to: entry.view)
+            // Don't re-theme here: this runs on every SwiftUI render, and each
+            // color setter calls updateFullScreen(), forcing constant redraws that
+            // fight an active text selection while a program streams output.
+            // The palette is applied on creation and re-applied on theme changes.
             return entry.view
         }
 
