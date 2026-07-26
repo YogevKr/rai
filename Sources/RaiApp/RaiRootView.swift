@@ -20,6 +20,9 @@ struct RaiRootView: View {
                     .background(Theme.base)
                     .ignoresSafeArea(.container, edges: .top)
             }
+            // Collapse/expand the sidebar instantly — animating it makes the
+            // terminal (AppKit) views redraw every frame and flicker.
+            .animation(nil, value: columnVisibility)
 
             if model.isCommandPalettePresented {
                 Color.black.opacity(0.42)
