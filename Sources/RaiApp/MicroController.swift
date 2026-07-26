@@ -152,6 +152,14 @@ final class MicroController {
     ) {
         guard let model else { return }
         guard case .action(let action, let state) = intent else { return }
+        // A pad press must not drive the session while the user is configuring
+        // the pad or typing into a rai-owned transient surface. The independent
+        // pressed handler still records the control for Settings learn mode.
+        let suppress = MicroStatusCenter.shared.isBindingEditorActive
+            || model.isCommandPalettePresented
+            || model.renameRequest != nil
+        if suppress { return }
+
         // A press on the pad pulls rai to the front so you act on the agent
         // you're driving. This INCLUDES Wispr Flow: its dictation is injected
         // into the frontmost app's focused field, so rai must be frontmost when

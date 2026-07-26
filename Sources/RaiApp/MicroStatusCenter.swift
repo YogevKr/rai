@@ -24,6 +24,10 @@ final class MicroStatusCenter: ObservableObject {
         }
     }
 
+    /// True while the visual pad is on screen, so identifying a physical
+    /// control cannot also drive the live session underneath Settings.
+    @Published var isBindingEditorActive = false
+
     /// True only while a device is actually attached, not merely enabled.
     @Published private(set) var isConnected = false
     /// "USB" / "Bluetooth Low Energy" once attached.

@@ -1209,6 +1209,12 @@ private struct CodexMicroSettingsView: View {
                 .inset(by: 1)
                 .stroke(padOutlineColor, lineWidth: 1)
         )
+        .onAppear {
+            status.isBindingEditorActive = true
+        }
+        .onDisappear {
+            status.isBindingEditorActive = false
+        }
     }
 
     @ViewBuilder
