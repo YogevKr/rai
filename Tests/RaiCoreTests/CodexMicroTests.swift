@@ -331,11 +331,11 @@ final class CodexMicroTests: XCTestCase {
         XCTAssertEqual(tracker.heldDirection, .right)
     }
 
-    func testSlotAssignmentRanksByAttentionAndCapsAtSix() {
+    func testSlotAssignmentIsStableSidebarOrderAndCapsAtSix() {
         var assigner = MicroSlotAssigner()
-        // blocked > done > working > idle; ties keep sidebar order. With seven
-        // panes the lone extra idle pane (g) is the one pushed off the keys.
-        let first = assigner.update([
+        // Keys hold the first six panes in sidebar order regardless of status;
+        // the seventh overflows off the pad (reachable via the dial).
+        let slots = assigner.update([
             .init(paneID: "a", status: .working),
             .init(paneID: "b", status: .blocked),
             .init(paneID: "c", status: .idle),
@@ -345,66 +345,46 @@ final class CodexMicroTests: XCTestCase {
             .init(paneID: "g", status: .idle),
         ])
         XCTAssertEqual(
-            first.compactMap { $0?.paneID },
-            ["b", "f", "d", "a", "e", "c"]
+            slots.compactMap { $0?.paneID },
+            ["a", "b", "c", "d", "e", "f"]
         )
+    }
 
-        // Attention-first reorders regardless of input order.
-        let reordered = assigner.update([
-            .init(paneID: "c", status: .working),
-            .init(paneID: "a", status: .done),
-            .init(paneID: "b", status: .blocked),
+    func testStatusChangesNeverReorderTheKeys() {
+        var assigner = MicroSlotAssigner()
+        let sidebarOrder = ["a", "b", "c"]
+        let first = assigner.update([
+            .init(paneID: "a", status: .idle),
+            .init(paneID: "b", status: .working),
+            .init(paneID: "c", status: .idle),
         ])
-        XCTAssertEqual(reordered.compactMap { $0?.paneID }, ["b", "a", "c"])
-        XCTAssertEqual(reordered[0]?.status, .blocked)
+        // The working pane goes idle and an idle one starts working: the key
+        // positions must not move (only the LED colour would). A physical key
+        // never shifts out from under a finger.
+        let second = assigner.update([
+            .init(paneID: "a", status: .working),
+            .init(paneID: "b", status: .idle),
+            .init(paneID: "c", status: .blocked),
+        ])
+        XCTAssertEqual(first.compactMap { $0?.paneID }, sidebarOrder)
+        XCTAssertEqual(second.compactMap { $0?.paneID }, sidebarOrder)
     }
 
-    func testBlockedAgentKeepsKeyAgainstSixWorkingOnes() {
-        var assigner = MicroSlotAssigner()
-        let slots = assigner.update(
-            (1...6).map { .init(paneID: "w\($0)", status: .working) }
-                + [.init(paneID: "blk", status: .blocked)]
-        )
-        let ids = slots.compactMap { $0?.paneID }
-        XCTAssertEqual(ids.first, "blk")
-        XCTAssertFalse(ids.contains("w6"))
-    }
-
-    func testFocusedPaneIsBoostedAboveIdlePanes() {
-        var assigner = MicroSlotAssigner()
-        let slots = assigner.update(
-            [
-                .init(paneID: "i1", status: .idle),
-                .init(paneID: "i2", status: .idle),
-                .init(paneID: "sel", status: .idle),
-                .init(paneID: "w1", status: .working),
-                .init(paneID: "w2", status: .working),
-                .init(paneID: "w3", status: .working),
-                .init(paneID: "w4", status: .working),
-            ],
-            selectedPaneID: "sel"
-        )
-        let ids = slots.compactMap { $0?.paneID }
-        // The focused idle pane is boosted to the working tier and keeps its key;
-        // an unfocused idle pane is what overflows instead.
-        XCTAssertTrue(ids.contains("sel"))
-        XCTAssertFalse(ids.contains("i2"))
-    }
-
-    func testOnlyNeedsYouFilterThenRanks() {
+    func testOnlyNeedsYouFilterKeepsSidebarOrder() {
         var assigner = MicroSlotAssigner()
         let filtered = assigner.update(
             [
                 .init(paneID: "a", status: .idle),
                 .init(paneID: "b", status: .blocked),
                 .init(paneID: "c", status: .done),
+                .init(paneID: "d", status: .blocked),
             ],
             selectedPaneID: "a",
             onlyNeedsYou: true
         )
-        // Only blocked panes and the focused pane survive the filter; the done
-        // pane (c) is dropped. The survivors are then ranked blocked-first.
-        XCTAssertEqual(filtered.compactMap { $0?.paneID }, ["b", "a"])
+        // Blocked panes and the focused pane survive; the done pane is dropped.
+        // The survivors stay in sidebar order — the filter never re-sorts.
+        XCTAssertEqual(filtered.compactMap { $0?.paneID }, ["a", "b", "d"])
     }
 
     func testMockTransportRecordsAndInjectsReports() throws {
