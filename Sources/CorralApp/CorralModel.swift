@@ -1417,6 +1417,42 @@ final class CorralModel: ObservableObject {
         await runHerdr(["server", "reload-config"])
     }
 
+    func pluginList() async -> String? {
+        await runHerdrCapture(["plugin", "list", "--json"])
+    }
+
+    func pluginEnable(_ pluginID: String) async -> Bool {
+        await runHerdr(["plugin", "enable", pluginID])
+    }
+
+    func pluginDisable(_ pluginID: String) async -> Bool {
+        await runHerdr(["plugin", "disable", pluginID])
+    }
+
+    func pluginUnlink(_ pluginID: String) async -> Bool {
+        await runHerdr(["plugin", "unlink", pluginID])
+    }
+
+    func pluginLogs(_ pluginID: String) async -> String? {
+        await runHerdrCapture([
+            "plugin", "log", "list",
+            "--plugin", pluginID,
+            "--limit", "200",
+        ])
+    }
+
+    func integrationInstall(_ name: String) async -> String? {
+        await runHerdrCapture(["integration", "install", name])
+    }
+
+    func integrationUninstall(_ name: String) async -> String? {
+        await runHerdrCapture(["integration", "uninstall", name])
+    }
+
+    func configCheck() async -> String? {
+        await runHerdrCapture(["config", "check"])
+    }
+
     func updateHerdr() async -> String {
         await runHerdrCapture(["update"])
             ?? "Herdr update failed or returned no output."

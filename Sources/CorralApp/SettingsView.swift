@@ -59,6 +59,24 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Herdr Server", systemImage: "server.rack")
                 }
+
+            PluginsSettingsView(model: model)
+                .tabItem {
+                    Label("Plugins", systemImage: "puzzlepiece.extension")
+                }
+
+            IntegrationsSettingsView(model: model)
+                .tabItem {
+                    Label(
+                        "Integrations",
+                        systemImage: "app.connected.to.app.below.fill"
+                    )
+                }
+
+            ConfigSettingsView(model: model)
+                .tabItem {
+                    Label("Config", systemImage: "doc.text")
+                }
         }
         .frame(width: 620, height: 460)
         .background(Theme.base)
@@ -208,6 +226,524 @@ private struct HerdrServerSettingsView: View {
         } else {
             output = "Unable to stop the Herdr server."
         }
+        isRunningAction = false
+    }
+}
+
+private struct PluginListResponse: Decodable {
+    let result: Result
+
+    struct Result: Decodable {
+        let plugins: [Plugin]
+    }
+
+    struct Plugin: Decodable, Identifiable {
+        let pluginID: String
+        let name: String
+        let description: String
+        var enabled: Bool
+        let events: [Event]
+
+        var id: String { pluginID }
+
+        private enum CodingKeys: String, CodingKey {
+            case pluginID = "plugin_id"
+            case name
+            case description
+            case enabled
+            case events
+        }
+    }
+
+    struct Event: Decodable {
+        let on: String
+    }
+}
+
+private struct PluginsSettingsView: View {
+    @ObservedObject var model: CorralModel
+
+    @State private var plugins: [PluginListResponse.Plugin] = []
+    @State private var isLoading = false
+    @State private var activePluginIDs: Set<String> = []
+    @State private var status: String?
+    @State private var pluginPendingUnlink: PluginListResponse.Plugin?
+    @State private var pluginForLogs: PluginListResponse.Plugin?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Manage plugins linked to this Herdr installation.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Button("Refresh") {
+                    Task { await refreshPlugins() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isLoading || !activePluginIDs.isEmpty)
+            }
+
+            SettingsSection(title: "Installed Plugins") {
+                Group {
+                    if isLoading && plugins.isEmpty {
+                        HStack(spacing: 9) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading plugins…")
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
+                    } else if plugins.isEmpty {
+                        Text(status ?? "No linked plugins.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, minHeight: 230)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(plugins) { plugin in
+                                    PluginSettingsRow(
+                                        plugin: plugin,
+                                        isRunningAction: activePluginIDs.contains(plugin.id),
+                                        onEnabledChange: { enabled in
+                                            setEnabled(enabled, for: plugin)
+                                        },
+                                        onLogs: {
+                                            pluginForLogs = plugin
+                                        },
+                                        onUnlink: {
+                                            pluginPendingUnlink = plugin
+                                        }
+                                    )
+
+                                    if plugin.id != plugins.last?.id {
+                                        Divider()
+                                            .overlay(Theme.hairlineStrong)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
+                    }
+                }
+                .font(.system(size: 12))
+            }
+
+            if let status, !plugins.isEmpty {
+                Text(status)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+            }
+        }
+        .settingsTabBackground()
+        .task {
+            await refreshPlugins()
+        }
+        .alert(
+            "Unlink \(pluginPendingUnlink?.name ?? "Plugin")?",
+            isPresented: Binding(
+                get: { pluginPendingUnlink != nil },
+                set: { if !$0 { pluginPendingUnlink = nil } }
+            ),
+            presenting: pluginPendingUnlink
+        ) { plugin in
+            Button("Cancel", role: .cancel) {}
+            Button("Unlink", role: .destructive) {
+                Task { await unlink(plugin) }
+            }
+        } message: { plugin in
+            Text("This unlinks \(plugin.pluginID) from Herdr.")
+        }
+        .sheet(item: $pluginForLogs) { plugin in
+            PluginLogsSheet(model: model, plugin: plugin)
+        }
+    }
+
+    private func refreshPlugins() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let output = await model.pluginList(),
+              let data = output.data(using: .utf8) else {
+            status = "Unable to list Herdr plugins."
+            return
+        }
+
+        do {
+            plugins = try JSONDecoder()
+                .decode(PluginListResponse.self, from: data)
+                .result
+                .plugins
+            status = plugins.isEmpty ? "No linked plugins." : nil
+        } catch {
+            status = "Unable to decode the Herdr plugin list: \(error.localizedDescription)"
+        }
+    }
+
+    private func setEnabled(
+        _ enabled: Bool,
+        for plugin: PluginListResponse.Plugin
+    ) {
+        guard let index = plugins.firstIndex(where: { $0.id == plugin.id }) else {
+            return
+        }
+        plugins[index].enabled = enabled
+        activePluginIDs.insert(plugin.id)
+        Task {
+            let succeeded = enabled
+                ? await model.pluginEnable(plugin.pluginID)
+                : await model.pluginDisable(plugin.pluginID)
+            if succeeded {
+                status = "\(plugin.name) \(enabled ? "enabled" : "disabled")."
+            } else {
+                if let currentIndex = plugins.firstIndex(where: { $0.id == plugin.id }) {
+                    plugins[currentIndex].enabled = !enabled
+                }
+                status = "Unable to \(enabled ? "enable" : "disable") \(plugin.name)."
+            }
+            activePluginIDs.remove(plugin.id)
+        }
+    }
+
+    private func unlink(_ plugin: PluginListResponse.Plugin) async {
+        pluginPendingUnlink = nil
+        activePluginIDs.insert(plugin.id)
+        if await model.pluginUnlink(plugin.pluginID) {
+            plugins.removeAll { $0.id == plugin.id }
+            status = "\(plugin.name) unlinked."
+        } else {
+            status = "Unable to unlink \(plugin.name)."
+        }
+        activePluginIDs.remove(plugin.id)
+    }
+}
+
+private struct PluginSettingsRow: View {
+    let plugin: PluginListResponse.Plugin
+    let isRunningAction: Bool
+    let onEnabledChange: (Bool) -> Void
+    let onLogs: () -> Void
+    let onUnlink: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(plugin.name)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(plugin.pluginID)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                Text(plugin.enabled ? "Enabled" : "Disabled")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(
+                        plugin.enabled ? Theme.accent : Theme.textTertiary
+                    )
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { plugin.enabled },
+                        set: onEnabledChange
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                .controlSize(.small)
+                .disabled(isRunningAction)
+            }
+
+            Text(plugin.description)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !plugin.events.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 5) {
+                        ForEach(plugin.events.map(\.on), id: \.self) { event in
+                            Text(event)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Theme.textSecondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule()
+                                        .fill(Theme.base)
+                                )
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Theme.hairlineStrong, lineWidth: 1)
+                                )
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+
+            HStack(spacing: 8) {
+                Button("Logs", action: onLogs)
+                Button("Unlink", role: .destructive, action: onUnlink)
+                Spacer()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isRunningAction)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+private struct PluginLogsSheet: View {
+    @ObservedObject var model: CorralModel
+    let plugin: PluginListResponse.Plugin
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var output = "Loading plugin logs…"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Plugin Logs")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(plugin.pluginID)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+
+            ScrollView {
+                Text(output)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .padding(22)
+        .frame(width: 560, height: 380)
+        .background(Theme.raised)
+        .task {
+            output = await model.pluginLogs(plugin.pluginID)
+                ?? "No plugin log output."
+        }
+    }
+}
+
+private struct IntegrationsSettingsView: View {
+    @ObservedObject var model: CorralModel
+
+    @State private var activeIntegration: String?
+    @State private var status = "No integration command run yet."
+
+    private let integrations = [
+        "pi", "omp", "claude", "codex", "copilot", "devin", "droid",
+        "kimi", "opencode", "kilo", "hermes", "qodercli", "cursor",
+        "mastracode",
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Install and uninstall are idempotent; Herdr does not report integration state.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+
+            SettingsSection(title: "Agent Integrations") {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(integrations, id: \.self) { integration in
+                            HStack(spacing: 10) {
+                                Text(integration)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(Theme.textPrimary)
+                                Spacer()
+                                Button("Install") {
+                                    Task {
+                                        await runIntegrationAction(
+                                            integration,
+                                            install: true
+                                        )
+                                    }
+                                }
+                                Button("Uninstall", role: .destructive) {
+                                    Task {
+                                        await runIntegrationAction(
+                                            integration,
+                                            install: false
+                                        )
+                                    }
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .padding(.vertical, 7)
+                            .disabled(activeIntegration != nil)
+
+                            if integration != integrations.last {
+                                Divider()
+                                    .overlay(Theme.hairlineStrong)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 230)
+            }
+
+            Text(status)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+        }
+        .settingsTabBackground()
+    }
+
+    private func runIntegrationAction(
+        _ integration: String,
+        install: Bool
+    ) async {
+        activeIntegration = integration
+        status = "\(install ? "Installing" : "Uninstalling") \(integration)…"
+        let output = install
+            ? await model.integrationInstall(integration)
+            : await model.integrationUninstall(integration)
+        status = output
+            ?? "\(install ? "Install" : "Uninstall") for \(integration) failed or returned no output."
+        activeIntegration = nil
+    }
+}
+
+private struct ConfigSettingsView: View {
+    @ObservedObject var model: CorralModel
+
+    @State private var configText = ""
+    @State private var status: String?
+    @State private var fileExists = true
+    @State private var isRunningAction = false
+
+    private var configURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/herdr/config.toml")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Caution: this edits the shared global Herdr configuration.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+
+            SettingsSection(title: "~/.config/herdr/config.toml") {
+                VStack(alignment: .leading, spacing: 9) {
+                    if !fileExists {
+                        Text("The config file does not exist yet. Saving will create it.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+
+                    TextEditor(text: $configText)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(Theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Theme.base)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Theme.hairlineStrong, lineWidth: 1)
+                        )
+                        .frame(minHeight: 160)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Check") {
+                    Task { await checkConfig() }
+                }
+                Button("Save", action: saveConfig)
+                Button("Reload Server") {
+                    Task { await reloadServer() }
+                }
+                Spacer()
+            }
+            .buttonStyle(.bordered)
+            .disabled(isRunningAction)
+
+            if let status {
+                ScrollView {
+                    Text(status)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .frame(maxHeight: 44)
+            }
+        }
+        .settingsTabBackground()
+        .task {
+            loadConfig()
+        }
+    }
+
+    private func loadConfig() {
+        do {
+            configText = try String(contentsOf: configURL, encoding: .utf8)
+            fileExists = true
+            status = nil
+        } catch CocoaError.fileReadNoSuchFile {
+            configText = ""
+            fileExists = false
+            status = nil
+        } catch {
+            configText = ""
+            fileExists = FileManager.default.fileExists(atPath: configURL.path)
+            status = "Unable to load config: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveConfig() {
+        do {
+            try FileManager.default.createDirectory(
+                at: configURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try configText.write(to: configURL, atomically: true, encoding: .utf8)
+            fileExists = true
+            status = "Config saved."
+        } catch {
+            status = "Unable to save config: \(error.localizedDescription)"
+        }
+    }
+
+    private func checkConfig() async {
+        isRunningAction = true
+        status = await model.configCheck()
+            ?? "Config check failed or returned no diagnostics."
+        isRunningAction = false
+    }
+
+    private func reloadServer() async {
+        isRunningAction = true
+        status = await model.reloadConfig()
+            ? "Herdr server configuration reloaded."
+            : "Unable to reload the Herdr server configuration."
         isRunningAction = false
     }
 }
