@@ -814,6 +814,12 @@ final class RaiModel: ObservableObject {
     }
 
     func close(tab: HerdrTab) {
+        if let workspace = snapshot?.workspaces.first(where: {
+            $0.workspaceID == tab.workspaceID
+        }), workspace.tabCount == 1 {
+            close(workspace: workspace)
+            return
+        }
         runAction(["tab", "close", tab.tabID])
     }
 
@@ -1339,8 +1345,8 @@ final class RaiModel: ObservableObject {
         runAction(["tab", "create", "--workspace", workspace, "--focus"])
     }
     func closeTab() {
-        guard let tab = selectedTabID else { return }
-        runAction(["tab", "close", tab])
+        guard let tab = selectedTab else { return }
+        close(tab: tab)
     }
     func newWorkspace() {
         runAction(["workspace", "create", "--focus"])
