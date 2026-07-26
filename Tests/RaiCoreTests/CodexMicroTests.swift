@@ -298,29 +298,40 @@ final class CodexMicroTests: XCTestCase {
         XCTAssertEqual(tracker.heldDirection, .right)
     }
 
-    func testSlotAssignmentIsStableAcrossRecencyChanges() {
+    func testSlotAssignmentPreservesFilteredInputOrderAndCapsAtSix() {
         var assigner = MicroSlotAssigner()
         let first = assigner.update([
             .init(paneID: "a", status: .working),
             .init(paneID: "b", status: .blocked),
             .init(paneID: "c", status: .idle),
+            .init(paneID: "d", status: .done),
+            .init(paneID: "e", status: .working),
+            .init(paneID: "f", status: .blocked),
+            .init(paneID: "g", status: .idle),
         ])
-        XCTAssertEqual(first.compactMap { $0?.paneID }, ["a", "b", "c"])
+        XCTAssertEqual(
+            first.compactMap { $0?.paneID },
+            ["a", "b", "c", "d", "e", "f"]
+        )
 
         let reordered = assigner.update([
             .init(paneID: "c", status: .working),
             .init(paneID: "a", status: .done),
             .init(paneID: "b", status: .blocked),
         ])
-        XCTAssertEqual(reordered.compactMap { $0?.paneID }, ["a", "b", "c"])
-        XCTAssertEqual(reordered[0]?.status, .done)
+        XCTAssertEqual(reordered.compactMap { $0?.paneID }, ["c", "a", "b"])
+        XCTAssertEqual(reordered[0]?.status, .working)
 
-        let replaced = assigner.update([
-            .init(paneID: "c", status: .working),
-            .init(paneID: "d", status: .idle),
-            .init(paneID: "a", status: .done),
-        ])
-        XCTAssertEqual(replaced.compactMap { $0?.paneID }, ["a", "d", "c"])
+        let filtered = assigner.update(
+            [
+                .init(paneID: "a", status: .idle),
+                .init(paneID: "b", status: .blocked),
+                .init(paneID: "c", status: .done),
+            ],
+            selectedPaneID: "a",
+            onlyNeedsYou: true
+        )
+        XCTAssertEqual(filtered.compactMap { $0?.paneID }, ["a", "b"])
     }
 
     func testMockTransportRecordsAndInjectsReports() throws {

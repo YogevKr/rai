@@ -12,12 +12,20 @@ enum MicroControllerIntent: Equatable {
 }
 
 enum MicroControllerDecisions {
-    static func assignments(from panes: [Pane]) -> [MicroSlotAssignment] {
-        panes.sorted {
-            if $0.revision != $1.revision { return $0.revision > $1.revision }
-            return $0.paneID < $1.paneID
-        }.map {
-            MicroSlotAssignment(paneID: $0.paneID, status: $0.agentStatus)
+    static func assignments(from snapshot: SessionSnapshot) -> [MicroSlotAssignment] {
+        snapshot.workspaces.flatMap { workspace in
+            snapshot.tabs
+                .filter { $0.workspaceID == workspace.workspaceID }
+                .flatMap { tab in
+                    snapshot.panes
+                        .filter { $0.tabID == tab.tabID }
+                        .map {
+                            MicroSlotAssignment(
+                                paneID: $0.paneID,
+                                status: $0.agentStatus
+                            )
+                        }
+                }
         }
     }
 
@@ -107,7 +115,7 @@ final class MicroController {
 
     func update(snapshot: SessionSnapshot) {
         worker?.update(
-            assignments: MicroControllerDecisions.assignments(from: snapshot.panes),
+            assignments: MicroControllerDecisions.assignments(from: snapshot),
             selectedPaneID: model?.selectedPaneID,
             onlyNeedsYou: model?.onlyNeedsYou ?? false
         )

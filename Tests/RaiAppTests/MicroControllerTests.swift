@@ -3,25 +3,79 @@ import RaiCore
 import XCTest
 
 final class MicroControllerTests: XCTestCase {
-    func testAssignmentsAreMostRecentFirst() throws {
-        func pane(_ id: String, revision: Int, status: String) throws -> Pane {
-            let json = """
+    func testAssignmentsFollowSnapshotSidebarOrder() throws {
+        let json = """
+        {
+          "version":"1","protocol":1,
+          "focused_workspace_id":null,"focused_tab_id":null,"focused_pane_id":null,
+          "workspaces":[
             {
-              "pane_id":"\(id)","terminal_id":"term-\(id)",
-              "workspace_id":"workspace","tab_id":"tab","focused":false,
-              "cwd":"/tmp","agent":"codex","agent_status":"\(status)",
-              "revision":\(revision)
+              "workspace_id":"second","number":1,"label":"Second","focused":false,
+              "pane_count":1,"tab_count":1,"active_tab_id":"second-tab",
+              "agent_status":"idle","worktree":null
+            },
+            {
+              "workspace_id":"first","number":0,"label":"First","focused":false,
+              "pane_count":3,"tab_count":2,"active_tab_id":"first-tab",
+              "agent_status":"working","worktree":null
             }
-            """
-            return try JSONDecoder().decode(Pane.self, from: Data(json.utf8))
+          ],
+          "tabs":[
+            {
+              "tab_id":"first-tab","workspace_id":"first","number":0,
+              "label":"First tab","focused":false,"pane_count":2,
+              "agent_status":"working"
+            },
+            {
+              "tab_id":"second-tab","workspace_id":"second","number":1,
+              "label":"Second tab","focused":false,"pane_count":1,
+              "agent_status":"idle"
+            },
+            {
+              "tab_id":"last-tab","workspace_id":"first","number":2,
+              "label":"Last tab","focused":false,"pane_count":1,
+              "agent_status":"blocked"
+            }
+          ],
+          "panes":[
+            {
+              "pane_id":"last","terminal_id":"term-last",
+              "workspace_id":"first","tab_id":"last-tab","focused":false,
+              "cwd":"/tmp","agent":"codex","agent_status":"blocked","revision":99
+            },
+            {
+              "pane_id":"second","terminal_id":"term-second",
+              "workspace_id":"second","tab_id":"second-tab","focused":false,
+              "cwd":"/tmp","agent":"codex","agent_status":"idle","revision":1
+            },
+            {
+              "pane_id":"first","terminal_id":"term-first",
+              "workspace_id":"first","tab_id":"first-tab","focused":false,
+              "cwd":"/tmp","agent":"codex","agent_status":"working","revision":50
+            },
+            {
+              "pane_id":"first-next","terminal_id":"term-first-next",
+              "workspace_id":"first","tab_id":"first-tab","focused":false,
+              "cwd":"/tmp","agent":"codex","agent_status":"done","revision":100
+            }
+          ],
+          "layouts":[]
         }
+        """
+        let snapshot = try JSONDecoder().decode(
+            SessionSnapshot.self,
+            from: Data(json.utf8)
+        )
 
-        let assignments = MicroControllerDecisions.assignments(from: [
-            try pane("old", revision: 4, status: "idle"),
-            try pane("new", revision: 9, status: "working"),
-        ])
-        XCTAssertEqual(assignments.map(\.paneID), ["new", "old"])
-        XCTAssertEqual(assignments.map(\.status), [.working, .idle])
+        let assignments = MicroControllerDecisions.assignments(from: snapshot)
+        XCTAssertEqual(
+            assignments.map(\.paneID),
+            ["second", "first", "first-next", "last"]
+        )
+        XCTAssertEqual(
+            assignments.map(\.status),
+            [.idle, .working, .done, .blocked]
+        )
     }
 
     func testEventToIntentMapping() {

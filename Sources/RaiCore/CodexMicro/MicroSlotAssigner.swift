@@ -9,51 +9,31 @@ public struct MicroSlotAssignment: Equatable, Sendable {
 }
 
 public struct MicroSlotAssigner: @unchecked Sendable {
-    private var recency = LRUTracker<String>(capacity: 6)
     private var slots: [String?] = Array(repeating: nil, count: 6)
 
     public init() {}
 
-    /// Updates from panes ordered most-recent-first. Existing eligible panes retain
-    /// their physical slot; newly eligible panes fill empty slots in recency order.
+    /// Updates from panes in sidebar order. Each eligible pane maps directly to
+    /// the corresponding physical slot, capped at the six available slots.
     public mutating func update(
-        _ panesMostRecentFirst: [MicroSlotAssignment],
+        _ panesInSidebarOrder: [MicroSlotAssignment],
         selectedPaneID: String? = nil,
         onlyNeedsYou: Bool = false
     ) -> [MicroSlotAssignment?] {
-        var statuses: [String: AgentStatus] = [:]
-        var orderedIDs: [String] = []
-        for pane in panesMostRecentFirst where statuses[pane.paneID] == nil {
-            guard AttentionFilter.includes(
-                status: pane.status,
-                id: pane.paneID,
+        var seenPaneIDs: Set<String> = []
+        let assignments = panesInSidebarOrder.filter {
+            seenPaneIDs.insert($0.paneID).inserted && AttentionFilter.includes(
+                status: $0.status,
+                id: $0.paneID,
                 selectedID: selectedPaneID,
                 onlyNeedsYou: onlyNeedsYou
-            ) else { continue }
-            statuses[pane.paneID] = pane.status
-            orderedIDs.append(pane.paneID)
+            )
         }
-
-        let desired = Set(orderedIDs.prefix(6))
-        for index in slots.indices {
-            if let paneID = slots[index], !desired.contains(paneID) {
-                slots[index] = nil
-                recency.remove(paneID)
-            }
-        }
-        for paneID in orderedIDs.prefix(6).reversed() {
-            _ = recency.touch(paneID)
-        }
-        let assigned = Set(slots.compactMap { $0 })
-        var newcomers = orderedIDs.prefix(6).filter { !assigned.contains($0) }[...]
-        for index in slots.indices where slots[index] == nil && !newcomers.isEmpty {
-            slots[index] = newcomers.removeFirst()
-        }
-        return slots.map { paneID in
-            paneID.flatMap { id in
-                statuses[id].map { MicroSlotAssignment(paneID: id, status: $0) }
-            }
-        }
+        let assigned = Array(assignments.prefix(6))
+        slots = assigned.map(\.paneID)
+            + Array(repeating: nil, count: 6 - assigned.count)
+        return assigned.map(Optional.some)
+            + Array(repeating: nil, count: 6 - assigned.count)
     }
 
     public var paneIDsBySlot: [String?] { slots }
