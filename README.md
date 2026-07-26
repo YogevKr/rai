@@ -23,13 +23,13 @@ per-pane terminals — driving the **unchanged** herdr daemon underneath.
 
 ## The name
 
-**rai** comes from the Arabic **رَاعِي** (*rāʿī*) — a *shepherd*, one who tends
+**rai** comes from the Arabic **رَاعِي** (*rāʿī*) - a *shepherd*, one who tends
 and watches over a flock. It's built on the triliteral root **ر‑ع‑ي** (*r‑ʿ‑y*),
 which carries the sense of pasturing, guarding, and caring for; the same root
 gives **رِعَايَة** (*riʿāya*), "care" or "guardianship."
 
 The fit is deliberate: **herdr** keeps the *herd* of agents; **rai** is the
-shepherd that watches over them — a calm window from which you keep an eye on the
+shepherd that watches over them - a calm window from which you keep an eye on the
 flock and step in only when one needs you.
 
 ## Why
@@ -44,7 +44,7 @@ terminal widget**.
 
 ## Features
 
-- **Live workspace sidebar** — workspaces → tabs → panes straight from
+- **Live workspace sidebar** - workspaces → tabs → panes straight from
   `session.snapshot`, kept live by herdr's event stream (no polling loop).
 - **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
   type, watch output, search the scrollback (⌘F).
