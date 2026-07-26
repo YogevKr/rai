@@ -1,144 +1,158 @@
-# corral
+<div align="center">
 
-A native macOS window for your **[herdr](https://herdr.dev)** herd — the desktop
-GUI that's currently missing. herdr is a great agent multiplexer, but its
-frontend is a TUI. `corral` is a thin native client over herdr's socket API: a
-real AppKit/SwiftUI window with a sidebar, tabs, splits, drag, and per-pane
-terminals — driving the **unchanged** herdr daemon underneath.
+<img src="assets/rai-icon.png" width="132" alt="rai icon" />
 
-> Working name (a corral holds the herd). Rename freely.
+# rai
 
-## Why this can exist (and why it's a gap)
+**A native macOS window for your [herdr](https://herdr.dev) herd.**
 
-herdr already exposes everything a GUI needs over its unix socket
-(`~/.config/herdr/herdr.sock`), newline-delimited JSON, `{id, method, params}`:
+herdr is a terminal multiplexer and live daemon for AI coding agents — but its
+frontend is a TUI. `rai` is a thin, fast native client over herdr's socket API:
+a real AppKit/SwiftUI window with a workspace sidebar, tabs, splits, drag, and
+per-pane terminals — driving the **unchanged** herdr daemon underneath.
 
-- **`session.snapshot`** — the full tree: workspaces → tabs → panes, focus,
-  agent status, worktree/repo per workspace. (Drives the sidebar.)
-- **`events.subscribe`** — live deltas: `layout.updated`, `pane.created/closed/
-  moved/focused`, `pane.agent_status_changed`, `pane.output_changed`,
-  `tab.closed`. (Keeps the UI live without polling.)
-- **`pane.send_input`**, **`pane.resize`** — drive a pane.
-- **`pane.read` (`--format ansi`)** / the `terminal` frame-attach stream —
-  render a pane's content.
-- **`layout.set_split_ratio` / `layout.apply` / `layout.export`** — read & drive
-  splits. **`agent.*`** — status, read, send, start, focus.
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-1a1a1a?logo=apple)
+![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-46ce7c)
 
-So the app is fundamentally: **socket client + terminal widget**. No herdr fork,
-no runtime patches. The only existing frontend anyone built is mobile (Collie,
-a Tailscale PWA). The single-window native Mac client doesn't exist yet.
+</div>
 
-This is deliberately **not** the reverted `ghostherd` approach (which
-AppleScript-spawned real Ghostty tabs). corral renders panes *inside its own
-window* from the socket stream — one window, one process, no terminal-app
-puppetry.
+---
 
-## Prior art: cmux (why not just use it?)
+## Why
 
-[cmux](https://cmux.com) (manaflow-ai/cmux, GPL) is a native macOS Swift/AppKit
-terminal on **libghostty** with a vertical-tab sidebar, notification rings, split
-panes, an in-app browser, a Unix-socket API, and session restore — almost exactly
-this app's shape. **But cmux is its own multiplexer, not a herdr frontend**, and
-its persistence model is fundamentally weaker for the daemon/remote case:
+herdr is a **live daemon**: detach and your agents keep running mid-flight;
+reattach to the same live processes, locally or over SSH. That's its edge over
+"save & resume" GUIs that stop processes on quit and reconstruct the layout
+later. `rai` keeps herdr's daemon-grade detach + remote + plugin/agent ecosystem
+and adds the native single-window GUI — no herdr fork, no runtime patches, no
+AppleScript terminal-puppetry. The app is fundamentally **socket client +
+terminal widget**.
 
-- **herdr = live daemon.** Detach and the processes *keep running*; reattach to
-  the same live, mid-flight process, locally or over SSH (`herdr --remote`).
-- **cmux = save + resume.** A GUI app: quit/reboot stops the processes, and on
-  relaunch cmux *rebuilds the layout and re-runs each agent's native resume*
-  (`claude --resume`, `codex resume`). Great "reopen and it's back" UX, but a
-  reconstruction, not a live daemon, and no remote-daemon-over-SSH.
+## Features
 
-So corral exists to keep herdr's daemon-grade detach + remote + plugin/agent
-ecosystem, and add the GUI cmux has. The terminal-emulation itself is **reused,
-not built**: `libghostty-vt` (Ghostty's core, alpha C API, fed external/remote VT
-bytes — see Ghostty's "Reconnectable Terminal" prototype, disc #12176) or
-**SwiftTerm** for v1. Only the herdr-binding shell is new.
+- **Live workspace sidebar** — workspaces → tabs → panes straight from
+  `session.snapshot`, kept live by herdr's event stream (no polling loop).
+- **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
+  type, watch output, search the scrollback (⌘F).
+- **Nested splits** — rendered from the daemon's own split geometry and ratios.
+- **Split &amp; launch an agent** — spawn Claude or Codex directly into a new pane.
+- **Broadcast input** — send one command to every pane in a tab.
+- **Drag to reorder** tabs and spaces; **double-click** to rename a tab or pane.
+- **Native notifications** + dock badge when an agent goes *blocked* or *done*.
+- **Command palette** (⌘K) for fuzzy navigation.
+- **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
+  Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
+  that hands screenshots straight to Claude Code.
+- **Settings** for the herdr server, appearance, plugins, and integrations.
 
-## Architecture
+## Requirements
+
+- macOS 14 (Sonoma) or newer
+- A running [**herdr**](https://herdr.dev) server (`herdr server`)
+- Xcode command-line tools / Swift 5.9+ toolchain (to build)
+
+## Install
+
+Build from source and drop the app into `/Applications`:
+
+```sh
+git clone https://github.com/YogevKr/rai.git
+cd rai
+./scripts/bundle.sh          # builds a release Rai.app and installs it
+open -a Rai
+```
+
+Or run straight from the package during development:
+
+```sh
+swift run rai
+```
+
+`rai` connects to `~/.config/herdr/herdr.sock` by default. Set
+`HERDR_SOCKET_PATH` to point at a different socket (e.g. a named session).
+
+## Usage
+
+Launch `rai` with a herdr server running and the sidebar populates with your live
+herd. Click a tab to attach its panes; type as you would in any terminal.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘K` | Command palette |
+| `⌘T` / `⌘W` | New / close tab |
+| `⌃⇥` / `⌃⇧⇥` | Next / previous tab |
+| `⌘1`…`⌘9` | Select tab by index |
+| `⌘D` / `⌘⇧D` | Split right / down |
+| `⌘⇧W` | Close pane |
+| `⌘⇧↩` | Zoom pane |
+| `⌥⌘←/→/↑/↓` | Focus pane in direction |
+| `⌘N` | New space (workspace) |
+| `⌘⇧]` / `⌘⇧[` | Next / previous space |
+| `⌘F` / `⌘G` / `⌘⇧G` | Find / next / previous in scrollback |
+| `⌘R` | Refresh |
+
+Double-click a tab or pane title to rename it; drag a tab or space in the sidebar
+to reorder.
+
+## How it works
 
 ```
   herdr daemon (unchanged)
-        │  unix socket: ~/.config/herdr/herdr.sock  (newline JSON-RPC + event stream)
+        │  unix socket: ~/.config/herdr/herdr.sock
+        │  newline-delimited JSON-RPC + a live event stream
         ▼
-  corral (native macOS app)
-   ├─ HerdrClient        session.snapshot + events.subscribe → an observable model
-   ├─ Sidebar/Tabs/Split  SwiftUI/AppKit views bound to that model
-   └─ PaneView            terminal widget:
-                            content  ← pane.read(ansi) / terminal frame stream
-                            keystrokes → pane.send_input
-                            resize     → pane.resize
+  rai (native macOS app)
+   ├─ HerdrClient   session.snapshot + events.subscribe → an observable model
+   ├─ Sidebar/Tabs  SwiftUI/AppKit views bound to that model
+   └─ PaneView      terminal widget:
+                      content   ← pane read / terminal frame stream
+                      keystrokes → pane input
+                      splits     ← layout snapshots + ratios
 ```
 
-## Stack decisions
+rai speaks herdr's documented `herdr.sock` RPC: `session.snapshot` for the tree,
+`events.subscribe` for live deltas (`layout.updated`,
+`pane.created/closed/moved/focused`, `pane.agent_status_changed`, `tab.closed`),
+plus `pane`/`tab`/`workspace`/`agent` methods to drive it. Two connections are
+held open — one for RPC, one for the event push.
 
-- **Swift + AppKit/SwiftUI** — native single-window Mac app (the stated want).
-- **Terminal widget:** start with **SwiftTerm** (MIT, trivially fed external
-  bytes — perfect for a remote PTY over the socket). **libghostty** is the
-  stretch goal (GPU, matches Ghostty) *if* its embedding API accepts an external
-  byte source rather than owning its own PTY — prove that before committing.
-- **Transport:** raw `AF_UNIX` `SOCK_STREAM`, one connection for RPC + one for the
-  event stream (events keep the socket open and push).
+### Explore the API without Swift
 
-## Roadmap
-
-- **P0 — de-risk (this repo, `poc/`):** a socket client that snapshots the tree,
-  streams events, reads a pane, and sends it input. Proves the whole loop from a
-  script before any Swift. ✅ started.
-- **P1 — MVP:** Swift window; sidebar from `session.snapshot`, kept live by
-  `events.subscribe`; **one interactive pane** (type into it, see output) via
-  SwiftTerm + `pane.send_input` + a content stream.
-- **P2 — current:** native tab bar; full nested split rendering from layout
-  snapshots and ratios; pane/tab focus; polished workspace sidebar and agent
-  status glyphs. Driving split ratios and pane lifecycle actions remains future
-  work.
-- **P3:** drag to move/split panes, workspace switching, agent actions
-  (`agent.send/start/attach`), native notifications on `blocked`/`done`.
-- **P4 (stretch):** swap SwiftTerm → libghostty; remote herdr over SSH
-  (`herdr --remote`).
-
-## Run the PoC
+The `poc/` folder has a small Python client that exercises the same socket, handy
+for poking at herdr directly:
 
 ```sh
-poc/herdr_client.py tree              # render the live workspace/tab/pane tree
-poc/herdr_client.py watch             # stream live events
-poc/herdr_client.py read  <pane_id>   # dump a pane's recent content
-poc/herdr_client.py send  <pane_id> "echo hi\n"   # send input to a pane
+poc/herdr_client.py tree               # render the live workspace/tab/pane tree
+poc/herdr_client.py watch              # stream live events
+poc/herdr_client.py read <pane_id>     # dump a pane's recent content
+poc/herdr_client.py send <pane_id> "echo hi\n"
 ```
 
-Requires a running herdr server (`herdr` / `herdr server`).
+## Project layout
 
-## macOS MVP
-
-The SwiftPM package builds both the native app and a headless socket probe:
-
-```sh
-swift build
-swift run corral-probe
-swift run corral
+```
+Sources/RaiApp     SwiftUI/AppKit app — views, terminal panes, settings, commands
+Sources/RaiCore    HerdrClient (socket RPC + event stream), model types, fuzzy match
+Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
+Tests/RaiCoreTests unit tests
+scripts/bundle.sh  builds and installs Rai.app
+poc/               reference Python herdr socket client
+docs/ROADMAP.md    herdr API coverage + build plan
 ```
 
-`corral` targets macOS 14 or newer. It connects to
-`~/.config/herdr/herdr.sock` by default; set `HERDR_SOCKET_PATH` to override
-the path. The probe prints the live workspace → tab → pane tree, then reads the
-focused pane through the same `HerdrClient` used by the app.
+## The name
 
-For explicit transport checks against a disposable or known-idle shell pane:
+Inspired by the Arabic word for shepherd (رَاعِي, *rāʿī*) — `rai` is a fast,
+lightweight terminal interface that watches over your herd.
 
-```sh
-swift run corral-probe --watch
-swift run corral-probe --send-smoke <pane-id>
-```
+## Credits
 
-The app renders every pane in the selected tab using the nested split geometry
-and ratios from `session.snapshot.layouts`. Workspace/tab/pane creation, focus,
-movement, closure, and agent status updates arrive on the event connection and
-are coalesced before updating SwiftUI. Herdr protocol 16 does not expose
-`pane.output_changed` as a subscribable event, so visible panes use
-`pane.updated` plus a 700 ms `pane.read` fallback poll.
+Terminal emulation by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
+(Miguel de Icaza, MIT). Built on top of [herdr](https://herdr.dev).
 
-Terminal view sizes are intentionally not forwarded. Protocol 16's public
-`pane.resize` request is directional split resizing, not terminal rows/columns.
-The daemon's separate `herdr-client.sock` terminal-observer transport negotiates
-a fixed rows/columns size through an undocumented binary handshake and exposes
-no observer resize message in the JSON API. Corral keeps the documented
-`herdr.sock` RPC path rather than guessing that private protocol.
+## License
+
+[MIT](LICENSE)

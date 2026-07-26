@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""corral PoC — a minimal herdr socket client.
+"""rai PoC — a minimal herdr socket client.
 
 Proves the exact loop a native macOS GUI would build on, from a script first:
 connect to the herdr unix socket, read the full workspace/tab/pane tree
@@ -106,7 +106,7 @@ def cmd_send(h: Herdr, pane_id: str, text: str) -> None:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="corral PoC herdr socket client")
+    p = argparse.ArgumentParser(description="rai PoC herdr socket client")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("tree")
     w = sub.add_parser("watch"); w.add_argument("--secs", type=float, default=None)
@@ -117,7 +117,7 @@ def main() -> int:
     try:
         h = Herdr()
     except OSError as exc:
-        print(f"corral: cannot reach herdr socket at {SOCKET_PATH}: {exc}", file=sys.stderr)
+        print(f"rai: cannot reach herdr socket at {SOCKET_PATH}: {exc}", file=sys.stderr)
         return 1
 
     if args.cmd == "tree":

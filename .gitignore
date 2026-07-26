@@ -1,2 +1,12 @@
+# Swift Package Manager
 .build/
 .swiftpm/
+
+# git worktrees (used by local tooling)
+.worktrees/
+
+# macOS
+.DS_Store
+
+# Built app bundle
+/*.app
