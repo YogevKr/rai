@@ -38,6 +38,9 @@ struct RaiRootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $model.isBroadcastPresented) {
+            BroadcastSheet(model: model)
+        }
         .background(WindowConfigurator())
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
         .onAppear { settings.updateSystemColorScheme(colorScheme) }

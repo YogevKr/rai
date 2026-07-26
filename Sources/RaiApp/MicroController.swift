@@ -1,15 +1,10 @@
 import AppKit
+import Combine
 import Foundation
 import RaiCore
 
 enum MicroControllerIntent: Equatable {
-    case selectSlot(Int)
-    case focusPane(String)
-    case stepSelection(Int)
-    case openCommandPalette
-    case wisprFlow(Bool)
-    case sendReturn
-    case unboundCommand(id: String, state: MicroPressState)
+    case action(MicroAction, state: MicroPressState)
 }
 
 enum MicroControllerDecisions {
@@ -49,34 +44,39 @@ enum MicroControllerDecisions {
         return paneIDs[(current + offset + paneIDs.count) % paneIDs.count]
     }
 
-    static func intent(for event: MicroInputEvent) -> MicroControllerIntent? {
+    static func controlAndState(
+        for event: MicroInputEvent
+    ) -> (MicroControl, MicroPressState)? {
         switch event {
-        case .agentKey(let index, .press):
-            .selectSlot(index)
-        case .agentKey(_, .release):
-            nil
-        case .joystick(let direction, .press):
-            .focusPane(direction.rawValue.prefix(1).description)
-        case .joystick(_, .release):
-            nil
-        case .encoder(.clockwise):
-            .stepSelection(-1)
-        case .encoder(.counterclockwise):
-            .stepSelection(1)
-        case .encoder(.press):
-            .openCommandPalette
-        case .encoder(.release):
-            nil
-        case .commandKey("ACT10", let state):
-            .wisprFlow(state == .press)
-        case .commandKey("ACT11", let state):
-            // The key next to the mic sends Return to the focused agent.
-            state == .press ? .sendReturn : nil
+        case .agentKey(let index, let state):
+            (.agentKey(index), state)
         case .commandKey(let id, let state):
-            .unboundCommand(id: id, state: state)
+            (.commandKey(id), state)
+        case .encoder(.clockwise):
+            (.dialClockwise, .press)
+        case .encoder(.counterclockwise):
+            (.dialCounterClockwise, .press)
+        case .encoder(.press):
+            (.dialPress, .press)
+        case .encoder(.release):
+            (.dialPress, .release)
+        case .joystick(let direction, let state):
+            (.joystick(direction), state)
         case .joystickSample, .deviceResponse, .debugLog, .unknown:
             nil
         }
+    }
+
+    static func intent(
+        for event: MicroInputEvent,
+        bindings: MicroBindings
+    ) -> MicroControllerIntent? {
+        guard let (control, state) = controlAndState(for: event) else { return nil }
+        let action = bindings[control]
+        // Wispr Flow is deliberately a hold action. Every other binding fires
+        // on its press edge only, even when its hardware reports a release.
+        guard state == .press || action == .wisprFlow else { return nil }
+        return .action(action, state: state)
     }
 }
 
@@ -88,24 +88,35 @@ final class MicroController {
     static let wisprFlowStartURL = URL(string: "wispr-flow://start-hands-free")!
     static let wisprFlowStopURL = URL(string: "wispr-flow://stop-hands-free")!
 
-    typealias UnboundCommandHandler = (String, MicroPressState) -> Void
-
     private weak var model: RaiModel?
     private var worker: Worker?
     private var wisprFlowUnavailableLogged = false
-    var onUnboundCommand: UnboundCommandHandler?
+    private var bindingsObserver: AnyCancellable?
 
     init(model: RaiModel) {
         self.model = model
+        bindingsObserver = MicroStatusCenter.shared.bindings.$table
+            .sink { [weak self] table in
+                let snapshot = MicroBindings(table: table)
+                self?.worker?.update(bindings: snapshot)
+            }
     }
 
     func start() {
         guard worker == nil else { return }
-        let worker = Worker { [weak self] intent, slots, ordered in
-            Task { @MainActor [weak self] in
-                self?.perform(intent, slots: slots, ordered: ordered)
+        let worker = Worker(
+            bindings: MicroStatusCenter.shared.bindings.copy(),
+            intentHandler: { [weak self] intent, slots, ordered in
+                Task { @MainActor [weak self] in
+                    self?.perform(intent, slots: slots, ordered: ordered)
+                }
+            },
+            pressedHandler: { control in
+                Task { @MainActor in
+                    MicroStatusCenter.shared.recordPressed(control)
+                }
             }
-        }
+        )
         self.worker = worker
         worker.start()
     }
@@ -129,7 +140,8 @@ final class MicroController {
         ordered: [MicroSlotAssignment]
     ) {
         guard let model else { return }
-        switch intent {
+        guard case .action(let action, let state) = intent else { return }
+        switch action {
         case .selectSlot(let index):
             guard slots.indices.contains(index), let paneID = slots[index]?.paneID else {
                 return
@@ -137,32 +149,61 @@ final class MicroController {
             model.select(paneID: paneID, focusInHerdr: true)
         case .focusPane(let direction):
             model.focusPane(direction)
-        case .stepSelection(let step):
+        case .nextAgent, .prevAgent:
             // The dial walks the full agent list in sidebar order — including
             // agents that overflowed off the six keys — so nothing is
             // unreachable. The keys stay attention-first; the dial is the
             // "scroll through everything" control.
+            let step = action == .nextAgent ? 1 : -1
             guard let paneID = MicroControllerDecisions.nextPaneID(
                 in: ordered.map(Optional.some),
                 selectedPaneID: model.selectedPaneID,
                 step: step
             ) else { return }
             model.select(paneID: paneID, focusInHerdr: true)
-        case .openCommandPalette:
+        case .commandPalette:
             if !model.isCommandPalettePresented {
                 model.toggleCommandPalette()
             }
         case .sendReturn:
             model.microSendReturnToSelectedPane()
-        case .wisprFlow(let starting):
-            openWisprFlow(starting: starting)
-        case .unboundCommand(let id, let state):
-            // Log so the physical layout of the unbound command keys can be
-            // identified (press a key → see its id) before binding them.
-            if state == .press {
-                NSLog("rai: Codex Micro unbound key pressed: \(id)")
-            }
-            onUnboundCommand?(id, state)
+        case .interruptEscape:
+            model.microSendKeysToSelectedPane("Escape")
+        case .stopCtrlC:
+            model.microSendKeysToSelectedPane("C-c")
+        case .approve:
+            model.microSendTextToSelectedPane("y", submit: true)
+        case .deny:
+            model.microSendTextToSelectedPane("n", submit: true)
+        case .customKeys(let keys):
+            model.microSendKeysToSelectedPane(keys)
+        case .customText(let text):
+            model.microSendTextToSelectedPane(text, submit: true)
+        case .toggleOnlyNeedsYou:
+            model.onlyNeedsYou.toggle()
+        case .newTab:
+            model.newTab()
+        case .closeTab:
+            model.closeTab()
+        case .reopenClosedTab:
+            model.reopenClosedTab()
+        case .newWorkspace:
+            model.newWorkspace()
+        case .collapseSpace:
+            guard let workspaceID = model.selectedWorkspace?.workspaceID else { return }
+            model.toggleWorkspaceCollapsed(workspaceID)
+        case .splitRight:
+            model.splitRight()
+        case .splitDown:
+            model.splitDown()
+        case .closePane:
+            model.closePane()
+        case .broadcast:
+            model.isBroadcastPresented = true
+        case .wisprFlow:
+            openWisprFlow(starting: state == .press)
+        case .none:
+            break
         }
     }
 
@@ -190,6 +231,7 @@ private final class Worker: @unchecked Sendable {
 
     private let lock = NSLock()
     private let intentHandler: IntentHandler
+    private let pressedHandler: @Sendable (MicroControl) -> Void
     private var runLoop: CFRunLoop?
     private var pendingBlocks: [@Sendable () -> Void] = []
     private var stopped = false
@@ -206,9 +248,16 @@ private final class Worker: @unchecked Sendable {
     // through every agent, not just the six that currently hold a key.
     private var orderedPanes: [MicroSlotAssignment] = []
     private var connected = false
+    private var bindings: MicroBindings
 
-    init(intentHandler: @escaping IntentHandler) {
+    init(
+        bindings: MicroBindings,
+        intentHandler: @escaping IntentHandler,
+        pressedHandler: @escaping @Sendable (MicroControl) -> Void
+    ) {
+        self.bindings = bindings
         self.intentHandler = intentHandler
+        self.pressedHandler = pressedHandler
     }
 
     func start() {
@@ -244,6 +293,13 @@ private final class Worker: @unchecked Sendable {
             orderedPanes = assignments
             sendLightingChanges()
         }
+    }
+
+    func update(bindings: MicroBindings) {
+        // The object is a detached value snapshot. It is installed on the HID
+        // run-loop just like slot assignments, so neither UserDefaults nor the
+        // observable Settings object is ever touched from this thread.
+        schedule { [weak self] in self?.bindings = bindings }
     }
 
     private func run() {
@@ -355,7 +411,14 @@ private final class Worker: @unchecked Sendable {
             }
             return
         }
-        guard let intent = MicroControllerDecisions.intent(for: event) else { return }
+        if let (control, state) = MicroControllerDecisions.controlAndState(for: event),
+           state == .press {
+            pressedHandler(control)
+        }
+        guard let intent = MicroControllerDecisions.intent(
+            for: event,
+            bindings: bindings
+        ) else { return }
         intentHandler(intent, slots, orderedPanes)
     }
 }

@@ -14,6 +14,8 @@ import RaiCore
 final class MicroStatusCenter: ObservableObject {
     static let shared = MicroStatusCenter()
 
+    let bindings: MicroBindings
+
     @Published var isEnabled: Bool {
         didSet {
             guard oldValue != isEnabled else { return }
@@ -32,9 +34,20 @@ final class MicroStatusCenter: ObservableObject {
     @Published private(set) var lastError: String?
     /// Rolling count of accepted lighting writes — cheap proof the link is live.
     @Published private(set) var acknowledgedWrites = 0
+    /// Latest press edge from any bindable control. Releases are intentionally
+    /// ignored so a learn operation cannot be completed twice by one gesture.
+    @Published private(set) var lastPressedControl: MicroControl?
+    @Published private(set) var pressSequence = 0
+    private var bindingsObserver: AnyCancellable?
 
     private init() {
+        bindings = MicroBindings.load()
         isEnabled = UserDefaults.standard.bool(forKey: MicroController.enabledDefaultsKey)
+        // Settings remains usable while the hardware integration is disabled,
+        // so persistence belongs here rather than in MicroController's lifetime.
+        bindingsObserver = bindings.$table
+            .dropFirst()
+            .sink { [weak bindings] _ in bindings?.persist() }
     }
 
     func deviceAttached(identity: MicroDeviceIdentity?) {
@@ -58,11 +71,24 @@ final class MicroStatusCenter: ObservableObject {
         lastError = message
     }
 
+    func recordPressed(_ control: MicroControl) {
+        lastPressedControl = control
+        pressSequence &+= 1
+        let sequence = pressSequence
+        Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            guard pressSequence == sequence else { return }
+            lastPressedControl = nil
+        }
+    }
+
     private func reset() {
         isConnected = false
         transportName = nil
         nodeID = nil
         lastError = nil
         acknowledgedWrites = 0
+        lastPressedControl = nil
+        pressSequence = 0
     }
 }

@@ -79,67 +79,109 @@ final class MicroControllerTests: XCTestCase {
     }
 
     func testEventToIntentMapping() {
-        XCTAssertEqual(
-            MicroControllerDecisions.intent(for: .agentKey(index: 2, state: .press)),
-            .selectSlot(2)
-        )
-        XCTAssertNil(
-            MicroControllerDecisions.intent(for: .agentKey(index: 2, state: .release))
-        )
+        let bindings = MicroBindings.default
         XCTAssertEqual(
             MicroControllerDecisions.intent(
-                for: .joystick(direction: .left, state: .press)
+                for: .agentKey(index: 2, state: .press),
+                bindings: bindings
             ),
-            .focusPane("l")
+            .action(.selectSlot(2), state: .press)
         )
         XCTAssertNil(
             MicroControllerDecisions.intent(
-                for: .joystick(direction: .left, state: .release)
+                for: .agentKey(index: 2, state: .release),
+                bindings: bindings
             )
         )
         XCTAssertEqual(
-            MicroControllerDecisions.intent(for: .encoder(.clockwise)),
-            .stepSelection(-1)
+            MicroControllerDecisions.intent(
+                for: .joystick(direction: .left, state: .press),
+                bindings: bindings
+            ),
+            .action(.focusPane("l"), state: .press)
+        )
+        XCTAssertNil(
+            MicroControllerDecisions.intent(
+                for: .joystick(direction: .left, state: .release),
+                bindings: bindings
+            )
         )
         XCTAssertEqual(
-            MicroControllerDecisions.intent(for: .encoder(.counterclockwise)),
-            .stepSelection(1)
+            MicroControllerDecisions.intent(
+                for: .encoder(.clockwise),
+                bindings: bindings
+            ),
+            .action(.prevAgent, state: .press)
         )
         XCTAssertEqual(
-            MicroControllerDecisions.intent(for: .encoder(.press)),
-            .openCommandPalette
+            MicroControllerDecisions.intent(
+                for: .encoder(.counterclockwise),
+                bindings: bindings
+            ),
+            .action(.nextAgent, state: .press)
+        )
+        XCTAssertEqual(
+            MicroControllerDecisions.intent(
+                for: .encoder(.press),
+                bindings: bindings
+            ),
+            .action(.commandPalette, state: .press)
         )
     }
 
     func testWisprAndUnboundCommandMapping() {
+        let bindings = MicroBindings.default
         XCTAssertEqual(
             MicroControllerDecisions.intent(
-                for: .commandKey(id: "ACT10", state: .press)
+                for: .commandKey(id: "ACT10", state: .press),
+                bindings: bindings
             ),
-            .wisprFlow(true)
+            .action(.wisprFlow, state: .press)
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(
-                for: .commandKey(id: "ACT10", state: .release)
+                for: .commandKey(id: "ACT10", state: .release),
+                bindings: bindings
             ),
-            .wisprFlow(false)
+            .action(.wisprFlow, state: .release)
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(
-                for: .commandKey(id: "ACT11", state: .press)
+                for: .commandKey(id: "ACT11", state: .press),
+                bindings: bindings
             ),
-            .sendReturn
+            .action(.sendReturn, state: .press)
         )
         XCTAssertNil(
             MicroControllerDecisions.intent(
-                for: .commandKey(id: "ACT11", state: .release)
+                for: .commandKey(id: "ACT11", state: .release),
+                bindings: bindings
             )
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(
-                for: .commandKey(id: "ACT06", state: .release)
+                for: .commandKey(id: "ACT06", state: .press),
+                bindings: bindings
             ),
-            .unboundCommand(id: "ACT06", state: .release)
+            .action(.none, state: .press)
+        )
+    }
+
+    func testCustomBindingOverridesDefault() {
+        let bindings = MicroBindings.default
+        bindings[.commandKey("ACT06")] = .customKeys("C-z")
+        XCTAssertEqual(
+            MicroControllerDecisions.intent(
+                for: .commandKey(id: "ACT06", state: .press),
+                bindings: bindings
+            ),
+            .action(.customKeys("C-z"), state: .press)
+        )
+        XCTAssertNil(
+            MicroControllerDecisions.intent(
+                for: .commandKey(id: "ACT06", state: .release),
+                bindings: bindings
+            )
         )
     }
 

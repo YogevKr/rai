@@ -2,6 +2,39 @@ import XCTest
 @testable import RaiCore
 
 final class CodexMicroTests: XCTestCase {
+    func testDefaultBindingsCoverEveryPhysicalControl() {
+        let bindings = MicroBindings.default
+        XCTAssertEqual(MicroControl.allCases.count, 20)
+        for index in 0..<6 {
+            XCTAssertEqual(bindings[.agentKey(index)], .selectSlot(index))
+        }
+        XCTAssertEqual(bindings[.dialClockwise], .prevAgent)
+        XCTAssertEqual(bindings[.dialCounterClockwise], .nextAgent)
+        XCTAssertEqual(bindings[.dialPress], .commandPalette)
+        XCTAssertEqual(bindings[.commandKey("ACT10")], .wisprFlow)
+        XCTAssertEqual(bindings[.commandKey("ACT11")], .sendReturn)
+        for id in ["ACT06", "ACT07", "ACT08", "ACT09", "ACT12"] {
+            XCTAssertEqual(bindings[.commandKey(id)], .none)
+        }
+        XCTAssertEqual(bindings[.joystick(.right)], .focusPane("r"))
+        XCTAssertEqual(bindings[.joystick(.down)], .focusPane("d"))
+        XCTAssertEqual(bindings[.joystick(.left)], .focusPane("l"))
+        XCTAssertEqual(bindings[.joystick(.up)], .focusPane("u"))
+    }
+
+    func testBindingsCodableRoundTripPreservesCustomPayloads() throws {
+        let original = MicroBindings.default
+        original[.commandKey("ACT06")] = .customText("deploy staging")
+        original[.commandKey("ACT07")] = .customKeys("C-x")
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(MicroBindings.self, from: data)
+
+        XCTAssertEqual(decoded.table, original.table)
+        XCTAssertEqual(decoded[.commandKey("ACT06")], .customText("deploy staging"))
+        XCTAssertEqual(decoded[.commandKey("ACT07")], .customKeys("C-x"))
+    }
+
     private func identity(
         id: UInt64,
         pairs: [MicroUsagePair],

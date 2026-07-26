@@ -1,4 +1,5 @@
 import AppKit
+import RaiCore
 import SwiftUI
 
 @MainActor
@@ -1055,16 +1056,19 @@ private extension View {
 
 /// Codex Micro macropad integration.
 ///
-/// Status is read-only and live: "enabled" is a user preference, "connected"
-/// means a device is actually attached. Keeping them visibly separate matters
-/// because the pad disconnects on its own, and because another process holding
-/// it (Karabiner seizes keyboards, and every node on this pad carries a Keyboard
+/// Device status is live: "enabled" is a user preference, "connected" means a
+/// device is actually attached. Keeping them visibly separate matters because
+/// the pad disconnects on its own, and because another process holding it
+/// (Karabiner seizes keyboards, and every node on this pad carries a Keyboard
 /// collection) looks identical to "not plugged in" without an explicit reason.
 private struct CodexMicroSettingsView: View {
     @ObservedObject private var status = MicroStatusCenter.shared
+    @ObservedObject private var bindings = MicroStatusCenter.shared.bindings
+    @State private var learningFrom: MicroControl?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
             Text("A Work Louder Codex Micro drives your agents: the six keys follow your most recent panes, their colour tracks agent state, and the joystick moves focus.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
@@ -1106,6 +1110,40 @@ private struct CodexMicroSettingsView: View {
                 .foregroundStyle(Theme.textPrimary)
             }
 
+            SettingsSection(title: "Buttons") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        if let control = status.lastPressedControl {
+                            Text("Last pressed: \(control.displayName)")
+                                .foregroundStyle(Theme.textSecondary)
+                        } else {
+                            Text("Press a control to identify it.")
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                        Spacer()
+                        Button("Reset to defaults") {
+                            learningFrom = nil
+                            bindings.reset()
+                        }
+                    }
+                    .font(.system(size: 10.5))
+
+                    ForEach(controlGroups, id: \.self) { group in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(group)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Theme.textSecondary)
+                            ForEach(
+                                MicroControl.allCases.filter { $0.group == group },
+                                id: \.id
+                            ) { control in
+                                bindingRow(control)
+                            }
+                        }
+                    }
+                }
+            }
+
             if let error = status.lastError {
                 SettingsSection(title: "Last Error") {
                     Text(error)
@@ -1116,9 +1154,119 @@ private struct CodexMicroSettingsView: View {
                 }
             }
 
-            Spacer()
+                Spacer()
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.base)
+        .onChange(of: status.pressSequence) { _, _ in
+            guard let source = learningFrom,
+                  let pressed = status.lastPressedControl else {
+                return
+            }
+            bindings[pressed] = bindings[source]
+            learningFrom = nil
+        }
+    }
+
+    private let controlGroups = ["Agent keys", "Command keys", "Dial", "Joystick"]
+
+    @ViewBuilder
+    private func bindingRow(_ control: MicroControl) -> some View {
+        let action = bindings[control]
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(control.displayName)
+                    .frame(width: 128, alignment: .leading)
+                Picker("", selection: actionSelection(control)) {
+                    ForEach(actionGroups, id: \.self) { group in
+                        Section(group) {
+                            ForEach(
+                                MicroAction.catalog.filter { $0.group == group },
+                                id: \.catalogID
+                            ) { candidate in
+                                Text(candidate.displayName)
+                                    .tag(candidate.catalogID)
+                            }
+                        }
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                Button(learningFrom == control ? "Listening…" : "Set by pressing") {
+                    learningFrom = learningFrom == control ? nil : control
+                }
+                .font(.system(size: 10.5))
+                .help("Copy this action to the next physical control you press")
+            }
+
+            switch action {
+            case .customKeys(let value):
+                TextField(
+                    "herdr key name (for example C-c or Escape)",
+                    text: customValue(control, value: value, keys: true)
+                )
+                .textFieldStyle(.roundedBorder)
+                .padding(.leading, 138)
+            case .customText(let value):
+                TextField(
+                    "Text to send, followed by Return",
+                    text: customValue(control, value: value, keys: false)
+                )
+                .textFieldStyle(.roundedBorder)
+                .padding(.leading, 138)
+            default:
+                EmptyView()
+            }
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(Theme.textPrimary)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(
+                    status.lastPressedControl == control
+                        ? Theme.accent.opacity(0.12)
+                        : Color.clear
+                )
+        )
+    }
+
+    private let actionGroups = [
+        "To focused agent", "Navigate", "Tabs/spaces", "App",
+    ]
+
+    private func actionSelection(_ control: MicroControl) -> Binding<String> {
+        Binding(
+            get: { bindings[control].catalogID },
+            set: { id in
+                guard let action = MicroAction.catalog.first(where: {
+                    $0.catalogID == id
+                }) else { return }
+                bindings[control] = action
+            }
+        )
+    }
+
+    private func customValue(
+        _ control: MicroControl,
+        value: String,
+        keys: Bool
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                switch bindings[control] {
+                case .customKeys(let current), .customText(let current):
+                    current
+                default:
+                    value
+                }
+            },
+            set: {
+                bindings[control] = keys ? .customKeys($0) : .customText($0)
+            }
+        )
     }
 }

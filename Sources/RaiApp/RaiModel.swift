@@ -169,6 +169,7 @@ final class RaiModel: ObservableObject {
         }
     }
     @Published var isCommandPalettePresented = false
+    @Published var isBroadcastPresented = false
     @Published var paletteQuery = ""
     @Published var paletteSelectedID: String?
     @Published var renameRequest: RenameRequest?
@@ -1691,6 +1692,22 @@ final class RaiModel: ObservableObject {
     func microSendReturnToSelectedPane() {
         guard let paneID = selectedPaneID else { return }
         Task { _ = await runHerdr(["pane", "send-keys", paneID, "Enter"]) }
+    }
+
+    func microSendKeysToSelectedPane(_ keys: String) {
+        guard let paneID = selectedPaneID, !keys.isEmpty else { return }
+        Task { _ = await runHerdr(["pane", "send-keys", paneID, keys]) }
+    }
+
+    func microSendTextToSelectedPane(_ text: String, submit: Bool) {
+        guard let paneID = selectedPaneID, !text.isEmpty else { return }
+        Task {
+            guard await runHerdr(["pane", "send-text", paneID, text]),
+                  submit else {
+                return
+            }
+            _ = await runHerdr(["pane", "send-keys", paneID, "Enter"])
+        }
     }
 
     func broadcast(text: String) {
