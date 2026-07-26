@@ -39,19 +39,27 @@ second model or a retain cycle while allowing cold-launch notification routing.
 - Create worktree (branch / base) → open as space; open existing; remove.
 - codexspin job → open its worktree (csws parity).
 
-### Phase 4 — Sessions & remote herds (the differentiator)  ← current
+### Phase 4 — Sessions & remote herds (the differentiator)  ✅ shipped
 - Runtime local named-session switcher, including create/start/stop.
 - Remote herd over an SSH-forwarded Unix socket — reattach the full GUI and
   terminal panes to a remote daemon, the thing cmux can't do.
+  (Remote path still needs a real host to confirm end-to-end.)
 
-### Phase 5 — Settings & ecosystem
-- Preferences (theme · font · keybindings), edit `config.toml` (toast / sound /
-  resume-on-restore), integrations manager, plugin manager, server controls
-  (reload · update · channel).
+### Phase 5 — Settings & ecosystem  ✅ shipped
+- Settings window (⌘,), themed: Appearance (terminal font family/size,
+  notification defaults), Herdr Server (status · reload-config · update · stop),
+  Plugins (list/enable/disable/unlink/logs), Integrations (install/uninstall),
+  Config (edit `config.toml` · check · reload-server).
+- Server "channel" control dropped — no herdr API/CLI for it.
 
-### Phase 6 — Terminal power & layouts
-- Scrollback search, broadcast input (one → many), layout presets + save/restore,
-  pane rename / process info, multi-window / mission-control tiling.
+### Phase 6 — Terminal power & layouts  ◑ mostly shipped
+- ✅ Scrollback search (⌘F → SwiftTerm find bar via the responder chain).
+- ✅ Broadcast input (one → many panes in a tab).
+- ✅ Pane rename · process info.
+- ⏸ Deferred: layout presets save/restore (`layout.apply` recreates split
+  geometry but not the live agent processes a preset references — low value
+  next to herdr's own live-session persistence) and multi-window / mission-
+  control tiling (large, low marginal value).
 
 ## herdr reference (for implementers)
 
