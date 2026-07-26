@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import RaiCore
 import SwiftTerm
 
@@ -17,6 +18,7 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
+    private var themeObserver: AnyCancellable?
 
     init(
         capacity: Int = 8,
@@ -24,6 +26,22 @@ final class TerminalPool {
     ) {
         recency = LRUTracker(capacity: capacity)
         self.socketPath = socketPath
+        // Re-theme + repaint every live terminal the instant the palette changes
+        // (RunLoop.main delivery lands after the @Published value has updated).
+        themeObserver = SettingsStore.shared.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.reapplyTheme() }
+            }
+    }
+
+    /// Re-applies the active palette to every pooled terminal and forces a redraw
+    /// so already-rendered content recolors immediately, not just new output.
+    func reapplyTheme() {
+        for entry in entries.values {
+            GhosttyTheme.apply(to: entry.view)
+            entry.view.needsDisplay = true
+        }
     }
 
     func view(for terminalID: String) -> FocusAwareTerminalView {
