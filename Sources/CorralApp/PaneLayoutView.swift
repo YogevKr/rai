@@ -341,7 +341,7 @@ private struct PaneSurface: View {
         .frame(height: 28)
         .background(selected ? Theme.accent.opacity(0.10) : Theme.bar)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.zoomPane(paneID) }
+        .onTapGesture(count: 2) { renamePresented = true }   // double-click title → rename (zoom: ⌘⇧↩)
         .onTapGesture { model.select(paneID: paneID, focusInHerdr: true) }
         .contextMenu {
             Button("Rename…") {

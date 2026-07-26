@@ -73,6 +73,50 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     private var draggedSinceMouseDown = false
 
+    // SwiftTerm's keyDown is `public` (not `open`), so we can't override it from
+    // this module. Instead an app-wide key monitor (installed in AppDelegate) calls
+    // this on the focused terminal; returning true means we sent bytes to the PTY
+    // and the monitor should swallow the event so SwiftTerm doesn't also handle it.
+    func handleInterceptedKey(_ event: NSEvent) -> Bool {
+        // Ghostty line-editing parity — the same ⌘/⌥ combos Yogev's Ghostty sends,
+        // so muscle memory works in Claude/shell.
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        var bytes: [UInt8]?
+        switch event.keyCode {
+        case 51:  // delete / backspace
+            if mods == .command { bytes = [0x15] }             // ⌘⌫ → Ctrl-U (kill to line start)
+            else if mods == .option { bytes = [0x17] }         // ⌥⌫ → Ctrl-W (delete word)
+        case 123: // left arrow
+            if mods == .command { bytes = [0x01] }             // ⌘← → Ctrl-A (line start)
+            else if mods == .option { bytes = [0x1b, 0x62] }   // ⌥← → ESC b (word back)
+        case 124: // right arrow
+            if mods == .command { bytes = [0x05] }             // ⌘→ → Ctrl-E (line end)
+            else if mods == .option { bytes = [0x1b, 0x66] }   // ⌥→ → ESC f (word forward)
+        case 36:  // return
+            if mods == .shift { bytes = [0x1b, 0x0d] }         // ⇧⏎ → ESC CR (Claude newline)
+        default:
+            break
+        }
+        if let bytes {
+            send(bytes)
+            return true
+        }
+
+        // Non-ASCII text input (Hebrew, emoji, …). In apps that enable the kitty
+        // keyboard protocol (Claude Code), SwiftTerm encodes the keystroke as a
+        // key-event keyed on the base-layout glyph and the actual text is lost.
+        // Send the literal UTF-8 ourselves, exactly as Ghostty does for text.
+        let textMods = event.modifierFlags.intersection([.command, .control, .option, .function])
+        if textMods.isEmpty, let chars = event.characters, !chars.isEmpty,
+           chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
+           chars.unicodeScalars.contains(where: { $0.value > 0x7f }) {
+            send(txt: chars)
+            return true
+        }
+
+        return false
+    }
+
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
         super.mouseDown(with: event)

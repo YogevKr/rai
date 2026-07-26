@@ -10,11 +10,22 @@ struct CorralRootView: View {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
+                // The detail is an isolated, inset panel floating on the window base
+                // (a gap separates it from the sidebar) — its header/divider are
+                // contained within it, never a line spanning across the sidebar.
                 VStack(spacing: 0) {
                     PaneHeader(model: model)
                     Divider().overlay(Theme.hairline)
                     PaneLayoutView(model: model)
                 }
+                .background(Theme.bar)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                )
+                .padding(10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.base)
             }
 
@@ -41,31 +52,27 @@ private struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             if let pane = model.selectedPane {
-                StatusDot(status: pane.agentStatus, size: 9)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.displayTitle(for: pane))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.textPrimary)
+                StatusDot(status: pane.agentStatus, size: 8)
+                Text(model.displayTitle(for: pane))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Text(Theme.statusLabel(pane.agentStatus))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Theme.status(pane.agentStatus))
+                if let workspace = model.selectedWorkspace {
+                    dot
+                    Text(workspace.label)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(Theme.statusLabel(pane.agentStatus))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Theme.status(pane.agentStatus))
-                        if let workspace = model.selectedWorkspace {
-                            dot
-                            Text(workspace.label)
-                                .font(.system(size: 11))
-                                .foregroundStyle(Theme.textSecondary)
-                                .lineLimit(1)
-                        }
-                        dot
-                        Text(pane.foregroundCWD ?? pane.cwd)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Theme.textTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
                 }
+                dot
+                Text(pane.foregroundCWD ?? pane.cwd)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             } else {
                 Image(systemName: "square.stack.3d.up")
                     .foregroundStyle(Theme.textTertiary)
@@ -79,8 +86,8 @@ private struct PaneHeader: View {
             }
             HeaderButton(system: "arrow.clockwise", help: "Refresh") { model.refreshNow() }
         }
-        .padding(.horizontal, 18)
-        .frame(height: Theme.headerHeight)
+        .padding(.horizontal, 14)
+        .frame(height: 40)
         .background(Theme.bar)
         .sheet(isPresented: $broadcastPresented) {
             BroadcastSheet(model: model)

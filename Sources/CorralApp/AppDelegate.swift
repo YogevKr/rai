@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: CorralApp.sharedModel)
+        installTerminalKeyMonitor()
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -57,6 +58,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         model?.shutdown()
+    }
+
+    // SwiftTerm's keyDown is not overridable from this module, so intercept the
+    // Ghostty line-editing combos (⌘⌫ etc.) and non-ASCII text (Hebrew) here and
+    // route them to whichever terminal pane is focused.
+    private func installTerminalKeyMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event -> NSEvent? in
+            MainActor.assumeIsolated {
+                guard let term = NSApp.keyWindow?.firstResponder as? FocusAwareTerminalView,
+                      term.handleInterceptedKey(event) else {
+                    return event
+                }
+                return nil
+            }
+        }
     }
 
     private func connect(to model: CorralModel) {
