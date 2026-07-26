@@ -164,6 +164,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         allowMouseReporting = true
     }
 
+    // SwiftTerm clears the text selection on every linefeed while mouse reporting
+    // is on (which we keep on so the wheel still scrolls the program). Override to
+    // a no-op so a manual selection survives a program streaming output — matching
+    // Ghostty, where streaming doesn't drop your selection.
+    override func linefeed(source: Terminal) {}
+
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
         withoutMouseReporting { super.mouseDown(with: event) }
