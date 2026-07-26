@@ -117,18 +117,41 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         return false
     }
 
-    // SwiftTerm's paste only reads clipboard text. When the clipboard holds an
-    // image (no text), send Ctrl-V so the running program's own image paste fires
-    // — Claude Code reads the clipboard image directly on Ctrl-V. This makes ⌘V
-    // attach images too, matching Claude's "ctrl+v to paste" affordance.
+    // SwiftTerm's paste only reads clipboard text, so an image (e.g. a screenshot)
+    // pastes nothing. Handle it based on what's in front:
+    //   • A rich TUI like Claude Code enables the kitty keyboard protocol and reads
+    //     the clipboard image itself on Ctrl-V — send Ctrl-V so it attaches [image].
+    //   • A plain shell leaves the protocol off; there Ctrl-V is "literal next", so
+    //     write the image to a temp PNG and paste its path (like a dropped file).
     override func paste(_ sender: Any) {
         let clipboard = NSPasteboard.general
         if clipboard.string(forType: .string) == nil,
            clipboard.canReadObject(forClasses: [NSImage.self], options: nil) {
-            send([0x16])  // Ctrl-V
+            if !getTerminal().keyboardEnhancementFlags.isEmpty {
+                send([0x16])  // Ctrl-V → Claude Code attaches the clipboard image
+            } else if let path = Self.writeClipboardImageToTemp(clipboard) {
+                send(txt: path + " ")
+            }
             return
         }
         super.paste(sender)
+    }
+
+    private static func writeClipboardImageToTemp(_ pasteboard: NSPasteboard) -> String? {
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        let name = "rai-paste-\(Int(Date().timeIntervalSince1970 * 1000)).png"
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name)
+        do {
+            try png.write(to: url)
+            return url.path
+        } catch {
+            return nil
+        }
     }
 
     // Text input (including Hebrew) arrives here via the input context. In apps
