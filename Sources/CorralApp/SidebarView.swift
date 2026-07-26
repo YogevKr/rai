@@ -86,13 +86,11 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
-        .background {
-            ZStack {
-                VisualEffectView(material: .sidebar)
-                Theme.sidebar.opacity(0.58)      // dark tint over the glass — Raycast-ish
-                Theme.panelGradient.opacity(0.35)
-            }
-            .ignoresSafeArea()
+        // Linear: a solid sidebar panel, separated from the content by a hairline
+        // (the region-defining device), with a whisper-subtle top highlight.
+        .background(Theme.sidebar.ignoresSafeArea())
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Theme.hairline).frame(width: 1).ignoresSafeArea()
         }
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.topHighlight).frame(height: 1).ignoresSafeArea()
@@ -441,11 +439,11 @@ private struct SidebarRowChrome: ViewModifier {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                     .fill(
                         selected
-                            ? Theme.accent.opacity(0.11)
-                            : (hovering ? Color.white.opacity(0.035) : .clear)
+                            ? Theme.accent.opacity(0.14)
+                            : (hovering ? Color.white.opacity(0.04) : .clear)
                     )
             }
             .overlay(alignment: .leading) {

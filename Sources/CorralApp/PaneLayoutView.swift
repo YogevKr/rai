@@ -297,21 +297,17 @@ private struct PaneSurface: View {
             }
         }
         .background(Theme.terminalBG)
-        .clipShape(RoundedRectangle(cornerRadius: showChrome ? 10 : 0, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: showChrome ? Theme.radiusPane : 0, style: .continuous))
         .overlay {
             if showChrome {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                // Linear defines panes by a crisp hairline, not glow or shadow.
+                RoundedRectangle(cornerRadius: Theme.radiusPane, style: .continuous)
                     .strokeBorder(
-                        selected ? Theme.accent.opacity(0.5) : Color.white.opacity(0.045),
+                        selected ? Theme.accent.opacity(0.55) : Theme.hairlineStrong,
                         lineWidth: 1
                     )
             }
         }
-        .shadow(
-            color: .black.opacity(showChrome ? 0.28 : 0),
-            radius: selected ? 16 : 9,
-            y: 5
-        )
     }
 
     private var paneBar: some View {

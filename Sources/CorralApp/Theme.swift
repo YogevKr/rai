@@ -2,35 +2,16 @@ import AppKit
 import CorralCore
 import SwiftUI
 
-/// Native window vibrancy (NSVisualEffectView) — the translucent "glass" depth
-/// Raycast/Finder use. Rendered dark via a tint overlay at the call site.
-struct VisualEffectView: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .underWindowBackground
-    var blending: NSVisualEffectView.BlendingMode = .behindWindow
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blending
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = material
-        view.blendingMode = blending
-    }
-}
-
-/// Makes the window non-opaque so behind-window vibrancy shows real translucency
-/// (Raycast-style glass). Opaque content (terminal panes) still reads solid.
+/// Configures the window for the solid "Linear" look: opaque, near-black base,
+/// transparent titlebar (paired with the hidden title-bar window style).
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
-            window.isOpaque = false
-            window.backgroundColor = .clear
+            // Linear is solid — opaque window on the near-black base (no vibrancy).
+            window.isOpaque = true
+            window.backgroundColor = NSColor(srgbRed: 0x0B / 255, green: 0x0B / 255, blue: 0x0D / 255, alpha: 1)
             window.titlebarAppearsTransparent = true
         }
         return view
@@ -42,42 +23,47 @@ struct WindowConfigurator: NSViewRepresentable {
 // (a terminal product should own its palette rather than inherit the system's).
 // One accent, a semantic status-color set, an 8pt spacing rhythm.
 enum Theme {
-    // Layered surfaces (deepest → raised). The content backdrop is the darkest
-    // "stage" the panes float on; the sidebar is a distinct panel; the terminal
-    // keeps the Ghostty Dracula+ bg. Depth (not flat grey) is what reads premium.
-    static let base = Color(hex: 0x0E0F13)        // window / content backdrop (deepest)
-    static let sidebar = Color(hex: 0x15161D)     // sidebar panel
-    static let raised = Color(hex: 0x23252F)      // hover fills, chips
-    static let bar = Color(hex: 0x121319)         // header bars
-    static let terminalBG = Color(hex: 0x212121)  // Ghostty Dracula+ bg (matches SwiftTerm)
+    // "Linear" direction: a warm near-black owned palette. Regions are defined by
+    // hairline borders (not glow or gradient); one desaturated-indigo accent, used
+    // sparingly; a quiet semantic status set. Restraint and precision over effect.
+    static let base = Color(hex: 0x0B0B0D)        // window / content backdrop
+    static let sidebar = Color(hex: 0x0E0E11)     // sidebar panel
+    static let raised = Color(hex: 0x161619)      // hover fills, chips, sheets
+    static let bar = Color(hex: 0x0D0D10)         // header / pane bars
+    static let terminalBG = Color(hex: 0x101013)  // cohesive near-black (matches SwiftTerm bg)
 
-    // A subtle top-lit gradient + hairline highlight for panels — "light from above".
+    // Corner radii — tight and consistent (Linear precision).
+    static let radiusRow: CGFloat = 6
+    static let radiusPane: CGFloat = 7
+    static let radiusCard: CGFloat = 8
+
+    // Nearly-flat panel wash — Linear surfaces are solid, so keep this whisper-subtle.
     static let panelGradient = LinearGradient(
-        colors: [Color(hex: 0x191A22), Color(hex: 0x131319)],
+        colors: [Color(hex: 0x0E0E11), Color(hex: 0x0B0B0D)],
         startPoint: .top, endPoint: .bottom
     )
-    static let topHighlight = Color.white.opacity(0.05)
+    static let topHighlight = Color.white.opacity(0.035)
 
-    // Hairlines.
-    static let hairline = Color.white.opacity(0.05)
+    // Hairlines — the primary region-defining device.
+    static let hairline = Color.white.opacity(0.065)
     static let hairlineStrong = Color.white.opacity(0.10)
 
-    // Text hierarchy.
-    static let textPrimary = Color(hex: 0xEDEEF3)
-    static let textSecondary = Color(hex: 0x9A9FB2)
-    static let textTertiary = Color(hex: 0x585D70)
+    // Text hierarchy (slightly warm neutrals).
+    static let textPrimary = Color(hex: 0xEEEEF1)
+    static let textSecondary = Color(hex: 0x8B8B95)
+    static let textTertiary = Color(hex: 0x54545E)
 
-    // Refined accent (Dracula+ blue, matches your Ghostty) — selection, focus, pulse.
-    static let accent = Color(hex: 0x82AAFF)
+    // Desaturated indigo accent — selection, focus, the working pulse.
+    static let accent = Color(hex: 0x7C86E0)
 
-    // Softened, less-neon status colors read more premium on a dark ground.
+    // Quiet, desaturated status colors read more premium on a near-black ground.
     static func status(_ s: AgentStatus) -> Color {
         switch s {
-        case .working: Color(hex: 0x6FB6FF)   // soft blue
-        case .blocked: Color(hex: 0xFF7A88)   // coral (needs you)
-        case .done: Color(hex: 0x54D999)      // green
-        case .idle: Color(hex: 0x676C82)      // muted
-        case .unknown: Color(hex: 0x3C4054)
+        case .working: Color(hex: 0x5B9BF0)   // muted blue
+        case .blocked: Color(hex: 0xE5636A)   // muted red (needs you)
+        case .done: Color(hex: 0x4BBF7B)      // green
+        case .idle: Color(hex: 0x63636D)      // muted grey
+        case .unknown: Color(hex: 0x3A3A42)
         }
     }
 

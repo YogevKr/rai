@@ -9,7 +9,9 @@ import SwiftUI
 /// Mirrors Yogev's Ghostty theme (`theme = Dracula+`) so agent sessions render
 /// with identical colors in corral. Snapshot of the resolved Ghostty palette.
 enum GhosttyTheme {
-    static let background: UInt32 = 0x212121
+    // Terminal bg darkened from Ghostty's 0x212121 to sit cohesively on the Linear
+    // near-black chrome; the Dracula+ ANSI palette + cursor stay true to Ghostty.
+    static let background: UInt32 = 0x101013
     static let foreground: UInt32 = 0xF8F8F2
     static let cursor: UInt32 = 0xECEFF4       // Ghostty `cursor-color`
     static let cursorText: UInt32 = 0x282828   // Ghostty `cursor-text` (block cursor)
