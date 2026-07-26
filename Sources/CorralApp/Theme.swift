@@ -37,6 +37,10 @@ enum Theme {
     static let radiusPane: CGFloat = 7
     static let radiusCard: CGFloat = 8
 
+    // Shared top-bar height so the sidebar header and the detail header (and their
+    // hairline dividers) align exactly across the split.
+    static let headerHeight: CGFloat = 56
+
     // Nearly-flat panel wash — Linear surfaces are solid, so keep this whisper-subtle.
     static let panelGradient = LinearGradient(
         colors: [Color(hex: 0x0E0E11), Color(hex: 0x0B0B0D)],

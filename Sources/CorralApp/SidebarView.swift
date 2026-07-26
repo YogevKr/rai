@@ -217,7 +217,7 @@ struct SidebarView: View {
         }
         .padding(.leading, 78)
         .padding(.trailing, 14)
-        .frame(height: 52)
+        .frame(height: Theme.headerHeight)
         .alert(item: $model.worktreeAlert) { alert in
             worktreeAlert(alert)
         }

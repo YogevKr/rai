@@ -80,7 +80,7 @@ private struct PaneHeader: View {
             HeaderButton(system: "arrow.clockwise", help: "Refresh") { model.refreshNow() }
         }
         .padding(.horizontal, 18)
-        .frame(height: 56)
+        .frame(height: Theme.headerHeight)
         .background(Theme.bar)
         .sheet(isPresented: $broadcastPresented) {
             BroadcastSheet(model: model)
