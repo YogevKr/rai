@@ -103,6 +103,36 @@ private struct PluginActionListResponse: Decodable {
     let result: Result
 }
 
+// `plugin action invoke` returns immediately with a log_id; the action runs
+// async and its stdout/stderr land in the plugin log, fetched separately.
+private struct PluginActionInvokeResponse: Decodable {
+    struct Result: Decodable { let log: LogRef? }
+    struct LogRef: Decodable {
+        let logID: String
+        enum CodingKeys: String, CodingKey { case logID = "log_id" }
+    }
+    let result: Result
+}
+
+private struct PluginLogListResponse: Decodable {
+    struct Result: Decodable { let logs: [Entry] }
+    struct Entry: Decodable {
+        let logID: String
+        let status: String
+        let exitCode: Int?
+        let stdout: String
+        let stderr: String
+        enum CodingKeys: String, CodingKey {
+            case logID = "log_id"
+            case status
+            case exitCode = "exit_code"
+            case stdout
+            case stderr
+        }
+    }
+    let result: Result
+}
+
 @MainActor
 final class RaiModel: ObservableObject {
     enum ConnectionState: Equatable {
@@ -861,20 +891,62 @@ final class RaiModel: ObservableObject {
                 return
             }
             guard generation == connectionGeneration else { return }
-            let output = await runHerdrCapture([
+            let ack = await runHerdrCapture([
                 "plugin", "action", "invoke", action.id,
                 "--plugin", action.pluginId,
             ])
             guard generation == connectionGeneration else { return }
-            if let output {
-                statusExplanation = StatusExplanation(
-                    id: UUID(),
-                    title: action.title,
-                    text: output
-                )
-            }
             await refreshSnapshot(keepSelection: false)
+            // The action runs async — its real output lands in the plugin log.
+            // Poll for it and surface any text (empty output = nothing to show).
+            guard let ack,
+                  let data = ack.data(using: .utf8),
+                  let logID = try? JSONDecoder()
+                      .decode(PluginActionInvokeResponse.self, from: data)
+                      .result.log?.logID
+            else { return }
+            let output = await pluginLogOutput(pluginID: action.pluginId, logID: logID)
+            guard generation == connectionGeneration,
+                  let output, !output.isEmpty else { return }
+            statusExplanation = StatusExplanation(
+                id: UUID(),
+                title: action.title,
+                text: output
+            )
         }
+    }
+
+    /// Polls the plugin log for a just-invoked action until it finishes, then
+    /// returns its stdout (or stderr/exit info on failure). Nil while still
+    /// running past the timeout or when there's nothing to show.
+    private func pluginLogOutput(pluginID: String, logID: String) async -> String? {
+        for _ in 0..<24 {  // ~6s at 250ms
+            guard let raw = await runHerdrCapture([
+                "plugin", "log", "list", "--plugin", pluginID, "--limit", "25",
+            ]),
+                  let data = raw.data(using: .utf8),
+                  let entry = try? JSONDecoder()
+                      .decode(PluginLogListResponse.self, from: data)
+                      .result.logs.first(where: { $0.logID == logID })
+            else {
+                try? await Task.sleep(for: .milliseconds(250))
+                continue
+            }
+            if entry.status == "running" {
+                try? await Task.sleep(for: .milliseconds(250))
+                continue
+            }
+            let out = entry.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let err = entry.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if entry.status == "failed" || (entry.exitCode ?? 0) != 0 {
+                let parts = [out, err].filter { !$0.isEmpty }
+                return parts.isEmpty
+                    ? "Action failed (exit \(entry.exitCode ?? -1))."
+                    : parts.joined(separator: "\n\n")
+            }
+            return out.isEmpty ? nil : out
+        }
+        return nil
     }
 
     func refreshNow() {
