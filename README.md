@@ -14,6 +14,8 @@ per-pane terminals — driving the **unchanged** herdr daemon underneath.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-1a1a1a?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-46ce7c)
+[![CI](https://github.com/YogevKr/rai/actions/workflows/ci.yml/badge.svg)](https://github.com/YogevKr/rai/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/YogevKr/rai?color=46ce7c&label=download)](https://github.com/YogevKr/rai/releases/latest)
 
 </div>
 
@@ -65,7 +67,21 @@ terminal widget**.
 
 ## Install
 
-Build from source and drop the app into `/Applications`:
+### Download
+
+Grab the latest `.dmg` from the
+[**Releases**](https://github.com/YogevKr/rai/releases/latest) page, open it, and
+drag **Rai** into Applications. The build is a universal binary (Apple Silicon +
+Intel).
+
+rai isn't notarized yet (no paid Apple Developer account), so on first launch
+Gatekeeper will block it — either **right-click `Rai.app` → Open → Open**, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Rai.app
+```
+
+### Build from source
 
 ```sh
 git clone https://github.com/YogevKr/rai.git

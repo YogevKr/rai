@@ -2,15 +2,27 @@
 # Build rai (release), wrap the SwiftPM executable in a proper Rai.app
 # bundle (SwiftUI @main needs a bundle to present its window), ad-hoc sign it,
 # and install to /Applications (falls back to ~/Applications). Repeatable.
+#
+# Env overrides (used by CI, optional for local runs):
+#   RAI_VERSION    CFBundleShortVersionString (default 0.1.0)
+#   RAI_UNIVERSAL  =1 → build a universal arm64 + x86_64 binary
+#   RAI_APP_DEST   place Rai.app in this dir instead of /Applications
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 APP_NAME="Rai"
 BIN_NAME="rai"
+APP_VERSION="${RAI_VERSION:-0.1.0}"
 
-echo "==> swift build -c release"
-swift build -c release
-BIN=".build/release/${BIN_NAME}"
+BUILD_ARGS=(-c release)
+if [ "${RAI_UNIVERSAL:-0}" = "1" ]; then
+  BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
+
+echo "==> swift build ${BUILD_ARGS[*]}"
+BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
+swift build "${BUILD_ARGS[@]}"
+BIN="${BIN_DIR}/${BIN_NAME}"
 [ -x "$BIN" ] || { echo "error: $BIN not built"; exit 1; }
 
 STAGE="$(mktemp -d)/${APP_NAME}.app"
@@ -29,7 +41,7 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>${BIN_NAME}</string>
   <key>CFBundleIconFile</key><string>Rai</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -60,7 +72,13 @@ echo "==> ad-hoc sign"
 codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \
   codesign --force --sign - "$STAGE"
 
-if [ -w /Applications ]; then DEST=/Applications; else DEST="$HOME/Applications"; mkdir -p "$DEST"; fi
+if [ -n "${RAI_APP_DEST:-}" ]; then
+  DEST="$RAI_APP_DEST"; mkdir -p "$DEST"
+elif [ -w /Applications ]; then
+  DEST=/Applications
+else
+  DEST="$HOME/Applications"; mkdir -p "$DEST"
+fi
 rm -rf "$DEST/${APP_NAME}.app"
 # ditto preserves bundle + resource forks
 /usr/bin/ditto "$STAGE" "$DEST/${APP_NAME}.app"

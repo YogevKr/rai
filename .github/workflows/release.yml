@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal Rai.app
+        run: RAI_UNIVERSAL=1 RAI_VERSION="${{ steps.v.outputs.version }}" RAI_APP_DEST="$PWD/dist" ./scripts/bundle.sh
+
+      - name: Package (zip + dmg)
+        working-directory: dist
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          /usr/bin/ditto -c -k --keepParent Rai.app "Rai-${VER}-macos.zip"
+          mkdir dmg && cp -R Rai.app dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "rai ${VER}" -srcfolder dmg -ov -format UDZO "Rai-${VER}-macos.dmg"
+          rm -rf dmg
+          ls -lh Rai-*
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" \
+            dist/Rai-*.dmg dist/Rai-*.zip \
+            --title "rai ${{ steps.v.outputs.version }}" \
+            --notes-file .github/release-notes.md
