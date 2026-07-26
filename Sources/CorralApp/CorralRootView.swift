@@ -36,13 +36,14 @@ struct CorralRootView: View {
 
 private struct PaneHeader: View {
     @ObservedObject var model: CorralModel
+    @State private var broadcastPresented = false
 
     var body: some View {
         HStack(spacing: 12) {
             if let pane = model.selectedPane {
                 StatusDot(status: pane.agentStatus, size: 9)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title(for: pane))
+                    Text(model.displayTitle(for: pane))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
@@ -73,24 +74,95 @@ private struct PaneHeader: View {
                     .foregroundStyle(Theme.textSecondary)
             }
             Spacer(minLength: 12)
+            HeaderButton(system: "megaphone", help: "Broadcast Input") {
+                broadcastPresented = true
+            }
             HeaderButton(system: "arrow.clockwise", help: "Refresh") { model.refreshNow() }
         }
         .padding(.horizontal, 18)
         .frame(height: 56)
         .background(Theme.bar)
+        .sheet(isPresented: $broadcastPresented) {
+            BroadcastSheet(model: model)
+        }
     }
 
     private var dot: some View {
         Text("·").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
     }
+}
 
-    // Graceful title — never the raw pane id like "w1:p1".
-    private func title(for pane: Pane) -> String {
-        if let t = pane.terminalTitleStripped?.trimmingCharacters(in: .whitespaces), !t.isEmpty { return t }
-        if let a = pane.agent?.trimmingCharacters(in: .whitespaces), !a.isEmpty { return a }
-        if let label = model.selectedTab?.label.trimmingCharacters(in: .whitespaces),
-           !label.isEmpty, Int(label) == nil { return label }
-        return "Terminal"
+private struct BroadcastSheet: View {
+    @ObservedObject var model: CorralModel
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var confirmation: String?
+    @State private var confirmationSequence = 0
+    @FocusState private var textFocused: Bool
+
+    private var paneCount: Int { model.visiblePanes.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Broadcast Input")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Send the same command to every pane in this tab.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            TextField("Command", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($textFocused)
+                .onSubmit(send)
+
+            HStack {
+                if let confirmation {
+                    Label(confirmation, systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.status(.working))
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(sendButtonTitle, action: send)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(
+                        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || paneCount == 0
+                    )
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .background(Theme.raised)
+        .onAppear { textFocused = true }
+        .onExitCommand { dismiss() }
+    }
+
+    private var sendButtonTitle: String {
+        "Send to all \(paneCount) \(paneCount == 1 ? "pane" : "panes")"
+    }
+
+    private func send() {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              paneCount > 0 else {
+            return
+        }
+        let count = paneCount
+        model.broadcast(text: text)
+        text = ""
+        confirmation = "Sent to \(count) \(count == 1 ? "pane" : "panes")"
+        confirmationSequence += 1
+        let sequence = confirmationSequence
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard sequence == confirmationSequence else { return }
+            confirmation = nil
+        }
     }
 }
 

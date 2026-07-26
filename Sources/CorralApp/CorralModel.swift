@@ -16,6 +16,44 @@ enum AgentLaunchKind: String {
     case codex
 }
 
+struct PaneProcessInfo: Decodable, Equatable, Sendable {
+    struct ForegroundProcess: Decodable, Equatable, Sendable {
+        let pid: Int
+        let name: String
+        let argv0: String
+        let argv: [String]
+        let cmdline: String
+        let cwd: String
+    }
+
+    let paneID: String
+    let shellPID: Int
+    // tty is absent for herdr attach panes; the group id is nullable per schema.
+    let tty: String?
+    let foregroundProcessGroupID: Int?
+    let foregroundProcesses: [ForegroundProcess]
+
+    enum CodingKeys: String, CodingKey {
+        case paneID = "pane_id"
+        case shellPID = "shell_pid"
+        case tty
+        case foregroundProcessGroupID = "foreground_process_group_id"
+        case foregroundProcesses = "foreground_processes"
+    }
+}
+
+private struct PaneProcessInfoResponse: Decodable {
+    struct Result: Decodable {
+        let processInfo: PaneProcessInfo
+
+        enum CodingKeys: String, CodingKey {
+            case processInfo = "process_info"
+        }
+    }
+
+    let result: Result
+}
+
 @MainActor
 final class CorralModel: ObservableObject {
     enum ConnectionState: Equatable {
@@ -148,6 +186,25 @@ final class CorralModel: ObservableObject {
         return panes.sorted {
             order[$0.paneID, default: .max] < order[$1.paneID, default: .max]
         }
+    }
+
+    func displayTitle(for pane: Pane) -> String {
+        if let title = pane.terminalTitleStripped?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        if let agent = pane.agent?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agent.isEmpty {
+            return agent
+        }
+        if let label = snapshot?.tabs.first(where: { $0.tabID == pane.tabID })?
+            .label.trimmingCharacters(in: .whitespacesAndNewlines),
+           !label.isEmpty,
+           Int(label) == nil {
+            return label
+        }
+        return "Terminal"
     }
 
     var commandPaletteItems: [CommandPaletteItem] {
@@ -1298,6 +1355,60 @@ final class CorralModel: ObservableObject {
         guard let pane = selectedPaneID else { return }
         runAction(["pane", "close", pane])
     }
+
+    func renamePane(paneID: String, to rawLabel: String) {
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = label.isEmpty
+            ? ["pane", "rename", paneID, "--clear"]
+            : ["pane", "rename", paneID, label]
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            _ = await runHerdr(arguments)
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func processInfo(for paneID: String) async -> PaneProcessInfo? {
+        let generation = connectionGeneration
+        guard let output = await runHerdrCapture([
+            "pane", "process-info", "--pane", paneID,
+        ]),
+        generation == connectionGeneration,
+        let data = output.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(PaneProcessInfoResponse.self, from: data)
+            .result.processInfo
+    }
+
+    func broadcast(text: String) {
+        guard !text.isEmpty else { return }
+        let paneIDs = visiblePanes.map(\.paneID)
+        guard !paneIDs.isEmpty else { return }
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            for paneID in paneIDs {
+                guard await runHerdr(["pane", "send-text", paneID, text]) else {
+                    continue
+                }
+                _ = await runHerdr(["pane", "send-keys", paneID, "Enter"])
+            }
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
     func focusPane(_ direction: String) {
         guard let pane = selectedPaneID else { return }
         runAction(["pane", "focus", "--direction", direction, "--pane", pane])

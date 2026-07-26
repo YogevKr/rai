@@ -226,6 +226,8 @@ private struct PaneSurface: View {
     @ObservedObject var model: CorralModel
     let showChrome: Bool
     @State private var dropIndicator: PaneDropIndicator?
+    @State private var renamePresented = false
+    @State private var processInfoPresented = false
 
     private var pane: Pane? {
         model.snapshot?.panes.first { $0.paneID == paneID }
@@ -255,6 +257,20 @@ private struct PaneSurface: View {
                     )
                 )
                 .animation(.easeOut(duration: 0.12), value: dropIndicator)
+                .sheet(isPresented: $renamePresented) {
+                    PaneRenameSheet(
+                        model: model,
+                        paneID: paneID,
+                        initialLabel: pane.map(model.displayTitle(for:)) ?? "Terminal"
+                    )
+                }
+                .sheet(isPresented: $processInfoPresented) {
+                    PaneProcessInfoSheet(
+                        model: model,
+                        paneID: paneID,
+                        paneTitle: pane.map(model.displayTitle(for:)) ?? "Terminal"
+                    )
+                }
         }
     }
 
@@ -302,7 +318,7 @@ private struct PaneSurface: View {
         HStack(spacing: 8) {
             if let pane {
                 StatusDot(status: pane.agentStatus, size: 6)
-                Text(pane.terminalTitleStripped ?? pane.agent ?? "Terminal")
+                Text(model.displayTitle(for: pane))
                     .lineLimit(1)
                 Spacer(minLength: 4)
             } else {
@@ -329,6 +345,14 @@ private struct PaneSurface: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.zoomPane(paneID) }
         .onTapGesture { model.select(paneID: paneID, focusInHerdr: true) }
+        .contextMenu {
+            Button("Rename…") {
+                renamePresented = true
+            }
+            Button("Process Info") {
+                processInfoPresented = true
+            }
+        }
         .onDrag {
             model.draggedPaneID = paneID
             let provider = NSItemProvider()
@@ -402,6 +426,178 @@ private struct PaneSurface: View {
         case nil:
             EmptyView()
         }
+    }
+}
+
+private struct PaneRenameSheet: View {
+    @ObservedObject var model: CorralModel
+    let paneID: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var label: String
+    @FocusState private var labelFocused: Bool
+
+    init(model: CorralModel, paneID: String, initialLabel: String) {
+        self.model = model
+        self.paneID = paneID
+        _label = State(initialValue: initialLabel)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Rename Pane")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                TextField("Name", text: $label)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($labelFocused)
+                    .onSubmit(commit)
+                Text("Leave empty to clear the pane name.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename", action: commit)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 380)
+        .background(Theme.raised)
+        .onAppear { labelFocused = true }
+        .onExitCommand { dismiss() }
+    }
+
+    private func commit() {
+        model.renamePane(paneID: paneID, to: label)
+        dismiss()
+    }
+}
+
+private struct PaneProcessInfoSheet: View {
+    @ObservedObject var model: CorralModel
+    let paneID: String
+    let paneTitle: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var processInfo: PaneProcessInfo?
+    @State private var isLoading = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Process Info")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(paneTitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Group {
+                if isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading process information…")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 110)
+                } else if let processInfo {
+                    processDetails(processInfo)
+                } else {
+                    VStack(spacing: 10) {
+                        Text("Process information is unavailable.")
+                            .foregroundStyle(Theme.textSecondary)
+                        Button("Try Again") {
+                            Task { await load() }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 110)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 500)
+        .background(Theme.raised)
+        .task { await load() }
+        .onExitCommand { dismiss() }
+    }
+
+    private func processDetails(_ info: PaneProcessInfo) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 20) {
+                metadata(label: "Shell PID", value: String(info.shellPID))
+                metadata(label: "TTY", value: info.tty ?? "—")
+            }
+
+            Divider().overlay(Theme.hairline)
+
+            if info.foregroundProcesses.isEmpty {
+                Text("No foreground processes.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, minHeight: 64)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(info.foregroundProcesses, id: \.pid) { process in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 7) {
+                                    Text(process.name)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Theme.textPrimary)
+                                    Text("PID \(process.pid)")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                                Text(process.cmdline)
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .textSelection(.enabled)
+                                Text(process.cwd)
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(Theme.textTertiary)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+    }
+
+    private func metadata(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        processInfo = await model.processInfo(for: paneID)
+        isLoading = false
     }
 }
 
