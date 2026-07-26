@@ -298,8 +298,10 @@ final class CodexMicroTests: XCTestCase {
         XCTAssertEqual(tracker.heldDirection, .right)
     }
 
-    func testSlotAssignmentPreservesFilteredInputOrderAndCapsAtSix() {
+    func testSlotAssignmentRanksByAttentionAndCapsAtSix() {
         var assigner = MicroSlotAssigner()
+        // blocked > done > working > idle; ties keep sidebar order. With seven
+        // panes the lone extra idle pane (g) is the one pushed off the keys.
         let first = assigner.update([
             .init(paneID: "a", status: .working),
             .init(paneID: "b", status: .blocked),
@@ -311,17 +313,53 @@ final class CodexMicroTests: XCTestCase {
         ])
         XCTAssertEqual(
             first.compactMap { $0?.paneID },
-            ["a", "b", "c", "d", "e", "f"]
+            ["b", "f", "d", "a", "e", "c"]
         )
 
+        // Attention-first reorders regardless of input order.
         let reordered = assigner.update([
             .init(paneID: "c", status: .working),
             .init(paneID: "a", status: .done),
             .init(paneID: "b", status: .blocked),
         ])
-        XCTAssertEqual(reordered.compactMap { $0?.paneID }, ["c", "a", "b"])
-        XCTAssertEqual(reordered[0]?.status, .working)
+        XCTAssertEqual(reordered.compactMap { $0?.paneID }, ["b", "a", "c"])
+        XCTAssertEqual(reordered[0]?.status, .blocked)
+    }
 
+    func testBlockedAgentKeepsKeyAgainstSixWorkingOnes() {
+        var assigner = MicroSlotAssigner()
+        let slots = assigner.update(
+            (1...6).map { .init(paneID: "w\($0)", status: .working) }
+                + [.init(paneID: "blk", status: .blocked)]
+        )
+        let ids = slots.compactMap { $0?.paneID }
+        XCTAssertEqual(ids.first, "blk")
+        XCTAssertFalse(ids.contains("w6"))
+    }
+
+    func testFocusedPaneIsBoostedAboveIdlePanes() {
+        var assigner = MicroSlotAssigner()
+        let slots = assigner.update(
+            [
+                .init(paneID: "i1", status: .idle),
+                .init(paneID: "i2", status: .idle),
+                .init(paneID: "sel", status: .idle),
+                .init(paneID: "w1", status: .working),
+                .init(paneID: "w2", status: .working),
+                .init(paneID: "w3", status: .working),
+                .init(paneID: "w4", status: .working),
+            ],
+            selectedPaneID: "sel"
+        )
+        let ids = slots.compactMap { $0?.paneID }
+        // The focused idle pane is boosted to the working tier and keeps its key;
+        // an unfocused idle pane is what overflows instead.
+        XCTAssertTrue(ids.contains("sel"))
+        XCTAssertFalse(ids.contains("i2"))
+    }
+
+    func testOnlyNeedsYouFilterThenRanks() {
+        var assigner = MicroSlotAssigner()
         let filtered = assigner.update(
             [
                 .init(paneID: "a", status: .idle),
@@ -331,7 +369,9 @@ final class CodexMicroTests: XCTestCase {
             selectedPaneID: "a",
             onlyNeedsYou: true
         )
-        XCTAssertEqual(filtered.compactMap { $0?.paneID }, ["a", "b"])
+        // Only blocked panes and the focused pane survive the filter; the done
+        // pane (c) is dropped. The survivors are then ranked blocked-first.
+        XCTAssertEqual(filtered.compactMap { $0?.paneID }, ["b", "a"])
     }
 
     func testMockTransportRecordsAndInjectsReports() throws {

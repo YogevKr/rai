@@ -99,11 +99,11 @@ final class MicroControllerTests: XCTestCase {
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(for: .encoder(.clockwise)),
-            .stepSelection(1)
+            .stepSelection(-1)
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(for: .encoder(.counterclockwise)),
-            .stepSelection(-1)
+            .stepSelection(1)
         )
         XCTAssertEqual(
             MicroControllerDecisions.intent(for: .encoder(.press)),

@@ -60,9 +60,9 @@ enum MicroControllerDecisions {
         case .joystick(_, .release):
             nil
         case .encoder(.clockwise):
-            .stepSelection(1)
-        case .encoder(.counterclockwise):
             .stepSelection(-1)
+        case .encoder(.counterclockwise):
+            .stepSelection(1)
         case .encoder(.press):
             .openCommandPalette
         case .encoder(.release):
@@ -101,9 +101,9 @@ final class MicroController {
 
     func start() {
         guard worker == nil else { return }
-        let worker = Worker { [weak self] intent, slots in
+        let worker = Worker { [weak self] intent, slots, ordered in
             Task { @MainActor [weak self] in
-                self?.perform(intent, slots: slots)
+                self?.perform(intent, slots: slots, ordered: ordered)
             }
         }
         self.worker = worker
@@ -125,7 +125,8 @@ final class MicroController {
 
     private func perform(
         _ intent: MicroControllerIntent,
-        slots: [MicroSlotAssignment?]
+        slots: [MicroSlotAssignment?],
+        ordered: [MicroSlotAssignment]
     ) {
         guard let model else { return }
         switch intent {
@@ -137,8 +138,12 @@ final class MicroController {
         case .focusPane(let direction):
             model.focusPane(direction)
         case .stepSelection(let step):
+            // The dial walks the full agent list in sidebar order — including
+            // agents that overflowed off the six keys — so nothing is
+            // unreachable. The keys stay attention-first; the dial is the
+            // "scroll through everything" control.
             guard let paneID = MicroControllerDecisions.nextPaneID(
-                in: slots,
+                in: ordered.map(Optional.some),
                 selectedPaneID: model.selectedPaneID,
                 step: step
             ) else { return }
@@ -179,7 +184,8 @@ final class MicroController {
 private final class Worker: @unchecked Sendable {
     typealias IntentHandler = @Sendable (
         MicroControllerIntent,
-        [MicroSlotAssignment?]
+        [MicroSlotAssignment?],
+        [MicroSlotAssignment]
     ) -> Void
 
     private let lock = NSLock()
@@ -196,6 +202,9 @@ private final class Worker: @unchecked Sendable {
     private var lighting = MicroLighting()
     private var rpcEncoder = MicroRPCEncoder()
     private var slots: [MicroSlotAssignment?] = Array(repeating: nil, count: 6)
+    // Full sidebar-order agent list (all panes, unfiltered) so the dial can step
+    // through every agent, not just the six that currently hold a key.
+    private var orderedPanes: [MicroSlotAssignment] = []
     private var connected = false
 
     init(intentHandler: @escaping IntentHandler) {
@@ -232,6 +241,7 @@ private final class Worker: @unchecked Sendable {
                 selectedPaneID: selectedPaneID,
                 onlyNeedsYou: onlyNeedsYou
             )
+            orderedPanes = assignments
             sendLightingChanges()
         }
     }
@@ -346,6 +356,6 @@ private final class Worker: @unchecked Sendable {
             return
         }
         guard let intent = MicroControllerDecisions.intent(for: event) else { return }
-        intentHandler(intent, slots)
+        intentHandler(intent, slots, orderedPanes)
     }
 }
