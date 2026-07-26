@@ -141,10 +141,12 @@ final class MicroController {
     ) {
         guard let model else { return }
         guard case .action(let action, let state) = intent else { return }
-        // A press on the pad pulls rai to the front so you can see the agent
-        // you're driving — except Wispr Flow, which is meant to dictate into
-        // whatever app currently has focus.
-        if state == .press, action != .wisprFlow, action != MicroAction.none, !NSApp.isActive {
+        // A press on the pad pulls rai to the front so you act on the agent
+        // you're driving. This INCLUDES Wispr Flow: its dictation is injected
+        // into the frontmost app's focused field, so rai must be frontmost when
+        // listening starts, otherwise the transcript lands in whatever app
+        // happened to be focused (e.g. the Codex desktop app).
+        if state == .press, action != MicroAction.none, !NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
         }
         switch action {
@@ -215,16 +217,23 @@ final class MicroController {
 
     private func openWisprFlow(starting: Bool) {
         let workspace = NSWorkspace.shared
-        guard workspace.urlForApplication(toOpen: Self.wisprFlowStartURL) != nil else {
+        let url = starting ? Self.wisprFlowStartURL : Self.wisprFlowStopURL
+        guard workspace.urlForApplication(toOpen: url) != nil else {
             if !wisprFlowUnavailableLogged {
                 NSLog("rai: no application handles the wispr-flow URL scheme")
                 wisprFlowUnavailableLogged = true
             }
             return
         }
-        // Leave the mic-position key blank/unassigned in Codex Micro's vendor
-        // settings; otherwise ChatGPT desktop will act on the same physical key.
-        workspace.open(starting ? Self.wisprFlowStartURL : Self.wisprFlowStopURL)
+        // Trigger Wispr WITHOUT activating it, so rai stays frontmost and the
+        // hands-free transcript is injected into rai's focused pane rather than
+        // into Wispr's own window or whatever else grabs focus. rai is already
+        // pulled to the front on the key press in perform(). (Also leave the
+        // mic-position key blank in the Codex Micro vendor settings, or the
+        // Codex desktop app will act on the same physical key.)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        workspace.open(url, configuration: configuration)
     }
 }
 
