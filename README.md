@@ -15,7 +15,7 @@ per-pane terminals — driving the **unchanged** herdr daemon underneath.
 ![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-46ce7c)
 [![CI](https://github.com/YogevKr/rai/actions/workflows/ci.yml/badge.svg)](https://github.com/YogevKr/rai/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/YogevKr/rai?color=46ce7c&label=download)](https://github.com/YogevKr/rai/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/YogevKr/rai?sort=semver&display_name=tag&label=download&color=46ce7c)](https://github.com/YogevKr/rai/releases/latest)
 
 </div>
 
