@@ -147,6 +147,27 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         }
     }
 
+    // Text input (including Hebrew) arrives here via the input context. In apps
+    // that enable the kitty keyboard protocol (Claude Code), SwiftTerm re-encodes
+    // it and loses non-ASCII text — so send non-ASCII as literal UTF-8 like Ghostty.
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        switch string {
+        case let s as String: text = s
+        case let s as NSAttributedString: text = s.string
+        default:
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+        if !text.isEmpty,
+           text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
+           text.unicodeScalars.contains(where: { $0.value > 0x7f }) {
+            send(txt: text)
+            return
+        }
+        super.insertText(string, replacementRange: replacementRange)
+    }
+
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
         super.mouseDown(with: event)

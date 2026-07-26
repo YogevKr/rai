@@ -19,9 +19,11 @@ struct RaiRootView: View {
                     .padding(.top, Theme.contentTopInset)
                     .background(Theme.base)
                     .ignoresSafeArea(.container, edges: .top)
+                    // Never animate the detail's own layout — otherwise toggling the
+                    // sidebar makes its top briefly jump (and the terminals flicker).
+                    .transaction { $0.animation = nil }
             }
-            // Collapse/expand the sidebar instantly — animating it makes the
-            // terminal (AppKit) views redraw every frame and flicker.
+            // Collapse/expand the sidebar instantly.
             .animation(nil, value: columnVisibility)
 
             if model.isCommandPalettePresented {

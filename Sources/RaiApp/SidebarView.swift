@@ -55,7 +55,8 @@ struct SidebarView: View {
                                             onSelect: { model.select(tab: tab) },
                                             onPaneDragHover: {
                                                 model.previewTabDuringPaneDrag(tab)
-                                            }
+                                            },
+                                            onBroadcast: { broadcastPresented = true }
                                         )
                                     }
                                 } header: {
@@ -141,21 +142,6 @@ struct SidebarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Theme.accent, Theme.accent.opacity(0.55)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: 16, height: 16)
-                .overlay(
-                    Image(systemName: "square.stack.3d.up.fill")
-                        .font(.system(size: 8, weight: .black))
-                        .foregroundStyle(.white)
-                )
-                .shadow(color: Theme.accent.opacity(0.4), radius: 4, y: 1)
             sessionMenu
             Spacer(minLength: 6)
             Menu {
@@ -218,9 +204,6 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .help("Only needs-you")
             .accessibilityLabel("Only needs-you")
-            HeaderButton(system: "megaphone", help: "Broadcast to every pane in this tab") {
-                broadcastPresented = true
-            }
             ConnectionPill(state: model.connectionState)
         }
         .padding(.leading, 78)
@@ -748,6 +731,7 @@ private struct AgentRow: View {
     let selected: Bool
     let onSelect: () -> Void
     let onPaneDragHover: () -> Void
+    let onBroadcast: () -> Void
 
     @State private var hovering = false
     @State private var paneDragTargeted = false
@@ -775,6 +759,17 @@ private struct AgentRow: View {
                 }
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(Theme.textTertiary)
+            }
+            // Broadcast is a tab action, so it only appears on the selected tab.
+            if selected {
+                Button(action: onBroadcast) {
+                    Image(systemName: "megaphone")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Broadcast to every pane in this tab")
             }
         }
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
