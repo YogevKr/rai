@@ -233,6 +233,11 @@ struct SettingsView: View {
                     )
                 }
 
+            CodexMicroSettingsView()
+                .tabItem {
+                    Label("Codex Micro", systemImage: "keyboard.badge.ellipsis")
+                }
+
             ConfigSettingsView(model: model)
                 .tabItem {
                     Label("Config", systemImage: "doc.text")
@@ -1045,5 +1050,75 @@ private extension View {
         padding(22)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Theme.base)
+    }
+}
+
+/// Codex Micro macropad integration.
+///
+/// Status is read-only and live: "enabled" is a user preference, "connected"
+/// means a device is actually attached. Keeping them visibly separate matters
+/// because the pad disconnects on its own, and because another process holding
+/// it (Karabiner seizes keyboards, and every node on this pad carries a Keyboard
+/// collection) looks identical to "not plugged in" without an explicit reason.
+private struct CodexMicroSettingsView: View {
+    @ObservedObject private var status = MicroStatusCenter.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("A Work Louder Codex Micro drives your agents: the six keys follow your most recent panes, their colour tracks agent state, and the joystick moves focus.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SettingsSection(title: "Integration") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Enable Codex Micro", isOn: $status.isEnabled)
+                    Text("Takes effect immediately. Connect over USB or pair over Bluetooth; the pad is picked up whenever it appears and re-attached after it drops.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SettingsSection(title: "Device") {
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent("Status") {
+                        Text(status.isConnected ? "Connected" : (status.isEnabled ? "Waiting for device" : "Disabled"))
+                            .foregroundStyle(status.isConnected ? Theme.status(.done) : Theme.textSecondary)
+                    }
+                    if let transport = status.transportName {
+                        LabeledContent("Transport") { Text(transport) }
+                    }
+                    if let node = status.nodeID {
+                        LabeledContent("Node") {
+                            Text(String(format: "0x%llX", node))
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                    }
+                    if status.isConnected {
+                        LabeledContent("Lighting writes accepted") {
+                            Text("\(status.acknowledgedWrites)")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                    }
+                }
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textPrimary)
+            }
+
+            if let error = status.lastError {
+                SettingsSection(title: "Last Error") {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.status(.blocked))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

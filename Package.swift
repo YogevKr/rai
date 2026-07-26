@@ -31,5 +31,9 @@ let package = Package(
             name: "RaiCoreTests",
             dependencies: ["RaiCore"]
         ),
+        .testTarget(
+            name: "RaiAppTests",
+            dependencies: ["RaiApp", "RaiCore"]
+        ),
     ]
 )

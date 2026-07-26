@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import RaiCore
 @preconcurrency import UserNotifications
 
@@ -16,12 +17,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         static let openAgent = "OPEN_AGENT"
     }
 
+    @MainActor
+    private func setMicroIntegration(enabled: Bool) {
+        if enabled {
+            guard microController == nil else { return }
+            let controller = MicroController(model: RaiApp.sharedModel)
+            microController = controller
+            controller.start()
+            if let snapshot = RaiApp.sharedModel.snapshot {
+                controller.update(snapshot: snapshot)
+            }
+        } else {
+            microController?.stop()
+            microController = nil
+        }
+    }
+
     private weak var model: RaiModel?
     private var pendingPaneID: String?
+    private var microController: MicroController?
+    private var microEnabledObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: RaiApp.sharedModel)
         installTerminalKeyMonitor()
+        microEnabledObserver = MicroStatusCenter.shared.$isEnabled
+            .removeDuplicates()
+            .sink { [weak self] enabled in
+                Task { @MainActor in self?.setMicroIntegration(enabled: enabled) }
+            }
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -57,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        microController?.stop()
         model?.shutdown()
     }
 
@@ -191,6 +216,7 @@ extension AppDelegate: RaiSnapshotObserver {
         )
 
         focusPendingPane(in: snapshot, model: model)
+        microController?.update(snapshot: snapshot)
 
         guard !model.notificationsMuted else { return }
         for transition in transitions where transition.paneID != model.selectedPaneID {
