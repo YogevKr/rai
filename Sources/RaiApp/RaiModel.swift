@@ -944,7 +944,11 @@ final class RaiModel: ObservableObject {
                     ? "Action failed (exit \(entry.exitCode ?? -1))."
                     : parts.joined(separator: "\n\n")
             }
-            return out.isEmpty ? nil : out
+            // On success, only surface human-readable text (a version, a URL…).
+            // Machine JSON (e.g. a pane-open confirmation) is noise — the action's
+            // visible effect is the feedback.
+            if out.isEmpty || out.hasPrefix("{") || out.hasPrefix("[") { return nil }
+            return out
         }
         return nil
     }
