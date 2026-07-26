@@ -43,6 +43,10 @@ enum Theme {
     // hairline dividers) align exactly across the split.
     static let headerHeight: CGFloat = 56
 
+    // A little breathing room at the very top so content clears the traffic lights
+    // without the big dead title-bar strip.
+    static let contentTopInset: CGFloat = 22
+
     // Nearly-flat panel wash — surfaces are solid, so keep this whisper-subtle.
     static let panelGradient = LinearGradient(
         colors: [Color(hex: 0x1F1F1F), Color(hex: 0x1A1A1A)],

@@ -86,8 +86,10 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
-        // Fill up to the window top (under the transparent title bar); the header's
-        // leading padding already reserves room for the traffic lights.
+        // A little top breathing room, then fill up to the window top (under the
+        // transparent title bar); the header's leading padding reserves room for
+        // the traffic lights.
+        .padding(.top, Theme.contentTopInset)
         .ignoresSafeArea(.container, edges: .top)
         // Linear: a solid sidebar panel, separated from the content by a hairline
         // (the region-defining device), with a whisper-subtle top highlight.

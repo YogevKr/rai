@@ -3,16 +3,20 @@ import SwiftUI
 
 struct RaiRootView: View {
     @ObservedObject var model: RaiModel
+    // Keep the sidebar shown by default (collapsing it would slide the panes under
+    // the traffic lights / toggle).
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         ZStack {
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
                 // No header — the panes fill the whole screen. The selected agent's
                 // details (status · space · cwd) live in the sidebar tab row.
                 PaneLayoutView(model: model)
+                    .padding(.top, Theme.contentTopInset)
                     .background(Theme.base)
                     .ignoresSafeArea(.container, edges: .top)
             }
