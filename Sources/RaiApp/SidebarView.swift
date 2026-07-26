@@ -9,6 +9,7 @@ extension UTType {
 
 struct SidebarView: View {
     @ObservedObject var model: RaiModel
+    @State private var broadcastPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -212,11 +213,17 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .help("Only needs-you")
             .accessibilityLabel("Only needs-you")
+            HeaderButton(system: "megaphone", help: "Broadcast to every pane in this tab") {
+                broadcastPresented = true
+            }
             ConnectionPill(state: model.connectionState)
         }
         .padding(.leading, 78)
-        .padding(.trailing, 14)
+        .padding(.trailing, 12)
         .frame(height: Theme.headerHeight)
+        .sheet(isPresented: $broadcastPresented) {
+            BroadcastSheet(model: model)
+        }
         .alert(item: $model.worktreeAlert) { alert in
             worktreeAlert(alert)
         }

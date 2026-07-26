@@ -10,15 +10,10 @@ struct RaiRootView: View {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
-                // The detail IS the main screen — it fills the area, unframed. Its
-                // header divider is contained to the detail (the sidebar has no
-                // header divider), so no hairline reads as spanning across both.
-                VStack(spacing: 0) {
-                    PaneHeader(model: model)
-                    Divider().overlay(Theme.hairline)
-                    PaneLayoutView(model: model)
-                }
-                .background(Theme.base)
+                // No header — the panes fill the whole screen. The selected agent's
+                // details (status · space · cwd) live in the sidebar tab row.
+                PaneLayoutView(model: model)
+                    .background(Theme.base)
             }
 
             if model.isCommandPalettePresented {
@@ -37,61 +32,7 @@ struct RaiRootView: View {
     }
 }
 
-private struct PaneHeader: View {
-    @ObservedObject var model: RaiModel
-    @State private var broadcastPresented = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            if let pane = model.selectedPane {
-                StatusDot(status: pane.agentStatus, size: 8)
-                Text(model.displayTitle(for: pane))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                Text(Theme.statusLabel(pane.agentStatus))
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Theme.status(pane.agentStatus))
-                if let workspace = model.selectedWorkspace {
-                    dot
-                    Text(workspace.label)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                }
-                dot
-                Text(pane.foregroundCWD ?? pane.cwd)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(Theme.textTertiary)
-                Text("rai")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            Spacer(minLength: 12)
-            HeaderButton(system: "megaphone", help: "Broadcast Input") {
-                broadcastPresented = true
-            }
-            HeaderButton(system: "arrow.clockwise", help: "Refresh") { model.refreshNow() }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 40)
-        .background(Theme.bar)
-        .sheet(isPresented: $broadcastPresented) {
-            BroadcastSheet(model: model)
-        }
-    }
-
-    private var dot: some View {
-        Text("·").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-    }
-}
-
-private struct BroadcastSheet: View {
+struct BroadcastSheet: View {
     @ObservedObject var model: RaiModel
 
     @Environment(\.dismiss) private var dismiss
@@ -165,7 +106,7 @@ private struct BroadcastSheet: View {
     }
 }
 
-private struct HeaderButton: View {
+struct HeaderButton: View {
     let system: String
     let help: String
     let action: () -> Void
