@@ -124,9 +124,15 @@ final class MicroControllerTests: XCTestCase {
             ),
             .wisprFlow(false)
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             MicroControllerDecisions.intent(
                 for: .commandKey(id: "ACT11", state: .press)
+            ),
+            .sendReturn
+        )
+        XCTAssertNil(
+            MicroControllerDecisions.intent(
+                for: .commandKey(id: "ACT11", state: .release)
             )
         )
         XCTAssertEqual(
