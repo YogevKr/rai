@@ -350,6 +350,17 @@ private struct PaneSurface: View {
             Button("Process Info") {
                 processInfoPresented = true
             }
+            let actions = model.pluginActions(for: .pane)
+            if !actions.isEmpty {
+                Menu("Plugin Actions") {
+                    ForEach(actions) { action in
+                        Button(action.title) {
+                            model.invokePluginAction(action, forPane: paneID)
+                        }
+                        .help(action.description ?? action.title)
+                    }
+                }
+            }
         }
         .onDrag {
             model.draggedPaneID = paneID

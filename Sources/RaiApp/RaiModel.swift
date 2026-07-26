@@ -54,6 +54,55 @@ private struct PaneProcessInfoResponse: Decodable {
     let result: Result
 }
 
+private struct PluginActionListResponse: Decodable {
+    struct Result: Decodable {
+        let actions: [Action]
+    }
+
+    struct Action: Decodable {
+        let actionID: String
+        let title: String
+        let description: String?
+        let pluginID: String
+        let contexts: Set<PluginAction.Context>
+        let platforms: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case actionID = "action_id"
+            case title
+            case description
+            case pluginID = "plugin_id"
+            case contexts
+            case platforms
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            actionID = try container.decode(String.self, forKey: .actionID)
+            title = try container.decode(String.self, forKey: .title)
+            description = try container.decodeIfPresent(String.self, forKey: .description)
+            pluginID = try container.decode(String.self, forKey: .pluginID)
+            contexts = try container.decodeIfPresent(
+                Set<PluginAction.Context>.self,
+                forKey: .contexts
+            ) ?? []
+            platforms = try container.decode([String].self, forKey: .platforms)
+        }
+
+        var pluginAction: PluginAction {
+            PluginAction(
+                id: actionID,
+                title: title,
+                description: description,
+                pluginId: pluginID,
+                contexts: contexts
+            )
+        }
+    }
+
+    let result: Result
+}
+
 @MainActor
 final class RaiModel: ObservableObject {
     enum ConnectionState: Equatable {
@@ -90,6 +139,7 @@ final class RaiModel: ObservableObject {
     @Published var inlineRename: InlineRenameTarget?
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
+    @Published var pluginActions: [PluginAction] = []
     @Published var worktreeCreateRequest: WorktreeCreateRequest?
     @Published var worktreeOpenRequest: WorktreeOpenRequest?
     @Published var worktreeAlert: WorktreeAlert?
@@ -502,6 +552,7 @@ final class RaiModel: ObservableObject {
         renameRequest = nil
         workspacePendingClose = nil
         statusExplanation = nil
+        pluginActions = []
         worktreeCreateRequest = nil
         worktreeOpenRequest = nil
         worktreeAlert = nil
@@ -743,6 +794,86 @@ final class RaiModel: ObservableObject {
                     connectionState = .disconnected(error.localizedDescription)
                 }
             }
+        }
+    }
+
+    func pluginActions(for context: PluginAction.Context) -> [PluginAction] {
+        pluginActions.filter { $0.contexts.isEmpty || $0.contexts.contains(context) }
+    }
+
+    func refreshPluginActions() {
+        let generation = connectionGeneration
+        Task {
+            await refreshPluginActions(generation: generation)
+        }
+    }
+
+    func invokePluginAction(_ action: PluginAction, forWorkspace workspace: Workspace) {
+        guard let paneID = preferredPaneID(forWorkspaceID: workspace.workspaceID) else { return }
+        invokePluginAction(action, focusedPaneID: paneID)
+    }
+
+    func invokePluginAction(_ action: PluginAction, forTab tab: HerdrTab) {
+        guard let paneID = preferredPaneID(forTabID: tab.tabID) else { return }
+        invokePluginAction(action, focusedPaneID: paneID)
+    }
+
+    func invokePluginAction(_ action: PluginAction, forPane paneID: String) {
+        guard snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else { return }
+        invokePluginAction(action, focusedPaneID: paneID)
+    }
+
+    private func preferredPaneID(forWorkspaceID workspaceID: String) -> String? {
+        guard let snapshot,
+              let workspace = snapshot.workspaces.first(where: {
+                  $0.workspaceID == workspaceID
+              }) else {
+            return nil
+        }
+        let tabs = snapshot.tabs.filter { $0.workspaceID == workspaceID }
+        guard let tab = tabs.first(where: { $0.tabID == workspace.activeTabID })
+            ?? tabs.first else {
+            return nil
+        }
+        return preferredPaneID(forTabID: tab.tabID)
+    }
+
+    private func preferredPaneID(forTabID tabID: String) -> String? {
+        guard let snapshot else { return nil }
+        let panes = snapshot.panes.filter { $0.tabID == tabID }
+        let layoutFocus = snapshot.layouts.first { $0.tabID == tabID }?.focusedPaneID
+        return panes.first(where: { $0.paneID == layoutFocus })?.paneID
+            ?? panes.first(where: \.focused)?.paneID
+            ?? panes.first?.paneID
+    }
+
+    private func invokePluginAction(_ action: PluginAction, focusedPaneID paneID: String) {
+        selectedPaneID = paneID
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            do {
+                try await client.focusPane(paneID)
+            } catch {
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
+                return
+            }
+            guard generation == connectionGeneration else { return }
+            let output = await runHerdrCapture([
+                "plugin", "action", "invoke", action.id,
+                "--plugin", action.pluginId,
+            ])
+            guard generation == connectionGeneration else { return }
+            if let output {
+                statusExplanation = StatusExplanation(
+                    id: UUID(),
+                    title: action.title,
+                    text: output
+                )
+            }
+            await refreshSnapshot(keepSelection: false)
         }
     }
 
@@ -1313,6 +1444,8 @@ final class RaiModel: ObservableObject {
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
             )
+            await refreshPluginActions(generation: generation)
+            guard generation == connectionGeneration else { return }
 
             let selectionStillValid = selectedPaneID.map { id in
                 newSnapshot.panes.contains { $0.paneID == id }
@@ -1559,6 +1692,21 @@ final class RaiModel: ObservableObject {
             guard generation == connectionGeneration else { return }
             await refreshSnapshot(keepSelection: !followFocus)
         }
+    }
+
+    private func refreshPluginActions(generation: UUID) async {
+        guard let output = await runHerdrCapture(["plugin", "action", "list"]),
+              generation == connectionGeneration,
+              let data = output.data(using: .utf8),
+              let response = try? JSONDecoder().decode(
+                  PluginActionListResponse.self,
+                  from: data
+              ) else {
+            return
+        }
+        pluginActions = response.result.actions
+            .filter { $0.platforms.contains("macos") }
+            .map(\.pluginAction)
     }
 
     func serverStatus() async -> String {

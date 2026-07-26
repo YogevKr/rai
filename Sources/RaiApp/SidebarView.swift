@@ -709,6 +709,17 @@ private struct WorkspaceRow: View {
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
             }
+            let actions = model.pluginActions(for: .workspace)
+            if !actions.isEmpty {
+                Menu("Plugin Actions") {
+                    ForEach(actions) { action in
+                        Button(action.title) {
+                            model.invokePluginAction(action, forWorkspace: workspace)
+                        }
+                        .help(action.description ?? action.title)
+                    }
+                }
+            }
             Divider()
             Button("New Worktree…") {
                 model.beginCreateWorktree(from: workspace)
@@ -828,6 +839,17 @@ private struct WorkspaceHeader: View {
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
             }
+            let actions = model.pluginActions(for: .workspace)
+            if !actions.isEmpty {
+                Menu("Plugin Actions") {
+                    ForEach(actions) { action in
+                        Button(action.title) {
+                            model.invokePluginAction(action, forWorkspace: workspace)
+                        }
+                        .help(action.description ?? action.title)
+                    }
+                }
+            }
             Divider()
             Button("New Worktree…") {
                 model.beginCreateWorktree(from: workspace)
@@ -932,6 +954,17 @@ private struct AgentRow: View {
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }
             Button("Close", role: .destructive) { model.close(tab: tab) }
+            let actions = model.pluginActions(for: .tab)
+            if !actions.isEmpty {
+                Menu("Plugin Actions") {
+                    ForEach(actions) { action in
+                        Button(action.title) {
+                            model.invokePluginAction(action, forTab: tab)
+                        }
+                        .help(action.description ?? action.title)
+                    }
+                }
+            }
             Divider()
             Button("Explain Status") { model.explainStatus(tab: tab) }
         }

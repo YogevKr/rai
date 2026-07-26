@@ -41,6 +41,20 @@ struct StatusExplanation: Identifiable, Equatable {
     var isLoading: Bool { text == nil }
 }
 
+struct PluginAction: Identifiable, Equatable {
+    enum Context: String, Decodable {
+        case workspace
+        case tab
+        case pane
+    }
+
+    let id: String
+    let title: String
+    let description: String?
+    let pluginId: String
+    let contexts: Set<Context>
+}
+
 struct WorktreeRepositoryContext: Equatable {
     let repoName: String
     let checkoutPath: String
