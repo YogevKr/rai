@@ -1192,10 +1192,11 @@ private struct CodexMicroSettingsView: View {
                 keyCell(.commandKey("ACT09"))
             }
             GridRow {
+                // The device's touch button sits at the bottom-left.
+                spareCell
                 keyCell(.commandKey("ACT10"))
                 keyCell(.commandKey("ACT11"))
                 keyCell(.commandKey("ACT12"))
-                spareCell
             }
         }
         .padding(24)
