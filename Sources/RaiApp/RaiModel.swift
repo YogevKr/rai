@@ -71,6 +71,9 @@ final class RaiModel: ObservableObject {
     @Published var draggedTabID: String?
     @Published var draggedWorkspaceID: String?
     @Published var onlyNeedsYou = false
+    // Spaces the user has collapsed in the sidebar. A collapsed space hides its
+    // tabs except the ones that need attention (and the selected one).
+    @Published var collapsedWorkspaceIDs: Set<String> = []
     @Published var notificationsMuted: Bool {
         didSet {
             userDefaults.set(
@@ -157,6 +160,18 @@ final class RaiModel: ObservableObject {
 
     var selectedTab: HerdrTab? {
         snapshot?.tabs.first { $0.tabID == selectedTabID }
+    }
+
+    func isWorkspaceCollapsed(_ workspaceID: String) -> Bool {
+        collapsedWorkspaceIDs.contains(workspaceID)
+    }
+
+    func toggleWorkspaceCollapsed(_ workspaceID: String) {
+        if collapsedWorkspaceIDs.contains(workspaceID) {
+            collapsedWorkspaceIDs.remove(workspaceID)
+        } else {
+            collapsedWorkspaceIDs.insert(workspaceID)
+        }
     }
 
     var selectedWorkspace: Workspace? {

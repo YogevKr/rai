@@ -19,12 +19,17 @@ struct SidebarView: View {
                     LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
                         ForEach(snapshot.workspaces) { workspace in
                             let allTabs = tabs(in: snapshot, of: workspace)
+                            // A collapsed space hides everything but its
+                            // attention-needing tabs (and the selected one) —
+                            // same predicate as the global "only needs you".
+                            let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
+                                && allTabs.count > 1
                             let visibleTabs = allTabs.filter {
                                 AttentionFilter.includes(
                                     status: $0.agentStatus,
                                     id: $0.tabID,
                                     selectedID: model.selectedTabID,
-                                    onlyNeedsYou: model.onlyNeedsYou
+                                    onlyNeedsYou: model.onlyNeedsYou || collapsed
                                 )
                             }
                             let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
@@ -44,7 +49,7 @@ struct SidebarView: View {
                                     }
                                 )
                                 .padding(.top, 8)
-                            } else if !visibleTabs.isEmpty {
+                            } else if allTabs.count > 1, collapsed || !visibleTabs.isEmpty {
                                 Section {
                                     ForEach(visibleTabs) { tab in
                                         AgentRow(
@@ -63,7 +68,12 @@ struct SidebarView: View {
                                     WorkspaceHeader(
                                         model: model,
                                         workspace: workspace,
-                                        focusedInHerdr: focused
+                                        focusedInHerdr: focused,
+                                        collapsed: collapsed,
+                                        hiddenCount: allTabs.count - visibleTabs.count,
+                                        onToggleCollapse: {
+                                            model.toggleWorkspaceCollapsed(workspace.workspaceID)
+                                        }
                                     )
                                 }
                             }
@@ -656,6 +666,9 @@ private struct WorkspaceHeader: View {
     @ObservedObject var model: RaiModel
     let workspace: Workspace
     let focusedInHerdr: Bool
+    var collapsed: Bool = false
+    var hiddenCount: Int = 0
+    var onToggleCollapse: () -> Void = {}
 
     @State private var dropTargeted = false
 
@@ -667,6 +680,16 @@ private struct WorkspaceHeader: View {
 
     var body: some View {
         HStack(spacing: 7) {
+            Button(action: onToggleCollapse) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    .frame(width: 12, height: 12)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "Expand space" : "Collapse space")
             StatusDot(status: workspace.agentStatus, size: 5)
             Text(workspace.label.uppercased())
                 .font(.system(size: 10, weight: .semibold))
@@ -678,7 +701,11 @@ private struct WorkspaceHeader: View {
                     .help("Focused in Herdr")
             }
             Spacer(minLength: 4)
-            if showWorktreeTag, let worktree = workspace.worktree {
+            if collapsed, hiddenCount > 0 {
+                Text("\(hiddenCount) hidden")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+            } else if showWorktreeTag, let worktree = workspace.worktree {
                 WorktreeTag(worktree: worktree)
             } else {
                 Text("\(workspace.tabCount)")
