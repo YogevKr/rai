@@ -74,10 +74,10 @@ enum MicroControllerDecisions {
     ) -> MicroControllerIntent? {
         guard let (control, state) = controlAndState(for: event) else { return nil }
         let action = bindings[control]
-        // Every binding fires on its press edge only (releases are dropped).
-        // Wispr Flow is a toggle: one press starts hands-free dictation, the
-        // next stops it.
-        guard state == .press else { return nil }
+        // Most bindings fire on their press edge only. Wispr Flow is push-to-
+        // talk: it holds its shortcut down for as long as the mic key is held,
+        // so let the release edge through too.
+        guard state == .press || action == .wisprFlow else { return nil }
         return .action(action, state: state)
     }
 }
@@ -221,17 +221,18 @@ final class MicroController {
         case .broadcast:
             model.isBroadcastPresented = true
         case .wisprFlow:
-            triggerWisprShortcut()
+            setWisprShortcut(down: state == .press)
         case .none:
             break
         }
     }
 
-    /// Simulates Wispr Flow's hands-free shortcut so its dictation is captured
-    /// into rai's focused pane. rai is already frontmost (pulled up on the key
-    /// press), and posting a global key chord — rather than opening the
-    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus.
-    private func triggerWisprShortcut() {
+    /// Holds (or releases) Wispr Flow's push-to-talk chord so its dictation is
+    /// captured into rai's focused pane. rai is already frontmost (pulled up on
+    /// the key press), and posting a global chord — rather than opening the
+    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus. Bind
+    /// Wispr's push-to-talk to the same chord (Control-Option-Semicolon).
+    private func setWisprShortcut(down: Bool) {
         guard ensureAccessibilityTrusted() else { return }
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
 
@@ -242,20 +243,24 @@ final class MicroController {
             event.flags = flags
             event.post(tap: .cghidEventTap)
         }
-        // Press the modifiers (accumulating flags), tap the key, release the
-        // modifiers in reverse — an explicit chord so both Carbon hot keys and
-        // NSEvent monitors register it.
+
         let modifiers = Self.wisprShortcutModifiers
-        var flags: CGEventFlags = []
-        for modifier in modifiers {
-            flags.insert(modifier.flag)
-            post(modifier.key, keyDown: true, flags: flags)
-        }
-        post(Self.wisprShortcutKey, keyDown: true, flags: flags)
-        post(Self.wisprShortcutKey, keyDown: false, flags: flags)
-        for modifier in modifiers.reversed() {
-            flags.remove(modifier.flag)
-            post(modifier.key, keyDown: false, flags: flags)
+        if down {
+            // Press the modifiers (accumulating flags), then the key — and hold.
+            var flags: CGEventFlags = []
+            for modifier in modifiers {
+                flags.insert(modifier.flag)
+                post(modifier.key, keyDown: true, flags: flags)
+            }
+            post(Self.wisprShortcutKey, keyDown: true, flags: flags)
+        } else {
+            // Release the key, then the modifiers in reverse.
+            var flags: CGEventFlags = modifiers.reduce(into: []) { $0.insert($1.flag) }
+            post(Self.wisprShortcutKey, keyDown: false, flags: flags)
+            for modifier in modifiers.reversed() {
+                flags.remove(modifier.flag)
+                post(modifier.key, keyDown: false, flags: flags)
+            }
         }
     }
 
