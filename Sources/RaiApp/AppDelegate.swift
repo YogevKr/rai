@@ -154,6 +154,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NotificationKey.workspaceID: pane.workspaceID,
             NotificationKey.workspace: snapshot.workspaceLabel(for: pane),
         ]
+        if let attachment = Self.iconAttachment() {
+            content.attachments = [attachment]
+        }
 
         let request = UNNotificationRequest(
             identifier: "agent-\(pane.paneID)-\(transition.newStatus.rawValue)-\(UUID())",
@@ -161,6 +164,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    // The app icon PNG, rendered once. macOS shows the app icon on the left of a
+    // notification automatically; attaching it as well guarantees the rai logo is
+    // visible (as the notification's thumbnail) regardless of icon-cache state.
+    private static let iconPNG: Data? = {
+        let icon = NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName)
+        guard let icon,
+              let tiff = icon.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return png
+    }()
+
+    private static func iconAttachment() -> UNNotificationAttachment? {
+        guard let data = iconPNG else { return nil }
+        // A fresh file per notification — UNNotificationAttachment consumes the URL.
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("rai-notif-\(UUID().uuidString).png")
+        guard (try? data.write(to: url)) != nil else { return nil }
+        return try? UNNotificationAttachment(identifier: "rai-icon", url: url, options: nil)
     }
 }
 
