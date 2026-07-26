@@ -1071,7 +1071,7 @@ private struct CodexMicroSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-            Text("A Work Louder Codex Micro drives your agents: the six keys follow your most recent panes, their colour tracks agent state, and the joystick moves focus.")
+            Text("A Work Louder Codex Micro drives your agents: the six keys hold your agents in sidebar order, their colour tracks agent state, the dial scrolls through every agent, and the joystick moves focus.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1165,17 +1165,18 @@ private struct CodexMicroSettingsView: View {
         // ACT key positions are approximate until confirmed on hardware via learn mode.
         Grid(horizontalSpacing: 12, verticalSpacing: 12) {
             GridRow {
-                aggregateControl(
-                    title: "Joystick",
-                    controls: joystickControls,
-                    kind: .joystick
-                )
-                keyCell(.agentKey(0))
-                keyCell(.agentKey(1))
+                // Mirrors the physical pad: dial on the left, joystick on the right.
                 aggregateControl(
                     title: "Dial",
                     controls: dialControls,
                     kind: .dial
+                )
+                keyCell(.agentKey(0))
+                keyCell(.agentKey(1))
+                aggregateControl(
+                    title: "Joystick",
+                    controls: joystickControls,
+                    kind: .joystick
                 )
             }
             GridRow {
