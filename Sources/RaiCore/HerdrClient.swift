@@ -267,6 +267,9 @@ public actor HerdrClient {
             wireSubscriptions.append(.object(["type": .string("pane.updated")]))
         }
 
+        // Capture an immutable copy — a mutable `var` can't be captured by the
+        // detached (concurrently-executing) closure under strict concurrency.
+        let subscriptionsPayload = wireSubscriptions
         return AsyncThrowingStream { continuation in
             let worker = Task.detached {
                 do {
@@ -276,7 +279,7 @@ public actor HerdrClient {
                         id: "sub",
                         method: "events.subscribe",
                         params: [
-                            "subscriptions": .array(wireSubscriptions),
+                            "subscriptions": .array(subscriptionsPayload),
                         ]
                     )
                     try socket.writeLine(JSONEncoder().encode(request))

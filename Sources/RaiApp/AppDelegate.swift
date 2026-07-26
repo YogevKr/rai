@@ -154,9 +154,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NotificationKey.workspaceID: pane.workspaceID,
             NotificationKey.workspace: snapshot.workspaceLabel(for: pane),
         ]
-        if let attachment = Self.iconAttachment() {
-            content.attachments = [attachment]
-        }
 
         let request = UNNotificationRequest(
             identifier: "agent-\(pane.paneID)-\(transition.newStatus.rawValue)-\(UUID())",

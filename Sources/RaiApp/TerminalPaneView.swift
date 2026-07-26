@@ -118,40 +118,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     }
 
     // SwiftTerm's paste only reads clipboard text, so an image (e.g. a screenshot)
-    // pastes nothing. Handle it based on what's in front:
-    //   • A rich TUI like Claude Code enables the kitty keyboard protocol and reads
-    //     the clipboard image itself on Ctrl-V — send Ctrl-V so it attaches [image].
-    //   • A plain shell leaves the protocol off; there Ctrl-V is "literal next", so
-    //     write the image to a temp PNG and paste its path (like a dropped file).
+    // pastes nothing. When the clipboard holds an image, send Ctrl-V: Claude Code
+    // reads the clipboard image itself on Ctrl-V and attaches it as [image]. (We
+    // can't reliably tell Claude from a plain shell — the app enables its keyboard
+    // protocol before rai attaches, so terminal state doesn't reflect it — and
+    // pasting into an agent is the overwhelmingly common case.)
     override func paste(_ sender: Any) {
         let clipboard = NSPasteboard.general
         if clipboard.string(forType: .string) == nil,
            clipboard.canReadObject(forClasses: [NSImage.self], options: nil) {
-            if !getTerminal().keyboardEnhancementFlags.isEmpty {
-                send([0x16])  // Ctrl-V → Claude Code attaches the clipboard image
-            } else if let path = Self.writeClipboardImageToTemp(clipboard) {
-                send(txt: path + " ")
-            }
+            send([0x16])  // Ctrl-V
             return
         }
         super.paste(sender)
-    }
-
-    private static func writeClipboardImageToTemp(_ pasteboard: NSPasteboard) -> String? {
-        guard let image = NSImage(pasteboard: pasteboard),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
-            return nil
-        }
-        let name = "rai-paste-\(Int(Date().timeIntervalSince1970 * 1000)).png"
-        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name)
-        do {
-            try png.write(to: url)
-            return url.path
-        } catch {
-            return nil
-        }
     }
 
     // Text input (including Hebrew) arrives here via the input context. In apps
