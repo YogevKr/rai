@@ -68,9 +68,19 @@ cat > "$STAGE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> ad-hoc sign"
-codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \
-  codesign --force --sign - "$STAGE"
+# Prefer a stable local code-signing identity so macOS TCC grants (e.g. Input
+# Monitoring for the Codex Micro pad) persist across rebuilds. Falls back to
+# ad-hoc where the identity isn't present (CI, other machines).
+SIGN_ID="${RAI_SIGN_IDENTITY:-rai-dev-signing}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+  echo "==> sign ($SIGN_ID)"
+  codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE" >/dev/null 2>&1 || \
+    codesign --force --sign "$SIGN_ID" "$STAGE"
+else
+  echo "==> ad-hoc sign"
+  codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \
+    codesign --force --sign - "$STAGE"
+fi
 
 if [ -n "${RAI_APP_DEST:-}" ]; then
   DEST="$RAI_APP_DEST"; mkdir -p "$DEST"
