@@ -494,6 +494,51 @@ private struct SidebarDropIndicator: ViewModifier {
     }
 }
 
+// A borderless text field for editing a name in place. Commits on Return or when
+// focus leaves; cancels on Escape. A one-shot guard keeps Return (which also
+// resigns focus) from committing twice.
+private struct InlineRenameField: View {
+    let font: Font
+    let onCommit: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var draft: String
+    @State private var finished = false
+    @FocusState private var focused: Bool
+
+    init(
+        initial: String,
+        font: Font,
+        onCommit: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.font = font
+        self.onCommit = onCommit
+        self.onCancel = onCancel
+        _draft = State(initialValue: initial)
+    }
+
+    var body: some View {
+        TextField("", text: $draft)
+            .textFieldStyle(.plain)
+            .font(font)
+            .foregroundStyle(Theme.textPrimary)
+            .focused($focused)
+            .onAppear { focused = true }
+            .onSubmit { finish(commit: true) }
+            .onExitCommand { finish(commit: false) }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { finish(commit: true) }
+            }
+    }
+
+    private func finish(commit: Bool) {
+        guard !finished else { return }
+        finished = true
+        if commit { onCommit(draft) } else { onCancel() }
+    }
+}
+
 // Shared two-line row content: a status dot, a title, and a muted
 // "status · context" subtitle — the mission-control row shape.
 private struct SidebarRowLabel<Trailing: View>: View {
@@ -502,6 +547,9 @@ private struct SidebarRowLabel<Trailing: View>: View {
     let subtitle: String
     let selected: Bool
     let focusedInHerdr: Bool
+    var editing: Bool = false
+    var onCommitRename: (String) -> Void = { _ in }
+    var onCancelRename: () -> Void = {}
     @ViewBuilder var trailing: () -> Trailing
 
     private var subtitleLine: Text {
@@ -518,14 +566,23 @@ private struct SidebarRowLabel<Trailing: View>: View {
             StatusDot(status: status)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if focusedInHerdr {
-                        Circle().fill(Theme.accent).frame(width: 4, height: 4)
-                            .help("Focused in Herdr")
+                    if editing {
+                        InlineRenameField(
+                            initial: title,
+                            font: .system(size: 13, weight: selected ? .semibold : .medium),
+                            onCommit: onCommitRename,
+                            onCancel: onCancelRename
+                        )
+                    } else {
+                        Text(title)
+                            .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                            .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if focusedInHerdr {
+                            Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                                .help("Focused in Herdr")
+                        }
                     }
                 }
                 subtitleLine
@@ -599,7 +656,10 @@ private struct WorkspaceRow: View {
             title: workspace.label,
             subtitle: subtitleContext,
             selected: selected,
-            focusedInHerdr: focusedInHerdr
+            focusedInHerdr: focusedInHerdr,
+            editing: model.inlineRename == .workspace(workspace.workspaceID),
+            onCommitRename: { model.commitInlineRename(workspace: workspace, to: $0) },
+            onCancelRename: { model.cancelInlineRename() }
         ) {
             if workspace.worktree?.isLinkedWorktree == true {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
@@ -610,7 +670,7 @@ private struct WorkspaceRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.beginRename(workspace: workspace) }
+        .onTapGesture(count: 2) { model.beginInlineRename(workspace: workspace) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
@@ -691,15 +751,26 @@ private struct WorkspaceHeader: View {
             }
             .buttonStyle(.plain)
             .help(collapsed ? "Expand space" : "Collapse space")
-            StatusDot(status: workspace.agentStatus, size: 5)
-            Text(workspace.label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.9)
+            Image(systemName: "square.stack")
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.textTertiary)
-                .lineLimit(1)
-            if focusedInHerdr {
-                Circle().fill(Theme.accent).frame(width: 4, height: 4)
-                    .help("Focused in Herdr")
+            if model.inlineRename == .workspace(workspace.workspaceID) {
+                InlineRenameField(
+                    initial: workspace.label,
+                    font: .system(size: 10, weight: .semibold),
+                    onCommit: { model.commitInlineRename(workspace: workspace, to: $0) },
+                    onCancel: { model.cancelInlineRename() }
+                )
+            } else {
+                Text(workspace.label.uppercased())
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                if focusedInHerdr {
+                    Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                        .help("Focused in Herdr")
+                }
             }
             Spacer(minLength: 4)
             if collapsed, hiddenCount > 0 {
@@ -716,11 +787,20 @@ private struct WorkspaceHeader: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 16)
-        .padding(.bottom, 5)
+        .padding(.bottom, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.sidebar)
+        // A faint band + bottom hairline so a space header reads as a group
+        // divider, clearly distinct from the flat tab rows beneath it.
+        .background {
+            Theme.sidebar
+            Color.white.opacity(0.025)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.beginInlineRename(workspace: workspace) }
         .onTapGesture { model.select(workspace: workspace) }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
@@ -788,7 +868,10 @@ private struct AgentRow: View {
             title: label,
             subtitle: subtitleContext,
             selected: selected,
-            focusedInHerdr: false
+            focusedInHerdr: false,
+            editing: model.inlineRename == .tab(tab.tabID),
+            onCommitRename: { model.commitInlineRename(tab: tab, to: $0) },
+            onCancelRename: { model.cancelInlineRename() }
         ) {
             if tab.paneCount > 1 {
                 HStack(spacing: 3) {
@@ -813,7 +896,7 @@ private struct AgentRow: View {
         .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.beginRename(tab: tab) }
+        .onTapGesture(count: 2) { model.beginInlineRename(tab: tab) }
         .onTapGesture { onSelect() }
         // Row is a plain view (not a Button) so `.onDrag` can start a drag on
         // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.

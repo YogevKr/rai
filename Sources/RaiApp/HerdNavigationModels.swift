@@ -27,6 +27,12 @@ struct RenameRequest: Identifiable, Equatable {
     let initialLabel: String
 }
 
+// Which sidebar row is being renamed in place (vs. the modal RenameRequest).
+enum InlineRenameTarget: Equatable {
+    case workspace(String)
+    case tab(String)
+}
+
 struct StatusExplanation: Identifiable, Equatable {
     let id: UUID
     let title: String

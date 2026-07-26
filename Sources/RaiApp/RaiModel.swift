@@ -86,6 +86,8 @@ final class RaiModel: ObservableObject {
     @Published var paletteQuery = ""
     @Published var paletteSelectedID: String?
     @Published var renameRequest: RenameRequest?
+    // In-place sidebar rename: which tab/space is currently editing its name.
+    @Published var inlineRename: InlineRenameTarget?
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
     @Published var worktreeCreateRequest: WorktreeCreateRequest?
@@ -826,6 +828,25 @@ final class RaiModel: ObservableObject {
         case .workspace(let workspaceID):
             runAction(["workspace", "rename", workspaceID, label], followFocus: false)
         }
+    }
+
+    // In-place rename: begin editing a row's name inline, then commit or cancel.
+    func beginInlineRename(tab: HerdrTab) { inlineRename = .tab(tab.tabID) }
+    func beginInlineRename(workspace: Workspace) { inlineRename = .workspace(workspace.workspaceID) }
+    func cancelInlineRename() { inlineRename = nil }
+
+    func commitInlineRename(tab: HerdrTab, to rawLabel: String) {
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        inlineRename = nil
+        guard !label.isEmpty, label != snapshot?.displayLabel(for: tab) else { return }
+        runAction(["tab", "rename", tab.tabID, label], followFocus: false)
+    }
+
+    func commitInlineRename(workspace: Workspace, to rawLabel: String) {
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        inlineRename = nil
+        guard !label.isEmpty, label != workspace.label else { return }
+        runAction(["workspace", "rename", workspace.workspaceID, label], followFocus: false)
     }
 
     func close(tab: HerdrTab) {
