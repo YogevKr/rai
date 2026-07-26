@@ -82,7 +82,13 @@ struct CommandPaletteView: View {
                 .stroke(Theme.hairlineStrong, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .task { searchFocused = true }
+        .task {
+            // The terminal gives up first responder asynchronously when the palette
+            // opens; claim the search field just after so it reliably wins keyboard
+            // focus (otherwise keystrokes fall through to the terminal).
+            try? await Task.sleep(for: .milliseconds(40))
+            searchFocused = true
+        }
         .onAppear(perform: installMonitor)
         .onDisappear(perform: removeMonitor)
     }
@@ -98,7 +104,21 @@ struct CommandPaletteView: View {
                 case 125: model.paletteMove(1); return nil           // ↓
                 case 36, 76: model.paletteActivate(); return nil     // return / enter
                 case 53: model.closeCommandPalette(); return nil     // esc
-                default: return event
+                case 51:                                             // delete / backspace
+                    if !model.paletteQuery.isEmpty { model.paletteQuery.removeLast() }
+                    return nil
+                default:
+                    // Route printable typing straight into the query. The local
+                    // monitor always fires, so a character can never be dropped by a
+                    // focus race or fall through to the terminal. Modified keys
+                    // (⌘V paste, ⌘A, …) pass through to the focused field.
+                    let mods = event.modifierFlags.intersection([.command, .control, .option])
+                    if mods.isEmpty, let chars = event.characters, !chars.isEmpty,
+                       chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
+                        model.paletteQuery += chars
+                        return nil
+                    }
+                    return event
                 }
             }
         }

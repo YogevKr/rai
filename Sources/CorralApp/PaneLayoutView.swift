@@ -285,7 +285,9 @@ private struct PaneSurface: View {
                 if let terminalID = pane?.terminalID {
                     TerminalPaneView(
                         terminalID: terminalID,
-                        isFocused: selected,
+                        // Release focus while the command palette is open so its
+                        // search field — not the terminal — receives keystrokes.
+                        isFocused: selected && !model.isCommandPalettePresented,
                         pool: model.terminalPool,
                         onPlainClick: {
                             model.select(paneID: paneID, focusInHerdr: true)

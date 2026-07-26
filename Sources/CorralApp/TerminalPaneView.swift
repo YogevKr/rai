@@ -138,6 +138,13 @@ struct TerminalPaneView: NSViewRepresentable {
                 guard let container, let view, view.superview === container else { return }
                 view.window?.makeFirstResponder(view)
             }
+        } else if !isFocused, view.window?.firstResponder === view {
+            // Give up first responder (e.g. while the command palette is open) so a
+            // SwiftUI TextField can take keyboard focus instead of the terminal.
+            DispatchQueue.main.async { [weak view] in
+                guard let view, view.window?.firstResponder === view else { return }
+                view.window?.makeFirstResponder(nil)
+            }
         }
     }
 
