@@ -10,3 +10,6 @@
 
 # Built app bundle
 /*.app
+
+# Claude Code local dir (agent worktrees, etc.)
+.claude/
