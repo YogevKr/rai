@@ -8,6 +8,7 @@ enum MicroControllerIntent: Equatable {
     case stepSelection(Int)
     case openCommandPalette
     case wisprFlow(Bool)
+    case sendReturn
     case unboundCommand(id: String, state: MicroPressState)
 }
 
@@ -68,8 +69,9 @@ enum MicroControllerDecisions {
             nil
         case .commandKey("ACT10", let state):
             .wisprFlow(state == .press)
-        case .commandKey("ACT11", _):
-            nil
+        case .commandKey("ACT11", let state):
+            // The key next to the mic sends Return to the focused agent.
+            state == .press ? .sendReturn : nil
         case .commandKey(let id, let state):
             .unboundCommand(id: id, state: state)
         case .joystickSample, .deviceResponse, .debugLog, .unknown:
@@ -145,9 +147,16 @@ final class MicroController {
             if !model.isCommandPalettePresented {
                 model.toggleCommandPalette()
             }
+        case .sendReturn:
+            model.microSendReturnToSelectedPane()
         case .wisprFlow(let starting):
             openWisprFlow(starting: starting)
         case .unboundCommand(let id, let state):
+            // Log so the physical layout of the unbound command keys can be
+            // identified (press a key → see its id) before binding them.
+            if state == .press {
+                NSLog("rai: Codex Micro unbound key pressed: \(id)")
+            }
             onUnboundCommand?(id, state)
         }
     }

@@ -1687,6 +1687,12 @@ final class RaiModel: ObservableObject {
             .result.processInfo
     }
 
+    // Codex Micro: send Return to the currently focused pane (the mic-adjacent key).
+    func microSendReturnToSelectedPane() {
+        guard let paneID = selectedPaneID else { return }
+        Task { _ = await runHerdr(["pane", "send-keys", paneID, "Enter"]) }
+    }
+
     func broadcast(text: String) {
         guard !text.isEmpty else { return }
         let paneIDs = visiblePanes.map(\.paneID)
