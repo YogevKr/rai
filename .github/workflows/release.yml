@@ -34,6 +34,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      # Gate the release on the test suite — a tagged build only ships if tests pass.
+      - name: Test
+        run: swift test
+
       - name: Build universal Rai.app
         run: RAI_UNIVERSAL=1 RAI_VERSION="${{ steps.v.outputs.version }}" RAI_APP_DEST="$PWD/dist" ./scripts/bundle.sh
 
