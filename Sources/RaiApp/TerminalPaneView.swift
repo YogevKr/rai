@@ -20,6 +20,10 @@ enum GhosttyTheme {
     ]
 
     static func apply(to view: LocalProcessTerminalView) {
+        // Ghostty parity: plain click-drag selects text (no Shift needed) and the
+        // wheel scrolls the local scrollback, instead of forwarding mouse events to
+        // programs that enable mouse reporting.
+        view.allowMouseReporting = false
         let isDark = Theme.activeVariant == .dark
         let background = Theme.nsColor(.terminalBG)
         let foreground = Theme.nsColor(.textPrimary)

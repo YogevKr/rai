@@ -444,10 +444,11 @@ struct SidebarView: View {
 private struct SidebarRowChrome: ViewModifier {
     let selected: Bool
     let hovering: Bool
+    var indent: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, 11)
+            .padding(.leading, 11 + indent)
             .padding(.trailing, 10)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -922,7 +923,9 @@ private struct AgentRow: View {
                 .help("Broadcast to every pane in this tab")
             }
         }
-        .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
+        // Indent tabs inside the chrome (not via outer padding) so the drag/drop
+        // modifiers still wrap the full-width row and reordering keeps working.
+        .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: 14))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.beginInlineRename(tab: tab) }
@@ -968,9 +971,6 @@ private struct AgentRow: View {
             Divider()
             Button("Explain Status") { model.explainStatus(tab: tab) }
         }
-        // Indent tabs so they read as children of their space header — a
-        // top-level (un-indented) row is a space, an indented row is a tab.
-        .padding(.leading, 14)
     }
 }
 
