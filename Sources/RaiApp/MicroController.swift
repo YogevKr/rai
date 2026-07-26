@@ -87,14 +87,13 @@ enum MicroControllerDecisions {
 @MainActor
 final class MicroController {
     static let enabledDefaultsKey = "codexMicroEnabled"
-    // Wispr Flow dictation is triggered by SIMULATING its hands-free shortcut,
+    // Wispr Flow dictation is triggered by SIMULATING its push-to-talk chord,
     // not the wispr-flow:// URL (which foregrounds Wispr's window and drops the
-    // transcript into Wispr's scratchpad instead of rai's focused pane). Wispr
-    // ignores a synthetic secondary-Fn flag (it reads real hardware Fn), so this
-    // sends a plain modifier chord: Control-Option-Semicolon. Set Wispr's hands-
-    // free shortcut to match. (Semicolon dodges the Space combos macOS reserves
-    // and the letter combos apps grab.)
-    static let wisprShortcutKey: CGKeyCode = 0x29 // ;
+    // transcript into Wispr's scratchpad instead of rai's focused pane). rai
+    // holds this chord while the mic key is held; it must match exactly what
+    // Wispr's push-to-talk is bound to (read from Wispr's config). Currently
+    // Control+Option — a modifier-only chord, so there is no trigger key.
+    static let wisprShortcutKey: CGKeyCode? = nil
     static let wisprShortcutModifiers: [(key: CGKeyCode, flag: CGEventFlags)] = [
         (0x3B, .maskControl),   // Control
         (0x3A, .maskAlternate), // Option
@@ -246,17 +245,22 @@ final class MicroController {
 
         let modifiers = Self.wisprShortcutModifiers
         if down {
-            // Press the modifiers (accumulating flags), then the key — and hold.
+            // Press the modifiers (accumulating flags), then the trigger key (if
+            // any) — and hold.
             var flags: CGEventFlags = []
             for modifier in modifiers {
                 flags.insert(modifier.flag)
                 post(modifier.key, keyDown: true, flags: flags)
             }
-            post(Self.wisprShortcutKey, keyDown: true, flags: flags)
+            if let key = Self.wisprShortcutKey {
+                post(key, keyDown: true, flags: flags)
+            }
         } else {
-            // Release the key, then the modifiers in reverse.
+            // Release the trigger key (if any), then the modifiers in reverse.
             var flags: CGEventFlags = modifiers.reduce(into: []) { $0.insert($1.flag) }
-            post(Self.wisprShortcutKey, keyDown: false, flags: flags)
+            if let key = Self.wisprShortcutKey {
+                post(key, keyDown: false, flags: flags)
+            }
             for modifier in modifiers.reversed() {
                 flags.remove(modifier.flag)
                 post(modifier.key, keyDown: false, flags: flags)
