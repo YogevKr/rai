@@ -10,22 +10,14 @@ struct RaiRootView: View {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
-                // The detail is an isolated, inset panel floating on the window base
-                // (a gap separates it from the sidebar) — its header/divider are
-                // contained within it, never a line spanning across the sidebar.
+                // The detail IS the main screen — it fills the area, unframed. Its
+                // header divider is contained to the detail (the sidebar has no
+                // header divider), so no hairline reads as spanning across both.
                 VStack(spacing: 0) {
                     PaneHeader(model: model)
                     Divider().overlay(Theme.hairline)
                     PaneLayoutView(model: model)
                 }
-                .background(Theme.bar)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                )
-                .padding(10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.base)
             }
 
