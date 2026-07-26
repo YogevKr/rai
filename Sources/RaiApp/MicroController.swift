@@ -141,6 +141,12 @@ final class MicroController {
     ) {
         guard let model else { return }
         guard case .action(let action, let state) = intent else { return }
+        // A press on the pad pulls rai to the front so you can see the agent
+        // you're driving — except Wispr Flow, which is meant to dictate into
+        // whatever app currently has focus.
+        if state == .press, action != .wisprFlow, action != MicroAction.none, !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         switch action {
         case .selectSlot(let index):
             guard slots.indices.contains(index), let paneID = slots[index]?.paneID else {
