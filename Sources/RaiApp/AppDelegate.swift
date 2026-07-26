@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: RaiApp.sharedModel)
         installTerminalKeyMonitor()
+        installTerminalScrollMonitor()
         microEnabledObserver = MicroStatusCenter.shared.$isEnabled
             .removeDuplicates()
             .sink { [weak self] enabled in
@@ -96,6 +97,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     return event
                 }
                 return nil
+            }
+        }
+    }
+
+    // Terminal panes keep `allowMouseReporting` off so SwiftTerm preserves the
+    // text selection while a program streams output (its feed path clears the
+    // selection whenever reporting is on). The wheel must still reach mouse-mode
+    // TUIs (Claude scrolls its own viewport), and SwiftTerm's `scrollWheel` is
+    // not overridable from this module — so route wheel events over a terminal
+    // through it with reporting enabled just for that synchronous dispatch.
+    private func installTerminalScrollMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event -> NSEvent? in
+            MainActor.assumeIsolated {
+                guard let content = event.window?.contentView else { return event }
+                let point = content.superview?.convert(event.locationInWindow, from: nil)
+                    ?? event.locationInWindow
+                var view = content.hitTest(point)
+                while let current = view {
+                    if let term = current as? FocusAwareTerminalView {
+                        term.handleInterceptedScroll(event)
+                        return nil
+                    }
+                    view = current.superview
+                }
+                return event
             }
         }
     }

@@ -155,34 +155,37 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         super.insertText(string, replacementRange: replacementRange)
     }
 
-    // Ghostty parity: plain click-drag selects text locally (no Shift needed).
-    // We suppress mouse reporting *only* around button events, leaving it on for
-    // scrollWheel so the wheel still reaches the program (Claude/TUIs scroll).
-    private func withoutMouseReporting(_ body: () -> Void) {
-        allowMouseReporting = false
-        body()
+    // Ghostty parity: selection must survive a program streaming output (Claude
+    // re-renders constantly, and Ghostty pins selections to content instead of
+    // dropping them). SwiftTerm clears the selection on every feed *and* every
+    // linefeed while `allowMouseReporting` is true, and the feed-side clear
+    // (`feedPrepare`) is internal — not overridable. So the pool keeps
+    // `allowMouseReporting = false` permanently: buttons always select locally
+    // (plain drag, no Shift needed), and streaming never drops the selection.
+    // The wheel must still reach mouse-mode TUIs (Claude scrolls its own
+    // viewport), so AppDelegate's scroll monitor routes wheel events here with
+    // reporting enabled just for that one synchronous dispatch. SwiftTerm's
+    // `scrollWheel` is `public` (not `open`), hence the monitor instead of an
+    // override — same story as `handleInterceptedKey` above.
+    func handleInterceptedScroll(_ event: NSEvent) {
         allowMouseReporting = true
+        scrollWheel(with: event)
+        allowMouseReporting = false
     }
-
-    // SwiftTerm clears the text selection on every linefeed while mouse reporting
-    // is on (which we keep on so the wheel still scrolls the program). Override to
-    // a no-op so a manual selection survives a program streaming output — matching
-    // Ghostty, where streaming doesn't drop your selection.
-    override func linefeed(source: Terminal) {}
 
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
-        withoutMouseReporting { super.mouseDown(with: event) }
+        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         draggedSinceMouseDown = true
-        withoutMouseReporting { super.mouseDragged(with: event) }
+        super.mouseDragged(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
         let wasPlainClick = !draggedSinceMouseDown
-        withoutMouseReporting { super.mouseUp(with: event) }
+        super.mouseUp(with: event)
         if wasPlainClick {
             onPlainClick?()
         }

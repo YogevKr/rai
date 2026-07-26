@@ -57,8 +57,17 @@ final class TerminalPool {
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font
         GhosttyTheme.apply(to: view)
-        // Keep SwiftTerm's default mouse reporting unchanged: wheel-driven TUIs
-        // scroll, while text selection remains Shift+drag as in Ghostty.
+        // Mouse reporting stays off so SwiftTerm never clears a selection while a
+        // program streams output (its feed path clears selection whenever this is
+        // true). Wheel events are re-enabled per-event by AppDelegate's scroll
+        // monitor so mouse-mode TUIs (Claude) still scroll. See
+        // FocusAwareTerminalView.handleInterceptedScroll.
+        view.allowMouseReporting = false
+        // SwiftTerm anchors selections to absolute buffer rows and does not shift
+        // them when a full scrollback trims from the top — at the default 500
+        // lines a long Claude stream makes a held selection crawl. A deep
+        // scrollback keeps trimming (and the drift) out of normal use.
+        view.getTerminal().changeScrollback(10_000)
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
