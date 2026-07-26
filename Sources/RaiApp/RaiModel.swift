@@ -16,6 +16,13 @@ enum AgentLaunchKind: String {
     case codex
 }
 
+struct ClosedTabRecord: Equatable {
+    let workspaceID: String
+    let cwd: String
+    let agentKind: AgentLaunchKind?
+    let label: String
+}
+
 struct PaneProcessInfo: Decodable, Equatable, Sendable {
     struct ForegroundProcess: Decodable, Equatable, Sendable {
         let pid: Int
@@ -177,6 +184,7 @@ final class RaiModel: ObservableObject {
     @Published private(set) var activeSocketPath: String
     @Published private(set) var currentSessionName: String
     @Published private(set) var remoteTarget: String?
+    @Published private(set) var closedTabs: [ClosedTabRecord] = []
     @Published var newSessionRequest: NewSessionRequest?
     @Published var remoteHerdRequest: RemoteHerdRequest?
     @Published var sessionAlert: SessionAlert?
@@ -242,6 +250,10 @@ final class RaiModel: ObservableObject {
 
     var selectedTab: HerdrTab? {
         snapshot?.tabs.first { $0.tabID == selectedTabID }
+    }
+
+    var canReopenClosedTab: Bool {
+        !closedTabs.isEmpty
     }
 
     func isWorkspaceCollapsed(_ workspaceID: String) -> Bool {
@@ -1057,6 +1069,11 @@ final class RaiModel: ObservableObject {
     }
 
     func close(tab: HerdrTab) {
+        guard let record = closedTabRecord(for: tab) else { return }
+        closedTabs.append(record)
+        if closedTabs.count > 10 {
+            closedTabs.removeFirst(closedTabs.count - 10)
+        }
         if let workspace = snapshot?.workspaces.first(where: {
             $0.workspaceID == tab.workspaceID
         }), workspace.tabCount == 1 {
@@ -1064,6 +1081,31 @@ final class RaiModel: ObservableObject {
             return
         }
         runAction(["tab", "close", tab.tabID])
+    }
+
+    private func closedTabRecord(for tab: HerdrTab) -> ClosedTabRecord? {
+        guard let snapshot else { return nil }
+        let panes = snapshot.panes.filter { $0.tabID == tab.tabID }
+        let focusedPaneID = snapshot.layouts.first {
+            $0.tabID == tab.tabID
+        }?.focusedPaneID
+        guard let activePane = panes.first(where: { $0.paneID == focusedPaneID })
+            ?? panes.first(where: \.focused)
+            ?? panes.first else {
+            return nil
+        }
+        let agentKind = panes.compactMap { pane -> AgentLaunchKind? in
+            guard let agent = pane.agent?.lowercased() else { return nil }
+            if agent.contains("claude") { return .claude }
+            if agent.contains("codex") { return .codex }
+            return nil
+        }.first
+        return ClosedTabRecord(
+            workspaceID: tab.workspaceID,
+            cwd: activePane.foregroundCWD ?? activePane.cwd,
+            agentKind: agentKind,
+            label: tab.label
+        )
     }
 
     func requestClose(workspace: Workspace) {
@@ -1589,6 +1631,13 @@ final class RaiModel: ObservableObject {
         guard let workspace = selectedWorkspace?.workspaceID else { return }
         runAction(["tab", "create", "--workspace", workspace, "--focus"])
     }
+    func reopenClosedTab() {
+        guard let record = closedTabs.popLast() else { return }
+        let generation = connectionGeneration
+        Task {
+            await reconstructClosedTab(record, generation: generation)
+        }
+    }
     func closeTab() {
         guard let tab = selectedTab else { return }
         close(tab: tab)
@@ -1731,6 +1780,96 @@ final class RaiModel: ObservableObject {
     private static func defaultAgentName(_ kind: AgentLaunchKind) -> String {
         let suffix = UUID().uuidString.prefix(6).lowercased()
         return "\(kind.rawValue)-\(suffix)"
+    }
+
+    private func reconstructClosedTab(
+        _ record: ClosedTabRecord,
+        generation: UUID
+    ) async {
+        guard generation == connectionGeneration else { return }
+        let oldTabIDs = Set(snapshot?.tabs.map(\.tabID) ?? [])
+        var workspaceID = snapshot?.workspaces.contains {
+            $0.workspaceID == record.workspaceID
+        } == true
+            ? record.workspaceID
+            : selectedWorkspace?.workspaceID
+                ?? snapshot?.focusedWorkspaceID
+                ?? snapshot?.workspaces.first?.workspaceID
+
+        if workspaceID == nil {
+            guard await runHerdr([
+                "workspace", "create",
+                "--cwd", record.cwd,
+                "--focus",
+            ]) else {
+                return
+            }
+            await refreshSnapshot(keepSelection: false)
+            workspaceID = snapshot?.focusedWorkspaceID
+        } else if let targetWorkspaceID = workspaceID {
+            var created = await runHerdr([
+                "tab", "create",
+                "--workspace", targetWorkspaceID,
+                "--cwd", record.cwd,
+                "--label", record.label,
+                "--focus",
+            ])
+            if !created {
+                // The recorded workspace may have disappeared after the close
+                // but before its structural event reached Rai.
+                await refreshSnapshot(keepSelection: false)
+                guard let fallbackWorkspaceID = selectedWorkspace?.workspaceID
+                    ?? snapshot?.focusedWorkspaceID
+                    ?? snapshot?.workspaces.first?.workspaceID else {
+                    return
+                }
+                workspaceID = fallbackWorkspaceID
+                created = await runHerdr([
+                    "tab", "create",
+                    "--workspace", fallbackWorkspaceID,
+                    "--cwd", record.cwd,
+                    "--label", record.label,
+                    "--focus",
+                ])
+            }
+            guard created else { return }
+            await refreshSnapshot(keepSelection: false)
+        }
+
+        guard generation == connectionGeneration,
+              let workspaceID,
+              let reopenedTab = snapshot?.tabs.first(where: {
+                  $0.workspaceID == workspaceID && !oldTabIDs.contains($0.tabID)
+              }) ?? snapshot?.tabs.first(where: {
+                  $0.workspaceID == workspaceID && $0.focused
+              }) else {
+            return
+        }
+
+        if snapshot?.displayLabel(for: reopenedTab) != record.label {
+            _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
+        }
+        if let agentKind = record.agentKind {
+            // Best effort: both clients scope their "most recent" lookup by cwd.
+            // Their current CLIs support these flags, but Rai cannot verify that
+            // a resumable session still exists after herdr killed it. Fall back
+            // to a fresh client only when the resume command exits unsuccessfully.
+            let resumeCommand: String = switch agentKind {
+            case .claude: "claude --continue || exec claude"
+            case .codex: "codex resume --last || exec codex"
+            }
+            _ = await runHerdr([
+                "agent", "start", Self.defaultAgentName(agentKind),
+                "--tab", reopenedTab.tabID,
+                "--cwd", record.cwd,
+                "--focus",
+                "--",
+                "/bin/sh", "-lc", resumeCommand,
+            ])
+        } else {
+            _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
+        }
+        await refreshSnapshot(keepSelection: false)
     }
 
     // Commit a divider drag. herdr's `pane resize --amount` is a positive delta on

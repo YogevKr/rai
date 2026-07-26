@@ -26,6 +26,9 @@ struct RaiApp: App {
             CommandMenu("Tab") {
                 Button("New Tab") { model.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
+                Button("Reopen Closed Tab") { model.reopenClosedTab() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                    .disabled(!model.canReopenClosedTab)
                 Button("Close Tab") { model.closeTab() }
                     .keyboardShortcut("w", modifiers: .command)
                 Divider()
