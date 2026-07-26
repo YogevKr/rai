@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 import Foundation
 import RaiCore
@@ -73,9 +74,10 @@ enum MicroControllerDecisions {
     ) -> MicroControllerIntent? {
         guard let (control, state) = controlAndState(for: event) else { return nil }
         let action = bindings[control]
-        // Wispr Flow is deliberately a hold action. Every other binding fires
-        // on its press edge only, even when its hardware reports a release.
-        guard state == .press || action == .wisprFlow else { return nil }
+        // Every binding fires on its press edge only (releases are dropped).
+        // Wispr Flow is a toggle: one press starts hands-free dictation, the
+        // next stops it.
+        guard state == .press else { return nil }
         return .action(action, state: state)
     }
 }
@@ -85,12 +87,19 @@ enum MicroControllerDecisions {
 @MainActor
 final class MicroController {
     static let enabledDefaultsKey = "codexMicroEnabled"
-    static let wisprFlowStartURL = URL(string: "wispr-flow://start-hands-free")!
-    static let wisprFlowStopURL = URL(string: "wispr-flow://stop-hands-free")!
+    // Wispr Flow dictation is triggered by SIMULATING its hands-free keyboard
+    // shortcut, not the wispr-flow:// URL. The URL foregrounds Wispr's own window
+    // so the transcript lands in Wispr's scratchpad instead of rai's focused
+    // pane. Set Wispr's hands-free shortcut to this chord — Control-Option-
+    // Command-Space — since Wispr's default (Fn+Space) can't be synthesized.
+    static let wisprShortcutKey: CGKeyCode = 49 // Space
+    static let wisprShortcutFlags: CGEventFlags = [
+        .maskControl, .maskAlternate, .maskCommand,
+    ]
 
     private weak var model: RaiModel?
     private var worker: Worker?
-    private var wisprFlowUnavailableLogged = false
+    private var wisprAccessibilityLogged = false
     private var bindingsObserver: AnyCancellable?
 
     init(model: RaiModel) {
@@ -209,31 +218,63 @@ final class MicroController {
         case .broadcast:
             model.isBroadcastPresented = true
         case .wisprFlow:
-            openWisprFlow(starting: state == .press)
+            triggerWisprShortcut()
         case .none:
             break
         }
     }
 
-    private func openWisprFlow(starting: Bool) {
-        let workspace = NSWorkspace.shared
-        let url = starting ? Self.wisprFlowStartURL : Self.wisprFlowStopURL
-        guard workspace.urlForApplication(toOpen: url) != nil else {
-            if !wisprFlowUnavailableLogged {
-                NSLog("rai: no application handles the wispr-flow URL scheme")
-                wisprFlowUnavailableLogged = true
-            }
-            return
+    /// Simulates Wispr Flow's hands-free shortcut so its dictation is captured
+    /// into rai's focused pane. rai is already frontmost (pulled up on the key
+    /// press), and posting a global key chord — rather than opening the
+    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus.
+    private func triggerWisprShortcut() {
+        guard ensureAccessibilityTrusted() else { return }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
+
+        func post(_ key: CGKeyCode, keyDown: Bool, flags: CGEventFlags) {
+            guard let event = CGEvent(
+                keyboardEventSource: source, virtualKey: key, keyDown: keyDown
+            ) else { return }
+            event.flags = flags
+            event.post(tap: .cghidEventTap)
         }
-        // Trigger Wispr WITHOUT activating it, so rai stays frontmost and the
-        // hands-free transcript is injected into rai's focused pane rather than
-        // into Wispr's own window or whatever else grabs focus. rai is already
-        // pulled to the front on the key press in perform(). (Also leave the
-        // mic-position key blank in the Codex Micro vendor settings, or the
-        // Codex desktop app will act on the same physical key.)
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        workspace.open(url, configuration: configuration)
+
+        // Press the modifiers, tap the key, release the modifiers — an explicit
+        // chord so both Carbon hot keys and NSEvent monitors register it.
+        let control: CGKeyCode = 0x3B
+        let option: CGKeyCode = 0x3A
+        let command: CGKeyCode = 0x37
+        post(control, keyDown: true, flags: [.maskControl])
+        post(option, keyDown: true, flags: [.maskControl, .maskAlternate])
+        post(command, keyDown: true, flags: Self.wisprShortcutFlags)
+        post(Self.wisprShortcutKey, keyDown: true, flags: Self.wisprShortcutFlags)
+        post(Self.wisprShortcutKey, keyDown: false, flags: Self.wisprShortcutFlags)
+        post(command, keyDown: false, flags: [.maskControl, .maskAlternate])
+        post(option, keyDown: false, flags: [.maskControl])
+        post(control, keyDown: false, flags: [])
+    }
+
+    /// True when rai may post keyboard events other apps receive. When false it
+    /// shows the Accessibility prompt once and surfaces guidance in Settings —
+    /// posting to `.cghidEventTap` is silently dropped without the grant.
+    private func ensureAccessibilityTrusted() -> Bool {
+        if AXIsProcessTrusted() { return true }
+        // `kAXTrustedCheckOptionPrompt` imports inconsistently (Unmanaged vs
+        // CFString) across SDKs; its value is the literal below.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        if !wisprAccessibilityLogged {
+            NSLog("rai: Wispr Flow needs Accessibility permission to send its shortcut")
+            wisprAccessibilityLogged = true
+        }
+        Task { @MainActor in
+            MicroStatusCenter.shared.recordError(
+                "Grant rai Accessibility (System Settings → Privacy & Security) "
+                    + "to send the Wispr Flow shortcut"
+            )
+        }
+        return false
     }
 }
 
