@@ -6,10 +6,10 @@
 
 **A native macOS window for your [herdr](https://herdr.dev) herd.**
 
-herdr is a terminal multiplexer and live daemon for AI coding agents — but its
+herdr is a terminal multiplexer and live daemon for AI coding agents - but its
 frontend is a TUI. `rai` is a thin, fast native client over herdr's socket API:
 a real AppKit/SwiftUI window with a workspace sidebar, tabs, splits, drag, and
-per-pane terminals — driving the **unchanged** herdr daemon underneath.
+per-pane terminals - driving the **unchanged** herdr daemon underneath.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-1a1a1a?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
