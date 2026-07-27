@@ -379,7 +379,7 @@ final class BridgeConnection: ObservableObject {
 
     private func webSocketURL(for pairing: Pairing) -> URL? {
         var components = URLComponents()
-        components.scheme = "ws"
+        components.scheme = pairing.useTLS ? "wss" : "ws"
         components.host = pairing.host
         components.port = pairing.port
         components.path = "/"

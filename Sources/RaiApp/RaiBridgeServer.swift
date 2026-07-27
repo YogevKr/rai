@@ -6,9 +6,8 @@ import SystemConfiguration
 /// Token-authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
-/// The bridge intentionally uses cleartext WebSocket on a trusted LAN or Tailscale
-/// network. The pairing token prevents accidental access, but is not a
-/// substitute for transport encryption on an untrusted network.
+/// The bridge uses cleartext WebSocket on the LAN. When available, Tailscale
+/// Serve adds a TLS-terminated tailnet endpoint for off-LAN connections.
 @MainActor
 final class RaiBridgeServer: ObservableObject {
     // 8787 collided with common dev servers (e.g. bun); 47837 is an uncommon
@@ -20,8 +19,10 @@ final class RaiBridgeServer: ObservableObject {
     @Published private(set) var connectedDeviceCount = 0
     @Published private(set) var pairingToken: String
     @Published private(set) var registeredPushDeviceCount = 0
+    @Published private(set) var tailscaleHost: String?
 
     let apnsSettings: APNsSettings
+    let tailscalePort: UInt16 = 8443
 
     var isEnabled: Bool {
         get { userDefaults.bool(forKey: Self.enabledKey) }
@@ -59,14 +60,36 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     var pairingURL: URL? {
+        makePairingURL(host: displayHost, port: port, useTLS: false)
+    }
+
+    var tailscalePairingURL: URL? {
+        guard let tailscaleHost else { return nil }
+        return makePairingURL(host: tailscaleHost, port: tailscalePort, useTLS: true)
+    }
+
+    var tailscaleWSSURL: URL? {
+        guard let tailscaleHost else { return nil }
+        var components = URLComponents()
+        components.scheme = "wss"
+        components.host = tailscaleHost
+        components.port = Int(tailscalePort)
+        components.path = "/"
+        return components.url
+    }
+
+    private func makePairingURL(host: String, port: UInt16, useTLS: Bool) -> URL? {
         var components = URLComponents()
         components.scheme = "rai"
         components.host = "pair"
         components.queryItems = [
-            URLQueryItem(name: "host", value: displayHost),
+            URLQueryItem(name: "host", value: host),
             URLQueryItem(name: "port", value: String(port)),
             URLQueryItem(name: "token", value: pairingToken),
         ]
+        if useTLS {
+            components.queryItems?.append(URLQueryItem(name: "tls", value: "1"))
+        }
         return components.url
     }
 
@@ -81,6 +104,8 @@ final class RaiBridgeServer: ObservableObject {
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
     private var pushRegistrations: Set<PushRegistration> = []
     private let apnsPusher = APNsPusher()
+    private let tailscaleServe = TailscaleServeController()
+    private var tailscaleTask: Task<Void, Never>?
 
     init(
         model: RaiModel,
@@ -131,6 +156,7 @@ final class RaiBridgeServer: ObservableObject {
             }
             self.listener = listener
             listener.start(queue: queue)
+            startTailscaleServe()
         } catch {
             statusMessage = error.localizedDescription
             isRunning = false
@@ -138,6 +164,15 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     func stop() {
+        let previousTailscaleTask = tailscaleTask
+        previousTailscaleTask?.cancel()
+        tailscaleHost = nil
+        let tailscaleServe = tailscaleServe
+        let tailscalePort = tailscalePort
+        tailscaleTask = Task {
+            await previousTailscaleTask?.value
+            await tailscaleServe.stop(httpsPort: tailscalePort)
+        }
         listener?.cancel()
         listener = nil
         stopAllObserveStreams()
@@ -147,6 +182,38 @@ final class RaiBridgeServer: ObservableObject {
         clients.removeAll()
         connectedDeviceCount = 0
         isRunning = false
+    }
+
+    func stopAndWait() async {
+        stop()
+        await tailscaleTask?.value
+    }
+
+    private func startTailscaleServe() {
+        let previousTailscaleTask = tailscaleTask
+        let tailscaleServe = tailscaleServe
+        let bridgePort = port
+        let tailscalePort = tailscalePort
+        tailscaleTask = Task { [weak self] in
+            await previousTailscaleTask?.value
+            guard !Task.isCancelled else { return }
+            let result = await tailscaleServe.start(
+                bridgePort: bridgePort,
+                httpsPort: tailscalePort
+            )
+            guard let self, !Task.isCancelled, self.listener != nil else {
+                await tailscaleServe.stop(httpsPort: tailscalePort)
+                return
+            }
+            switch result {
+            case let .active(host):
+                self.tailscaleHost = host
+            case .unavailable:
+                break
+            case let .failed(message):
+                self.statusMessage = message
+            }
+        }
     }
 
     func regenerateToken() {

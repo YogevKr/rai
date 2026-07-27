@@ -5,8 +5,9 @@ struct Pairing: Equatable {
     let host: String
     let port: Int
     let token: String
+    let useTLS: Bool
 
-    init(host: String, port: Int, token: String) throws {
+    init(host: String, port: Int, token: String, useTLS: Bool = false) throws {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHost.isEmpty else { throw PairingError.invalidHost }
@@ -16,6 +17,7 @@ struct Pairing: Equatable {
         self.host = trimmedHost
         self.port = port
         self.token = trimmedToken
+        self.useTLS = useTLS
     }
 
     init(urlString: String) throws {
@@ -31,7 +33,8 @@ struct Pairing: Equatable {
               let token = queryItems.first(where: { $0.name == "token" })?.value else {
             throw PairingError.invalidCode
         }
-        try self.init(host: host, port: port, token: token)
+        let useTLS = queryItems.first(where: { $0.name == "tls" })?.value == "1"
+        try self.init(host: host, port: port, token: token, useTLS: useTLS)
     }
 }
 
@@ -59,6 +62,7 @@ final class PairingStore {
     private let account = "pairing-token"
     private let hostKey = "bridge.host"
     private let portKey = "bridge.port"
+    private let useTLSKey = "bridge.useTLS"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -68,7 +72,12 @@ final class PairingStore {
         guard let host = defaults.string(forKey: hostKey),
               let token = readToken() else { return nil }
         let port = defaults.integer(forKey: portKey)
-        return try? Pairing(host: host, port: port, token: token)
+        return try? Pairing(
+            host: host,
+            port: port,
+            token: token,
+            useTLS: defaults.bool(forKey: useTLSKey)
+        )
     }
 
     func save(_ pairing: Pairing) throws {
@@ -90,12 +99,14 @@ final class PairingStore {
 
         defaults.set(pairing.host, forKey: hostKey)
         defaults.set(pairing.port, forKey: portKey)
+        defaults.set(pairing.useTLS, forKey: useTLSKey)
     }
 
     func clear() {
         SecItemDelete(baseQuery() as CFDictionary)
         defaults.removeObject(forKey: hostKey)
         defaults.removeObject(forKey: portKey)
+        defaults.removeObject(forKey: useTLSKey)
     }
 
     private func readToken() -> String? {

@@ -296,49 +296,43 @@ private struct CompanionSettingsView: View {
 
                     if server.isEnabled {
                         Divider().overlay(Theme.hairline)
-                        HStack(alignment: .top, spacing: 24) {
-                            VStack(alignment: .leading, spacing: 12) {
-                                companionValue(
-                                    label: "Address",
-                                    value: "\(server.displayHost):\(server.port)"
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(alignment: .top, spacing: 24) {
+                                pairingOption(
+                                    title: "Same Wi-Fi",
+                                    address: "\(server.displayHost):\(server.port)",
+                                    url: server.pairingURL
                                 )
-                                companionValue(label: "Pairing token", value: server.pairingToken)
-                                companionValue(
-                                    label: "Connected",
-                                    value: "\(server.connectedDeviceCount) device"
-                                        + (server.connectedDeviceCount == 1 ? "" : "s")
-                                )
-                                if let status = server.statusMessage {
-                                    Text(status)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Theme.status(.blocked))
-                                } else if server.isRunning {
-                                    Text("Listening and advertised as _rai._tcp.")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Theme.status(.done))
-                                } else {
-                                    Text("Starting bridge…")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Theme.textTertiary)
-                                }
-                                Button("Regenerate Token", role: .destructive) {
-                                    isRegenerateConfirmationPresented = true
+                                if let host = server.tailscaleHost {
+                                    pairingOption(
+                                        title: "Anywhere via Tailscale",
+                                        address: "\(host):\(server.tailscalePort)",
+                                        url: server.tailscalePairingURL
+                                    )
                                 }
                             }
 
-                            Spacer()
-                            if let url = server.pairingURL,
-                               let image = CompanionQRCode.image(for: url.absoluteString) {
-                                VStack(spacing: 8) {
-                                    Image(nsImage: image)
-                                        .interpolation(.none)
-                                        .resizable()
-                                        .frame(width: 180, height: 180)
-                                        .accessibilityLabel("Companion pairing QR code")
-                                    Text("Scan with rai for iPhone")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Theme.textTertiary)
-                                }
+                            companionValue(label: "Pairing token", value: server.pairingToken)
+                            companionValue(
+                                label: "Connected",
+                                value: "\(server.connectedDeviceCount) device"
+                                    + (server.connectedDeviceCount == 1 ? "" : "s")
+                            )
+                            if let status = server.statusMessage {
+                                Text(status)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.status(.blocked))
+                            } else if server.isRunning {
+                                Text("Listening and advertised as _rai._tcp.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.status(.done))
+                            } else {
+                                Text("Starting bridge…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                            Button("Regenerate Token", role: .destructive) {
+                                isRegenerateConfirmationPresented = true
                             }
                         }
                     }
@@ -439,6 +433,26 @@ private struct CompanionSettingsView: View {
                 .font(.system(size: 11.5, design: .monospaced))
                 .textSelection(.enabled)
         }
+    }
+
+    private func pairingOption(title: String, address: String, url: URL?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+            companionValue(label: "Address", value: address)
+            if let url,
+               let image = CompanionQRCode.image(for: url.absoluteString) {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 150, height: 150)
+                    .accessibilityLabel("\(title) companion pairing QR code")
+                Text("Scan with rai for iPhone")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

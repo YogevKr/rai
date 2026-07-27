@@ -373,8 +373,8 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    func shutdown() {
-        bridgeServer.stop()
+    func shutdown() async {
+        await bridgeServer.stopAndWait()
         tearDownCurrentConnection(stopRemote: true)
     }
 
