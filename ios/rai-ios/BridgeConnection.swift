@@ -28,6 +28,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var requiresRepair = false
+    @Published private(set) var actionError: String?
     var didConnect: (() -> Void)?
 
     var host: String {
@@ -81,6 +82,10 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func clearActionError() {
+        actionError = nil
+    }
+
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
         let size = desiredStreams[paneID] ?? (cols, rows)
         desiredStreams[paneID] = size
@@ -97,11 +102,41 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    func closePane(paneID: String) {
+    func detachPane(paneID: String) {
         desiredStreams.removeValue(forKey: paneID)
         Task {
             do {
                 try await send(.detachStream(paneID: paneID))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    func launchAgent(workspaceID: String?, agent: String, cwd: String? = nil) {
+        sendAction(.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd))
+    }
+
+    func renamePane(paneID: String, label: String) {
+        sendAction(.renamePane(paneID: paneID, label: label))
+    }
+
+    func renameTab(tabID: String, label: String) {
+        sendAction(.renameTab(tabID: tabID, label: label))
+    }
+
+    func closePane(paneID: String) {
+        sendAction(.closePane(paneID: paneID))
+    }
+
+    func closeTab(tabID: String) {
+        sendAction(.closeTab(tabID: tabID))
+    }
+
+    private func sendAction(_ message: BridgeMessage) {
+        Task {
+            do {
+                try await send(message)
             } catch {
                 handleSocketFailure(error)
             }
@@ -306,14 +341,27 @@ final class BridgeConnection: ObservableObject {
                 handler(data, full)
             }
         case let .error(message):
-            status = .failed(reason: message)
+            if Self.isActionError(message) {
+                actionError = message
+            } else {
+                status = .failed(reason: message)
+            }
         case .event:
             break
         case .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
+             .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush:
             break
         }
+    }
+
+    private static func isActionError(_ message: String) -> Bool {
+        message == "Agent must be claude or codex."
+            || message.hasPrefix("Unknown workspace ")
+            || message.hasPrefix("Could not launch ")
+            || message.hasPrefix("Could not rename ")
+            || message.hasPrefix("Could not close ")
     }
 
     private func send(_ message: BridgeMessage) async throws {

@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Versioning is independent of herdr's RPC protocol so the Mac and companion
 /// app can negotiate their wire contract without exposing daemon internals.
-public let bridgeProtocolVersion = 4
+public let bridgeProtocolVersion = 5
 
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
@@ -42,6 +42,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case focusPane(paneID: String)
     case selectPane(paneID: String)
     case resizePane(paneID: String, cols: Int, rows: Int)
+    case launchAgent(workspaceID: String?, agent: String, cwd: String?)
+    case renamePane(paneID: String, label: String)
+    case renameTab(tabID: String, label: String)
+    case closePane(paneID: String)
+    case closeTab(tabID: String)
     case registerPush(deviceToken: String, environment: String)
     case unregisterPush(deviceToken: String)
 
@@ -56,7 +61,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case type
         case token, client
-        case paneID, bytesBase64, filename
+        case paneID, tabID, workspaceID, agent, cwd, label
+        case bytesBase64, filename
         case cols, rows
         case full, seq
         case protocolVersion, sessionName
@@ -67,6 +73,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     private enum MessageType: String, Codable {
         case hello, subscribe, attachStream, detachStream
         case input, sendImage, focusPane, selectPane, resizePane
+        case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
         case welcome, authFailed, snapshot, event, paneFrame, error
     }
@@ -110,6 +117,26 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 cols: try container.decode(Int.self, forKey: .cols),
                 rows: try container.decode(Int.self, forKey: .rows)
             )
+        case .launchAgent:
+            self = .launchAgent(
+                workspaceID: try container.decodeIfPresent(String.self, forKey: .workspaceID),
+                agent: try container.decode(String.self, forKey: .agent),
+                cwd: try container.decodeIfPresent(String.self, forKey: .cwd)
+            )
+        case .renamePane:
+            self = .renamePane(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                label: try container.decode(String.self, forKey: .label)
+            )
+        case .renameTab:
+            self = .renameTab(
+                tabID: try container.decode(String.self, forKey: .tabID),
+                label: try container.decode(String.self, forKey: .label)
+            )
+        case .closePane:
+            self = .closePane(paneID: try container.decode(String.self, forKey: .paneID))
+        case .closeTab:
+            self = .closeTab(tabID: try container.decode(String.self, forKey: .tabID))
         case .registerPush:
             self = .registerPush(
                 deviceToken: try container.decode(String.self, forKey: .deviceToken),
@@ -179,6 +206,25 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(paneID, forKey: .paneID)
             try container.encode(cols, forKey: .cols)
             try container.encode(rows, forKey: .rows)
+        case let .launchAgent(workspaceID, agent, cwd):
+            try container.encode(MessageType.launchAgent, forKey: .type)
+            try container.encodeIfPresent(workspaceID, forKey: .workspaceID)
+            try container.encode(agent, forKey: .agent)
+            try container.encodeIfPresent(cwd, forKey: .cwd)
+        case let .renamePane(paneID, label):
+            try container.encode(MessageType.renamePane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(label, forKey: .label)
+        case let .renameTab(tabID, label):
+            try container.encode(MessageType.renameTab, forKey: .type)
+            try container.encode(tabID, forKey: .tabID)
+            try container.encode(label, forKey: .label)
+        case let .closePane(paneID):
+            try container.encode(MessageType.closePane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+        case let .closeTab(tabID):
+            try container.encode(MessageType.closeTab, forKey: .type)
+            try container.encode(tabID, forKey: .tabID)
         case let .registerPush(deviceToken, environment):
             try container.encode(MessageType.registerPush, forKey: .type)
             try container.encode(deviceToken, forKey: .deviceToken)

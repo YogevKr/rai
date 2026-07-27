@@ -6,11 +6,15 @@ struct MonitorView: View {
     let forgetPairing: () -> Void
     @State private var path: [String] = []
     @State private var didAutoOpen = false
+    @State private var showingAgentLauncher = false
+    @State private var renameTarget: RenameTarget?
+    @State private var renameLabel = ""
+    @State private var closeTarget: CloseTarget?
 
     private var connection: BridgeConnection { appModel.connection }
 
     var body: some View {
-        NavigationStack(path: $path) {
+        AnyView(NavigationStack(path: $path) {
             Group {
                 if let snapshot = connection.snapshot {
                     if connection.status.isConnected, snapshot.panes.isEmpty {
@@ -40,6 +44,13 @@ struct MonitorView: View {
             }
             .navigationTitle("rai")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingAgentLauncher = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .disabled(!connection.status.isConnected)
+                    .accessibilityLabel("Launch agent")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if connection.requiresRepair {
@@ -77,7 +88,85 @@ struct MonitorView: View {
             } message: {
                 Text(connection.status.label)
             }
+        })
+        .sheet(isPresented: $showingAgentLauncher) {
+            AgentLauncherSheet(
+                workspaces: connection.snapshot?.workspaces ?? []
+            ) { workspaceID, agent in
+                connection.launchAgent(workspaceID: workspaceID, agent: agent)
+            }
         }
+        .alert(renameTarget?.title ?? "Rename", isPresented: renameBinding) {
+            TextField("Name", text: $renameLabel)
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+            Button("Rename") { commitRename() }
+                .disabled(renameIsDisabled)
+        }
+        .confirmationDialog(
+            closeTarget?.title ?? "Close?",
+            isPresented: closeBinding,
+            titleVisibility: .visible
+        ) {
+            Button("Close", role: .destructive) { commitClose() }
+            Button("Cancel", role: .cancel) { closeTarget = nil }
+        } message: {
+            Text("This will stop the processes in \(closeTarget?.name ?? "this item").")
+        }
+        .alert("Action Failed", isPresented: actionErrorBinding) {
+            Button("OK") { connection.clearActionError() }
+        } message: {
+            Text(connection.actionError ?? "")
+        }
+    }
+
+    private var renameBinding: Binding<Bool> {
+        Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )
+    }
+
+    private var actionErrorBinding: Binding<Bool> {
+        Binding(
+            get: { connection.actionError != nil },
+            set: { if !$0 { connection.clearActionError() } }
+        )
+    }
+
+    private var closeBinding: Binding<Bool> {
+        Binding(
+            get: { closeTarget != nil },
+            set: { if !$0 { closeTarget = nil } }
+        )
+    }
+
+    private var renameIsDisabled: Bool {
+        guard case .tab = renameTarget else { return false }
+        return renameLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func beginRename(_ target: RenameTarget) {
+        renameLabel = target.currentLabel
+        renameTarget = target
+    }
+
+    private func commitRename() {
+        guard let target = renameTarget else { return }
+        let label = renameLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch target {
+        case let .pane(id, _): connection.renamePane(paneID: id, label: label)
+        case let .tab(id, _): connection.renameTab(tabID: id, label: label)
+        }
+        renameTarget = nil
+    }
+
+    private func commitClose() {
+        guard let target = closeTarget else { return }
+        switch target {
+        case let .pane(id, _): connection.closePane(paneID: id)
+        case let .tab(id, _): connection.closeTab(tabID: id)
+        }
+        closeTarget = nil
     }
 
     private var repairBinding: Binding<Bool> {
@@ -189,7 +278,9 @@ struct MonitorView: View {
                     ForEach(tabs) { tab in
                         TabGroup(
                             tab: tab,
-                            panes: snapshot.panes.filter { $0.tabID == tab.tabID }
+                            panes: snapshot.panes.filter { $0.tabID == tab.tabID },
+                            rename: beginRename,
+                            close: { closeTarget = $0 }
                         )
                     }
                 } header: {
@@ -217,6 +308,87 @@ struct MonitorView: View {
             }
             return NeedsYouAgent(pane: pane, workspace: workspace, tab: tab)
         }
+    }
+}
+
+private enum RenameTarget {
+    case pane(String, String)
+    case tab(String, String)
+
+    var title: String {
+        switch self {
+        case .pane: "Rename Pane"
+        case .tab: "Rename Tab"
+        }
+    }
+
+    var currentLabel: String {
+        switch self {
+        case let .pane(_, label), let .tab(_, label): label
+        }
+    }
+}
+
+private enum CloseTarget {
+    case pane(String, String)
+    case tab(String, String)
+
+    var title: String {
+        switch self {
+        case .pane: "Close Pane?"
+        case .tab: "Close Tab?"
+        }
+    }
+
+    var name: String {
+        switch self {
+        case let .pane(_, name), let .tab(_, name): name
+        }
+    }
+}
+
+private struct AgentLauncherSheet: View {
+    let workspaces: [Workspace]
+    let launch: (String?, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var agent = "claude"
+    @State private var workspaceID: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Agent", selection: $agent) {
+                    Text("Claude").tag("claude")
+                    Text("Codex").tag("codex")
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Workspace", selection: $workspaceID) {
+                    Text("New workspace").tag(String?.none)
+                    ForEach(workspaces) { workspace in
+                        Text(workspace.label.isEmpty
+                            ? "Space \(workspace.number)"
+                            : workspace.label
+                        )
+                        .tag(Optional(workspace.workspaceID))
+                    }
+                }
+            }
+            .navigationTitle("Launch Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Launch") {
+                        launch(workspaceID, agent)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 
@@ -259,6 +431,12 @@ private struct NeedsYouRow: View {
 private struct TabGroup: View {
     let tab: HerdrTab
     let panes: [Pane]
+    let rename: (RenameTarget) -> Void
+    let close: (CloseTarget) -> Void
+
+    private var label: String {
+        tab.label.isEmpty ? "Tab \(tab.number)" : tab.label
+    }
 
     var body: some View {
         DisclosureGroup {
@@ -266,17 +444,33 @@ private struct TabGroup: View {
                 NavigationLink(value: pane.paneID) {
                     PaneRow(pane: pane)
                 }
+                .contextMenu {
+                    Button("Rename", systemImage: "pencil") {
+                        rename(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? ""))
+                    }
+                    Button("Close", systemImage: "xmark", role: .destructive) {
+                        close(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? "pane"))
+                    }
+                }
             }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: tab.focused ? "rectangle.fill" : "rectangle")
                     .foregroundStyle(.secondary)
-                Text(tab.label.isEmpty ? "Tab \(tab.number)" : tab.label)
+                Text(label)
                     .font(.headline)
                 Spacer()
                 StatusPill(status: tab.agentStatus)
             }
             .padding(.vertical, 4)
+            .contextMenu {
+                Button("Rename", systemImage: "pencil") {
+                    rename(.tab(tab.tabID, tab.label))
+                }
+                Button("Close", systemImage: "xmark", role: .destructive) {
+                    close(.tab(tab.tabID, label))
+                }
+            }
         }
     }
 }

@@ -26,6 +26,12 @@ final class BridgeProtocolTests: XCTestCase {
             .focusPane(paneID: "pane-1"),
             .selectPane(paneID: "pane-1"),
             .resizePane(paneID: "pane-1", cols: 120, rows: 40),
+            .launchAgent(workspaceID: nil, agent: "claude", cwd: nil),
+            .launchAgent(workspaceID: "workspace-1", agent: "codex", cwd: "/tmp/repo"),
+            .renamePane(paneID: "pane-1", label: "API"),
+            .renameTab(tabID: "tab-1", label: "Backend"),
+            .closePane(paneID: "pane-1"),
+            .closeTab(tabID: "tab-1"),
             .registerPush(deviceToken: "012345abcdef", environment: "sandbox"),
             .unregisterPush(deviceToken: "012345abcdef"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
@@ -54,7 +60,7 @@ final class BridgeProtocolTests: XCTestCase {
         }
     }
 
-    func testBridgeProtocolVersionIsFour() {
-        XCTAssertEqual(bridgeProtocolVersion, 4)
+    func testBridgeProtocolVersionIsFive() {
+        XCTAssertEqual(bridgeProtocolVersion, 5)
     }
 }

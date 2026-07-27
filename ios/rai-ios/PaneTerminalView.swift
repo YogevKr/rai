@@ -23,7 +23,7 @@ struct PaneTerminalView: View {
                 search: terminalSearch,
                 send: { connection.sendInput($0, to: pane.paneID) }
             )
-            .background(Color.black)
+            .background(Color(red: 33 / 255, green: 33 / 255, blue: 33 / 255))
 
             if isSearching {
                 HStack(spacing: 8) {
@@ -100,7 +100,7 @@ struct PaneTerminalView: View {
             }
         }
         .onAppear { connection.openPane(paneID: pane.paneID) }
-        .onDisappear { connection.closePane(paneID: pane.paneID) }
+        .onDisappear { connection.detachPane(paneID: pane.paneID) }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await sendPhoto(item) }
@@ -176,6 +176,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
     // mangling the layout.
     static let columns = 80
     private static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private static let background = ui(0x212121)
+    private static let foreground = ui(0xF8F8F2)
+    private static let palette: [UInt32] = [
+        0x21222C, 0xFF5555, 0x50FA7B, 0xFFCB6B, 0x82AAFF, 0xC792EA, 0x8BE9FD, 0xF8F8F2,
+        0x545454, 0xFF6E6E, 0x69FF94, 0xFFCB6B, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xF8F8F2,
+    ]
 
     func makeCoordinator() -> Coordinator {
         Coordinator(paneID: paneID, connection: connection, search: search, send: send)
@@ -184,9 +190,13 @@ private struct StreamingTerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIScrollView {
         let terminal = TerminalView(frame: .zero, font: Self.font)
         terminal.terminalDelegate = context.coordinator
-        terminal.nativeBackgroundColor = .black
-        terminal.nativeForegroundColor = .white
-        terminal.caretColor = .white
+        terminal.nativeBackgroundColor = Self.background
+        terminal.nativeForegroundColor = Self.foreground
+        terminal.caretColor = Self.foreground
+        terminal.caretTextColor = Self.background
+        terminal.selectedTextBackgroundColor = Self.foreground
+        terminal.selectedTextForegroundColor = Self.ui(0x545454)
+        terminal.installColors(Self.palette.map(Self.st))
         terminal.indicatorStyle = .white
         terminal.translatesAutoresizingMaskIntoConstraints = false
         context.coordinator.terminal = terminal
@@ -212,7 +222,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         let terminalWidth = ceil(charWidth * CGFloat(Self.columns)) + 4
 
         let scroll = UIScrollView()
-        scroll.backgroundColor = .black
+        scroll.backgroundColor = Self.background
         scroll.showsHorizontalScrollIndicator = true
         scroll.showsVerticalScrollIndicator = false
         scroll.alwaysBounceVertical = false
@@ -227,6 +237,26 @@ private struct StreamingTerminalView: UIViewRepresentable {
             terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
         return scroll
+    }
+
+    private static func ui(_ hex: UInt32) -> UIColor {
+        UIColor(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    private static func st(_ hex: UInt32) -> SwiftTerm.Color {
+        func component(_ shift: UInt32) -> UInt16 {
+            UInt16((hex >> shift) & 0xFF) &* 257
+        }
+        return SwiftTerm.Color(
+            red: component(16),
+            green: component(8),
+            blue: component(0)
+        )
     }
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {

@@ -1078,13 +1078,21 @@ final class RaiModel: ObservableObject {
         if closedTabs.count > 10 {
             closedTabs.removeFirst(closedTabs.count - 10)
         }
-        if let workspace = snapshot?.workspaces.first(where: {
-            $0.workspaceID == tab.workspaceID
-        }), workspace.tabCount == 1 {
-            close(workspace: workspace)
-            return
+        guard let arguments = closeTabArguments(tabID: tab.tabID) else { return }
+        runAction(arguments)
+    }
+
+    private func closeTabArguments(tabID: String) -> [String]? {
+        guard let tab = snapshot?.tabs.first(where: { $0.tabID == tabID }),
+              let workspace = snapshot?.workspaces.first(where: {
+                  $0.workspaceID == tab.workspaceID
+              }) else {
+            return nil
         }
-        runAction(["tab", "close", tab.tabID])
+        if workspace.tabCount == 1 {
+            return ["workspace", "close", workspace.workspaceID]
+        }
+        return ["tab", "close", tabID]
     }
 
     private func closedTabRecord(for tab: HerdrTab) -> ClosedTabRecord? {
@@ -1663,10 +1671,7 @@ final class RaiModel: ObservableObject {
     }
 
     func renamePane(paneID: String, to rawLabel: String) {
-        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let arguments = label.isEmpty
-            ? ["pane", "rename", paneID, "--clear"]
-            : ["pane", "rename", paneID, label]
+        let arguments = renamePaneArguments(paneID: paneID, label: rawLabel)
         let client = client
         let generation = connectionGeneration
         Task {
@@ -1678,6 +1683,13 @@ final class RaiModel: ObservableObject {
                 generation: generation
             )
         }
+    }
+
+    private func renamePaneArguments(paneID: String, label rawLabel: String) -> [String] {
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty
+            ? ["pane", "rename", paneID, "--clear"]
+            : ["pane", "rename", paneID, label]
     }
 
     func processInfo(for paneID: String) async -> PaneProcessInfo? {
@@ -1808,6 +1820,49 @@ final class RaiModel: ObservableObject {
     private static func defaultAgentName(_ kind: AgentLaunchKind) -> String {
         let suffix = UUID().uuidString.prefix(6).lowercased()
         return "\(kind.rawValue)-\(suffix)"
+    }
+
+    func launchAgentFromBridge(
+        _ kind: AgentLaunchKind,
+        workspaceID: String?,
+        cwd: String?
+    ) async -> Bool {
+        await runHerdr(
+            PaneActionPlanner.agentStartArguments(
+                name: Self.defaultAgentName(kind),
+                executable: kind.rawValue,
+                workspaceID: workspaceID,
+                cwd: cwd
+            )
+        )
+    }
+
+    func renamePaneFromBridge(paneID: String, label rawLabel: String) async -> Bool {
+        guard snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+            return false
+        }
+        return await runHerdr(renamePaneArguments(paneID: paneID, label: rawLabel))
+    }
+
+    func renameTabFromBridge(tabID: String, label rawLabel: String) async -> Bool {
+        guard snapshot?.tabs.contains(where: { $0.tabID == tabID }) == true else {
+            return false
+        }
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return false }
+        return await runHerdr(["tab", "rename", tabID, label])
+    }
+
+    func closePaneFromBridge(paneID: String) async -> Bool {
+        guard snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+            return false
+        }
+        return await runHerdr(["pane", "close", paneID])
+    }
+
+    func closeTabFromBridge(tabID: String) async -> Bool {
+        guard let arguments = closeTabArguments(tabID: tabID) else { return false }
+        return await runHerdr(arguments)
     }
 
     private func reconstructClosedTab(

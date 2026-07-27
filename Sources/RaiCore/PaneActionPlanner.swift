@@ -41,4 +41,22 @@ public enum PaneActionPlanner {
             "--", executable,
         ]
     }
+
+    /// Builds the non-splitting agent launch used by remote companions.
+    public static func agentStartArguments(
+        name: String,
+        executable: String,
+        workspaceID: String?,
+        cwd: String?
+    ) -> [String] {
+        var arguments = ["agent", "start", name]
+        if let workspaceID {
+            arguments += ["--workspace", workspaceID]
+        }
+        if let cwd {
+            arguments += ["--cwd", cwd]
+        }
+        arguments += ["--no-focus", "--", executable]
+        return arguments
+    }
 }

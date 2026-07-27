@@ -452,6 +452,43 @@ final class RaiBridgeServer: ObservableObject {
             let clientID = ObjectIdentifier(client.connection)
             guard observeStreams[clientID]?[paneID] != nil else { return }
             startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
+        case let .launchAgent(workspaceID, agent, cwd):
+            guard let kind = AgentLaunchKind(rawValue: agent) else {
+                send(.error(message: "Agent must be claude or codex."), to: client)
+                return
+            }
+            if let workspaceID,
+               model.snapshot?.workspaces.contains(where: {
+                   $0.workspaceID == workspaceID
+               }) != true {
+                send(.error(message: "Unknown workspace \(workspaceID)."), to: client)
+                return
+            }
+            guard await model.launchAgentFromBridge(kind, workspaceID: workspaceID, cwd: cwd)
+            else {
+                send(.error(message: "Could not launch \(agent)."), to: client)
+                return
+            }
+        case let .renamePane(paneID, label):
+            guard await model.renamePaneFromBridge(paneID: paneID, label: label) else {
+                send(.error(message: "Could not rename pane \(paneID)."), to: client)
+                return
+            }
+        case let .renameTab(tabID, label):
+            guard await model.renameTabFromBridge(tabID: tabID, label: label) else {
+                send(.error(message: "Could not rename tab \(tabID)."), to: client)
+                return
+            }
+        case let .closePane(paneID):
+            guard await model.closePaneFromBridge(paneID: paneID) else {
+                send(.error(message: "Could not close pane \(paneID)."), to: client)
+                return
+            }
+        case let .closeTab(tabID):
+            guard await model.closeTabFromBridge(tabID: tabID) else {
+                send(.error(message: "Could not close tab \(tabID)."), to: client)
+                return
+            }
         case let .registerPush(deviceToken, environment):
             guard environment == "sandbox" || environment == "production" else {
                 send(.error(message: "Push environment must be sandbox or production."), to: client)

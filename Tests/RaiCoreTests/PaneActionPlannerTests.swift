@@ -67,4 +67,38 @@ final class PaneActionPlannerTests: XCTestCase {
             ]
         )
     }
+
+    func testRemoteAgentStartTargetsWorkspaceWithoutChangingFocus() {
+        XCTAssertEqual(
+            PaneActionPlanner.agentStartArguments(
+                name: "codex-a1b2c3",
+                executable: "codex",
+                workspaceID: "workspace-1",
+                cwd: "/tmp/project with spaces"
+            ),
+            [
+                "agent", "start", "codex-a1b2c3",
+                "--workspace", "workspace-1",
+                "--cwd", "/tmp/project with spaces",
+                "--no-focus",
+                "--", "codex",
+            ]
+        )
+    }
+
+    func testRemoteAgentStartCreatesWorkspaceWhenTargetIsNil() {
+        XCTAssertEqual(
+            PaneActionPlanner.agentStartArguments(
+                name: "claude-a1b2c3",
+                executable: "claude",
+                workspaceID: nil,
+                cwd: nil
+            ),
+            [
+                "agent", "start", "claude-a1b2c3",
+                "--no-focus",
+                "--", "claude",
+            ]
+        )
+    }
 }
