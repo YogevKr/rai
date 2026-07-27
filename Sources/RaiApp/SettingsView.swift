@@ -273,6 +273,16 @@ private struct CompanionSettingsView: View {
         _keyP8Draft = State(initialValue: model.bridgeServer.apnsSettings.keyP8)
     }
 
+    /// APNs push is a self-hoster feature — it needs your own Apple Developer
+    /// account and your own iOS build — so it's noise for most users. Hide the
+    /// section by default; show it only when it's already configured, or when
+    /// explicitly revealed with
+    /// `defaults write gr.krig.rai companionPushSettingsVisible -bool true`.
+    private var showPushSettings: Bool {
+        apnsSettings.isConfigured
+            || UserDefaults.standard.bool(forKey: "companionPushSettingsVisible")
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -341,6 +351,7 @@ private struct CompanionSettingsView: View {
                 .foregroundStyle(Theme.textPrimary)
                 }
 
+                if showPushSettings {
                 SettingsSection(title: "Push Notifications") {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 12) {
@@ -401,6 +412,7 @@ private struct CompanionSettingsView: View {
                     }
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textPrimary)
+                }
                 }
             }
         }
