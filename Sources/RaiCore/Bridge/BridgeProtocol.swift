@@ -35,6 +35,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
     case hello(token: String, client: ClientInfo)
     case subscribe
+    case requestPane(paneID: String)
     case input(paneID: String, bytesBase64: String)
     case focusPane(paneID: String)
     case selectPane(paneID: String)
@@ -58,7 +59,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     }
 
     private enum MessageType: String, Codable {
-        case hello, subscribe, input, focusPane, selectPane, resizePane
+        case hello, subscribe, requestPane, input, focusPane, selectPane, resizePane
         case welcome, authFailed, snapshot, event, paneOutput, error
     }
 
@@ -72,6 +73,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             )
         case .subscribe:
             self = .subscribe
+        case .requestPane:
+            self = .requestPane(paneID: try container.decode(String.self, forKey: .paneID))
         case .input:
             self = .input(
                 paneID: try container.decode(String.self, forKey: .paneID),
@@ -117,6 +120,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(client, forKey: .client)
         case .subscribe:
             try container.encode(MessageType.subscribe, forKey: .type)
+        case let .requestPane(paneID):
+            try container.encode(MessageType.requestPane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
         case let .input(paneID, bytesBase64):
             try container.encode(MessageType.input, forKey: .type)
             try container.encode(paneID, forKey: .paneID)

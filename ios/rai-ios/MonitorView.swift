@@ -86,8 +86,7 @@ private struct TabGroup: View {
         DisclosureGroup {
             ForEach(panes) { pane in
                 NavigationLink {
-                    PanePlaceholder(pane: pane)
-                        .onAppear { connection.selectAndFocus(paneID: pane.paneID) }
+                    PaneTerminalView(pane: pane, connection: connection)
                 } label: {
                     PaneRow(pane: pane)
                 }
@@ -123,20 +122,6 @@ private struct PaneRow: View {
             StatusPill(status: pane.agentStatus)
         }
         .padding(.vertical, 2)
-    }
-}
-
-private struct PanePlaceholder: View {
-    let pane: Pane
-
-    var body: some View {
-        ContentUnavailableView {
-            Label(pane.agent ?? "Agent", systemImage: "terminal")
-        } description: {
-            Text("Terminal viewing and input arrive in Session 2b.")
-        }
-        .navigationTitle(pane.terminalTitleStripped ?? "Pane")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

@@ -29,6 +29,7 @@ final class BridgeConnection: ObservableObject {
 
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
+    @Published private(set) var paneOutputs: [String: Data] = [:]
 
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
@@ -61,11 +62,27 @@ final class BridgeConnection: ObservableObject {
         openSocket()
     }
 
-    func selectAndFocus(paneID: String) {
+    func openPane(paneID: String) {
         Task {
             do {
                 try await send(.selectPane(paneID: paneID))
                 try await send(.focusPane(paneID: paneID))
+                try await send(.requestPane(paneID: paneID))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    func sendInput(_ bytes: [UInt8], to paneID: String) {
+        Task {
+            do {
+                try await send(
+                    .input(
+                        paneID: paneID,
+                        bytesBase64: Data(bytes).base64EncodedString()
+                    )
+                )
             } catch {
                 handleSocketFailure(error)
             }
@@ -145,11 +162,14 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure("Pairing rejected: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
+        case let .paneOutput(paneID, bytesBase64):
+            guard let data = Data(base64Encoded: bytesBase64) else { return }
+            paneOutputs[paneID] = data
         case let .error(message):
             status = .failed(message)
-        case .event, .paneOutput:
+        case .event:
             break
-        case .hello, .subscribe, .input, .focusPane, .selectPane, .resizePane:
+        case .hello, .subscribe, .requestPane, .input, .focusPane, .selectPane, .resizePane:
             break
         }
     }
@@ -204,6 +224,7 @@ final class BridgeConnection: ObservableObject {
         reconnectTask = nil
         status = .disconnected
         snapshot = nil
+        paneOutputs = [:]
         if clearPairing { pairing = nil }
     }
 

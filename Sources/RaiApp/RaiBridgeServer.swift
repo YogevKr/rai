@@ -257,6 +257,22 @@ final class RaiBridgeServer: ObservableObject {
             } else {
                 send(.error(message: "Herdr is not connected."), to: client)
             }
+        case let .requestPane(paneID):
+            do {
+                let read = try await model.client.readPane(paneID: paneID)
+                send(
+                    .paneOutput(
+                        paneID: paneID,
+                        bytesBase64: Data(read.text.utf8).base64EncodedString()
+                    ),
+                    to: client
+                )
+            } catch {
+                send(
+                    .error(message: "Unable to read pane \(paneID): \(error.localizedDescription)"),
+                    to: client
+                )
+            }
         case let .input(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else {
                 send(.error(message: "input bytesBase64 is invalid."), to: client)
