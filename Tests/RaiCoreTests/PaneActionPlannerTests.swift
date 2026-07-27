@@ -91,7 +91,7 @@ final class PaneActionPlannerTests: XCTestCase {
                 "--workspace", "workspace-1",
                 "--cwd", "/tmp/project with spaces",
                 "--no-focus",
-                "--", "codex",
+                "--", "/bin/sh", "-lc", "codex; exec \"${SHELL:-/bin/sh}\" -l",
             ]
         )
     }
@@ -107,7 +107,7 @@ final class PaneActionPlannerTests: XCTestCase {
             [
                 "agent", "start", "claude-a1b2c3",
                 "--no-focus",
-                "--", "claude",
+                "--", "/bin/sh", "-lc", "claude; exec \"${SHELL:-/bin/sh}\" -l",
             ]
         )
     }

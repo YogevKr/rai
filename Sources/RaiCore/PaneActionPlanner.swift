@@ -66,7 +66,9 @@ public enum PaneActionPlanner {
         if let cwd {
             arguments += ["--cwd", cwd]
         }
-        arguments += ["--no-focus", "--", executable]
+        // Same shell fallback as the split launch: keep the companion-launched
+        // pane alive at a prompt when the agent exits, instead of closing it.
+        arguments += ["--no-focus", "--"] + shellFallbackArgv(executable)
         return arguments
     }
 }
