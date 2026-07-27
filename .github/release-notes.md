@@ -1,21 +1,13 @@
 Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Silicon + Intel), macOS 14+.
 
-### New in this release — iPhone companion
+### New in this release
 
-rai now bridges your herd to a native **iOS companion app** (`ios/`, build it with
-Xcode — see [docs/ios.md](https://github.com/YogevKr/rai/blob/main/docs/ios.md)):
-
-- **Live terminal streaming** — panes stream to the phone as raw terminal frames
-  (real scrollback, colors, no flicker), not flat screen snapshots.
-- **Push notifications** — get an "agent needs you / finished" alert on your phone
-  when an agent goes blocked or done. The always-on Mac talks to APNs directly
-  (no relay server); configure it in **Settings → iPhone → Push** with your Apple
-  Developer APNs key. (Real delivery needs a paid Apple Developer account + a
-  signed device build.)
-- **At-a-glance monitor** — spaces → tabs → agent status with a "Needs you" summary,
-  a live SwiftTerm terminal per pane, input + compose bar, and auto-reconnect.
-
-Turn on the bridge in **Settings → iPhone** (QR pairing over your LAN / Tailscale).
+- **One continuous dark surface** — the dark theme's window base now matches the
+  terminal background, so the strip above the panes and the gutter under the
+  sidebar no longer read as a darker band.
+- **iOS companion: TestFlight-ready project** — the `ios/` app moved to the
+  `com.whetstone` bundle prefix with automatic signing, gained an app icon, and
+  declares the export-compliance exemption needed for TestFlight uploads.
 
 ### Install
 
