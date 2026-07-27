@@ -4,9 +4,11 @@ import SwiftUI
 struct MonitorView: View {
     @ObservedObject var connection: BridgeConnection
     let forgetPairing: () -> Void
+    @State private var path: [String] = []
+    @State private var didAutoOpen = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let snapshot = connection.snapshot {
                     if connection.status.isConnected, snapshot.panes.isEmpty {
@@ -17,6 +19,17 @@ struct MonitorView: View {
                 } else {
                     snapshotlessState
                 }
+            }
+            .navigationDestination(for: String.self) { paneID in
+                if let pane = connection.snapshot?.panes.first(where: { $0.paneID == paneID }) {
+                    PaneTerminalView(pane: pane, connection: connection)
+                }
+            }
+            .onChange(of: connection.snapshot?.panes.map(\.paneID) ?? []) { _, panes in
+                autoOpenIfRequested(panes: panes)
+            }
+            .onAppear {
+                autoOpenIfRequested(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
             .navigationTitle("rai")
             .toolbar {
@@ -65,6 +78,18 @@ struct MonitorView: View {
             get: { connection.requiresRepair },
             set: { _ in }
         )
+    }
+
+    // Testing/automation affordance mirroring RAI_PAIR_URL: auto-open a pane's
+    // terminal on first sight so end-to-end runs are deterministic. Never set in
+    // normal use.
+    private func autoOpenIfRequested(panes: [String]) {
+        guard !didAutoOpen,
+              let target = ProcessInfo.processInfo.environment["RAI_OPEN_PANE"],
+              panes.contains(target)
+        else { return }
+        didAutoOpen = true
+        path.append(target)
     }
 
     @ViewBuilder
@@ -127,9 +152,7 @@ struct MonitorView: View {
             if !needsYou.isEmpty {
                 Section {
                     ForEach(needsYou) { item in
-                        NavigationLink {
-                            PaneTerminalView(pane: item.pane, connection: connection)
-                        } label: {
+                        NavigationLink(value: item.pane.paneID) {
                             NeedsYouRow(item: item)
                         }
                     }
@@ -151,8 +174,7 @@ struct MonitorView: View {
                     ForEach(tabs) { tab in
                         TabGroup(
                             tab: tab,
-                            panes: snapshot.panes.filter { $0.tabID == tab.tabID },
-                            connection: connection
+                            panes: snapshot.panes.filter { $0.tabID == tab.tabID }
                         )
                     }
                 } header: {
@@ -222,14 +244,11 @@ private struct NeedsYouRow: View {
 private struct TabGroup: View {
     let tab: HerdrTab
     let panes: [Pane]
-    @ObservedObject var connection: BridgeConnection
 
     var body: some View {
         DisclosureGroup {
             ForEach(panes) { pane in
-                NavigationLink {
-                    PaneTerminalView(pane: pane, connection: connection)
-                } label: {
+                NavigationLink(value: pane.paneID) {
                     PaneRow(pane: pane)
                 }
             }

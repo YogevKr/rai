@@ -32,7 +32,15 @@ final class RaiBridgeServer: ObservableObject {
         return name.hasSuffix(".local") ? name : "\(name).local"
     }
 
-    var port: UInt16 { Self.defaultPort }
+    var port: UInt16 {
+        // Dev/test override so an isolated second instance can run its bridge
+        // off the default port without colliding with a primary rai.
+        if let raw = ProcessInfo.processInfo.environment["RAI_BRIDGE_PORT"],
+           let override = UInt16(raw) {
+            return override
+        }
+        return Self.defaultPort
+    }
 
     var pairingURL: URL? {
         var components = URLComponents()

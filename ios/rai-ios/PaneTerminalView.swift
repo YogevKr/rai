@@ -105,7 +105,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            connection.resizePane(paneID: paneID, cols: newCols, rows: newRows)
+            // SwiftTerm fires this delegate call on the main thread, but it is a
+            // nonisolated protocol method, so hop onto the main actor explicitly
+            // to touch the @MainActor connection.
+            Task { @MainActor [connection, paneID] in
+                connection.resizePane(paneID: paneID, cols: newCols, rows: newRows)
+            }
         }
         func setTerminalTitle(source: TerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
