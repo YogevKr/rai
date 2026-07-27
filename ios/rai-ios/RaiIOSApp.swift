@@ -12,7 +12,7 @@ struct RaiIOSApp: App {
                     // Deep-link pairing: tapping (or opening) a rai://pair link
                     // pairs and connects, same path as scanning the QR.
                     if let pairing = try? Pairing(urlString: url.absoluteString) {
-                        try? appModel.pair(pairing)
+                        appModel.pair(pairing)
                     }
                 }
         }

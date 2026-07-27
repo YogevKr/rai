@@ -16,8 +16,10 @@ struct MonitorView: View {
                     } description: {
                         Text(connection.status.label)
                     } actions: {
-                        if !connection.status.isConnected {
-                            Button("Retry") { connection.retryNow() }
+                        if connection.requiresRepair {
+                            Button("Pair Again", action: forgetPairing)
+                        } else if !connection.status.isConnected {
+                            Button("Reconnect") { connection.retryNow() }
                         }
                     }
                 }
@@ -26,7 +28,11 @@ struct MonitorView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("Reconnect") { connection.retryNow() }
+                        if connection.requiresRepair {
+                            Button("Pair Again", action: forgetPairing)
+                        } else {
+                            Button("Reconnect") { connection.retryNow() }
+                        }
                         Button("Forget Mac", role: .destructive, action: forgetPairing)
                     } label: {
                         ConnectionBadge(status: connection.status)
@@ -34,13 +40,17 @@ struct MonitorView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if !connection.status.isConnected {
+                if case .failed = connection.status {
                     HStack {
                         Image(systemName: "wifi.exclamationmark")
                         Text(connection.status.label)
                             .lineLimit(1)
                         Spacer()
-                        Button("Retry") { connection.retryNow() }
+                        if connection.requiresRepair {
+                            Button("Pair Again", action: forgetPairing)
+                        } else {
+                            Button("Reconnect") { connection.retryNow() }
+                        }
                     }
                     .font(.footnote)
                     .padding(.horizontal)
@@ -48,7 +58,19 @@ struct MonitorView: View {
                     .background(.bar)
                 }
             }
+            .alert("Pairing Rejected", isPresented: repairBinding) {
+                Button("Pair Again", action: forgetPairing)
+            } message: {
+                Text(connection.status.label)
+            }
         }
+    }
+
+    private var repairBinding: Binding<Bool> {
+        Binding(
+            get: { connection.requiresRepair },
+            set: { _ in }
+        )
     }
 
     private func herdList(_ snapshot: SessionSnapshot) -> some View {
@@ -129,10 +151,28 @@ private struct ConnectionBadge: View {
     let status: BridgeConnection.Status
 
     var body: some View {
-        Label(status.label, systemImage: status.isConnected ? "wifi" : "wifi.exclamationmark")
+        Label(status.label, systemImage: symbol)
             .labelStyle(.iconOnly)
-            .foregroundStyle(status.isConnected ? Color.green : Color.secondary)
+            .foregroundStyle(color)
             .accessibilityLabel(status.label)
+    }
+
+    private var symbol: String {
+        switch status {
+        case .disconnected: "wifi.slash"
+        case .connecting: "wifi"
+        case .connected: "wifi"
+        case .failed: "wifi.exclamationmark"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .disconnected: .secondary
+        case .connecting: .orange
+        case .connected: .green
+        case .failed: .red
+        }
     }
 }
 
@@ -164,7 +204,7 @@ private struct StatusPill: View {
 
     private var color: Color {
         switch status {
-        case .idle: .primary
+        case .idle: .secondary
         case .working: .blue
         case .blocked: .orange
         case .done: .green

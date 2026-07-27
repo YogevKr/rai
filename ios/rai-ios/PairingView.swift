@@ -73,7 +73,7 @@ struct PairingView: View {
             return
         }
         do {
-            try appModel.pair(Pairing(host: host, port: portNumber, token: token))
+            appModel.pair(try Pairing(host: host, port: portNumber, token: token))
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -82,7 +82,7 @@ struct PairingView: View {
     private func handleScan(_ result: Result<String, Error>) {
         do {
             let code = try result.get()
-            try appModel.pair(Pairing(urlString: code))
+            appModel.pair(try Pairing(urlString: code))
         } catch {
             errorMessage = error.localizedDescription
         }

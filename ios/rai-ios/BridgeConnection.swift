@@ -7,17 +7,15 @@ final class BridgeConnection: ObservableObject {
     enum Status: Equatable {
         case disconnected
         case connecting
-        case connected(sessionName: String?)
-        case reconnecting(attempt: Int)
-        case failed(String)
+        case connected
+        case failed(reason: String)
 
         var label: String {
             switch self {
             case .disconnected: "Disconnected"
             case .connecting: "Connecting…"
-            case let .connected(sessionName): sessionName.map { "Connected · \($0)" } ?? "Connected"
-            case let .reconnecting(attempt): "Reconnecting · attempt \(attempt)"
-            case let .failed(message): message
+            case .connected: "Connected"
+            case let .failed(reason): reason
             }
         }
 
@@ -30,6 +28,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var paneOutputs: [String: Data] = [:]
+    @Published private(set) var requiresRepair = false
 
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
@@ -44,6 +43,7 @@ final class BridgeConnection: ObservableObject {
         disconnect(clearPairing: false)
         self.pairing = pairing
         shouldReconnect = true
+        requiresRepair = false
         reconnectAttempt = 0
         openSocket()
     }
@@ -59,6 +59,7 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectAttempt = 0
         shouldReconnect = true
+        requiresRepair = false
         openSocket()
     }
 
@@ -91,12 +92,12 @@ final class BridgeConnection: ObservableObject {
 
     private func openSocket() {
         guard let pairing, let url = webSocketURL(for: pairing), shouldReconnect else {
-            status = .failed("Invalid bridge address")
+            status = .failed(reason: "Invalid bridge address")
             return
         }
 
         reconnectTask?.cancel()
-        status = reconnectAttempt == 0 ? .connecting : .reconnecting(attempt: reconnectAttempt)
+        status = .connecting
         let socket = URLSession.shared.webSocketTask(with: url)
         task = socket
         socket.resume()
@@ -109,7 +110,7 @@ final class BridgeConnection: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                self.handleSocketFailure(error)
+                self.handleSocketFailure(error, from: socket)
             }
         }
     }
@@ -151,22 +152,23 @@ final class BridgeConnection: ObservableObject {
 
     private func handle(_ message: BridgeMessage) {
         switch message {
-        case let .welcome(protocolVersion, sessionName):
+        case let .welcome(protocolVersion, _):
             guard protocolVersion == bridgeProtocolVersion else {
                 stopWithFailure("Unsupported bridge protocol \(protocolVersion)")
                 return
             }
             reconnectAttempt = 0
-            status = .connected(sessionName: sessionName)
+            status = .connected
         case let .authFailed(reason):
-            stopWithFailure("Pairing rejected: \(reason)")
+            requiresRepair = true
+            stopWithFailure("Re-pair required: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
         case let .paneOutput(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             paneOutputs[paneID] = data
         case let .error(message):
-            status = .failed(message)
+            status = .failed(reason: message)
         case .event:
             break
         case .hello, .subscribe, .requestPane, .input, .focusPane, .selectPane, .resizePane:
@@ -183,17 +185,23 @@ final class BridgeConnection: ObservableObject {
         try await task.send(.string(text))
     }
 
-    private func handleSocketFailure(_ error: Error) {
+    private func handleSocketFailure(
+        _ error: Error,
+        from socket: URLSessionWebSocketTask? = nil
+    ) {
         guard shouldReconnect, !(error is CancellationError) else { return }
-        scheduleReconnect()
+        if let socket, task !== socket {
+            return
+        }
+        scheduleReconnect(after: error)
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(after error: Error) {
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
         task = nil
         receiveTask = nil
         reconnectAttempt += 1
-        status = .reconnecting(attempt: reconnectAttempt)
+        status = .failed(reason: failureReason(for: error))
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -211,7 +219,7 @@ final class BridgeConnection: ObservableObject {
         receiveTask = nil
         reconnectTask?.cancel()
         reconnectTask = nil
-        status = .failed(message)
+        status = .failed(reason: message)
     }
 
     private func disconnect(clearPairing: Bool) {
@@ -223,6 +231,7 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .disconnected
+        requiresRepair = false
         snapshot = nil
         paneOutputs = [:]
         if clearPairing { pairing = nil }
@@ -235,5 +244,21 @@ final class BridgeConnection: ObservableObject {
         components.port = pairing.port
         components.path = "/"
         return components.url
+    }
+
+    private func failureReason(for error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet:
+                return "No network connection"
+            case .cannotConnectToHost, .networkConnectionLost:
+                return "Mac connection lost"
+            case .timedOut:
+                return "Connection timed out"
+            default:
+                break
+            }
+        }
+        return "Connection lost"
     }
 }

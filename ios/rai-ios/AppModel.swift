@@ -14,11 +14,7 @@ final class AppModel: ObservableObject {
         if let urlString = ProcessInfo.processInfo.environment["RAI_PAIR_URL"] {
             NSLog("rai-ios: RAI_PAIR_URL present: \(urlString)")
             if let launchPairing = try? Pairing(urlString: urlString) {
-                // Connect directly — don't let a Keychain-save failure (unsigned
-                // simulator builds lack the entitlement) block the connection.
-                pairing = launchPairing
-                try? pairingStore.save(launchPairing)
-                connection.connect(to: launchPairing)
+                pair(launchPairing)
                 return
             } else {
                 NSLog("rai-ios: RAI_PAIR_URL failed to parse")
@@ -30,10 +26,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func pair(_ pairing: Pairing) throws {
-        try pairingStore.save(pairing)
+    func pair(_ pairing: Pairing) {
         self.pairing = pairing
         connection.connect(to: pairing)
+        do {
+            try pairingStore.save(pairing)
+        } catch {
+            // Connecting must not depend on Keychain availability. In particular,
+            // unsigned simulator builds may lack the required entitlement.
+            NSLog("rai-ios: Could not persist pairing: \(error.localizedDescription)")
+        }
     }
 
     func forgetPairing() {

@@ -6,6 +6,7 @@ import UIKit
 struct PaneTerminalView: View {
     let pane: Pane
     @ObservedObject var connection: BridgeConnection
+    @State private var composedLine = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,11 +16,32 @@ struct PaneTerminalView: View {
             )
             .background(Color.black)
 
+            HStack(spacing: 8) {
+                TextField("Send a line…", text: $composedLine)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.send)
+                    .onSubmit(sendComposedLine)
+                Button("Send", action: sendComposedLine)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(composedLine.isEmpty)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
+
             TerminalControlToolbar { connection.sendInput($0, to: pane.paneID) }
         }
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { connection.openPane(paneID: pane.paneID) }
+    }
+
+    private func sendComposedLine() {
+        guard !composedLine.isEmpty else { return }
+        connection.sendInput(Array(composedLine.utf8) + [0x0D], to: pane.paneID)
+        composedLine = ""
     }
 }
 
