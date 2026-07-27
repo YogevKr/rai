@@ -67,9 +67,15 @@ private struct StreamingTerminalView: UIViewRepresentable {
         view.caretColor = .white
         view.indicatorStyle = .white
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak view] data in
-            let bytes = [UInt8](data)
-            view?.feed(byteArray: bytes[...])
+            [weak view] data, full in
+            // A `full` frame starts a fresh stream (initial attach, or a restart
+            // after resize/reconnect). Clear the visible screen and home the
+            // cursor first so stale cells/styles from the previous stream don't
+            // bleed through; scrollback above is preserved.
+            if full {
+                view?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
+            }
+            view?.feed(byteArray: [UInt8](data)[...])
         }
         return view
     }

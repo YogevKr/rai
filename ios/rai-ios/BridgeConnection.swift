@@ -41,7 +41,7 @@ final class BridgeConnection: ObservableObject {
     private var shouldReconnect = false
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private var paneFrameHandlers: [String: [UUID: (Data) -> Void]] = [:]
+    private var paneFrameHandlers: [String: [UUID: (Data, Bool) -> Void]] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
 
     func connect(to pairing: Pairing) {
@@ -123,7 +123,7 @@ final class BridgeConnection: ObservableObject {
 
     func addPaneFrameHandler(
         for paneID: String,
-        handler: @escaping (Data) -> Void
+        handler: @escaping (Data, Bool) -> Void
     ) -> UUID {
         let id = UUID()
         paneFrameHandlers[paneID, default: [:]][id] = handler
@@ -237,11 +237,11 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure("Re-pair required: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
-        case let .paneFrame(paneID, bytesBase64, _, _):
+        case let .paneFrame(paneID, bytesBase64, full, _):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
             for handler in handlers {
-                handler(data)
+                handler(data, full)
             }
         case let .error(message):
             status = .failed(reason: message)
