@@ -254,7 +254,8 @@ extension AppDelegate: RaiSnapshotObserver {
                 body: body,
                 paneID: pane.paneID,
                 workspaceID: pane.workspaceID,
-                workspace: workspace
+                workspace: workspace,
+                requiresAttention: transition.newStatus == .blocked
             )
         }
     }

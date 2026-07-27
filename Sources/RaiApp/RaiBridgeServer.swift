@@ -192,7 +192,8 @@ final class RaiBridgeServer: ObservableObject {
         body: String,
         paneID: String,
         workspaceID: String,
-        workspace: String?
+        workspace: String?,
+        requiresAttention: Bool
     ) {
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
@@ -212,7 +213,8 @@ final class RaiBridgeServer: ObservableObject {
                             body: body,
                             paneID: paneID,
                             workspaceID: workspaceID,
-                            workspace: workspace
+                            workspace: workspace,
+                            category: requiresAttention ? "agent-attention" : nil
                         )
                         return result == .deadToken ? registration.deviceToken : nil
                     }
@@ -348,6 +350,23 @@ final class RaiBridgeServer: ObservableObject {
             await perform(for: client) {
                 try await self.model.client.sendInput(paneID: paneID, bytes: [UInt8](data))
             }
+        case let .sendImage(paneID, bytesBase64, filename):
+            guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else {
+                send(.error(message: "sendImage bytesBase64 is invalid."), to: client)
+                return
+            }
+            guard data.count <= 5 * 1_024 * 1_024 else {
+                send(.error(message: "Images must be 5 MB or smaller."), to: client)
+                return
+            }
+            await perform(for: client) {
+                let url = try self.writeTemporaryImage(data, filename: filename)
+                let path = url.path.replacingOccurrences(of: " ", with: "\\ ")
+                try await self.model.client.sendInput(
+                    paneID: paneID,
+                    bytes: [UInt8]("\(path) ".utf8)
+                )
+            }
         case let .focusPane(paneID):
             await perform(for: client) {
                 try await self.model.client.focusPane(paneID)
@@ -385,6 +404,38 @@ final class RaiBridgeServer: ObservableObject {
             send(.error(message: "Connection is already authenticated."), to: client)
         case .welcome, .authFailed, .snapshot, .event, .paneFrame, .error:
             send(.error(message: "Server-to-client message received from client."), to: client)
+        }
+    }
+
+    private func writeTemporaryImage(_ data: Data, filename: String) throws -> URL {
+        let stem = URL(fileURLWithPath: filename)
+            .deletingPathExtension().lastPathComponent
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let safeStem = stem.isEmpty ? "rai-image" : stem
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-bridge-images", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let url = directory.appendingPathComponent("\(safeStem)-\(UUID().uuidString).png")
+        try data.write(to: url, options: .atomic)
+        removeStaleImages(in: directory, keeping: url)
+        return url
+    }
+
+    private func removeStaleImages(in directory: URL, keeping current: URL) {
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        for url in urls where url != current {
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let date = values.contentModificationDate,
+                  date < cutoff
+            else { continue }
+            try? FileManager.default.removeItem(at: url)
         }
     }
 

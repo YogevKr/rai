@@ -63,6 +63,11 @@ final class AppModel: ObservableObject {
         registerPushIfPossible()
     }
 
+    func sendNotificationInput(_ bytes: [UInt8], to paneID: String) async -> Bool {
+        guard let pairing else { return false }
+        return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
+    }
+
     private func registerPushIfPossible() {
         guard let deviceToken, connection.status.isConnected else { return }
         connection.registerPush(

@@ -22,6 +22,7 @@ final class BridgeProtocolTests: XCTestCase {
             .attachStream(paneID: "pane-1", cols: 80, rows: 24),
             .detachStream(paneID: "pane-1"),
             .input(paneID: "pane-1", bytesBase64: bytes),
+            .sendImage(paneID: "pane-1", bytesBase64: bytes, filename: "photo.png"),
             .focusPane(paneID: "pane-1"),
             .selectPane(paneID: "pane-1"),
             .resizePane(paneID: "pane-1", cols: 120, rows: 40),
@@ -51,5 +52,9 @@ final class BridgeProtocolTests: XCTestCase {
                 try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
             )
         }
+    }
+
+    func testBridgeProtocolVersionIsFour() {
+        XCTAssertEqual(bridgeProtocolVersion, 4)
     }
 }

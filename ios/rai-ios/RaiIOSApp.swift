@@ -3,6 +3,13 @@ import UIKit
 import UserNotifications
 
 final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    private enum NotificationAction {
+        static let category = "agent-attention"
+        static let approve = "Approve"
+        static let deny = "Deny"
+        static let reply = "Reply"
+    }
+
     weak var appModel: AppModel? {
         didSet {
             if let deviceToken {
@@ -26,6 +33,31 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     ) -> Bool {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: NotificationAction.category,
+                actions: [
+                    UNNotificationAction(
+                        identifier: NotificationAction.approve,
+                        title: "Approve",
+                        options: [.authenticationRequired]
+                    ),
+                    UNNotificationAction(
+                        identifier: NotificationAction.deny,
+                        title: "Deny",
+                        options: [.authenticationRequired, .destructive]
+                    ),
+                    UNTextInputNotificationAction(
+                        identifier: NotificationAction.reply,
+                        title: "Reply",
+                        options: [.authenticationRequired],
+                        textInputButtonTitle: "Send",
+                        textInputPlaceholder: "Message"
+                    ),
+                ],
+                intentIdentifiers: []
+            ),
+        ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, error in
             if let error {
                 NSLog("rai-ios: Notification authorization failed: \(error.localizedDescription)")
@@ -67,12 +99,43 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         guard let paneID = response.notification.request.content.userInfo["paneID"] as? String else {
             return
         }
+        let bytes: [UInt8]?
+        switch response.actionIdentifier {
+        case NotificationAction.approve:
+            bytes = [0x0D]
+        case NotificationAction.deny:
+            bytes = [0x1B]
+        case NotificationAction.reply:
+            guard let response = response as? UNTextInputNotificationResponse else { return }
+            bytes = Array(response.userText.utf8) + [0x0D]
+        default:
+            bytes = nil
+        }
+
+        if let bytes {
+            let delivered: Bool
+            if let appModel {
+                delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+            } else if let pairing = PairingStore().load() {
+                let connection = await MainActor.run { BridgeConnection() }
+                delivered = await connection.connectAndSendInput(
+                    bytes,
+                    to: paneID,
+                    pairing: pairing
+                )
+            } else {
+                delivered = false
+            }
+            if delivered { return }
+        }
+        await openPane(paneID)
+    }
+
+    private func openPane(_ paneID: String) async {
         pendingPaneID = paneID
         await MainActor.run {
             appModel?.pendingOpenPaneID = paneID
-            if appModel != nil {
-                pendingPaneID = nil
-            }
+            if appModel != nil { pendingPaneID = nil }
         }
     }
 }

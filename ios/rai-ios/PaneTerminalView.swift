@@ -1,4 +1,5 @@
 import RaiCore
+import PhotosUI
 import SwiftTerm
 import SwiftUI
 import UIKit
@@ -7,17 +8,68 @@ struct PaneTerminalView: View {
     let pane: Pane
     @ObservedObject var connection: BridgeConnection
     @State private var composedLine = ""
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var isSendingImage = false
+    @State private var imageError: String?
+    @StateObject private var terminalSearch = TerminalSearchController()
 
     var body: some View {
         VStack(spacing: 0) {
             StreamingTerminalView(
                 paneID: pane.paneID,
                 connection: connection,
+                search: terminalSearch,
                 send: { connection.sendInput($0, to: pane.paneID) }
             )
             .background(Color.black)
 
+            if isSearching {
+                HStack(spacing: 8) {
+                    TextField("Find in scrollback", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.search)
+                        .onSubmit { terminalSearch.next(searchText) }
+                        .onChange(of: searchText) { _, query in
+                            terminalSearch.search(query)
+                        }
+                    Text(terminalSearch.summary)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 36)
+                    Button { terminalSearch.previous(searchText) } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .disabled(searchText.isEmpty)
+                    Button { terminalSearch.next(searchText) } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .disabled(searchText.isEmpty)
+                    Button {
+                        isSearching = false
+                        terminalSearch.clear()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+
             HStack(spacing: 8) {
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    if isSendingImage {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "photo")
+                    }
+                }
+                .disabled(isSendingImage)
+                .accessibilityLabel("Send photo")
                 TextField("Send a line…", text: $composedLine)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
@@ -36,8 +88,34 @@ struct PaneTerminalView: View {
         }
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isSearching.toggle()
+                    if !isSearching { terminalSearch.clear() }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("Find in terminal")
+            }
+        }
         .onAppear { connection.openPane(paneID: pane.paneID) }
         .onDisappear { connection.closePane(paneID: pane.paneID) }
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task { await sendPhoto(item) }
+        }
+        .alert(
+            "Could Not Send Photo",
+            isPresented: Binding(
+                get: { imageError != nil },
+                set: { if !$0 { imageError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(imageError ?? "")
+        }
     }
 
     private func sendComposedLine() {
@@ -45,11 +123,52 @@ struct PaneTerminalView: View {
         connection.sendInput(Array(composedLine.utf8) + [0x0D], to: pane.paneID)
         composedLine = ""
     }
+
+    private func sendPhoto(_ item: PhotosPickerItem) async {
+        isSendingImage = true
+        defer {
+            isSendingImage = false
+            selectedPhoto = nil
+        }
+        do {
+            guard let source = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: source),
+                  let data = Self.sizedPNG(from: image)
+            else {
+                throw PhotoSendError.invalidImage
+            }
+            try await connection.sendImage(
+                data,
+                filename: "photo-\(Int(Date().timeIntervalSince1970)).png",
+                to: pane.paneID
+            )
+        } catch {
+            imageError = error.localizedDescription
+        }
+    }
+
+    private static func sizedPNG(from source: UIImage) -> Data? {
+        var image = source
+        let maxDimension: CGFloat = 2_048
+        let longest = max(image.size.width, image.size.height)
+        if longest > maxDimension {
+            image = image.resized(by: maxDimension / longest)
+        }
+        var data = image.pngData()
+        while let current = data, current.count > 4 * 1_024 * 1_024,
+              min(image.size.width, image.size.height) > 512 {
+            image = image.resized(by: 0.75)
+            data = image.pngData()
+        }
+        guard let data, data.count <= 5 * 1_024 * 1_024 else { return nil }
+        return data
+    }
 }
 
 private struct StreamingTerminalView: UIViewRepresentable {
     let paneID: String
     let connection: BridgeConnection
+    let search: TerminalSearchController
     let send: ([UInt8]) -> Void
 
     // Render the pane at a faithful fixed width (agent TUIs assume ~80 cols) and
@@ -59,7 +178,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
     private static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(paneID: paneID, connection: connection, send: send)
+        Coordinator(paneID: paneID, connection: connection, search: search, send: send)
     }
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -71,6 +190,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.indicatorStyle = .white
         terminal.translatesAutoresizingMaskIntoConstraints = false
         context.coordinator.terminal = terminal
+        search.terminal = terminal
 
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
             [weak terminal] data, full in
@@ -117,6 +237,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         if let id = coordinator.frameHandlerID {
             coordinator.connection.removePaneFrameHandler(for: coordinator.paneID, id: id)
         }
+        coordinator.search.terminal = nil
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
@@ -125,14 +246,17 @@ private struct StreamingTerminalView: UIViewRepresentable {
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
         weak var terminal: TerminalView?
+        let search: TerminalSearchController
 
         init(
             paneID: String,
             connection: BridgeConnection,
+            search: TerminalSearchController,
             send: @escaping ([UInt8]) -> Void
         ) {
             self.paneID = paneID
             self.connection = connection
+            self.search = search
             self.send = send
         }
 
@@ -157,6 +281,64 @@ private struct StreamingTerminalView: UIViewRepresentable {
         func scrolled(source: TerminalView, position: Double) {}
         func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
         func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    }
+}
+
+@MainActor
+private final class TerminalSearchController: ObservableObject {
+    @Published private(set) var summary = "0/0"
+    weak var terminal: TerminalView?
+
+    func search(_ query: String) {
+        terminal?.clearSearch()
+        if query.isEmpty {
+            summary = "0/0"
+        } else {
+            next(query)
+        }
+    }
+
+    func next(_ query: String) {
+        guard !query.isEmpty else { return }
+        _ = terminal?.findNext(query)
+        updateSummary(query)
+    }
+
+    func previous(_ query: String) {
+        guard !query.isEmpty else { return }
+        _ = terminal?.findPrevious(query)
+        updateSummary(query)
+    }
+
+    func clear() {
+        terminal?.clearSearch()
+        summary = "0/0"
+    }
+
+    private func updateSummary(_ query: String) {
+        let value: (index: Int, total: Int) =
+            terminal?.searchMatchSummary(query) ?? (index: 0, total: 0)
+        summary = "\(value.index)/\(value.total)"
+    }
+}
+
+private enum PhotoSendError: LocalizedError {
+    case invalidImage
+
+    var errorDescription: String? {
+        "The selected image could not be prepared under the 5 MB limit."
+    }
+}
+
+private extension UIImage {
+    func resized(by scale: CGFloat) -> UIImage {
+        let size = CGSize(
+            width: max(1, self.size.width * scale),
+            height: max(1, self.size.height * scale)
+        )
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 }
 

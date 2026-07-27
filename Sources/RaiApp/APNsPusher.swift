@@ -57,6 +57,7 @@ actor APNsPusher {
 
             let alert: Alert
             let sound: String
+            let category: String?
         }
 
         let aps: APS
@@ -81,7 +82,8 @@ actor APNsPusher {
         body: String,
         paneID: String,
         workspaceID: String,
-        workspace: String?
+        workspace: String?,
+        category: String?
     ) async -> Result {
         do {
             let jwt = try providerJWT(for: configuration)
@@ -102,7 +104,8 @@ actor APNsPusher {
             request.httpBody = try JSONEncoder().encode(Payload(
                 aps: .init(
                     alert: .init(title: title, subtitle: subtitle, body: body),
-                    sound: "default"
+                    sound: "default",
+                    category: category
                 ),
                 paneID: paneID,
                 workspaceID: workspaceID,

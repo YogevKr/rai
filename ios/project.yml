@@ -51,6 +51,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: Scan a rai pairing code from your Mac.
+        NSPhotoLibraryUsageDescription: Choose a photo or screenshot to send to an agent.
         NSLocalNetworkUsageDescription: Connect to the rai bridge running on your Mac.
         NSBonjourServices:
           - _rai._tcp

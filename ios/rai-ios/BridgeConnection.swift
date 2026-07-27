@@ -153,6 +153,48 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
+        try await send(
+            .sendImage(
+                paneID: paneID,
+                bytesBase64: data.base64EncodedString(),
+                filename: filename
+            )
+        )
+    }
+
+    /// Notification actions can arrive while the app is suspended. Reuse the
+    /// live socket when possible, otherwise reconnect and wait briefly for the
+    /// authenticated welcome before sending within the notification window.
+    func connectAndSendInput(
+        _ bytes: [UInt8],
+        to paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        do {
+            try await send(
+                .input(
+                    paneID: paneID,
+                    bytesBase64: Data(bytes).base64EncodedString()
+                )
+            )
+            return true
+        } catch {
+            handleSocketFailure(error)
+            return false
+        }
+    }
+
     func registerPush(deviceToken: String, environment: String) {
         Task {
             do {
@@ -268,7 +310,7 @@ final class BridgeConnection: ObservableObject {
         case .event:
             break
         case .hello, .subscribe, .attachStream, .detachStream,
-             .input, .focusPane, .selectPane, .resizePane,
+             .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .registerPush, .unregisterPush:
             break
         }

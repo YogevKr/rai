@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Versioning is independent of herdr's RPC protocol so the Mac and companion
 /// app can negotiate their wire contract without exposing daemon internals.
-public let bridgeProtocolVersion = 3
+public let bridgeProtocolVersion = 4
 
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
@@ -38,6 +38,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case attachStream(paneID: String, cols: Int, rows: Int)
     case detachStream(paneID: String)
     case input(paneID: String, bytesBase64: String)
+    case sendImage(paneID: String, bytesBase64: String, filename: String)
     case focusPane(paneID: String)
     case selectPane(paneID: String)
     case resizePane(paneID: String, cols: Int, rows: Int)
@@ -55,7 +56,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case type
         case token, client
-        case paneID, bytesBase64
+        case paneID, bytesBase64, filename
         case cols, rows
         case full, seq
         case protocolVersion, sessionName
@@ -65,7 +66,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
 
     private enum MessageType: String, Codable {
         case hello, subscribe, attachStream, detachStream
-        case input, focusPane, selectPane, resizePane
+        case input, sendImage, focusPane, selectPane, resizePane
         case registerPush, unregisterPush
         case welcome, authFailed, snapshot, event, paneFrame, error
     }
@@ -92,6 +93,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .input(
                 paneID: try container.decode(String.self, forKey: .paneID),
                 bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
+            )
+        case .sendImage:
+            self = .sendImage(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                bytesBase64: try container.decode(String.self, forKey: .bytesBase64),
+                filename: try container.decode(String.self, forKey: .filename)
             )
         case .focusPane:
             self = .focusPane(paneID: try container.decode(String.self, forKey: .paneID))
@@ -156,6 +163,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.input, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(bytesBase64, forKey: .bytesBase64)
+        case let .sendImage(paneID, bytesBase64, filename):
+            try container.encode(MessageType.sendImage, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(bytesBase64, forKey: .bytesBase64)
+            try container.encode(filename, forKey: .filename)
         case let .focusPane(paneID):
             try container.encode(MessageType.focusPane, forKey: .type)
             try container.encode(paneID, forKey: .paneID)

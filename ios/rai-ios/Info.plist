@@ -46,6 +46,8 @@
 	<string>Scan a rai pairing code from your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to the rai bridge running on your Mac.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a photo or screenshot to send to an agent.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
