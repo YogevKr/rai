@@ -2,23 +2,13 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Fix: agents launched from your phone keep their pane** — a v0.1.10
-  regression where an agent started from the iOS companion closed its pane (and
-  a single-pane tab) on exit; it now drops back to a shell prompt like every
-  other launch.
-- **Agent panes outlive their agents** — exiting a coding agent no longer
-  closes its pane (or the whole tab, when it was the only pane). The pane now
-  drops back to a shell prompt instead, the same as exiting an agent you
-  started by hand in a terminal.
-- **Answer agents from your phone** — the iOS companion gains actionable
-  blocked-agent notifications, native scrollback search, photo-to-pane
-  transfer, and herd controls with a matching terminal theme.
-- **Faithful phone terminal** — panes render at a fixed 80-column grid inside
-  a horizontal scroll view, so wide agent output no longer reflows to
-  phone width.
-- **Bridge over Tailscale** — the companion bridge is exposed through
-  `tailscale serve` and advertises a resolvable Bonjour hostname, so the
-  phone can reach your herd away from home.
+- **Selection auto-scroll at both edges** — drag a selection to the top *or*
+  bottom edge of a terminal and the viewport now scrolls while the selection
+  keeps growing, so you can select past what's on screen. Previously the bottom
+  edge never scrolled (and the top was inconsistent).
+- **The wheel keeps your selection** — scrolling while text is selected now
+  moves the terminal's own scrollback so the highlight stays glued to its text,
+  instead of the running program scrolling out from under the selection.
 
 ### Install
 
