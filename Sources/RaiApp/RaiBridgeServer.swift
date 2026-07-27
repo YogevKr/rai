@@ -10,7 +10,9 @@ import RaiCore
 /// substitute for transport encryption on an untrusted network.
 @MainActor
 final class RaiBridgeServer: ObservableObject {
-    static let defaultPort: UInt16 = 8787
+    // 8787 collided with common dev servers (e.g. bun); 47837 is an uncommon
+    // registered-range port far from the usual suspects.
+    static let defaultPort: UInt16 = 47837
 
     @Published private(set) var isRunning = false
     @Published private(set) var statusMessage: String?

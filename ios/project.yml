@@ -48,3 +48,7 @@ targets:
           - _rai._tcp
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        CFBundleURLTypes:
+          - CFBundleURLName: gr.krig.rai.pair
+            CFBundleURLSchemes:
+              - rai
