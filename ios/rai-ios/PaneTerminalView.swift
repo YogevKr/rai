@@ -52,39 +52,68 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let connection: BridgeConnection
     let send: ([UInt8]) -> Void
 
+    // Render the pane at a faithful fixed width (agent TUIs assume ~80 cols) and
+    // let the user scroll horizontally, rather than reflowing to phone-width and
+    // mangling the layout.
+    static let columns = 80
+    private static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
     func makeCoordinator() -> Coordinator {
         Coordinator(paneID: paneID, connection: connection, send: send)
     }
 
-    func makeUIView(context: Context) -> TerminalView {
-        let view = TerminalView(
-            frame: .zero,
-            font: .monospacedSystemFont(ofSize: 13, weight: .regular)
-        )
-        view.terminalDelegate = context.coordinator
-        view.nativeBackgroundColor = .black
-        view.nativeForegroundColor = .white
-        view.caretColor = .white
-        view.indicatorStyle = .white
+    func makeUIView(context: Context) -> UIScrollView {
+        let terminal = TerminalView(frame: .zero, font: Self.font)
+        terminal.terminalDelegate = context.coordinator
+        terminal.nativeBackgroundColor = .black
+        terminal.nativeForegroundColor = .white
+        terminal.caretColor = .white
+        terminal.indicatorStyle = .white
+        terminal.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.terminal = terminal
+
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak view] data, full in
+            [weak terminal] data, full in
             // A `full` frame starts a fresh stream (initial attach, or a restart
-            // after resize/reconnect). Clear the visible screen and home the
-            // cursor first so stale cells/styles from the previous stream don't
-            // bleed through; scrollback above is preserved.
+            // after resize/reconnect). Clear the visible screen + home the cursor
+            // first so stale cells/styles from the previous stream don't bleed
+            // through; scrollback above is preserved.
             if full {
-                view?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
+                terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
-            view?.feed(byteArray: [UInt8](data)[...])
+            terminal?.feed(byteArray: [UInt8](data)[...])
         }
-        return view
+
+        // Fix the grid to `columns` and host it in a horizontally-scrolling view.
+        // The terminal keeps its own vertical scrollback; the outer scroll view
+        // only moves left/right so wide output is reachable on a narrow screen.
+        let charWidth = ("W" as NSString)
+            .size(withAttributes: [.font: Self.font]).width
+        let terminalWidth = ceil(charWidth * CGFloat(Self.columns)) + 4
+
+        let scroll = UIScrollView()
+        scroll.backgroundColor = .black
+        scroll.showsHorizontalScrollIndicator = true
+        scroll.showsVerticalScrollIndicator = false
+        scroll.alwaysBounceVertical = false
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.addSubview(terminal)
+        NSLayoutConstraint.activate([
+            terminal.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            terminal.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            terminal.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            terminal.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            terminal.widthAnchor.constraint(equalToConstant: terminalWidth),
+            terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+        ])
+        return scroll
     }
 
-    func updateUIView(_ terminal: TerminalView, context: Context) {
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
     }
 
-    static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
+    static func dismantleUIView(_ scroll: UIScrollView, coordinator: Coordinator) {
         if let id = coordinator.frameHandlerID {
             coordinator.connection.removePaneFrameHandler(for: coordinator.paneID, id: id)
         }
@@ -95,6 +124,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         let connection: BridgeConnection
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
+        weak var terminal: TerminalView?
 
         init(
             paneID: String,
@@ -111,11 +141,15 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            // SwiftTerm fires this delegate call on the main thread, but it is a
-            // nonisolated protocol method, so hop onto the main actor explicitly
-            // to touch the @MainActor connection.
+            // Width is fixed to `columns`; only the row count varies with height.
+            // SwiftTerm fires this on the main thread, but it is a nonisolated
+            // protocol method, so hop onto the main actor to touch the connection.
             Task { @MainActor [connection, paneID] in
-                connection.resizePane(paneID: paneID, cols: newCols, rows: newRows)
+                connection.resizePane(
+                    paneID: paneID,
+                    cols: StreamingTerminalView.columns,
+                    rows: newRows
+                )
             }
         }
         func setTerminalTitle(source: TerminalView, title: String) {}

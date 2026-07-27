@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import RaiCore
+import SystemConfiguration
 
 /// Token-authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
@@ -30,8 +31,20 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    /// A hostname the phone can actually resolve over the LAN. The friendly
+    /// computer name (`Host.localizedName`, e.g. "Yogev's MacBook Pro") is NOT a
+    /// valid mDNS host — its spaces and apostrophe break resolution — so use the
+    /// Bonjour LocalHostName ("Yogevs-MacBook-Pro.local").
+    ///
+    /// Tailscale reach is deliberately NOT advertised here: macOS Tailscale runs
+    /// in userspace, so a raw tailnet port isn't reachable without
+    /// `tailscale serve` in front of it (that's how collie exposes its bridge) —
+    /// advertising the bare 100.x address just yields a connection that times out.
     var displayHost: String {
-        let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        if let local = SCDynamicStoreCopyLocalHostName(nil) as String?, !local.isEmpty {
+            return "\(local).local"
+        }
+        let name = ProcessInfo.processInfo.hostName
         return name.hasSuffix(".local") ? name : "\(name).local"
     }
 

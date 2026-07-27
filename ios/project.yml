@@ -37,6 +37,8 @@ targets:
       path: rai-ios/Info.plist
       properties:
         CFBundleDisplayName: rai
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "2"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
