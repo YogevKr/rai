@@ -2,6 +2,10 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
+- **Fix: agents launched from your phone keep their pane** — a v0.1.10
+  regression where an agent started from the iOS companion closed its pane (and
+  a single-pane tab) on exit; it now drops back to a shell prompt like every
+  other launch.
 - **Agent panes outlive their agents** — exiting a coding agent no longer
   closes its pane (or the whole tab, when it was the only pane). The pane now
   drops back to a shell prompt instead, the same as exiting an agent you
