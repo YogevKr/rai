@@ -75,7 +75,7 @@ struct ThemePalette {
     }
 
     static let dark = ThemePalette(colors: [
-        .base: .hex(0x1A1A1A),
+        .base: .hex(0x212121),
         .sidebar: .hex(0x1F1F1F),
         .raised: .hex(0x2C2C2E),
         .bar: .hex(0x1C1C1C),
