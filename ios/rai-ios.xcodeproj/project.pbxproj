@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */; };
+		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
 		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
 		34B948A1A6F5F394B4D3A72C /* PaneTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */; };
 		364263F635053B13874BD7DE /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */; };
@@ -27,6 +28,7 @@
 		3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
 		3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaiIOSApp.swift; sourceTree = "<group>"; };
+		3D076077933E7F528040D0BE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTerminalView.swift; sourceTree = "<group>"; };
 		A94AED5CC385FC1F5FD41FE9 /* rai */ = {isa = PBXFileReference; lastKnownFileType = folder; name = rai; path = ..; sourceTree = SOURCE_ROOT; };
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -69,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				FB1D30390653CB42449AC98C /* AppModel.swift */,
+				3D076077933E7F528040D0BE /* Assets.xcassets */,
 				3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */,
 				2CA038B4352450A677BF46AE /* Info.plist */,
 				310ECD4F2FE845F00F88608F /* MonitorView.swift */,
@@ -100,6 +103,7 @@
 			buildConfigurationList = 26D802174B3A47E6F6518587 /* Build configuration list for PBXNativeTarget "rai-ios" */;
 			buildPhases = (
 				DA30D004E1870956380C78AF /* Sources */,
+				F87C914A6C41FE6371AD066F /* Resources */,
 				CB4AF4E49114F3BD79118C8A /* Frameworks */,
 			);
 			buildRules = (
@@ -125,6 +129,7 @@
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					9D4B90CFDA1D3CD398C07820 = {
+						DevelopmentTeam = T2XB37WVYD;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -150,6 +155,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F87C914A6C41FE6371AD066F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		DA30D004E1870956380C78AF /* Sources */ = {
@@ -179,12 +195,13 @@
 				CODE_SIGN_ENTITLEMENTS = "rai-ios/rai-ios.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T2XB37WVYD;
 				INFOPLIST_FILE = "rai-ios/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = gr.krig.rai.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
 				PRODUCT_NAME = rai;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -263,12 +280,13 @@
 				CODE_SIGN_ENTITLEMENTS = "rai-ios/rai-ios.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = T2XB37WVYD;
 				INFOPLIST_FILE = "rai-ios/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = gr.krig.rai.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
 				PRODUCT_NAME = rai;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;

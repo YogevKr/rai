@@ -1,6 +1,6 @@
 name: rai-ios
 options:
-  bundleIdPrefix: gr.krig.rai
+  bundleIdPrefix: com.whetstone
   deploymentTarget:
     iOS: "17.0"
   xcodeVersion: "16.0"
@@ -20,11 +20,13 @@ targets:
         product: SwiftTerm
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: gr.krig.rai.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.whetstone.rai.ios
         PRODUCT_NAME: rai
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: T2XB37WVYD
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: rai-ios/rai-ios.entitlements
       configs:
         Debug:
@@ -35,6 +37,7 @@ targets:
       path: rai-ios/Info.plist
       properties:
         CFBundleDisplayName: rai
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -52,6 +55,6 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         CFBundleURLTypes:
-          - CFBundleURLName: gr.krig.rai.pair
+          - CFBundleURLName: com.whetstone.rai.pair
             CFBundleURLSchemes:
               - rai
