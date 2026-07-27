@@ -14,7 +14,14 @@ let package = Package(
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0"),
+        // Fork of migueldeicaza/SwiftTerm 1.15.0 with one fix: selection
+        // auto-scroll fires at the bottom edge (upstream derived the trigger
+        // from a clamped hit row, so dragging a selection to the bottom never
+        // scrolled). Branch rai-selection-autoscroll; upstreaming pending.
+        .package(
+            url: "https://github.com/YogevKr/SwiftTerm.git",
+            revision: "4240f21a1b1d601e623f8bbf238d204860d5b08d"
+        ),
     ],
     targets: [
         .target(name: "RaiCore"),
