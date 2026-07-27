@@ -25,6 +25,7 @@ targets:
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: rai-ios/rai-ios.entitlements
       configs:
         Debug:
           CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO

@@ -3,11 +3,16 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
+    @Published var pendingOpenPaneID: String?
     let connection = BridgeConnection()
 
     private let pairingStore = PairingStore()
+    private var deviceToken: String?
 
     init() {
+        connection.didConnect = { [weak self] in
+            self?.registerPushIfPossible()
+        }
         // Testing/automation affordance: pair straight from a launch env var,
         // e.g. `simctl launch --setenv RAI_PAIR_URL "rai://pair?..."`. Harmless
         // in normal use (the var is never set); lets e2e tests skip the QR/UI.
@@ -42,5 +47,20 @@ final class AppModel: ObservableObject {
         connection.disconnect()
         pairingStore.clear()
         pairing = nil
+    }
+
+    func setPushDeviceToken(_ token: String) {
+        deviceToken = token
+        registerPushIfPossible()
+    }
+
+    private func registerPushIfPossible() {
+        guard let deviceToken, connection.status.isConnected else { return }
+        #if DEBUG
+        let environment = "sandbox"
+        #else
+        let environment = "production"
+        #endif
+        connection.registerPush(deviceToken: deviceToken, environment: environment)
     }
 }

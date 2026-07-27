@@ -52,6 +52,24 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
    destination, and Run.
 4. On first launch, grant **Camera** (QR scan) and **Local Network** when asked.
 
+## Push notifications
+
+Push delivery requires an Apple Developer Program membership and a real device:
+
+1. Enroll in the Apple Developer Program.
+2. Enable **Push Notifications** for the `gr.krig.rai.ios` App ID.
+3. Create an APNs Auth Key, download its `.p8` file, and note its Key ID and
+   your developer Team ID.
+4. In rai, open **Settings → iPhone → Push Notifications**, enter the Team ID,
+   Key ID, and paste the `.p8` contents. The bundle ID defaults to
+   `gr.krig.rai.ios`.
+5. Select your Team in Xcode signing, run rai on your iPhone, and grant
+   notification permission.
+
+The same `.p8` authentication key serves both APNs sandbox and production. The
+environment attached to each device token determines which APNs host the Mac
+uses. The private key is stored in the Mac's Keychain, not in preferences.
+
 ## 4. Pair
 
 Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:
@@ -80,6 +98,6 @@ per‑session — fine for testing; real signed device builds persist it.)
 
 ## Status
 
-Working end to end (pair, monitor, live terminal, input). Known follow‑ups: raw
-output streaming for scrollback (currently visible‑screen snapshots), and APNs
-push for "an agent needs you" while backgrounded (needs a relay).
+Working end to end: pair, monitor, raw terminal streaming, input, and native APNs
+push with tap-to-open navigation. Real push delivery remains pending the user's
+Apple Developer enrollment, credentials, signing, and a physical iPhone.

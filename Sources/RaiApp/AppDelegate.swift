@@ -184,14 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func postNotification(
         for transition: PaneStatusTransition,
+        pane: Pane,
         in snapshot: SessionSnapshot
     ) {
-        guard let pane = snapshot.panes.first(where: {
-            $0.paneID == transition.paneID
-        }) else {
-            return
-        }
-
         let content = UNMutableNotificationContent()
         content.title = snapshot.displayName(for: pane)
         content.body = transition.newStatus == .blocked ? "Needs you" : "Finished"
@@ -246,7 +241,21 @@ extension AppDelegate: RaiSnapshotObserver {
 
         guard !model.notificationsMuted else { return }
         for transition in transitions where transition.paneID != model.selectedPaneID {
-            postNotification(for: transition, in: snapshot)
+            guard let pane = snapshot.panes.first(where: {
+                $0.paneID == transition.paneID
+            }) else { continue }
+            let title = snapshot.displayName(for: pane)
+            let body = transition.newStatus == .blocked ? "Needs you" : "Finished"
+            let workspace = snapshot.workspaceLabel(for: pane)
+            postNotification(for: transition, pane: pane, in: snapshot)
+            model.bridgeServer.sendPush(
+                title: title,
+                subtitle: workspace,
+                body: body,
+                paneID: pane.paneID,
+                workspaceID: pane.workspaceID,
+                workspace: workspace
+            )
         }
     }
 }

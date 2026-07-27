@@ -28,6 +28,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var requiresRepair = false
+    var didConnect: (() -> Void)?
 
     var host: String {
         pairing?.host ?? "Mac"
@@ -152,6 +153,18 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func registerPush(deviceToken: String, environment: String) {
+        Task {
+            do {
+                try await send(
+                    .registerPush(deviceToken: deviceToken, environment: environment)
+                )
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
     private func openSocket() {
         guard let pairing, let url = webSocketURL(for: pairing), shouldReconnect else {
             status = .failed(reason: "Invalid bridge address")
@@ -221,6 +234,7 @@ final class BridgeConnection: ObservableObject {
             }
             reconnectAttempt = 0
             status = .connected
+            didConnect?()
             for (paneID, size) in desiredStreams {
                 Task {
                     do {
@@ -248,7 +262,8 @@ final class BridgeConnection: ObservableObject {
         case .event:
             break
         case .hello, .subscribe, .attachStream, .detachStream,
-             .input, .focusPane, .selectPane, .resizePane:
+             .input, .focusPane, .selectPane, .resizePane,
+             .registerPush, .unregisterPush:
             break
         }
     }

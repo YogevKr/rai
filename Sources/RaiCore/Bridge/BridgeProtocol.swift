@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Versioning is independent of herdr's RPC protocol so the Mac and companion
 /// app can negotiate their wire contract without exposing daemon internals.
-public let bridgeProtocolVersion = 2
+public let bridgeProtocolVersion = 3
 
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
@@ -41,6 +41,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case focusPane(paneID: String)
     case selectPane(paneID: String)
     case resizePane(paneID: String, cols: Int, rows: Int)
+    case registerPush(deviceToken: String, environment: String)
+    case unregisterPush(deviceToken: String)
 
     // Server -> client
     case welcome(protocolVersion: Int, sessionName: String?)
@@ -58,11 +60,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case full, seq
         case protocolVersion, sessionName
         case reason, snapshot, event, message
+        case deviceToken, environment
     }
 
     private enum MessageType: String, Codable {
         case hello, subscribe, attachStream, detachStream
         case input, focusPane, selectPane, resizePane
+        case registerPush, unregisterPush
         case welcome, authFailed, snapshot, event, paneFrame, error
     }
 
@@ -98,6 +102,15 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 paneID: try container.decode(String.self, forKey: .paneID),
                 cols: try container.decode(Int.self, forKey: .cols),
                 rows: try container.decode(Int.self, forKey: .rows)
+            )
+        case .registerPush:
+            self = .registerPush(
+                deviceToken: try container.decode(String.self, forKey: .deviceToken),
+                environment: try container.decode(String.self, forKey: .environment)
+            )
+        case .unregisterPush:
+            self = .unregisterPush(
+                deviceToken: try container.decode(String.self, forKey: .deviceToken)
             )
         case .welcome:
             self = .welcome(
@@ -154,6 +167,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(paneID, forKey: .paneID)
             try container.encode(cols, forKey: .cols)
             try container.encode(rows, forKey: .rows)
+        case let .registerPush(deviceToken, environment):
+            try container.encode(MessageType.registerPush, forKey: .type)
+            try container.encode(deviceToken, forKey: .deviceToken)
+            try container.encode(environment, forKey: .environment)
+        case let .unregisterPush(deviceToken):
+            try container.encode(MessageType.unregisterPush, forKey: .type)
+            try container.encode(deviceToken, forKey: .deviceToken)
         case let .welcome(protocolVersion, sessionName):
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)

@@ -32,6 +32,7 @@
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C28A9944E5B3DBD0E0B55C06 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		DD164C96454BB5CAE0E70FAD /* rai-ios.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "rai-ios.entitlements"; sourceTree = "<group>"; };
 		FB1D30390653CB42449AC98C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -75,6 +76,7 @@
 				DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */,
 				4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */,
 				3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */,
+				DD164C96454BB5CAE0E70FAD /* rai-ios.entitlements */,
 				3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */,
 				C28A9944E5B3DBD0E0B55C06 /* RootView.swift */,
 			);
@@ -174,6 +176,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				CODE_SIGN_ENTITLEMENTS = "rai-ios/rai-ios.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				INFOPLIST_FILE = "rai-ios/Info.plist";
@@ -257,6 +260,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				CODE_SIGN_ENTITLEMENTS = "rai-ios/rai-ios.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				INFOPLIST_FILE = "rai-ios/Info.plist";

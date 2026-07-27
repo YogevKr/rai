@@ -2,10 +2,12 @@ import RaiCore
 import SwiftUI
 
 struct MonitorView: View {
-    @ObservedObject var connection: BridgeConnection
+    @ObservedObject var appModel: AppModel
     let forgetPairing: () -> Void
     @State private var path: [String] = []
     @State private var didAutoOpen = false
+
+    private var connection: BridgeConnection { appModel.connection }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -27,9 +29,14 @@ struct MonitorView: View {
             }
             .onChange(of: connection.snapshot?.panes.map(\.paneID) ?? []) { _, panes in
                 autoOpenIfRequested(panes: panes)
+                openPendingPush(panes: panes)
+            }
+            .onChange(of: appModel.pendingOpenPaneID) { _, _ in
+                openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
             .onAppear {
                 autoOpenIfRequested(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
+                openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
             .navigationTitle("rai")
             .toolbar {
@@ -90,6 +97,14 @@ struct MonitorView: View {
         else { return }
         didAutoOpen = true
         path.append(target)
+    }
+
+    private func openPendingPush(panes: [String]) {
+        guard let paneID = appModel.pendingOpenPaneID, panes.contains(paneID) else { return }
+        if path.last != paneID {
+            path.append(paneID)
+        }
+        appModel.pendingOpenPaneID = nil
     }
 
     @ViewBuilder

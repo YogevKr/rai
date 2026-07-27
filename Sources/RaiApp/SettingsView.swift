@@ -262,15 +262,21 @@ struct SettingsView: View {
 
 private struct CompanionSettingsView: View {
     @ObservedObject private var server: RaiBridgeServer
+    @ObservedObject private var apnsSettings: APNsSettings
     @State private var isRegenerateConfirmationPresented = false
+    @State private var keyP8Draft: String
+    @State private var keyP8Error: String?
 
     init(model: RaiModel) {
         server = model.bridgeServer
+        apnsSettings = model.bridgeServer.apnsSettings
+        _keyP8Draft = State(initialValue: model.bridgeServer.apnsSettings.keyP8)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(title: "Companion Bridge") {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Companion Bridge") {
                 VStack(alignment: .leading, spacing: 14) {
                     Toggle(
                         "Allow iPhone connections",
@@ -339,9 +345,70 @@ private struct CompanionSettingsView: View {
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.textPrimary)
-            }
+                }
 
-            Spacer()
+                SettingsSection(title: "Push Notifications") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            pushField("Team ID", text: $apnsSettings.teamID)
+                            pushField("Key ID", text: $apnsSettings.keyID)
+                        }
+                        HStack(spacing: 12) {
+                            pushField("Bundle ID", text: $apnsSettings.bundleID)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Default environment")
+                                    .foregroundStyle(Theme.textTertiary)
+                                Picker("", selection: $apnsSettings.defaultEnvironment) {
+                                    Text("Sandbox").tag("sandbox")
+                                    Text("Production").tag("production")
+                                }
+                                .labelsHidden()
+                            }
+                        }
+                        Text("APNs Auth Key (.p8 PEM)")
+                            .foregroundStyle(Theme.textTertiary)
+                        TextEditor(text: $keyP8Draft)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .frame(height: 100)
+                            .scrollContentBackground(.hidden)
+                            .padding(5)
+                            .background(Theme.raised)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Theme.hairline)
+                            }
+                        HStack {
+                            Button("Save Auth Key") {
+                                do {
+                                    try apnsSettings.setKeyP8(keyP8Draft)
+                                    keyP8Error = nil
+                                } catch {
+                                    keyP8Error = error.localizedDescription
+                                }
+                            }
+                            Text(
+                                apnsSettings.isConfigured
+                                    ? "Configured · \(server.registeredPushDeviceCount) device(s) registered"
+                                    : "Not configured"
+                            )
+                            .foregroundStyle(
+                                apnsSettings.isConfigured
+                                    ? Theme.status(.done)
+                                    : Theme.textTertiary
+                            )
+                            if let keyP8Error {
+                                Text(keyP8Error)
+                                    .foregroundStyle(Theme.status(.blocked))
+                            }
+                        }
+                        Text("The private key is stored in the macOS Keychain.")
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
+                }
+            }
         }
         .settingsTabBackground()
         .alert("Regenerate Pairing Token?", isPresented: $isRegenerateConfirmationPresented) {
@@ -352,6 +419,16 @@ private struct CompanionSettingsView: View {
         } message: {
             Text("All connected companion devices will be disconnected and must pair again.")
         }
+    }
+
+    private func pushField(_ label: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .foregroundStyle(Theme.textTertiary)
+            TextField(label, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func companionValue(label: String, value: String) -> some View {

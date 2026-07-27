@@ -18,6 +18,9 @@ final class RaiBridgeServer: ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var connectedDeviceCount = 0
     @Published private(set) var pairingToken: String
+    @Published private(set) var registeredPushDeviceCount = 0
+
+    let apnsSettings: APNsSettings
 
     var isEnabled: Bool {
         get { userDefaults.bool(forKey: Self.enabledKey) }
@@ -56,22 +59,35 @@ final class RaiBridgeServer: ObservableObject {
 
     private static let enabledKey = "companionBridgeEnabled"
     private static let tokenKey = "companionBridgePairingToken"
+    private static let pushRegistrationsKey = "companionBridgePushRegistrations"
     private unowned let model: RaiModel
     private let userDefaults: UserDefaults
     private let queue = DispatchQueue(label: "ai.sawmills.rai.bridge")
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
+    private var pushRegistrations: Set<PushRegistration> = []
+    private let apnsPusher = APNsPusher()
 
-    init(model: RaiModel, userDefaults: UserDefaults = .standard) {
+    init(
+        model: RaiModel,
+        userDefaults: UserDefaults = .standard,
+        apnsSettings: APNsSettings? = nil
+    ) {
         self.model = model
         self.userDefaults = userDefaults
+        self.apnsSettings = apnsSettings ?? .shared
         if let saved = userDefaults.string(forKey: Self.tokenKey), !saved.isEmpty {
             pairingToken = saved
         } else {
             let token = Self.makeToken()
             pairingToken = token
             userDefaults.set(token, forKey: Self.tokenKey)
+        }
+        if let data = userDefaults.data(forKey: Self.pushRegistrationsKey),
+           let saved = try? JSONDecoder().decode(Set<PushRegistration>.self, from: data) {
+            pushRegistrations = saved
+            registeredPushDeviceCount = saved.count
         }
     }
 
@@ -150,6 +166,51 @@ final class RaiBridgeServer: ObservableObject {
 
     func relay(snapshot: SessionSnapshot) {
         broadcast(.snapshot(snapshot), onlyToSubscribers: true)
+    }
+
+    func sendPush(
+        title: String,
+        subtitle: String?,
+        body: String,
+        paneID: String,
+        workspaceID: String,
+        workspace: String?
+    ) {
+        let configuration = apnsSettings.configuration
+        let registrations = pushRegistrations
+        guard configuration.isConfigured, !registrations.isEmpty else { return }
+        let pusher = apnsPusher
+
+        let delivery = Task.detached {
+            await withTaskGroup(of: String?.self, returning: [String].self) { group in
+                for registration in registrations {
+                    group.addTask {
+                        let result = await pusher.send(
+                            configuration: configuration,
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            title: title,
+                            subtitle: subtitle,
+                            body: body,
+                            paneID: paneID,
+                            workspaceID: workspaceID,
+                            workspace: workspace
+                        )
+                        return result == .deadToken ? registration.deviceToken : nil
+                    }
+                }
+                var deadTokens: [String] = []
+                for await deadToken in group {
+                    if let deadToken { deadTokens.append(deadToken) }
+                }
+                return deadTokens
+            }
+        }
+        Task { [weak self] in
+            for deadToken in await delivery.value {
+                self?.removePushRegistration(deviceToken: deadToken)
+            }
+        }
     }
 
     private func listenerDidChange(_ state: NWListener.State) {
@@ -287,6 +348,21 @@ final class RaiBridgeServer: ObservableObject {
             let clientID = ObjectIdentifier(client.connection)
             guard observeStreams[clientID]?[paneID] != nil else { return }
             startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
+        case let .registerPush(deviceToken, environment):
+            guard environment == "sandbox" || environment == "production" else {
+                send(.error(message: "Push environment must be sandbox or production."), to: client)
+                return
+            }
+            let normalizedToken = deviceToken.lowercased()
+            guard normalizedToken.count == 64,
+                  normalizedToken.allSatisfy(\.isHexDigit)
+            else {
+                send(.error(message: "Push device token must be 64 hexadecimal characters."), to: client)
+                return
+            }
+            registerPush(deviceToken: normalizedToken, environment: environment)
+        case let .unregisterPush(deviceToken):
+            removePushRegistration(deviceToken: deviceToken.lowercased())
         case .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
         case .welcome, .authFailed, .snapshot, .event, .paneFrame, .error:
@@ -465,9 +541,35 @@ final class RaiBridgeServer: ObservableObject {
         connectedDeviceCount = clients.values.lazy.filter(\.isAuthenticated).count
     }
 
+    private func registerPush(deviceToken: String, environment: String) {
+        pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
+        pushRegistrations.insert(.init(deviceToken: deviceToken, environment: environment))
+        persistPushRegistrations()
+    }
+
+    private func removePushRegistration(deviceToken: String) {
+        let oldCount = pushRegistrations.count
+        pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
+        if pushRegistrations.count != oldCount {
+            persistPushRegistrations()
+        }
+    }
+
+    private func persistPushRegistrations() {
+        if let data = try? JSONEncoder().encode(pushRegistrations) {
+            userDefaults.set(data, forKey: Self.pushRegistrationsKey)
+        }
+        registeredPushDeviceCount = pushRegistrations.count
+    }
+
     private static func makeToken() -> String {
         UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
+}
+
+private struct PushRegistration: Codable, Hashable, Sendable {
+    let deviceToken: String
+    let environment: String
 }
 
 private struct ObserveFrame: Decodable {

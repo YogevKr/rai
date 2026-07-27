@@ -25,6 +25,8 @@ final class BridgeProtocolTests: XCTestCase {
             .focusPane(paneID: "pane-1"),
             .selectPane(paneID: "pane-1"),
             .resizePane(paneID: "pane-1", cols: 120, rows: 40),
+            .registerPush(deviceToken: "012345abcdef", environment: "sandbox"),
+            .unregisterPush(deviceToken: "012345abcdef"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
             .authFailed(reason: "Invalid pairing token"),
