@@ -1,4 +1,6 @@
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import RaiCore
 import SwiftUI
 
@@ -221,6 +223,11 @@ struct SettingsView: View {
                     Label("Herdr Server", systemImage: "server.rack")
                 }
 
+            CompanionSettingsView(model: model)
+                .tabItem {
+                    Label("iPhone", systemImage: "iphone")
+                }
+
             PluginsSettingsView(model: model)
                 .tabItem {
                     Label("Plugins", systemImage: "puzzlepiece.extension")
@@ -250,6 +257,127 @@ struct SettingsView: View {
         .onChange(of: colorScheme) { _, value in
             settings.updateSystemColorScheme(value)
         }
+    }
+}
+
+private struct CompanionSettingsView: View {
+    @ObservedObject private var server: RaiBridgeServer
+    @State private var isRegenerateConfirmationPresented = false
+
+    init(model: RaiModel) {
+        server = model.bridgeServer
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsSection(title: "Companion Bridge") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle(
+                        "Allow iPhone connections",
+                        isOn: Binding(
+                            get: { server.isEnabled },
+                            set: { server.isEnabled = $0 }
+                        )
+                    )
+                    .toggleStyle(.switch)
+
+                    Text(
+                        "V1 uses token authentication over WebSocket. "
+                            + "Connect only over a trusted LAN or Tailscale network."
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+
+                    if server.isEnabled {
+                        Divider().overlay(Theme.hairline)
+                        HStack(alignment: .top, spacing: 24) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                companionValue(
+                                    label: "Address",
+                                    value: "\(server.displayHost):\(server.port)"
+                                )
+                                companionValue(label: "Pairing token", value: server.pairingToken)
+                                companionValue(
+                                    label: "Connected",
+                                    value: "\(server.connectedDeviceCount) device"
+                                        + (server.connectedDeviceCount == 1 ? "" : "s")
+                                )
+                                if let status = server.statusMessage {
+                                    Text(status)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.status(.blocked))
+                                } else if server.isRunning {
+                                    Text("Listening and advertised as _rai._tcp.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.status(.done))
+                                } else {
+                                    Text("Starting bridge…")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                                Button("Regenerate Token", role: .destructive) {
+                                    isRegenerateConfirmationPresented = true
+                                }
+                            }
+
+                            Spacer()
+                            if let url = server.pairingURL,
+                               let image = CompanionQRCode.image(for: url.absoluteString) {
+                                VStack(spacing: 8) {
+                                    Image(nsImage: image)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .frame(width: 180, height: 180)
+                                        .accessibilityLabel("Companion pairing QR code")
+                                    Text("Scan with rai for iPhone")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textPrimary)
+            }
+
+            Spacer()
+        }
+        .settingsTabBackground()
+        .alert("Regenerate Pairing Token?", isPresented: $isRegenerateConfirmationPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Regenerate", role: .destructive) {
+                server.regenerateToken()
+            }
+        } message: {
+            Text("All connected companion devices will be disconnected and must pair again.")
+        }
+    }
+
+    private func companionValue(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .foregroundStyle(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private enum CompanionQRCode {
+    static func image(for value: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(value.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: 180, height: 180))
     }
 }
 

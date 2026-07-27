@@ -6,8 +6,10 @@ let package = Package(
     name: "rai",
     platforms: [
         .macOS(.v14),
+        .iOS(.v17),
     ],
     products: [
+        .library(name: "RaiCore", targets: ["RaiCore"]),
         .executable(name: "rai", targets: ["RaiApp"]),
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
     ],

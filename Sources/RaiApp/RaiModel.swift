@@ -195,6 +195,7 @@ final class RaiModel: ObservableObject {
 
     private(set) var client: HerdrClient
     let terminalPool: TerminalPool
+    lazy var bridgeServer = RaiBridgeServer(model: self, userDefaults: userDefaults)
 
     weak var snapshotObserver: RaiSnapshotObserver?
 
@@ -357,6 +358,7 @@ final class RaiModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        bridgeServer.startIfEnabled()
         let attemptID = UUID()
         connectionAttemptID = attemptID
 
@@ -372,6 +374,7 @@ final class RaiModel: ObservableObject {
     }
 
     func shutdown() {
+        bridgeServer.stop()
         tearDownCurrentConnection(stopRemote: true)
     }
 
@@ -1519,6 +1522,7 @@ final class RaiModel: ObservableObject {
         pendingEvents.removeAll(keepingCapacity: true)
         flushTask = nil
         guard !events.isEmpty else { return }
+        bridgeServer.relay(events: events)
 
         // The terminal content itself is rendered by each pane's attach process,
         // so we only need to re-snapshot on structural changes (create/close/move/
@@ -1581,6 +1585,7 @@ final class RaiModel: ObservableObject {
                 didRefresh: newSnapshot,
                 transitions: transitions
             )
+            bridgeServer.relay(snapshot: newSnapshot)
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)

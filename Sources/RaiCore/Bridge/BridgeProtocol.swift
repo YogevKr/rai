@@ -1,0 +1,157 @@
+import Foundation
+
+/// Version of rai's WebSocket bridge protocol.
+///
+/// Versioning is independent of herdr's RPC protocol so the Mac and companion
+/// app can negotiate their wire contract without exposing daemon internals.
+public let bridgeProtocolVersion = 1
+
+public struct ClientInfo: Codable, Equatable, Sendable {
+    public let deviceID: String
+    public let name: String
+    public let platform: String
+
+    public init(deviceID: String, name: String, platform: String) {
+        self.deviceID = deviceID
+        self.name = name
+        self.platform = platform
+    }
+}
+
+public struct BridgeEvent: Codable, Equatable, Sendable {
+    public let name: String
+    public let payload: [String: JSONValue]
+
+    public init(name: String, payload: [String: JSONValue] = [:]) {
+        self.name = name
+        self.payload = payload
+    }
+}
+
+/// One discriminated envelope is used in both directions. A flat `type` field
+/// keeps frames easy to inspect and permits clients in languages other than
+/// Swift without relying on Swift enum synthesis.
+public enum BridgeMessage: Codable, Equatable, Sendable {
+    // Client -> server
+    case hello(token: String, client: ClientInfo)
+    case subscribe
+    case input(paneID: String, bytesBase64: String)
+    case focusPane(paneID: String)
+    case selectPane(paneID: String)
+    case resizePane(paneID: String, cols: Int, rows: Int)
+
+    // Server -> client
+    case welcome(protocolVersion: Int, sessionName: String?)
+    case authFailed(reason: String)
+    case snapshot(SessionSnapshot)
+    case event(BridgeEvent)
+    case paneOutput(paneID: String, bytesBase64: String)
+    case error(message: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case token, client
+        case paneID, bytesBase64
+        case cols, rows
+        case protocolVersion, sessionName
+        case reason, snapshot, event, message
+    }
+
+    private enum MessageType: String, Codable {
+        case hello, subscribe, input, focusPane, selectPane, resizePane
+        case welcome, authFailed, snapshot, event, paneOutput, error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(MessageType.self, forKey: .type) {
+        case .hello:
+            self = .hello(
+                token: try container.decode(String.self, forKey: .token),
+                client: try container.decode(ClientInfo.self, forKey: .client)
+            )
+        case .subscribe:
+            self = .subscribe
+        case .input:
+            self = .input(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
+            )
+        case .focusPane:
+            self = .focusPane(paneID: try container.decode(String.self, forKey: .paneID))
+        case .selectPane:
+            self = .selectPane(paneID: try container.decode(String.self, forKey: .paneID))
+        case .resizePane:
+            self = .resizePane(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                cols: try container.decode(Int.self, forKey: .cols),
+                rows: try container.decode(Int.self, forKey: .rows)
+            )
+        case .welcome:
+            self = .welcome(
+                protocolVersion: try container.decode(Int.self, forKey: .protocolVersion),
+                sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
+            )
+        case .authFailed:
+            self = .authFailed(reason: try container.decode(String.self, forKey: .reason))
+        case .snapshot:
+            self = .snapshot(try container.decode(SessionSnapshot.self, forKey: .snapshot))
+        case .event:
+            self = .event(try container.decode(BridgeEvent.self, forKey: .event))
+        case .paneOutput:
+            self = .paneOutput(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
+            )
+        case .error:
+            self = .error(message: try container.decode(String.self, forKey: .message))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .hello(token, client):
+            try container.encode(MessageType.hello, forKey: .type)
+            try container.encode(token, forKey: .token)
+            try container.encode(client, forKey: .client)
+        case .subscribe:
+            try container.encode(MessageType.subscribe, forKey: .type)
+        case let .input(paneID, bytesBase64):
+            try container.encode(MessageType.input, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(bytesBase64, forKey: .bytesBase64)
+        case let .focusPane(paneID):
+            try container.encode(MessageType.focusPane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+        case let .selectPane(paneID):
+            try container.encode(MessageType.selectPane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+        case let .resizePane(paneID, cols, rows):
+            try container.encode(MessageType.resizePane, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(cols, forKey: .cols)
+            try container.encode(rows, forKey: .rows)
+        case let .welcome(protocolVersion, sessionName):
+            try container.encode(MessageType.welcome, forKey: .type)
+            try container.encode(protocolVersion, forKey: .protocolVersion)
+            try container.encodeIfPresent(sessionName, forKey: .sessionName)
+        case let .authFailed(reason):
+            try container.encode(MessageType.authFailed, forKey: .type)
+            try container.encode(reason, forKey: .reason)
+        case let .snapshot(snapshot):
+            try container.encode(MessageType.snapshot, forKey: .type)
+            try container.encode(snapshot, forKey: .snapshot)
+        case let .event(event):
+            try container.encode(MessageType.event, forKey: .type)
+            try container.encode(event, forKey: .event)
+        case let .paneOutput(paneID, bytesBase64):
+            try container.encode(MessageType.paneOutput, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(bytesBase64, forKey: .bytesBase64)
+        case let .error(message):
+            try container.encode(MessageType.error, forKey: .type)
+            try container.encode(message, forKey: .message)
+        }
+    }
+}
