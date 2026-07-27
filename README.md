@@ -184,6 +184,7 @@ Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
 Tests/RaiCoreTests unit tests
 scripts/bundle.sh  builds and installs Rai.app
 poc/               reference Python herdr socket client
+docs/ios.md        iOS companion app — build, run on device, pairing
 docs/TESTING.md    build, screenshot, and safe end-to-end verification workflow
 docs/ROADMAP.md    herdr API coverage + build plan
 ```
