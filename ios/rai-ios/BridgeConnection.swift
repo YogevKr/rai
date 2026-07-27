@@ -30,6 +30,10 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var paneOutputs: [String: Data] = [:]
     @Published private(set) var requiresRepair = false
 
+    var host: String {
+        pairing?.host ?? "Mac"
+    }
+
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -61,6 +65,18 @@ final class BridgeConnection: ObservableObject {
         shouldReconnect = true
         requiresRepair = false
         openSocket()
+    }
+
+    func refreshSnapshot() async {
+        guard status.isConnected else {
+            retryNow()
+            return
+        }
+        do {
+            try await send(.subscribe)
+        } catch {
+            handleSocketFailure(error)
+        }
     }
 
     func openPane(paneID: String) {

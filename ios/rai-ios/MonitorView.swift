@@ -9,19 +9,13 @@ struct MonitorView: View {
         NavigationStack {
             Group {
                 if let snapshot = connection.snapshot {
-                    herdList(snapshot)
-                } else {
-                    ContentUnavailableView {
-                        Label("Waiting for the herd", systemImage: "antenna.radiowaves.left.and.right")
-                    } description: {
-                        Text(connection.status.label)
-                    } actions: {
-                        if connection.requiresRepair {
-                            Button("Pair Again", action: forgetPairing)
-                        } else if !connection.status.isConnected {
-                            Button("Reconnect") { connection.retryNow() }
-                        }
+                    if connection.status.isConnected, snapshot.panes.isEmpty {
+                        emptyHerdState
+                    } else {
+                        herdList(snapshot)
                     }
+                } else {
+                    snapshotlessState
                 }
             }
             .navigationTitle("rai")
@@ -73,8 +67,84 @@ struct MonitorView: View {
         )
     }
 
+    @ViewBuilder
+    private var snapshotlessState: some View {
+        switch connection.status {
+        case .connecting:
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Connecting to \(connection.host)…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .connected:
+            emptyHerdState
+        case let .failed(reason):
+            failureState(reason: reason)
+        case .disconnected:
+            ContentUnavailableView {
+                Label("Disconnected", systemImage: "wifi.slash")
+            } actions: {
+                Button("Reconnect") { connection.retryNow() }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No agents running", systemImage: "rectangle.stack")
+        } description: {
+            Text("Your herd will appear here when agents start.")
+        }
+    }
+
+    private var emptyHerdState: some View {
+        ScrollView {
+            emptyState
+                .frame(maxWidth: .infinity)
+                .padding(.top, 120)
+        }
+        .refreshable { await connection.refreshSnapshot() }
+    }
+
+    private func failureState(reason: String) -> some View {
+        ContentUnavailableView {
+            Label("Connection failed", systemImage: "wifi.exclamationmark")
+        } description: {
+            Text(reason)
+        } actions: {
+            if connection.requiresRepair {
+                Button("Pair Again", action: forgetPairing)
+            } else {
+                Button("Reconnect") { connection.retryNow() }
+            }
+        }
+    }
+
     private func herdList(_ snapshot: SessionSnapshot) -> some View {
         List {
+            let needsYou = needsYouAgents(in: snapshot)
+            if !needsYou.isEmpty {
+                Section {
+                    ForEach(needsYou) { item in
+                        NavigationLink {
+                            PaneTerminalView(pane: item.pane, connection: connection)
+                        } label: {
+                            NeedsYouRow(item: item)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Needs you")
+                        Spacer()
+                        Text("\(needsYou.count) need you")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
+                    }
+                }
+            }
+
             ForEach(snapshot.workspaces) { workspace in
                 Section {
                     let tabs = snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
@@ -95,7 +165,57 @@ struct MonitorView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .refreshable { connection.retryNow() }
+        .refreshable { await connection.refreshSnapshot() }
+    }
+
+    private func needsYouAgents(in snapshot: SessionSnapshot) -> [NeedsYouAgent] {
+        let workspaces = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map { ($0.workspaceID, $0) })
+        let tabs = Dictionary(uniqueKeysWithValues: snapshot.tabs.map { ($0.tabID, $0) })
+
+        return snapshot.panes.compactMap { pane in
+            guard pane.agentStatus == .blocked || pane.agentStatus == .done,
+                  let workspace = workspaces[pane.workspaceID],
+                  let tab = tabs[pane.tabID] else {
+                return nil
+            }
+            return NeedsYouAgent(pane: pane, workspace: workspace, tab: tab)
+        }
+    }
+}
+
+private struct NeedsYouAgent: Identifiable {
+    let pane: Pane
+    let workspace: Workspace
+    let tab: HerdrTab
+
+    var id: String { pane.paneID }
+}
+
+private struct NeedsYouRow: View {
+    let item: NeedsYouAgent
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.pane.agent ?? item.pane.terminalTitleStripped ?? "Pane")
+                    .font(.headline)
+                Text("\(workspaceLabel) · \(tabLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            StatusPill(status: item.pane.agentStatus)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var workspaceLabel: String {
+        item.workspace.label.isEmpty ? "Space \(item.workspace.number)" : item.workspace.label
+    }
+
+    private var tabLabel: String {
+        item.tab.label.isEmpty ? "Tab \(item.tab.number)" : item.tab.label
     }
 }
 
