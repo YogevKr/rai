@@ -80,25 +80,29 @@ jobs:
             --title "rai ${{ steps.v.outputs.version }}" \
             --notes-file .github/release-notes.md
 
-      # Keep the Homebrew cask in lockstep with the release. Needs a PAT with
-      # contents:write on YogevKr/homebrew-tap, stored as the HOMEBREW_TAP_TOKEN
-      # secret (the default GITHUB_TOKEN can't push to another repo). If the
+      # Keep the Homebrew cask in lockstep with the release. Pushes with a
+      # write deploy key on YogevKr/homebrew-tap, stored as the
+      # HOMEBREW_TAP_DEPLOY_KEY secret (the default GITHUB_TOKEN can't push to
+      # another repo, and deploy keys never expire the way PATs do). If the
       # secret is absent the step just prints the sha256 and skips, so a release
-      # never fails on a missing token — you can still bump the cask by hand.
+      # never fails on a missing key — you can still bump the cask by hand.
       - name: Update Homebrew cask
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           VER="${{ steps.v.outputs.version }}"
           DMG="dist/Rai-${VER}-macos.dmg"
           SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
           echo "Rai-${VER}-macos.dmg sha256=${SHA}"
-          if [ -z "${TAP_TOKEN}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping cask bump. Bump manually to version ${VER}, sha256 ${SHA}."
+          if [ -z "${TAP_DEPLOY_KEY}" ]; then
+            echo "::warning::HOMEBREW_TAP_DEPLOY_KEY not set — skipping cask bump. Bump manually to version ${VER}, sha256 ${SHA}."
             exit 0
           fi
-          git clone --depth 1 \
-            "https://x-access-token:${TAP_TOKEN}@github.com/YogevKr/homebrew-tap.git" tap
+          KEY="$RUNNER_TEMP/tap_deploy_key"
+          printf '%s\n' "${TAP_DEPLOY_KEY}" > "$KEY"
+          chmod 600 "$KEY"
+          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:YogevKr/homebrew-tap.git tap
           cd tap
           sed -i '' -E "s/^([[:space:]]*version )\"[^\"]*\"/\1\"${VER}\"/" Casks/rai.rb
           sed -i '' -E "s/^([[:space:]]*sha256 )\"[^\"]*\"/\1\"${SHA}\"/" Casks/rai.rb
