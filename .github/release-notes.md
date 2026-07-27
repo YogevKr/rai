@@ -2,12 +2,19 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **One continuous dark surface** — the dark theme's window base now matches the
-  terminal background, so the strip above the panes and the gutter under the
-  sidebar no longer read as a darker band.
-- **iOS companion: TestFlight-ready project** — the `ios/` app moved to the
-  `com.whetstone` bundle prefix with automatic signing, gained an app icon, and
-  declares the export-compliance exemption needed for TestFlight uploads.
+- **Agent panes outlive their agents** — exiting a coding agent no longer
+  closes its pane (or the whole tab, when it was the only pane). The pane now
+  drops back to a shell prompt instead, the same as exiting an agent you
+  started by hand in a terminal.
+- **Answer agents from your phone** — the iOS companion gains actionable
+  blocked-agent notifications, native scrollback search, photo-to-pane
+  transfer, and herd controls with a matching terminal theme.
+- **Faithful phone terminal** — panes render at a fixed 80-column grid inside
+  a horizontal scroll view, so wide agent output no longer reflows to
+  phone width.
+- **Bridge over Tailscale** — the companion bridge is exposed through
+  `tailscale serve` and advertises a resolvable Bonjour hostname, so the
+  phone can reach your herd away from home.
 
 ### Install
 
