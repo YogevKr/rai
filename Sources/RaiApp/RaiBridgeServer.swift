@@ -147,6 +147,11 @@ final class RaiBridgeServer: ObservableObject {
         }
         clients.removeAll()
         connectedDeviceCount = 0
+        // Revoking bridge access must also revoke push delivery: a device that
+        // can no longer connect (its token no longer matches) would otherwise
+        // keep receiving pane names, workspace labels, and status pushes.
+        pushRegistrations.removeAll()
+        persistPushRegistrations()
     }
 
     func relay(events: [HerdrEvent]) {

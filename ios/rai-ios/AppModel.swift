@@ -44,7 +44,16 @@ final class AppModel: ObservableObject {
     }
 
     func forgetPairing() {
-        connection.disconnect()
+        // Revoke push delivery on the Mac before dropping the socket, otherwise
+        // it keeps this device registered and notifying after the user has
+        // explicitly forgotten the pairing.
+        let token = deviceToken
+        Task {
+            if let token, connection.status.isConnected {
+                await connection.unregisterPush(deviceToken: token)
+            }
+            connection.disconnect()
+        }
         pairingStore.clear()
         pairing = nil
     }
@@ -56,11 +65,40 @@ final class AppModel: ObservableObject {
 
     private func registerPushIfPossible() {
         guard let deviceToken, connection.status.isConnected else { return }
-        #if DEBUG
-        let environment = "sandbox"
-        #else
-        let environment = "production"
-        #endif
-        connection.registerPush(deviceToken: deviceToken, environment: environment)
+        connection.registerPush(
+            deviceToken: deviceToken,
+            environment: Self.apnsEnvironment
+        )
     }
+
+    /// The APNs token's environment is fixed by the signed `aps-environment`
+    /// entitlement, not the build configuration — a Release build run from Xcode
+    /// on a development profile still gets a *sandbox* token. Read it from the
+    /// embedded provisioning profile; fall back to the build config when there
+    /// is no profile (e.g. the simulator).
+    static let apnsEnvironment: String = {
+        if let url = Bundle.main.url(
+            forResource: "embedded",
+            withExtension: "mobileprovision"
+        ),
+           let data = try? Data(contentsOf: url),
+           let raw = String(data: data, encoding: .ascii),
+           let start = raw.range(of: "<plist"),
+           let end = raw.range(of: "</plist>"),
+           let plistData = String(raw[start.lowerBound..<end.upperBound])
+               .data(using: .utf8),
+           let plist = try? PropertyListSerialization.propertyList(
+               from: plistData, format: nil
+           ) as? [String: Any],
+           let entitlements = plist["Entitlements"] as? [String: Any],
+           let aps = entitlements["aps-environment"] as? String {
+            // Entitlement values are "development" or "production".
+            return aps == "production" ? "production" : "sandbox"
+        }
+        #if DEBUG
+        return "sandbox"
+        #else
+        return "production"
+        #endif
+    }()
 }

@@ -165,6 +165,12 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    /// Best-effort unregister on the still-open socket. Awaited so callers can
+    /// flush it before tearing the connection down (e.g. forgetting a pairing).
+    func unregisterPush(deviceToken: String) async {
+        try? await send(.unregisterPush(deviceToken: deviceToken))
+    }
+
     private func openSocket() {
         guard let pairing, let url = webSocketURL(for: pairing), shouldReconnect else {
             status = .failed(reason: "Invalid bridge address")
