@@ -10,8 +10,9 @@ struct PaneTerminalView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SnapshotTerminalView(
-                snapshot: connection.paneOutputs[pane.paneID],
+            StreamingTerminalView(
+                paneID: pane.paneID,
+                connection: connection,
                 send: { connection.sendInput($0, to: pane.paneID) }
             )
             .background(Color.black)
@@ -36,6 +37,7 @@ struct PaneTerminalView: View {
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { connection.openPane(paneID: pane.paneID) }
+        .onDisappear { connection.closePane(paneID: pane.paneID) }
     }
 
     private func sendComposedLine() {
@@ -45,12 +47,13 @@ struct PaneTerminalView: View {
     }
 }
 
-private struct SnapshotTerminalView: UIViewRepresentable {
-    let snapshot: Data?
+private struct StreamingTerminalView: UIViewRepresentable {
+    let paneID: String
+    let connection: BridgeConnection
     let send: ([UInt8]) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(send: send)
+        Coordinator(paneID: paneID, connection: connection, send: send)
     }
 
     func makeUIView(context: Context) -> TerminalView {
@@ -63,29 +66,37 @@ private struct SnapshotTerminalView: UIViewRepresentable {
         view.nativeForegroundColor = .white
         view.caretColor = .white
         view.indicatorStyle = .white
+        context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
+            [weak view] data in
+            let bytes = [UInt8](data)
+            view?.feed(byteArray: bytes[...])
+        }
         return view
     }
 
     func updateUIView(_ terminal: TerminalView, context: Context) {
         context.coordinator.send = send
-        guard let snapshot, snapshot != context.coordinator.lastSnapshot else { return }
-        context.coordinator.lastSnapshot = snapshot
+    }
 
-        // Bridge paneOutput frames are full visible-screen snapshots, not stream
-        // chunks. V1 clears and homes before feeding each ANSI snapshot so the
-        // phone mirrors herdr. A future raw-output relay can render incrementally
-        // and preserve real terminal scrollback.
-        let clearAndHome: [UInt8] = [0x1B, 0x5B, 0x32, 0x4A, 0x1B, 0x5B, 0x48]
-        terminal.feed(byteArray: clearAndHome[...])
-        let snapshotBytes = [UInt8](snapshot)
-        terminal.feed(byteArray: snapshotBytes[...])
+    static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
+        if let id = coordinator.frameHandlerID {
+            coordinator.connection.removePaneFrameHandler(for: coordinator.paneID, id: id)
+        }
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
+        let paneID: String
+        let connection: BridgeConnection
         var send: ([UInt8]) -> Void
-        var lastSnapshot: Data?
+        var frameHandlerID: UUID?
 
-        init(send: @escaping ([UInt8]) -> Void) {
+        init(
+            paneID: String,
+            connection: BridgeConnection,
+            send: @escaping ([UInt8]) -> Void
+        ) {
+            self.paneID = paneID
+            self.connection = connection
             self.send = send
         }
 
@@ -93,7 +104,9 @@ private struct SnapshotTerminalView: UIViewRepresentable {
             send(Array(data))
         }
 
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+            connection.resizePane(paneID: paneID, cols: newCols, rows: newRows)
+        }
         func setTerminalTitle(source: TerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         func scrolled(source: TerminalView, position: Double) {}

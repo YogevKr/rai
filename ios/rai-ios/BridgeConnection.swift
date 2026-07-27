@@ -27,7 +27,6 @@ final class BridgeConnection: ObservableObject {
 
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
-    @Published private(set) var paneOutputs: [String: Data] = [:]
     @Published private(set) var requiresRepair = false
 
     var host: String {
@@ -42,6 +41,8 @@ final class BridgeConnection: ObservableObject {
     private var shouldReconnect = false
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private var paneFrameHandlers: [String: [UUID: (Data) -> Void]] = [:]
+    private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
 
     func connect(to pairing: Pairing) {
         disconnect(clearPairing: false)
@@ -79,15 +80,60 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    func openPane(paneID: String) {
+    func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
+        let size = desiredStreams[paneID] ?? (cols, rows)
+        desiredStreams[paneID] = size
         Task {
             do {
                 try await send(.selectPane(paneID: paneID))
                 try await send(.focusPane(paneID: paneID))
-                try await send(.requestPane(paneID: paneID))
+                try await send(
+                    .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
+                )
             } catch {
                 handleSocketFailure(error)
             }
+        }
+    }
+
+    func closePane(paneID: String) {
+        desiredStreams.removeValue(forKey: paneID)
+        Task {
+            do {
+                try await send(.detachStream(paneID: paneID))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    func resizePane(paneID: String, cols: Int, rows: Int) {
+        guard cols > 0, rows > 0,
+              desiredStreams[paneID]?.cols != cols || desiredStreams[paneID]?.rows != rows
+        else { return }
+        desiredStreams[paneID] = (cols, rows)
+        Task {
+            do {
+                try await send(.resizePane(paneID: paneID, cols: cols, rows: rows))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    func addPaneFrameHandler(
+        for paneID: String,
+        handler: @escaping (Data) -> Void
+    ) -> UUID {
+        let id = UUID()
+        paneFrameHandlers[paneID, default: [:]][id] = handler
+        return id
+    }
+
+    func removePaneFrameHandler(for paneID: String, id: UUID) {
+        paneFrameHandlers[paneID]?.removeValue(forKey: id)
+        if paneFrameHandlers[paneID]?.isEmpty == true {
+            paneFrameHandlers.removeValue(forKey: paneID)
         }
     }
 
@@ -175,19 +221,34 @@ final class BridgeConnection: ObservableObject {
             }
             reconnectAttempt = 0
             status = .connected
+            for (paneID, size) in desiredStreams {
+                Task {
+                    do {
+                        try await send(
+                            .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
+                        )
+                    } catch {
+                        handleSocketFailure(error)
+                    }
+                }
+            }
         case let .authFailed(reason):
             requiresRepair = true
             stopWithFailure("Re-pair required: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
-        case let .paneOutput(paneID, bytesBase64):
+        case let .paneFrame(paneID, bytesBase64, _, _):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
-            paneOutputs[paneID] = data
+            guard let handlers = paneFrameHandlers[paneID]?.values else { return }
+            for handler in handlers {
+                handler(data)
+            }
         case let .error(message):
             status = .failed(reason: message)
         case .event:
             break
-        case .hello, .subscribe, .requestPane, .input, .focusPane, .selectPane, .resizePane:
+        case .hello, .subscribe, .attachStream, .detachStream,
+             .input, .focusPane, .selectPane, .resizePane:
             break
         }
     }
@@ -249,7 +310,7 @@ final class BridgeConnection: ObservableObject {
         status = .disconnected
         requiresRepair = false
         snapshot = nil
-        paneOutputs = [:]
+        desiredStreams.removeAll()
         if clearPairing { pairing = nil }
     }
 

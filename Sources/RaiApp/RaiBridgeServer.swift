@@ -5,7 +5,7 @@ import RaiCore
 /// Token-authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
-/// V1 intentionally uses cleartext WebSocket on a trusted LAN or Tailscale
+/// The bridge intentionally uses cleartext WebSocket on a trusted LAN or Tailscale
 /// network. The pairing token prevents accidental access, but is not a
 /// substitute for transport encryption on an untrusted network.
 @MainActor
@@ -53,6 +53,7 @@ final class RaiBridgeServer: ObservableObject {
     private let queue = DispatchQueue(label: "ai.sawmills.rai.bridge")
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
+    private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
 
     init(model: RaiModel, userDefaults: UserDefaults = .standard) {
         self.model = model
@@ -102,6 +103,7 @@ final class RaiBridgeServer: ObservableObject {
     func stop() {
         listener?.cancel()
         listener = nil
+        stopAllObserveStreams()
         for client in clients.values {
             client.connection.cancel()
         }
@@ -115,6 +117,7 @@ final class RaiBridgeServer: ObservableObject {
         userDefaults.set(pairingToken, forKey: Self.tokenKey)
         // Authentication is connection-scoped, so changing the token also
         // disconnects already-paired devices immediately.
+        stopAllObserveStreams()
         for client in clients.values {
             client.connection.cancel()
         }
@@ -126,33 +129,14 @@ final class RaiBridgeServer: ObservableObject {
         let subscribers = clients.values.filter(\.isSubscribed)
         guard !subscribers.isEmpty else { return }
 
-        for event in events {
-            if event.name == "pane.output_changed" || event.name == "pane.updated" {
-                guard let paneID = event.paneID else { continue }
-                let client = model.client
-                Task {
-                    do {
-                        let read = try await client.readPane(paneID: paneID)
-                        let encoded = Data(read.text.utf8).base64EncodedString()
-                        broadcast(
-                            .paneOutput(paneID: paneID, bytesBase64: encoded),
-                            onlyToSubscribers: true
-                        )
-                    } catch {
-                        broadcast(
-                            .error(message: "Unable to read pane \(paneID): \(error.localizedDescription)"),
-                            onlyToSubscribers: true
-                        )
-                    }
-                }
-            } else {
-                // Structural event details are useful for diagnostics. The
-                // authoritative state follows as a fresh snapshot from RaiModel.
-                broadcast(
-                    .event(BridgeEvent(name: event.name, payload: event.data)),
-                    onlyToSubscribers: true
-                )
-            }
+        for event in events
+        where event.name != "pane.output_changed" && event.name != "pane.updated" {
+            // Structural event details are useful for diagnostics. The
+            // authoritative state follows as a fresh snapshot from RaiModel.
+            broadcast(
+                .event(BridgeEvent(name: event.name, payload: event.data)),
+                onlyToSubscribers: true
+            )
         }
     }
 
@@ -257,22 +241,18 @@ final class RaiBridgeServer: ObservableObject {
             } else {
                 send(.error(message: "Herdr is not connected."), to: client)
             }
-        case let .requestPane(paneID):
-            do {
-                let read = try await model.client.readPane(paneID: paneID)
-                send(
-                    .paneOutput(
-                        paneID: paneID,
-                        bytesBase64: Data(read.text.utf8).base64EncodedString()
-                    ),
-                    to: client
-                )
-            } catch {
-                send(
-                    .error(message: "Unable to read pane \(paneID): \(error.localizedDescription)"),
-                    to: client
-                )
+        case let .attachStream(paneID, cols, rows):
+            guard client.isSubscribed else {
+                send(.error(message: "Subscribe before attaching a pane stream."), to: client)
+                return
             }
+            guard cols > 0, rows > 0 else {
+                send(.error(message: "Pane dimensions must be positive."), to: client)
+                return
+            }
+            startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
+        case let .detachStream(paneID):
+            stopObserveStream(paneID: paneID, for: client)
         case let .input(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else {
                 send(.error(message: "input bytesBase64 is invalid."), to: client)
@@ -291,22 +271,128 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             model.select(paneID: paneID, focusInHerdr: true)
-        case let .resizePane(_, cols, rows):
+        case let .resizePane(paneID, cols, rows):
             guard cols > 0, rows > 0 else {
                 send(.error(message: "Pane dimensions must be positive."), to: client)
                 return
             }
-            // Herdr protocol 16's pane.resize is directional split resizing,
-            // not terminal rows/columns. Keep the v1 wire shape future-proof
-            // while refusing to report a resize that herdr cannot perform.
-            send(
-                .error(message: "Terminal column/row resize is not supported by herdr protocol 16."),
-                to: client
-            )
+            let clientID = ObjectIdentifier(client.connection)
+            guard observeStreams[clientID]?[paneID] != nil else { return }
+            startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
         case .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
-        case .welcome, .authFailed, .snapshot, .event, .paneOutput, .error:
+        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .error:
             send(.error(message: "Server-to-client message received from client."), to: client)
+        }
+    }
+
+    private func startObserveStream(
+        paneID: String,
+        cols: Int,
+        rows: Int,
+        for client: BridgeClient
+    ) {
+        guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+            send(.error(message: "Unknown pane \(paneID)."), to: client)
+            return
+        }
+
+        stopObserveStream(paneID: paneID, for: client)
+
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        process.arguments = [
+            "terminal", "session", "observe", paneID,
+            "--cols", String(cols), "--rows", String(rows),
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdout
+        let stream = ObserveStream(process: process, stdout: stdout)
+        let clientID = ObjectIdentifier(client.connection)
+
+        stdout.fileHandleForReading.readabilityHandler = { [weak self, weak client, weak stream] handle in
+            guard let self, let client, let stream else { return }
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            let frames = stream.consume(data)
+            guard !frames.isEmpty else { return }
+            Task { @MainActor in
+                guard self.observeStreams[clientID]?[paneID] === stream else { return }
+                for frame in frames {
+                    self.send(
+                        .paneFrame(
+                            paneID: paneID,
+                            bytesBase64: frame.bytes,
+                            full: frame.full,
+                            seq: frame.seq
+                        ),
+                        to: client
+                    )
+                }
+            }
+        }
+        process.terminationHandler = { [weak self, weak client, weak stream] process in
+            Task { @MainActor in
+                guard let self, let client, let stream,
+                      self.observeStreams[clientID]?[paneID] === stream
+                else { return }
+                self.removeObserveStream(paneID: paneID, clientID: clientID)
+                if !stream.isStopping {
+                    self.send(
+                        .error(
+                            message: "Pane stream \(paneID) exited with status \(process.terminationStatus)."
+                        ),
+                        to: client
+                    )
+                }
+            }
+        }
+
+        observeStreams[clientID, default: [:]][paneID] = stream
+        do {
+            try process.run()
+        } catch {
+            removeObserveStream(paneID: paneID, clientID: clientID)
+            send(
+                .error(message: "Unable to start pane stream \(paneID): \(error.localizedDescription)"),
+                to: client
+            )
+        }
+    }
+
+    private func stopObserveStream(paneID: String, for client: BridgeClient) {
+        let clientID = ObjectIdentifier(client.connection)
+        guard let stream = observeStreams[clientID]?[paneID] else { return }
+        stream.stop()
+        removeObserveStream(paneID: paneID, clientID: clientID)
+    }
+
+    private func removeObserveStream(paneID: String, clientID: ObjectIdentifier) {
+        guard let stream = observeStreams[clientID]?.removeValue(forKey: paneID) else { return }
+        stream.close()
+        if observeStreams[clientID]?.isEmpty == true {
+            observeStreams.removeValue(forKey: clientID)
+        }
+    }
+
+    private func stopObserveStreams(for clientID: ObjectIdentifier) {
+        guard let streams = observeStreams.removeValue(forKey: clientID) else { return }
+        for stream in streams.values {
+            stream.stop()
+            stream.close()
+        }
+    }
+
+    private func stopAllObserveStreams() {
+        let streams = observeStreams.values.flatMap(\.values)
+        observeStreams.removeAll()
+        for stream in streams {
+            stream.stop()
+            stream.close()
         }
     }
 
@@ -362,6 +448,7 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func removeClient(_ id: ObjectIdentifier) {
+        stopObserveStreams(for: id)
         clients.removeValue(forKey: id)
         updateConnectedDeviceCount()
     }
@@ -372,6 +459,58 @@ final class RaiBridgeServer: ObservableObject {
 
     private static func makeToken() -> String {
         UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+}
+
+private struct ObserveFrame: Decodable {
+    let type: String
+    let encoding: String
+    let seq: Int
+    let full: Bool
+    let bytes: String
+}
+
+private final class ObserveStream: @unchecked Sendable {
+    let process: Process
+    let stdout: Pipe
+    private var buffer = Data()
+    private(set) var isStopping = false
+
+    init(process: Process, stdout: Pipe) {
+        self.process = process
+        self.stdout = stdout
+    }
+
+    func consume(_ data: Data) -> [ObserveFrame] {
+        buffer.append(data)
+        var frames: [ObserveFrame] = []
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = buffer[..<newline]
+            buffer.removeSubrange(...newline)
+            guard !line.isEmpty,
+                  let frame = try? JSONDecoder().decode(ObserveFrame.self, from: line),
+                  frame.type == "terminal.frame",
+                  frame.encoding == "ansi"
+            else { continue }
+            frames.append(frame)
+        }
+        return frames
+    }
+
+    @MainActor
+    func stop() {
+        isStopping = true
+        stdout.fileHandleForReading.readabilityHandler = nil
+        if process.isRunning {
+            process.terminate()
+        }
+    }
+
+    @MainActor
+    func close() {
+        stdout.fileHandleForReading.readabilityHandler = nil
+        try? stdout.fileHandleForReading.close()
+        try? stdout.fileHandleForWriting.close()
     }
 }
 

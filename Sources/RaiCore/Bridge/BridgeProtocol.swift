@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Versioning is independent of herdr's RPC protocol so the Mac and companion
 /// app can negotiate their wire contract without exposing daemon internals.
-public let bridgeProtocolVersion = 1
+public let bridgeProtocolVersion = 2
 
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
@@ -35,7 +35,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
     case hello(token: String, client: ClientInfo)
     case subscribe
-    case requestPane(paneID: String)
+    case attachStream(paneID: String, cols: Int, rows: Int)
+    case detachStream(paneID: String)
     case input(paneID: String, bytesBase64: String)
     case focusPane(paneID: String)
     case selectPane(paneID: String)
@@ -46,7 +47,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case authFailed(reason: String)
     case snapshot(SessionSnapshot)
     case event(BridgeEvent)
-    case paneOutput(paneID: String, bytesBase64: String)
+    case paneFrame(paneID: String, bytesBase64: String, full: Bool, seq: Int)
     case error(message: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -54,13 +55,15 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case token, client
         case paneID, bytesBase64
         case cols, rows
+        case full, seq
         case protocolVersion, sessionName
         case reason, snapshot, event, message
     }
 
     private enum MessageType: String, Codable {
-        case hello, subscribe, requestPane, input, focusPane, selectPane, resizePane
-        case welcome, authFailed, snapshot, event, paneOutput, error
+        case hello, subscribe, attachStream, detachStream
+        case input, focusPane, selectPane, resizePane
+        case welcome, authFailed, snapshot, event, paneFrame, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -73,8 +76,14 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             )
         case .subscribe:
             self = .subscribe
-        case .requestPane:
-            self = .requestPane(paneID: try container.decode(String.self, forKey: .paneID))
+        case .attachStream:
+            self = .attachStream(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                cols: try container.decode(Int.self, forKey: .cols),
+                rows: try container.decode(Int.self, forKey: .rows)
+            )
+        case .detachStream:
+            self = .detachStream(paneID: try container.decode(String.self, forKey: .paneID))
         case .input:
             self = .input(
                 paneID: try container.decode(String.self, forKey: .paneID),
@@ -101,10 +110,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .snapshot(try container.decode(SessionSnapshot.self, forKey: .snapshot))
         case .event:
             self = .event(try container.decode(BridgeEvent.self, forKey: .event))
-        case .paneOutput:
-            self = .paneOutput(
+        case .paneFrame:
+            self = .paneFrame(
                 paneID: try container.decode(String.self, forKey: .paneID),
-                bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
+                bytesBase64: try container.decode(String.self, forKey: .bytesBase64),
+                full: try container.decode(Bool.self, forKey: .full),
+                seq: try container.decode(Int.self, forKey: .seq)
             )
         case .error:
             self = .error(message: try container.decode(String.self, forKey: .message))
@@ -120,8 +131,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(client, forKey: .client)
         case .subscribe:
             try container.encode(MessageType.subscribe, forKey: .type)
-        case let .requestPane(paneID):
-            try container.encode(MessageType.requestPane, forKey: .type)
+        case let .attachStream(paneID, cols, rows):
+            try container.encode(MessageType.attachStream, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(cols, forKey: .cols)
+            try container.encode(rows, forKey: .rows)
+        case let .detachStream(paneID):
+            try container.encode(MessageType.detachStream, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
         case let .input(paneID, bytesBase64):
             try container.encode(MessageType.input, forKey: .type)
@@ -151,10 +167,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .event(event):
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(event, forKey: .event)
-        case let .paneOutput(paneID, bytesBase64):
-            try container.encode(MessageType.paneOutput, forKey: .type)
+        case let .paneFrame(paneID, bytesBase64, full, seq):
+            try container.encode(MessageType.paneFrame, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(bytesBase64, forKey: .bytesBase64)
+            try container.encode(full, forKey: .full)
+            try container.encode(seq, forKey: .seq)
         case let .error(message):
             try container.encode(MessageType.error, forKey: .type)
             try container.encode(message, forKey: .message)

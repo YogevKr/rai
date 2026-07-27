@@ -19,7 +19,8 @@ final class BridgeProtocolTests: XCTestCase {
         let messages: [BridgeMessage] = [
             .hello(token: "pair-token", client: client),
             .subscribe,
-            .requestPane(paneID: "pane-1"),
+            .attachStream(paneID: "pane-1", cols: 80, rows: 24),
+            .detachStream(paneID: "pane-1"),
             .input(paneID: "pane-1", bytesBase64: bytes),
             .focusPane(paneID: "pane-1"),
             .selectPane(paneID: "pane-1"),
@@ -32,7 +33,7 @@ final class BridgeProtocolTests: XCTestCase {
                 name: "layout.updated",
                 payload: ["tab_id": .string("tab-1")]
             )),
-            .paneOutput(paneID: "pane-1", bytesBase64: bytes),
+            .paneFrame(paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1),
             .error(message: "Herdr is unavailable"),
         ]
 
