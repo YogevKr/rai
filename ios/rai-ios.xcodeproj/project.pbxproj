@@ -1,0 +1,362 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */; };
+		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
+		364263F635053B13874BD7DE /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */; };
+		48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */; };
+		8485449A51E1C585A0439512 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28A9944E5B3DBD0E0B55C06 /* RootView.swift */; };
+		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
+		C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */; };
+		E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */; };
+		F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ECD4F2FE845F00F88608F /* MonitorView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
+		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
+		3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
+		3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaiIOSApp.swift; sourceTree = "<group>"; };
+		6EF1EC67F37E92C058E32C92 /* ios-app-2a-0727-074737-pf3i */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ios-app-2a-0727-074737-pf3i"; path = ..; sourceTree = SOURCE_ROOT; };
+		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C28A9944E5B3DBD0E0B55C06 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		FB1D30390653CB42449AC98C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CB4AF4E49114F3BD79118C8A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2DA318A8F4154999D3174BCB /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				6EF1EC67F37E92C058E32C92 /* ios-app-2a-0727-074737-pf3i */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		AD37D283F77B85DAA18EC27B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C0A260D874FB82D82728AC5A /* rai-ios.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		ADFD2E77B89CB97E42410815 /* rai-ios */ = {
+			isa = PBXGroup;
+			children = (
+				FB1D30390653CB42449AC98C /* AppModel.swift */,
+				3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */,
+				2CA038B4352450A677BF46AE /* Info.plist */,
+				310ECD4F2FE845F00F88608F /* MonitorView.swift */,
+				1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */,
+				DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */,
+				3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */,
+				3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */,
+				C28A9944E5B3DBD0E0B55C06 /* RootView.swift */,
+			);
+			path = "rai-ios";
+			sourceTree = "<group>";
+		};
+		C21D816B184653E0DCC84809 = {
+			isa = PBXGroup;
+			children = (
+				2DA318A8F4154999D3174BCB /* Packages */,
+				ADFD2E77B89CB97E42410815 /* rai-ios */,
+				AD37D283F77B85DAA18EC27B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9D4B90CFDA1D3CD398C07820 /* rai-ios */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 26D802174B3A47E6F6518587 /* Build configuration list for PBXNativeTarget "rai-ios" */;
+			buildPhases = (
+				DA30D004E1870956380C78AF /* Sources */,
+				CB4AF4E49114F3BD79118C8A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "rai-ios";
+			packageProductDependencies = (
+				0DF2560875011836BCF0C528 /* RaiCore */,
+			);
+			productName = "rai-ios";
+			productReference = C0A260D874FB82D82728AC5A /* rai-ios.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		425D45EB082872CE41357666 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					9D4B90CFDA1D3CD398C07820 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = F30C567720345A5E9B813317 /* Build configuration list for PBXProject "rai-ios" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C21D816B184653E0DCC84809;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4EC453AAA774EF4C90469D1A /* XCLocalSwiftPackageReference "..//" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AD37D283F77B85DAA18EC27B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9D4B90CFDA1D3CD398C07820 /* rai-ios */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DA30D004E1870956380C78AF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */,
+				001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */,
+				F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */,
+				364263F635053B13874BD7DE /* Pairing.swift in Sources */,
+				E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */,
+				C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */,
+				48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */,
+				8485449A51E1C585A0439512 /* RootView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		E2009C6F92CB8DAAA9844B56 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = "rai-ios/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = gr.krig.rai.ios;
+				PRODUCT_NAME = rai;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E48FD821CDBAE40C0BB93D3A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F817F7C0A30A8B5F1D3B04EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = "rai-ios/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = gr.krig.rai.ios;
+				PRODUCT_NAME = rai;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F85232920B1906F75DA89D2B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		26D802174B3A47E6F6518587 /* Build configuration list for PBXNativeTarget "rai-ios" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F817F7C0A30A8B5F1D3B04EC /* Debug */,
+				E2009C6F92CB8DAAA9844B56 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F30C567720345A5E9B813317 /* Build configuration list for PBXProject "rai-ios" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E48FD821CDBAE40C0BB93D3A /* Debug */,
+				F85232920B1906F75DA89D2B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		4EC453AAA774EF4C90469D1A /* XCLocalSwiftPackageReference "..//" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "..//";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0DF2560875011836BCF0C528 /* RaiCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RaiCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 425D45EB082872CE41357666 /* Project object */;
+}

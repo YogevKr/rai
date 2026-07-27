@@ -1,0 +1,50 @@
+name: rai-ios
+options:
+  bundleIdPrefix: gr.krig.rai
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+packages:
+  Rai:
+    path: ../
+targets:
+  rai-ios:
+    type: application
+    platform: iOS
+    sources:
+      - path: rai-ios
+    dependencies:
+      - package: Rai
+        product: RaiCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: gr.krig.rai.ios
+        PRODUCT_NAME: rai
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+        Release:
+          CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+    info:
+      path: rai-ios/Info.plist
+      properties:
+        CFBundleDisplayName: rai
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: Scan a rai pairing code from your Mac.
+        NSLocalNetworkUsageDescription: Connect to the rai bridge running on your Mac.
+        NSBonjourServices:
+          - _rai._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true

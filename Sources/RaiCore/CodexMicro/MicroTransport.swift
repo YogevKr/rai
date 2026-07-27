@@ -1,3 +1,4 @@
+#if os(macOS)
 @preconcurrency import IOKit.hid
 import Foundation
 
@@ -663,3 +664,4 @@ public final class MockMicroTransport: MicroTransport, @unchecked Sendable {
         handler?(report)
     }
 }
+#endif
