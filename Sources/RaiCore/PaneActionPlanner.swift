@@ -38,8 +38,18 @@ public enum PaneActionPlanner {
             "--split", direction.rawValue,
             "--cwd", cwd,
             "--no-focus",
-            "--", executable,
-        ]
+            "--",
+        ] + shellFallbackArgv(executable)
+    }
+
+    /// Wraps an agent command line so the pane outlives the agent. herdr execs
+    /// this argv as the pane's root process, so a bare agent binary would take
+    /// the pane — and a single-pane tab — down with it when the user exits the
+    /// agent. Falling back to the user's interactive shell keeps the pane open
+    /// at a prompt instead, matching what exiting an agent started by hand in
+    /// a terminal does.
+    public static func shellFallbackArgv(_ command: String) -> [String] {
+        ["/bin/sh", "-lc", "\(command); exec \"${SHELL:-/bin/sh}\" -l"]
     }
 
     /// Builds the non-splitting agent launch used by remote companions.

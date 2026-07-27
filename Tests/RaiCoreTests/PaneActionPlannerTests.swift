@@ -63,7 +63,17 @@ final class PaneActionPlannerTests: XCTestCase {
                 "--split", "down",
                 "--cwd", "/tmp/project with spaces",
                 "--no-focus",
-                "--", "claude",
+                "--", "/bin/sh", "-lc", "claude; exec \"${SHELL:-/bin/sh}\" -l",
+            ]
+        )
+    }
+
+    func testShellFallbackKeepsPaneAliveAfterAgentExit() {
+        XCTAssertEqual(
+            PaneActionPlanner.shellFallbackArgv("claude --continue || claude"),
+            [
+                "/bin/sh", "-lc",
+                "claude --continue || claude; exec \"${SHELL:-/bin/sh}\" -l",
             ]
         )
     }

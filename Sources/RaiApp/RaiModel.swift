@@ -1938,8 +1938,8 @@ final class RaiModel: ObservableObject {
             // a resumable session still exists after herdr killed it. Fall back
             // to a fresh client only when the resume command exits unsuccessfully.
             let resumeCommand: String = switch agentKind {
-            case .claude: "claude --continue || exec claude"
-            case .codex: "codex resume --last || exec codex"
+            case .claude: "claude --continue || claude"
+            case .codex: "codex resume --last || codex"
             }
             // `tab create` already gave the tab a default shell pane, and
             // `agent start` puts the agent in a SECOND pane beside it. Capture
@@ -1955,8 +1955,7 @@ final class RaiModel: ObservableObject {
                 "--cwd", record.cwd,
                 "--focus",
                 "--",
-                "/bin/sh", "-lc", resumeCommand,
-            ])
+            ] + PaneActionPlanner.shellFallbackArgv(resumeCommand))
             if let defaultPaneID {
                 _ = await runHerdr(["pane", "close", defaultPaneID])
             }
