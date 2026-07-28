@@ -66,10 +66,30 @@ struct MonitorView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if let sessionName = connection.sessionName {
+                        if connection.sessions.count > 1 {
+                            // Named herds: pick which one the Mac (and this
+                            // phone) watches.
+                            Menu("Session: \(connection.sessionName ?? "…")") {
+                                ForEach(connection.sessions, id: \.name) { session in
+                                    Button {
+                                        connection.switchSession(named: session.name)
+                                    } label: {
+                                        if session.isCurrent {
+                                            Label(session.name, systemImage: "checkmark")
+                                        } else if session.isRunning {
+                                            Text(session.name)
+                                        } else {
+                                            Text("\(session.name) (stopped)")
+                                        }
+                                    }
+                                    .disabled(session.isCurrent)
+                                }
+                            }
+                        } else if let sessionName = connection.sessionName {
                             Text("Session: \(sessionName)")
                         }
                         Text("Mac: \(connection.host)")
+                            .onAppear { connection.requestSessions() }
                         Text("App: v\(Self.appVersion) (\(Self.appBuild))")
                         Divider()
                         if connection.requiresRepair {

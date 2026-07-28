@@ -30,6 +30,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var requiresRepair = false
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
+    @Published private(set) var sessions: [BridgeSessionInfo] = []
     var didConnect: (() -> Void)?
     var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
 
@@ -394,6 +395,7 @@ final class BridgeConnection: ObservableObject {
             status = .connected
             self.sessionName = sessionName
             didConnect?()
+            requestSessions()
             for (paneID, size) in desiredStreams {
                 let needsSeed = !seededPanes.contains(paneID)
                 Task {
@@ -420,6 +422,11 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure("Re-pair required: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
+        case let .sessions(list):
+            sessions = list
+            if let current = list.first(where: { $0.isCurrent }) {
+                sessionName = current.name
+            }
         case let .backgroundWork(work):
             didReceiveBackgroundWork?(work)
         case let .paneFrame(paneID, bytesBase64, full, _):
@@ -458,8 +465,27 @@ final class BridgeConnection: ObservableObject {
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
              .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
-             .listSessions, .selectSession, .sessions:
+             .listSessions, .selectSession:
             break
+        }
+    }
+
+    /// Named herdr sessions the Mac can watch (empty until the Mac replies).
+    func requestSessions() {
+        Task {
+            try? await send(.listSessions)
+        }
+    }
+
+    /// Switches the herd the Mac — and therefore this phone — watches.
+    func switchSession(named name: String) {
+        guard name != sessionName else { return }
+        Task {
+            try? await send(.selectSession(name: name))
+            // The Mac pushes a fresh snapshot on switch; refresh the session
+            // list too so the checkmark follows.
+            try? await Task.sleep(for: .seconds(1.5))
+            try? await send(.listSessions)
         }
     }
 
