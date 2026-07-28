@@ -196,22 +196,34 @@ final class RaiBridgeServer: ObservableObject {
         let tailscalePort = tailscalePort
         tailscaleTask = Task { [weak self] in
             await previousTailscaleTask?.value
-            guard !Task.isCancelled else { return }
-            let result = await tailscaleServe.start(
-                bridgePort: bridgePort,
-                httpsPort: tailscalePort
-            )
-            guard let self, !Task.isCancelled, self.listener != nil else {
-                await tailscaleServe.stop(httpsPort: tailscalePort)
-                return
-            }
-            switch result {
-            case let .active(host):
-                self.tailscaleHost = host
-            case .unavailable:
-                break
-            case let .failed(message):
-                self.statusMessage = message
+            // "Unavailable" is often transient — tailscaled still coming up, a
+            // slow spawn under load, Tailscale installed after rai. Retry with
+            // backoff instead of leaving the Tailscale option missing until
+            // the next bridge restart.
+            var delay: Duration = .seconds(5)
+            while !Task.isCancelled {
+                let result = await tailscaleServe.start(
+                    bridgePort: bridgePort,
+                    httpsPort: tailscalePort
+                )
+                guard let self, !Task.isCancelled, self.listener != nil else {
+                    await tailscaleServe.stop(httpsPort: tailscalePort)
+                    return
+                }
+                switch result {
+                case let .active(host):
+                    self.tailscaleHost = host
+                    return
+                case let .failed(message):
+                    // A real conflict (port taken, serve rejected) won't
+                    // self-heal; surface it and stop retrying.
+                    self.statusMessage = message
+                    return
+                case .unavailable:
+                    break
+                }
+                try? await Task.sleep(for: delay)
+                delay = min(delay * 2, .seconds(300))
             }
         }
     }

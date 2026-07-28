@@ -81,13 +81,20 @@ actor TailscaleServeController {
 
     private static func findExecutable() -> URL? {
         let fileManager = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for directory in path.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(directory))
-                    .appendingPathComponent("tailscale")
-                if fileManager.isExecutableFile(atPath: candidate.path) {
-                    return candidate
-                }
+        // A launchd-launched app gets a bare PATH (no Homebrew), and the GUI
+        // app's CLI can't run headless — outside a login-shell env it tries to
+        // start the GUI, fails, and prints the error to stdout WITH EXIT 0.
+        // The standalone CLI talks straight to tailscaled's socket, so search
+        // its well-known homes explicitly; the GUI binary is a last resort.
+        var directories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init)
+        directories += ["/opt/homebrew/bin", "/usr/local/bin",
+                        NSHomeDirectory() + "/.local/bin"]
+        for directory in directories {
+            let candidate = URL(fileURLWithPath: directory)
+                .appendingPathComponent("tailscale")
+            if fileManager.isExecutableFile(atPath: candidate.path) {
+                return candidate
             }
         }
 
