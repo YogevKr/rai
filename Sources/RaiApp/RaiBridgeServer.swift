@@ -286,7 +286,14 @@ final class RaiBridgeServer: ObservableObject {
     ) {
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
-        guard configuration.isConfigured, !registrations.isEmpty else { return }
+        guard !registrations.isEmpty else { return }
+        guard configuration.isConfigured else {
+            // A phone expects pushes but the APNs key is gone (e.g. removed
+            // from the keychain). Losing them SILENTLY cost a debugging
+            // session — say so where the bridge status is shown.
+            statusMessage = "Push disabled: APNs auth key missing — re-add it in Settings."
+            return
+        }
         let pusher = apnsPusher
 
         let delivery = Task.detached {
