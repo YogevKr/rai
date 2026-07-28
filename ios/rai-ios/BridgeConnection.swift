@@ -31,6 +31,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
     var didConnect: (() -> Void)?
+    var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
 
     var host: String {
         pairing?.host ?? "Mac"
@@ -155,6 +156,18 @@ final class BridgeConnection: ObservableObject {
 
     func closeTab(tabID: String) {
         sendAction(.closeTab(tabID: tabID))
+    }
+
+    func renameWorkspace(workspaceID: String, label: String) {
+        sendAction(.renameWorkspace(workspaceID: workspaceID, label: label))
+    }
+
+    func closeWorkspace(workspaceID: String) {
+        sendAction(.closeWorkspace(workspaceID: workspaceID))
+    }
+
+    func broadcastInput(tabID: String, text: String) {
+        sendAction(.broadcastInput(tabID: tabID, text: text))
     }
 
     private func sendAction(_ message: BridgeMessage) {
@@ -396,6 +409,8 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure("Re-pair required: \(reason)")
         case let .snapshot(snapshot):
             self.snapshot = snapshot
+        case let .backgroundWork(work):
+            didReceiveBackgroundWork?(work)
         case let .paneFrame(paneID, bytesBase64, full, _):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -426,7 +441,9 @@ final class BridgeConnection: ObservableObject {
         case .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
-             .registerPush, .unregisterPush, .readScrollback:
+             .registerPush, .unregisterPush, .readScrollback,
+             .renameWorkspace, .closeWorkspace, .broadcastInput,
+             .listSessions, .selectSession, .sessions:
             break
         }
     }
@@ -498,6 +515,7 @@ final class BridgeConnection: ObservableObject {
         requiresRepair = false
         snapshot = nil
         sessionName = nil
+        didReceiveBackgroundWork?([])
         desiredStreams.removeAll()
         seededPanes.removeAll()
         if clearPairing { pairing = nil }

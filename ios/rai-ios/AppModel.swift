@@ -4,6 +4,7 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
     @Published var pendingOpenPaneID: String?
+    @Published private(set) var backgroundWorkByPaneID: [String: [String]] = [:]
     let connection = BridgeConnection()
 
     private let pairingStore = PairingStore()
@@ -12,6 +13,12 @@ final class AppModel: ObservableObject {
     init() {
         connection.didConnect = { [weak self] in
             self?.registerPushIfPossible()
+        }
+        connection.didReceiveBackgroundWork = { [weak self] work in
+            self?.backgroundWorkByPaneID = Dictionary(
+                work.map { ($0.paneID, $0.summaries) },
+                uniquingKeysWith: { _, latest in latest }
+            )
         }
         // Testing/automation affordance: pair straight from a launch env var,
         // e.g. `simctl launch --setenv RAI_PAIR_URL "rai://pair?..."`. Harmless

@@ -14,6 +14,7 @@ struct MonitorView: View {
     @State private var renameTarget: RenameTarget?
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
+    @State private var backgroundWorkTarget: BackgroundWorkTarget?
 
     var body: some View {
         AnyView(NavigationStack(path: $path) {
@@ -104,6 +105,9 @@ struct MonitorView: View {
                 connection.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd)
             }
         }
+        .sheet(item: $backgroundWorkTarget) { target in
+            BackgroundWorkSheet(target: target)
+        }
         .alert(renameTarget?.title ?? "Rename", isPresented: renameBinding) {
             TextField("Name", text: $renameLabel)
             Button("Cancel", role: .cancel) { renameTarget = nil }
@@ -156,7 +160,7 @@ struct MonitorView: View {
     }
 
     private var renameIsDisabled: Bool {
-        guard case .tab = renameTarget else { return false }
+        guard renameTarget != nil else { return false }
         return renameLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -171,6 +175,7 @@ struct MonitorView: View {
         switch target {
         case let .pane(id, _): connection.renamePane(paneID: id, label: label)
         case let .tab(id, _): connection.renameTab(tabID: id, label: label)
+        case let .workspace(id, _): connection.renameWorkspace(workspaceID: id, label: label)
         }
         renameTarget = nil
     }
@@ -180,6 +185,7 @@ struct MonitorView: View {
         switch target {
         case let .pane(id, _): connection.closePane(paneID: id)
         case let .tab(id, _): connection.closeTab(tabID: id)
+        case let .workspace(id, _): connection.closeWorkspace(workspaceID: id)
         }
         closeTarget = nil
     }
@@ -273,8 +279,12 @@ struct MonitorView: View {
                 Section {
                     ForEach(needsYou) { item in
                         NavigationLink(value: item.pane.paneID) {
-                            NeedsYouRow(item: item)
+                            NeedsYouRow(
+                                item: item,
+                                backgroundWork: backgroundWork(for: item.pane)
+                            )
                         }
+                        .contextMenu { backgroundWorkButton(for: item.pane) }
                     }
                 } header: {
                     HStack {
@@ -291,8 +301,12 @@ struct MonitorView: View {
                 Section {
                     ForEach(working) { item in
                         NavigationLink(value: item.pane.paneID) {
-                            NeedsYouRow(item: item)
+                            NeedsYouRow(
+                                item: item,
+                                backgroundWork: backgroundWork(for: item.pane)
+                            )
                         }
+                        .contextMenu { backgroundWorkButton(for: item.pane) }
                     }
                 } header: {
                     HStack {
@@ -313,8 +327,10 @@ struct MonitorView: View {
                         TabGroup(
                             tab: tab,
                             panes: snapshot.panes.filter { $0.tabID == tab.tabID },
+                            backgroundWorkByPaneID: appModel.backgroundWorkByPaneID,
                             rename: beginRename,
-                            close: { closeTarget = $0 }
+                            close: { closeTarget = $0 },
+                            showBackgroundWork: { backgroundWorkTarget = $0 }
                         )
                     }
                 } header: {
@@ -323,11 +339,40 @@ struct MonitorView: View {
                         Spacer()
                         StatusPill(status: workspace.agentStatus)
                     }
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        Button("Rename", systemImage: "pencil") {
+                            beginRename(.workspace(workspace.workspaceID, workspace.label))
+                        }
+                        Button("Close", systemImage: "xmark", role: .destructive) {
+                            closeTarget = .workspace(
+                                workspace.workspaceID,
+                                workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label
+                            )
+                        }
+                    }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .refreshable { await connection.refreshSnapshot() }
+    }
+
+    private func backgroundWork(for pane: Pane) -> [String] {
+        appModel.backgroundWorkByPaneID[pane.paneID] ?? []
+    }
+
+    @ViewBuilder
+    private func backgroundWorkButton(for pane: Pane) -> some View {
+        let summaries = backgroundWork(for: pane)
+        if !summaries.isEmpty {
+            Button("Background Work", systemImage: "hourglass") {
+                backgroundWorkTarget = BackgroundWorkTarget(
+                    paneName: pane.terminalTitleStripped ?? pane.agent ?? "Pane",
+                    summaries: summaries
+                )
+            }
+        }
     }
 
     private func agents(
@@ -352,17 +397,19 @@ struct MonitorView: View {
 private enum RenameTarget {
     case pane(String, String)
     case tab(String, String)
+    case workspace(String, String)
 
     var title: String {
         switch self {
         case .pane: "Rename Pane"
         case .tab: "Rename Tab"
+        case .workspace: "Rename Workspace"
         }
     }
 
     var currentLabel: String {
         switch self {
-        case let .pane(_, label), let .tab(_, label): label
+        case let .pane(_, label), let .tab(_, label), let .workspace(_, label): label
         }
     }
 }
@@ -370,18 +417,51 @@ private enum RenameTarget {
 private enum CloseTarget {
     case pane(String, String)
     case tab(String, String)
+    case workspace(String, String)
 
     var title: String {
         switch self {
         case .pane: "Close Pane?"
         case .tab: "Close Tab?"
+        case .workspace: "Close Workspace?"
         }
     }
 
     var name: String {
         switch self {
-        case let .pane(_, name), let .tab(_, name): name
+        case let .pane(_, name), let .tab(_, name), let .workspace(_, name): name
         }
+    }
+}
+
+private struct BackgroundWorkTarget: Identifiable {
+    let id = UUID()
+    let paneName: String
+    let summaries: [String]
+}
+
+private struct BackgroundWorkSheet: View {
+    let target: BackgroundWorkTarget
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(target.paneName) {
+                    ForEach(Array(target.summaries.enumerated()), id: \.offset) { _, summary in
+                        Label(summary, systemImage: "hourglass")
+                    }
+                }
+            }
+            .navigationTitle("Background Work")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -457,6 +537,7 @@ private struct NeedsYouAgent: Identifiable {
 
 private struct NeedsYouRow: View {
     let item: NeedsYouAgent
+    let backgroundWork: [String]
 
     var body: some View {
         HStack {
@@ -469,7 +550,7 @@ private struct NeedsYouRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            StatusPill(status: item.pane.agentStatus)
+            PaneStatus(status: item.pane.agentStatus, backgroundWorkCount: backgroundWork.count)
         }
         .padding(.vertical, 2)
     }
@@ -486,8 +567,10 @@ private struct NeedsYouRow: View {
 private struct TabGroup: View {
     let tab: HerdrTab
     let panes: [Pane]
+    let backgroundWorkByPaneID: [String: [String]]
     let rename: (RenameTarget) -> Void
     let close: (CloseTarget) -> Void
+    let showBackgroundWork: (BackgroundWorkTarget) -> Void
 
     private var label: String {
         tab.label.isEmpty ? "Tab \(tab.number)" : tab.label
@@ -512,11 +595,15 @@ private struct TabGroup: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    StatusPill(status: pane.agentStatus)
+                    PaneStatus(
+                        status: pane.agentStatus,
+                        backgroundWorkCount: backgroundWork(for: pane).count
+                    )
                 }
                 .padding(.vertical, 2)
             }
             .contextMenu {
+                backgroundWorkButton(for: pane)
                 Button("Rename", systemImage: "pencil") {
                     rename(.tab(tab.tabID, tab.label))
                 }
@@ -544,10 +631,11 @@ private struct TabGroup: View {
             }
             ForEach(panes) { pane in
                 NavigationLink(value: pane.paneID) {
-                    PaneRow(pane: pane)
+                    PaneRow(pane: pane, backgroundWork: backgroundWork(for: pane))
                         .padding(.leading, 16)
                 }
                 .contextMenu {
+                    backgroundWorkButton(for: pane)
                     Button("Rename", systemImage: "pencil") {
                         rename(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? ""))
                     }
@@ -558,10 +646,30 @@ private struct TabGroup: View {
             }
         }
     }
+
+    private func backgroundWork(for pane: Pane) -> [String] {
+        backgroundWorkByPaneID[pane.paneID] ?? []
+    }
+
+    @ViewBuilder
+    private func backgroundWorkButton(for pane: Pane) -> some View {
+        let summaries = backgroundWork(for: pane)
+        if !summaries.isEmpty {
+            Button("Background Work", systemImage: "hourglass") {
+                showBackgroundWork(
+                    BackgroundWorkTarget(
+                        paneName: pane.terminalTitleStripped ?? pane.agent ?? "Pane",
+                        summaries: summaries
+                    )
+                )
+            }
+        }
+    }
 }
 
 private struct PaneRow: View {
     let pane: Pane
+    let backgroundWork: [String]
 
     var body: some View {
         HStack {
@@ -574,9 +682,29 @@ private struct PaneRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            StatusPill(status: pane.agentStatus)
+            PaneStatus(status: pane.agentStatus, backgroundWorkCount: backgroundWork.count)
         }
         .padding(.vertical, 2)
+    }
+}
+
+private struct PaneStatus: View {
+    let status: AgentStatus
+    let backgroundWorkCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if backgroundWorkCount > 0 {
+                Text("⏳ \(backgroundWorkCount)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("\(backgroundWorkCount) background work items")
+            }
+            StatusPill(
+                status: status,
+                labelOverride: status == .idle && backgroundWorkCount > 0 ? "Waiting" : nil
+            )
+        }
     }
 }
 
@@ -611,18 +739,19 @@ private struct ConnectionBadge: View {
 
 private struct StatusPill: View {
     let status: AgentStatus
+    var labelOverride: String?
 
     var body: some View {
         HStack(spacing: 5) {
             Circle()
                 .fill(color)
                 .frame(width: 8, height: 8)
-            Text(label)
+            Text(labelOverride ?? label)
                 .font(.caption.weight(.semibold))
         }
         .foregroundStyle(color)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status: \(label)")
+        .accessibilityLabel("Status: \(labelOverride ?? label)")
     }
 
     private var label: String {

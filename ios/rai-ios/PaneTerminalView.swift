@@ -15,6 +15,7 @@ struct PaneTerminalView: View {
     @State private var imageError: String?
     @State private var showingCommandPalette = false
     @State private var destructiveArmed = false
+    @State private var broadcastsToTab = false
     @StateObject private var terminalSearch = TerminalSearchController()
 
     var body: some View {
@@ -97,6 +98,14 @@ struct PaneTerminalView: View {
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
+            .background(.bar)
+
+            Toggle(isOn: $broadcastsToTab) {
+                Label("Send to all panes in this tab", systemImage: "megaphone")
+                    .font(.caption)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
             .background(.bar)
 
             if pane.agent != nil {
@@ -190,7 +199,11 @@ struct PaneTerminalView: View {
     }
 
     private func sendLine(_ text: String) {
-        connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
+        if broadcastsToTab {
+            connection.broadcastInput(tabID: pane.tabID, text: text)
+        } else {
+            connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
+        }
     }
 
     private func sendPhoto(_ item: PhotosPickerItem) async {
