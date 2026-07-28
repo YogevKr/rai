@@ -23,7 +23,6 @@ struct SidebarView: View {
                             // attention-needing tabs (and the selected one) —
                             // same predicate as the global "only needs you".
                             let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
-                                && allTabs.count > 1
                             let visibleTabs = allTabs.filter {
                                 AttentionFilter.includes(
                                     status: $0.agentStatus,
@@ -33,23 +32,9 @@ struct SidebarView: View {
                                 )
                             }
                             let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
-                            if allTabs.count <= 1,
-                               !model.onlyNeedsYou || !visibleTabs.isEmpty {
-                                let tab = visibleTabs.first ?? allTabs.first
-                                // A one-agent space: collapse header + lone tab into a single row.
-                                WorkspaceRow(
-                                    model: model,
-                                    workspace: workspace,
-                                    tab: tab,
-                                    focusedInHerdr: focused,
-                                    selected: model.selectedTabID == tab?.tabID,
-                                    onSelect: { tab.map { model.select(tab: $0) } },
-                                    onPaneDragHover: {
-                                        tab.map { model.previewTabDuringPaneDrag($0) }
-                                    }
-                                )
-                                .padding(.top, 8)
-                            } else if allTabs.count > 1, collapsed || !visibleTabs.isEmpty {
+                            // Every space renders the same way — header + tab
+                            // rows — whether it holds one tab or many.
+                            if collapsed || !visibleTabs.isEmpty {
                                 Section {
                                     ForEach(visibleTabs) { tab in
                                         AgentRow(
@@ -635,124 +620,6 @@ private struct WorktreeTag: View {
         guard worktree.isLinkedWorktree else { return worktree.repoName }
         let checkoutName = URL(fileURLWithPath: worktree.checkoutPath).lastPathComponent
         return checkoutName.isEmpty ? worktree.repoName : checkoutName
-    }
-}
-
-private struct WorkspaceRow: View {
-    @ObservedObject var model: RaiModel
-    let workspace: Workspace
-    let tab: HerdrTab?
-    let focusedInHerdr: Bool
-    let selected: Bool
-    let onSelect: () -> Void
-    let onPaneDragHover: () -> Void
-
-    @State private var hovering = false
-    @State private var dropTargeted = false
-
-    private var subtitleContext: String {
-        if let wt = workspace.worktree {
-            if wt.isLinkedWorktree {
-                let base = URL(fileURLWithPath: wt.checkoutPath).lastPathComponent
-                return base.isEmpty ? wt.repoName : base
-            }
-            if wt.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame {
-                return wt.repoName
-            }
-        }
-        if let tabID = tab?.tabID,
-           let cwd = model.snapshot?.panes.first(where: { $0.tabID == tabID })?.cwd {
-            let base = URL(fileURLWithPath: cwd).lastPathComponent
-            return base.caseInsensitiveCompare(workspace.label) == .orderedSame ? "" : base
-        }
-        return ""
-    }
-
-    var body: some View {
-        SidebarRowLabel(
-            status: tab?.agentStatus ?? workspace.agentStatus,
-            title: workspace.label,
-            subtitle: subtitleContext,
-            selected: selected,
-            focusedInHerdr: focusedInHerdr,
-            isSpace: true,
-            editing: model.inlineRename == .workspace(workspace.workspaceID),
-            onCommitRename: { model.commitInlineRename(workspace: workspace, to: $0) },
-            onCancelRename: { model.cancelInlineRename() },
-            onRename: { model.beginInlineRename(workspace: workspace) }
-        ) {
-            if workspace.worktree?.isLinkedWorktree == true {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
-        .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
-        .modifier(SidebarDropIndicator(active: dropTargeted))
-        .contentShape(Rectangle())
-        .onTapGesture { onSelect() }
-        // Row is a plain view (not a Button) so `.onDrag` can start a drag on
-        // macOS — re-add the button semantics `.onTapGesture` drops for VoiceOver.
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { onSelect() }
-        .onHover { hovering = $0 }
-        .onDrag {
-            model.draggedWorkspaceID = workspace.workspaceID
-            return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
-        }
-        // ONE drop destination per row: it reorders spaces AND previews the
-        // space's tab under a pane drag (never accepting the pane). A second
-        // stacked `.onDrop` would shadow this one — macOS honors only the
-        // innermost — which is what broke reordering.
-        .onDrop(
-            of: [.raiWorkspace, UTType.raiPane],
-            delegate: SidebarReorderDropDelegate(
-                targetID: workspace.workspaceID,
-                type: .raiWorkspace,
-                model: model,
-                targeted: $dropTargeted,
-                onPaneDragHover: onPaneDragHover
-            )
-        )
-        .contextMenu {
-            Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
-            Button("New Space") { model.newWorkspace() }
-            Divider()
-            Button("Focus", action: onSelect)
-            Button("Rename") { model.beginRename(workspace: workspace) }
-            Button("Close", role: .destructive) {
-                model.requestClose(workspace: workspace)
-            }
-            let actions = model.pluginActions(for: .workspace)
-            if !actions.isEmpty {
-                Menu("Plugin Actions") {
-                    ForEach(actions) { action in
-                        Button(action.title) {
-                            model.invokePluginAction(action, forWorkspace: workspace)
-                        }
-                        .help(action.description ?? action.title)
-                    }
-                }
-            }
-            Divider()
-            Button("New Worktree…") {
-                model.beginCreateWorktree(from: workspace)
-            }
-            .disabled(workspace.worktree == nil)
-            Button("Open Worktree…") {
-                model.beginOpenWorktree(from: workspace)
-            }
-            .disabled(workspace.worktree == nil)
-            if workspace.worktree?.isLinkedWorktree == true {
-                Button("Remove Worktree…", role: .destructive) {
-                    model.requestRemoveWorktree(workspace)
-                }
-            }
-            Divider()
-            Button("Explain Status") { model.explainStatus(workspace: workspace) }
-        }
-        .help(workspace.worktree?.checkoutPath ?? workspace.label)
     }
 }
 
