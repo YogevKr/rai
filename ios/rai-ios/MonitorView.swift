@@ -59,6 +59,7 @@ struct MonitorView: View {
                             Text("Session: \(sessionName)")
                         }
                         Text("Mac: \(connection.host)")
+                        Text("App: v\(Self.appVersion) (\(Self.appBuild))")
                         Divider()
                         if connection.requiresRepair {
                             Button("Pair Again", action: forgetPairing)
@@ -125,6 +126,13 @@ struct MonitorView: View {
             Text(connection.actionError ?? "")
         }
     }
+
+    static let appVersion = Bundle.main.object(
+        forInfoDictionaryKey: "CFBundleShortVersionString"
+    ) as? String ?? "?"
+    static let appBuild = Bundle.main.object(
+        forInfoDictionaryKey: "CFBundleVersion"
+    ) as? String ?? "?"
 
     private var renameBinding: Binding<Bool> {
         Binding(

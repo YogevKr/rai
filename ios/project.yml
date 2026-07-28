@@ -38,7 +38,7 @@ targets:
       properties:
         CFBundleDisplayName: rai
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "8"
+        CFBundleVersion: "9"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
