@@ -1668,8 +1668,8 @@ final class RaiModel: ObservableObject {
         guard let pane = selectedPaneID else { return }
         runAction(["pane", "split", pane, "--direction", direction, "--focus"])
     }
-    func closePane() {
-        guard let pane = selectedPaneID else { return }
+    func closePane(_ paneID: String? = nil) {
+        guard let pane = paneID ?? selectedPaneID else { return }
         runAction(["pane", "close", pane])
     }
 

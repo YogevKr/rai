@@ -100,18 +100,24 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         menu.addItem(pasteItem)
 
         menu.addItem(.separator())
-        menu.addItem(contextItem("Split Right", #selector(menuSplitRight)))
-        menu.addItem(contextItem("Split Down", #selector(menuSplitDown)))
+        menu.addItem(contextItem("Split Right", #selector(menuSplitRight), "d", [.command]))
+        menu.addItem(contextItem("Split Down", #selector(menuSplitDown), "d", [.command, .shift]))
         menu.addItem(.separator())
-        menu.addItem(contextItem("Zoom Pane", #selector(menuZoomPane)))
-        menu.addItem(contextItem("Close Pane", #selector(menuClosePane)))
+        menu.addItem(contextItem("Zoom Pane", #selector(menuZoomPane), "\r", [.command, .shift]))
+        menu.addItem(contextItem("Close Pane", #selector(menuClosePane), "w", [.command, .shift]))
         menu.addItem(.separator())
-        menu.addItem(contextItem("New Tab", #selector(menuNewTab)))
+        menu.addItem(contextItem("New Tab", #selector(menuNewTab), "t", [.command]))
         return menu
     }
 
-    private func contextItem(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func contextItem(
+        _ title: String,
+        _ action: Selector,
+        _ key: String = "",
+        _ modifiers: NSEvent.ModifierFlags = []
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = modifiers
         item.target = self
         return item
     }

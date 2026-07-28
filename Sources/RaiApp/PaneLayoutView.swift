@@ -344,6 +344,18 @@ private struct PaneSurface: View {
             }
 
             agentLaunchMenu
+
+            Button {
+                model.closePane(paneID)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close Pane (⌘⇧W)")
         }
         .font(.system(size: 11, weight: selected ? .semibold : .medium))
         .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
