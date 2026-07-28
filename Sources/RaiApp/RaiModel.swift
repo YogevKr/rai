@@ -1727,14 +1727,9 @@ final class RaiModel: ObservableObject {
     /// Live check for one pane — used before posting a "Finished" notification:
     /// a session with background work pending isn't finished, just waiting.
     func pendingBackgroundWork(forPane paneID: String) async -> [AgentBackgroundTask] {
-        guard let info = await processInfo(for: paneID) else { return [] }
-        let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
-        guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes),
-              let claude = info.foregroundProcesses.first(where: { $0.pid == claudePID }) else {
-            return []
-        }
+        guard let claude = await claudeInfo(forPane: paneID) else { return [] }
         let rows = await Task.detached { Self.psRows() }.value
-        let shells = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+        let shells = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: Int(claude.pid))
         let async = await Task.detached {
             Self.transcriptPendingWork(claudeCmdline: claude.cmdline, claudeCWD: claude.cwd)
         }.value
@@ -1809,31 +1804,34 @@ final class RaiModel: ObservableObject {
             slug = slug.replacingOccurrences(of: ch, with: "-")
         }
         let dir = NSHomeDirectory() + "/.claude/projects/" + slug
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return tasks }
-        // Newest transcripts last, so later (fresher) descriptions win.
-        let files = names.filter { $0.hasSuffix(".jsonl") }
-            .map { dir + "/" + $0 }
-            .sorted {
-                let a = (try? fm.attributesOfItem(atPath: $0)[.modificationDate] as? Date) ?? .distantPast
-                let b = (try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast
-                return (a ?? .distantPast) < (b ?? .distantPast)
-            }
-            .suffix(6)
-        guard !files.isEmpty else { return tasks }
-
-        // TIME-based cache, deliberately: the live session's transcript changes
-        // every few seconds, so a content signature would never hit and this
-        // multi-file grep would run on every refresh (measured: the app's
-        // hottest path, felt as typing/scroll lag). The descriptions we harvest
+        // TIME-based cache, deliberately, checked BEFORE any filesystem work:
+        // the live session's transcript changes every few seconds, so a content
+        // signature would never hit, and even the directory listing + mtime
+        // sort showed up in profiles (a stat per comparison). Descriptions
         // belong to tasks that ALREADY started, so five-minute staleness is
-        // harmless — a task launched since then simply falls back to showing
-        // its command until the next harvest.
+        // harmless — a newer task shows its command until the next harvest.
         let cacheKey = "described:\(dir)"
         var described: [(command: String, description: String)] = []
         if let cached: [[String]] = Self.transcriptCache.timedValue(for: cacheKey, ttl: 300) {
             described = cached.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
-        } else {
+            guard !described.isEmpty else { return tasks }
+            return applyDescriptions(described, to: tasks)
+        }
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return tasks }
+        // Stat each candidate ONCE, then sort — newest last so fresher
+        // descriptions win.
+        let files = names.filter { $0.hasSuffix(".jsonl") }
+            .compactMap { name -> (path: String, mtime: Date)? in
+                let path = dir + "/" + name
+                guard let attrs = try? fm.attributesOfItem(atPath: path) else { return nil }
+                return (path, attrs[.modificationDate] as? Date ?? .distantPast)
+            }
+            .sorted { $0.mtime < $1.mtime }
+            .suffix(6)
+            .map(\.path)
+        guard !files.isEmpty else { return tasks }
+        do {
             let grep = Process()
             grep.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
             // Backgrounded Bash calls AND Monitor tool calls both carry a
@@ -1857,7 +1855,14 @@ final class RaiModel: ObservableObject {
             )
         }
         guard !described.isEmpty else { return tasks }
-        return tasks.map { task in
+        return applyDescriptions(described, to: tasks)
+    }
+
+    nonisolated private static func applyDescriptions(
+        _ described: [(command: String, description: String)],
+        to tasks: [AgentBackgroundTask]
+    ) -> [AgentBackgroundTask] {
+        tasks.map { task in
             var task = task
             for entry in described.reversed()
             where BackgroundWorkParser.matches(definition: task.definition, command: entry.command) {
@@ -1912,19 +1917,29 @@ final class RaiModel: ObservableObject {
             file = dir + "/" + uuid + ".jsonl"
         } else if let names = try? fm.contentsOfDirectory(atPath: dir) {
             file = names.filter { $0.hasSuffix(".jsonl") }
-                .map { dir + "/" + $0 }
-                .max {
-                    let a = (try? fm.attributesOfItem(atPath: $0)[.modificationDate] as? Date) ?? .distantPast
-                    let b = (try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast
-                    return (a ?? .distantPast) < (b ?? .distantPast)
+                .compactMap { name -> (path: String, mtime: Date)? in
+                    let path = dir + "/" + name
+                    guard let attrs = try? fm.attributesOfItem(atPath: path) else { return nil }
+                    return (path, attrs[.modificationDate] as? Date ?? .distantPast)
                 }
+                .max { $0.mtime < $1.mtime }?
+                .path
         }
         guard let file else { return [] }
+        // Exact signature hit first (idle sessions: free). For LIVE sessions
+        // the file churns every few seconds and the signature never matches —
+        // floor those to one parse per 45s; pending async work does not
+        // meaningfully change faster.
         if let signature = TranscriptCache.signature(of: file),
            let cached: [AgentBackgroundTask] = Self.transcriptCache.value(
                for: "pending:" + file, signature: signature
            ) {
             return cached
+        }
+        if let recent: [AgentBackgroundTask] = Self.transcriptCache.timedValue(
+            for: "pending-ttl:" + file, ttl: 45
+        ) {
+            return recent
         }
         guard let handle = FileHandle(forReadingAtPath: file) else { return [] }
         defer { try? handle.close() }
@@ -1951,7 +1966,30 @@ final class RaiModel: ObservableObject {
         if let signature = TranscriptCache.signature(of: file) {
             Self.transcriptCache.store(pending, for: "pending:" + file, signature: signature)
         }
+        Self.transcriptCache.storeTimed(pending, for: "pending-ttl:" + file)
         return pending
+    }
+
+    /// paneID → its claude process (pid, cmdline, cwd), cached because a
+    /// pane's claude pid is stable for its lifetime. Validated per use with a
+    /// zero-signal kill(2); on miss the herdr CLI re-resolves. This removes
+    /// ~one process spawn per pane per refresh cycle.
+    private var claudeInfoCache: [String: (pid: Int32, cmdline: String, cwd: String)] = [:]
+
+    private func claudeInfo(forPane paneID: String) async -> (pid: Int32, cmdline: String, cwd: String)? {
+        if let cached = claudeInfoCache[paneID], kill(cached.pid, 0) == 0 {
+            return cached
+        }
+        claudeInfoCache[paneID] = nil
+        guard let info = await processInfo(for: paneID) else { return nil }
+        let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
+        guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes),
+              let claude = info.foregroundProcesses.first(where: { $0.pid == claudePID }) else {
+            return nil
+        }
+        let resolved = (pid: Int32(claude.pid), cmdline: claude.cmdline, cwd: claude.cwd)
+        claudeInfoCache[paneID] = resolved
+        return resolved
     }
 
     /// Refreshes the sidebar's background-work map for every pane (throttled).
@@ -1965,23 +2003,19 @@ final class RaiModel: ObservableObject {
             let rows = await Task.detached { Self.psRows() }.value
             var result: [String: [AgentBackgroundTask]] = [:]
             for paneID in paneIDs {
-                guard let info = await processInfo(for: paneID) else { continue }
-                let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
-                guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes)
-                else { continue }
-                var tasks = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
-                if let claude = info.foregroundProcesses.first(where: { $0.pid == claudePID }) {
-                    let shellTasks = tasks
-                    tasks = await Task.detached {
-                        var enriched = shellTasks.isEmpty
-                            ? shellTasks
-                            : Self.transcriptSummaries(for: shellTasks, claudeCWD: claude.cwd)
-                        enriched += Self.transcriptPendingWork(
-                            claudeCmdline: claude.cmdline, claudeCWD: claude.cwd
-                        )
-                        return enriched
-                    }.value
-                }
+                guard let claude = await claudeInfo(forPane: paneID) else { continue }
+                let shellTasks = BackgroundWorkParser.backgroundShells(
+                    psRows: rows, claudePID: Int(claude.pid)
+                )
+                let tasks = await Task.detached {
+                    var enriched = shellTasks.isEmpty
+                        ? shellTasks
+                        : Self.transcriptSummaries(for: shellTasks, claudeCWD: claude.cwd)
+                    enriched += Self.transcriptPendingWork(
+                        claudeCmdline: claude.cmdline, claudeCWD: claude.cwd
+                    )
+                    return enriched
+                }.value
                 if !tasks.isEmpty { result[paneID] = tasks }
             }
             guard generation == connectionGeneration else { return }
