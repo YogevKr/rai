@@ -271,7 +271,7 @@ public actor HerdrClient {
         var wireSubscriptions: [JSONValue] = []
         for type in subscriptions {
             switch type {
-            case "pane.agent_status_changed":
+            case "pane.agent_status_changed", "pane.scroll_changed":
                 // Protocol 16 requires a pane filter for this subscription.
                 wireSubscriptions.append(
                     contentsOf: paneIDs.map {

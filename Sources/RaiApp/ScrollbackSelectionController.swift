@@ -55,12 +55,14 @@ final class ScrollbackSelectionController {
     private var stickyStart: Position?
     private var stickyEnd: Position?
     private var wheelReconcileTask: Task<Void, Never>?
+    private var scrollEventTask: Task<Void, Never>?
 
     // MARK: gesture lifecycle
 
     func mouseDown() {
         stopTimer()
         wheelReconcileTask?.cancel()
+        stopScrollEventStream()
         engaged = false
         probing = false
         probeFailed = false
@@ -104,6 +106,8 @@ final class ScrollbackSelectionController {
         let text = model.assembledText()
         if copyOnSelect {
             clear()
+        } else {
+            startScrollEventStream()
         }
         return text
     }
@@ -128,6 +132,49 @@ final class ScrollbackSelectionController {
             self.model = m
             self.lastScroll = scroll
             self.lastAppliedHighlight = nil
+            self.startScrollEventStream()
+        }
+    }
+
+    /// Follows herdr's pane.scroll_changed events (delivered the instant the
+    /// pane scrolls, payload carries the offsets) so the highlight re-anchors
+    /// at scroll speed — no polling, no settle delay.
+    private func startScrollEventStream() {
+        guard scrollEventTask == nil, let paneID else { return }
+        let stream = client.events(
+            subscriptions: ["pane.scroll_changed"], paneIDs: [paneID]
+        )
+        scrollEventTask = Task { [weak self] in
+            do {
+                for try await event in stream {
+                    guard !Task.isCancelled else { return }
+                    guard event.name == "pane.scroll_changed",
+                          let scroll = event.scroll else { continue }
+                    await MainActor.run { self?.applyScroll(scroll) }
+                }
+            } catch {
+                // Stream ended (reconnect, herd switch): the debounced wheel
+                // reconcile remains as the fallback path.
+            }
+        }
+    }
+
+    private func stopScrollEventStream() {
+        scrollEventTask?.cancel()
+        scrollEventTask = nil
+    }
+
+    private func applyScroll(_ scroll: PaneScroll) {
+        guard model.isActive, let view else { return }
+        lastScroll = scroll
+        lastAppliedHighlight = nil
+        if let hl = model.visibleHighlight(scroll: scroll) {
+            view.setSelectionRange(
+                start: Position(col: hl.startCol, row: hl.startRow),
+                end: Position(col: hl.endCol, row: hl.endRow)
+            )
+        } else if view.selectionActive {
+            view.selectNone()
         }
     }
 
@@ -187,6 +234,7 @@ final class ScrollbackSelectionController {
 
     func clear() {
         stopTimer()
+        stopScrollEventStream()
         model.reset()
         engaged = false
     }

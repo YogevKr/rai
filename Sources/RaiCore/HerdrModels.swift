@@ -71,6 +71,12 @@ public struct PaneScroll: Codable, Sendable, Equatable {
     public let maxOffsetFromBottom: Int
     public let viewportRows: Int
 
+    public init(offsetFromBottom: Int, maxOffsetFromBottom: Int, viewportRows: Int) {
+        self.offsetFromBottom = offsetFromBottom
+        self.maxOffsetFromBottom = maxOffsetFromBottom
+        self.viewportRows = viewportRows
+    }
+
     enum CodingKeys: String, CodingKey {
         case offsetFromBottom = "offset_from_bottom"
         case maxOffsetFromBottom = "max_offset_from_bottom"
@@ -250,6 +256,19 @@ public struct HerdrEvent: Sendable, Equatable {
     public let data: [String: JSONValue]
 
     public var paneID: String? { data["pane_id"]?.stringValue }
+
+    /// The scroll payload of a pane.scroll_changed event.
+    public var scroll: PaneScroll? {
+        guard let object = data["scroll"]?.objectValue,
+              let offset = object["offset_from_bottom"]?.numberValue,
+              let max = object["max_offset_from_bottom"]?.numberValue,
+              let rows = object["viewport_rows"]?.numberValue else { return nil }
+        return PaneScroll(
+            offsetFromBottom: Int(offset),
+            maxOffsetFromBottom: Int(max),
+            viewportRows: Int(rows)
+        )
+    }
     public var workspaceID: String? { data["workspace_id"]?.stringValue }
     public var tabID: String? { data["tab_id"]?.stringValue }
 }

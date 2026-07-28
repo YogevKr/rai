@@ -48,6 +48,11 @@ public enum JSONValue: Codable, Sendable, Equatable {
         return value
     }
 
+    public var numberValue: Double? {
+        if case let .number(value) = self { return value }
+        return nil
+    }
+
     public var objectValue: [String: JSONValue]? {
         guard case .object(let value) = self else { return nil }
         return value
