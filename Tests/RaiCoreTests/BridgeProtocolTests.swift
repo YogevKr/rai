@@ -35,6 +35,7 @@ final class BridgeProtocolTests: XCTestCase {
             .registerPush(deviceToken: "012345abcdef", environment: "sandbox"),
             .unregisterPush(deviceToken: "012345abcdef"),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39),
+            .sendKeys(paneID: "pane-1", keys: ["1"]),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
             .authFailed(reason: "Invalid pairing token"),

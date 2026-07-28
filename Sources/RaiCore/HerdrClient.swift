@@ -177,6 +177,16 @@ public actor HerdrClient {
         return result.read
     }
 
+    public func sendKeys(paneID: String, keys: [String]) async throws {
+        let _: JSONValue = try call(
+            method: "pane.send_input",
+            params: [
+                "pane_id": .string(paneID),
+                "keys": .array(keys.map { .string($0) }),
+            ]
+        )
+    }
+
     public func sendInput(paneID: String, bytes: [UInt8]) async throws {
         let tokens = PaneInputTokenizer.tokenize(bytes)
         var previousWasText = false

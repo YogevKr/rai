@@ -89,6 +89,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// companion can seed its local buffer before the live frame stream —
     /// agent TUIs run on the alt screen, which never produces local scrollback.
     case readScrollback(paneID: String, lines: Int, rows: Int)
+    /// Named keypresses (herdr key names: "enter", "1", "ctrl+c", …) that must
+    /// act as keystrokes, not pasted text — e.g. answering a Claude dialog.
+    case sendKeys(paneID: String, keys: [String])
     case renameWorkspace(workspaceID: String, label: String)
     case closeWorkspace(workspaceID: String)
     case broadcastInput(tabID: String, text: String)
@@ -118,7 +121,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case protocolVersion, sessionName
         case reason, snapshot, event, message
         case deviceToken, environment
-        case lines
+        case lines, keys
         case text, name, work, sessions
     }
 
@@ -127,7 +130,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
-        case readScrollback, scrollback
+        case readScrollback, scrollback, sendKeys
         case renameWorkspace, closeWorkspace, broadcastInput
         case listSessions, selectSession
         case backgroundWork, sessions
@@ -207,6 +210,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 paneID: try container.decode(String.self, forKey: .paneID),
                 lines: try container.decode(Int.self, forKey: .lines),
                 rows: try container.decode(Int.self, forKey: .rows)
+            )
+        case .sendKeys:
+            self = .sendKeys(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                keys: try container.decode([String].self, forKey: .keys)
             )
         case .scrollback:
             self = .scrollback(
@@ -330,6 +338,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(paneID, forKey: .paneID)
             try container.encode(lines, forKey: .lines)
             try container.encode(rows, forKey: .rows)
+        case let .sendKeys(paneID, keys):
+            try container.encode(MessageType.sendKeys, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(keys, forKey: .keys)
         case let .scrollback(paneID, bytesBase64):
             try container.encode(MessageType.scrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)

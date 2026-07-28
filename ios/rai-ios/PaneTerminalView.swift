@@ -74,7 +74,15 @@ struct PaneTerminalView: View {
                     select: { option in
                         promptController.send(
                             option: option,
-                            through: { connection.sendInput($0, to: pane.paneID) }
+                            // Dialogs listen for keypresses; a digit sent as
+                            // text arrives as a paste and is ignored. Route
+                            // the answer through herdr's key semantics.
+                            through: { bytes in
+                                connection.sendKeys(
+                                    [String(decoding: bytes, as: UTF8.self)],
+                                    to: pane.paneID
+                                )
+                            }
                         )
                     },
                     escape: {
@@ -119,7 +127,7 @@ struct PaneTerminalView: View {
             .padding(.vertical, 8)
             .background(.bar)
 
-            if pane.agent != nil {
+            if pane.agent != nil, promptController.prompt == nil {
                 QuickReplyRow { text in
                     sendLine(text)
                 }
@@ -212,6 +220,7 @@ struct PaneTerminalView: View {
     private func sendLine(_ text: String) {
         connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
     }
+
 
     private func sendPhoto(_ item: PhotosPickerItem) async {
         isSendingImage = true

@@ -233,6 +233,10 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func sendKeys(_ keys: [String], to paneID: String) {
+        sendAction(.sendKeys(paneID: paneID, keys: keys))
+    }
+
     func sendInput(_ bytes: [UInt8], to paneID: String) {
         Task {
             do {
@@ -453,7 +457,7 @@ final class BridgeConnection: ObservableObject {
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
-             .renameWorkspace, .closeWorkspace, .broadcastInput,
+             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
              .listSessions, .selectSession, .sessions:
             break
         }

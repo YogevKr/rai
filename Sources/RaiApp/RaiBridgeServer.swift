@@ -519,6 +519,14 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Could not close tab \(tabID)."), to: client)
                 return
             }
+        case let .sendKeys(paneID, keys):
+            guard !keys.isEmpty, keys.count <= 8 else {
+                send(.error(message: "sendKeys takes 1-8 keys."), to: client)
+                return
+            }
+            await perform(for: client) {
+                try await self.model.client.sendKeys(paneID: paneID, keys: keys)
+            }
         case let .readScrollback(paneID, lines, rows):
             guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
                 send(.error(message: "Unknown pane \(paneID)."), to: client)

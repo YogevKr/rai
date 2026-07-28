@@ -63,9 +63,10 @@ enum PromptDetector {
         let context = region.joined(separator: "\n").lowercased()
         let labels = parsed.map(\.option.label).joined(separator: " ").lowercased()
 
+        // Claude v2.1.220 dialogs hint "Esc to cancel · Tab to amend" with no
+        // Enter/Return wording, so only the cancel side is a reliable marker.
         let hasPromptControls =
-            (context.contains("enter") || context.contains("return"))
-            && (context.contains("esc") || context.contains("cancel"))
+            context.contains("esc") || context.contains("cancel")
         let isPermissionOrTrust =
             context.contains("permission")
             || context.contains("allow")
