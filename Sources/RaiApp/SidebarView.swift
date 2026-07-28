@@ -813,17 +813,6 @@ private struct AgentRow: View {
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(Theme.textTertiary)
             }
-            // Broadcast is a tab action, so it only appears on the selected tab.
-            if selected {
-                Button(action: onBroadcast) {
-                    Image(systemName: "megaphone")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Broadcast to every pane in this tab")
-            }
         }
         // Indent tabs inside the chrome (not via outer padding) so the drag/drop
         // modifiers still wrap the full-width row and reordering keeps working.
@@ -859,6 +848,7 @@ private struct AgentRow: View {
             Divider()
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }
+            Button("Broadcast…", action: onBroadcast)
             Button("Close", role: .destructive) { model.close(tab: tab) }
             let actions = model.pluginActions(for: .tab)
             if !actions.isEmpty {
