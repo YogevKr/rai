@@ -1741,6 +1741,42 @@ final class RaiModel: ObservableObject {
         return shells + async
     }
 
+    /// Transcript scans are expensive (multi-MB jsonl reads + JSON parsing) and
+    /// transcripts only grow — cache results keyed by (path, size, mtime) so an
+    /// unchanged file costs one stat instead of a re-read. In steady state an
+    /// idle herd makes every refresh nearly free.
+    private final class TranscriptCache: @unchecked Sendable {
+        struct Signature: Equatable {
+            let size: UInt64
+            let mtime: Date
+        }
+        private let lock = NSLock()
+        private var entries: [String: (Signature, Any)] = [:]
+
+        func value<T>(for key: String, signature: Signature) -> T? {
+            lock.lock(); defer { lock.unlock() }
+            guard let (cached, value) = entries[key], cached == signature else { return nil }
+            return value as? T
+        }
+
+        func store(_ value: Any, for key: String, signature: Signature) {
+            lock.lock(); defer { lock.unlock() }
+            entries[key] = (signature, value)
+        }
+
+        static func signature(of path: String) -> Signature? {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
+                return nil
+            }
+            return Signature(
+                size: (attrs[.size] as? NSNumber)?.uint64Value ?? 0,
+                mtime: attrs[.modificationDate] as? Date ?? .distantPast
+            )
+        }
+    }
+
+    private static let transcriptCache = TranscriptCache()
+
     /// Recovers the session's own human descriptions for background tasks from
     /// the Claude Code transcript: every backgrounded Bash tool call records a
     /// `description` alongside its `command`. Matched by whitespace-insensitive
@@ -1769,23 +1805,39 @@ final class RaiModel: ObservableObject {
             .suffix(12)
         guard !files.isEmpty else { return tasks }
 
-        let grep = Process()
-        grep.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
-        // Backgrounded Bash calls AND Monitor tool calls both carry a
-        // command + human description in the transcript.
-        grep.arguments = ["-hE", "\"run_in_background\":true|\"name\":\"Monitor\""] + files
-        let pipe = Pipe()
-        grep.standardOutput = pipe
-        grep.standardError = FileHandle.nullDevice
-        guard (try? grep.run()) != nil else { return tasks }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        grep.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return tasks }
-
+        // Cache the harvest against the newest transcript's signature: this
+        // greps up to 12 multi-MB files, far too expensive to repeat while
+        // nothing new has been written.
+        let newest = files.last ?? dir
+        let cacheKey = "described:\(dir):\(files.count)"
         var described: [(command: String, description: String)] = []
-        for line in text.split(separator: "\n") {
-            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
-            collectBackgroundBashInputs(obj, into: &described)
+        if let signature = TranscriptCache.signature(of: newest),
+           let cached: [[String]] = Self.transcriptCache.value(for: cacheKey, signature: signature) {
+            described = cached.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+        } else {
+            let grep = Process()
+            grep.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
+            // Backgrounded Bash calls AND Monitor tool calls both carry a
+            // command + human description in the transcript.
+            grep.arguments = ["-hE", "\"run_in_background\":true|\"name\":\"Monitor\""] + files
+            let pipe = Pipe()
+            grep.standardOutput = pipe
+            grep.standardError = FileHandle.nullDevice
+            guard (try? grep.run()) != nil else { return tasks }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            grep.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return tasks }
+
+            for line in text.split(separator: "\n") {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
+                collectBackgroundBashInputs(obj, into: &described)
+            }
+            if let signature = TranscriptCache.signature(of: newest) {
+                Self.transcriptCache.store(
+                    described.map { [$0.command, $0.description] },
+                    for: cacheKey, signature: signature
+                )
+            }
         }
         guard !described.isEmpty else { return tasks }
         return tasks.map { task in
@@ -1850,7 +1902,14 @@ final class RaiModel: ObservableObject {
                     return (a ?? .distantPast) < (b ?? .distantPast)
                 }
         }
-        guard let file, let handle = FileHandle(forReadingAtPath: file) else { return [] }
+        guard let file else { return [] }
+        if let signature = TranscriptCache.signature(of: file),
+           let cached: [AgentBackgroundTask] = Self.transcriptCache.value(
+               for: "pending:" + file, signature: signature
+           ) {
+            return cached
+        }
+        guard let handle = FileHandle(forReadingAtPath: file) else { return [] }
         defer { try? handle.close() }
         // Tail window: recent enough for anything still in flight.
         let tailBytes: UInt64 = 6 * 1024 * 1024
@@ -1861,7 +1920,7 @@ final class RaiModel: ObservableObject {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         if size > tailBytes, !lines.isEmpty { lines.removeFirst() }   // partial first line
 
-        return TranscriptWorkParser.pendingAsyncWork(jsonlLines: lines)
+        let pending = TranscriptWorkParser.pendingAsyncWork(jsonlLines: lines)
             // Shells/monitors are covered live by process detection; the
             // transcript contributes only the process-less kinds.
             .filter { $0.kind == .subagent || $0.kind == .workflow }
@@ -1872,11 +1931,15 @@ final class RaiModel: ObservableObject {
                     summary: "[\(work.kind.rawValue)] \(work.description)"
                 )
             }
+        if let signature = TranscriptCache.signature(of: file) {
+            Self.transcriptCache.store(pending, for: "pending:" + file, signature: signature)
+        }
+        return pending
     }
 
     /// Refreshes the sidebar's background-work map for every pane (throttled).
     func refreshBackgroundWork(force: Bool = false) {
-        guard force || Date().timeIntervalSince(lastBackgroundWorkRefresh) > 10 else { return }
+        guard force || Date().timeIntervalSince(lastBackgroundWorkRefresh) > 20 else { return }
         lastBackgroundWorkRefresh = Date()
         guard let snapshot else { return }
         let paneIDs = snapshot.panes.map(\.paneID)
@@ -1905,8 +1968,12 @@ final class RaiModel: ObservableObject {
                 if !tasks.isEmpty { result[paneID] = tasks }
             }
             guard generation == connectionGeneration else { return }
-            backgroundWork = result
-            bridgeServer.relay(backgroundWork: result)
+            // Only publish on change: an unchanged map re-rendering the whole
+            // sidebar (and re-broadcasting to phones) every cycle is pure churn.
+            if backgroundWork != result {
+                backgroundWork = result
+                bridgeServer.relay(backgroundWork: result)
+            }
         }
     }
 
