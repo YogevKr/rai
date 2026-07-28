@@ -87,6 +87,22 @@ enum ScrolledPillDecision {
     }
 }
 
+/// Ghostty-parity escaping for paths dropped onto a terminal: backslash-escape
+/// every character the shell (or Claude's @-path parsing) would otherwise
+/// interpret, leaving common path characters readable.
+enum DroppedPathEscaper {
+    private static let safe = Set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+=:,@%")
+
+    static func escape(_ path: String) -> String {
+        String(path.flatMap { safe.contains($0) ? [$0] : ["\\", $0] })
+    }
+
+    static func line(for urls: [URL]) -> String {
+        urls.map { escape($0.path) }.joined(separator: " ") + " "
+    }
+}
+
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
@@ -96,6 +112,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var scrolledOffset = 0
     private var mouseIsDown = false
     private var frameObserverInstalled = false
+    private var dragTypesRegistered = false
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -418,10 +435,41 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         }
     }
 
+    // MARK: file drop → path insertion (Ghostty parity)
+
+    // SwiftTerm has no NSDraggingDestination support, so without this a file
+    // dragged from Finder onto a pane is simply rejected. Ghostty (and
+    // Terminal.app) type the escaped path into the pty; do the same.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        // Focus follows the drop: the paths land in this pane's pty, so the
+        // pane should become the selected one, exactly like a click.
+        onPlainClick?()
+        window?.makeFirstResponder(self)
+        send(txt: DroppedPathEscaper.line(for: urls))
+        return true
+    }
+
+    private func droppedFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+    }
+
     // MARK: "back to live" pill
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if !dragTypesRegistered {
+            dragTypesRegistered = true
+            registerForDraggedTypes([.fileURL])
+        }
         // Pooled views move between windows/containers; keep the pill (a child
         // panel of the OLD window) from lingering over unrelated content.
         updateScrolledPill()
