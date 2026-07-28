@@ -2,13 +2,12 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Selection auto-scroll at both edges** — drag a selection to the top *or*
-  bottom edge of a terminal and the viewport now scrolls while the selection
-  keeps growing, so you can select past what's on screen. Previously the bottom
-  edge never scrolled (and the top was inconsistent).
-- **The wheel keeps your selection** — scrolling while text is selected now
-  moves the terminal's own scrollback so the highlight stays glued to its text,
-  instead of the running program scrolling out from under the selection.
+- **Reverts v0.1.12's terminal‑selection changes.** Those changes assumed the
+  pane terminal had its own scrollback, but rai renders panes through herdr's
+  full‑screen attach (the scrollback lives in herdr), so the selection
+  auto‑scroll had nothing local to move and the wheel change interfered with
+  scrolling while text was selected. Reverted to the prior, working behavior.
+  Proper selection‑scrolling needs a deeper terminal change and is in progress.
 
 ### Install
 

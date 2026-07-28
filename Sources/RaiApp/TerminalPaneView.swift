@@ -168,15 +168,6 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // `scrollWheel` is `public` (not `open`), hence the monitor instead of an
     // override — same story as `handleInterceptedKey` above.
     func handleInterceptedScroll(_ event: NSEvent) {
-        // With an active selection, keep the wheel local (reporting stays off, so
-        // scrollWheel takes the scrollback path). The selection is anchored to
-        // buffer content, so scrolling the local viewport keeps the highlight
-        // glued to its text — Ghostty parity. Forwarding the wheel to a mouse-mode
-        // app instead would scroll and redraw over the selection, detaching it.
-        if selectionActive {
-            scrollWheel(with: event)
-            return
-        }
         allowMouseReporting = true
         scrollWheel(with: event)
         allowMouseReporting = false
