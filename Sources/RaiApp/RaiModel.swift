@@ -1764,6 +1764,23 @@ final class RaiModel: ObservableObject {
             entries[key] = (signature, value)
         }
 
+        /// Time-based entries, for work that is expensive AND tolerant of
+        /// staleness (human descriptions of already-running tasks).
+        private var timed: [String: (Date, Any)] = [:]
+
+        func timedValue<T>(for key: String, ttl: TimeInterval) -> T? {
+            lock.lock(); defer { lock.unlock() }
+            guard let (stamp, value) = timed[key], Date().timeIntervalSince(stamp) < ttl else {
+                return nil
+            }
+            return value as? T
+        }
+
+        func storeTimed(_ value: Any, for key: String) {
+            lock.lock(); defer { lock.unlock() }
+            timed[key] = (Date(), value)
+        }
+
         static func signature(of path: String) -> Signature? {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
                 return nil
@@ -1802,17 +1819,19 @@ final class RaiModel: ObservableObject {
                 let b = (try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast
                 return (a ?? .distantPast) < (b ?? .distantPast)
             }
-            .suffix(12)
+            .suffix(6)
         guard !files.isEmpty else { return tasks }
 
-        // Cache the harvest against the newest transcript's signature: this
-        // greps up to 12 multi-MB files, far too expensive to repeat while
-        // nothing new has been written.
-        let newest = files.last ?? dir
-        let cacheKey = "described:\(dir):\(files.count)"
+        // TIME-based cache, deliberately: the live session's transcript changes
+        // every few seconds, so a content signature would never hit and this
+        // multi-file grep would run on every refresh (measured: the app's
+        // hottest path, felt as typing/scroll lag). The descriptions we harvest
+        // belong to tasks that ALREADY started, so five-minute staleness is
+        // harmless — a task launched since then simply falls back to showing
+        // its command until the next harvest.
+        let cacheKey = "described:\(dir)"
         var described: [(command: String, description: String)] = []
-        if let signature = TranscriptCache.signature(of: newest),
-           let cached: [[String]] = Self.transcriptCache.value(for: cacheKey, signature: signature) {
+        if let cached: [[String]] = Self.transcriptCache.timedValue(for: cacheKey, ttl: 300) {
             described = cached.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
         } else {
             let grep = Process()
@@ -1832,12 +1851,10 @@ final class RaiModel: ObservableObject {
                 guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
                 collectBackgroundBashInputs(obj, into: &described)
             }
-            if let signature = TranscriptCache.signature(of: newest) {
-                Self.transcriptCache.store(
-                    described.map { [$0.command, $0.description] },
-                    for: cacheKey, signature: signature
-                )
-            }
+            Self.transcriptCache.storeTimed(
+                described.map { [$0.command, $0.description] },
+                for: cacheKey
+            )
         }
         guard !described.isEmpty else { return tasks }
         return tasks.map { task in
@@ -1912,7 +1929,7 @@ final class RaiModel: ObservableObject {
         guard let handle = FileHandle(forReadingAtPath: file) else { return [] }
         defer { try? handle.close() }
         // Tail window: recent enough for anything still in flight.
-        let tailBytes: UInt64 = 6 * 1024 * 1024
+        let tailBytes: UInt64 = 1_536 * 1024
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > tailBytes ? size - tailBytes : 0)
         guard let data = try? handle.readToEnd(),
