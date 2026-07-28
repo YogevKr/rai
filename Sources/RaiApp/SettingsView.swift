@@ -51,6 +51,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// On (default): phone pushes are held while the user is active at the
+    /// Mac and fire only if the pane still wants attention once they step
+    /// away. Off: push immediately, presence ignored.
+    @Published var holdPushesWhileAtMac: Bool {
+        didSet {
+            userDefaults.set(holdPushesWhileAtMac, forKey: Self.holdPushesKey)
+        }
+    }
+
     @Published private(set) var systemThemeVariant: ThemeVariant
 
     private static let terminalFontFamilyKey = "terminalFontFamily"
@@ -60,6 +69,7 @@ final class SettingsStore: ObservableObject {
     private static let blockedSoundKey = "blockedNotificationSound"
     private static let doneSoundKey = "doneNotificationSound"
     private static let copyOnSelectKey = "terminalCopyOnSelect"
+    private static let holdPushesKey = "holdPushesWhileAtMac"
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -79,6 +89,7 @@ final class SettingsStore: ObservableObject {
             rawValue: userDefaults.string(forKey: Self.doneSoundKey) ?? ""
         ) ?? .default
         copyOnSelect = userDefaults.bool(forKey: Self.copyOnSelectKey)
+        holdPushesWhileAtMac = userDefaults.object(forKey: Self.holdPushesKey) as? Bool ?? true
         colorOverrides = Self.loadColorOverrides(
             from: userDefaults.data(forKey: Self.colorOverridesKey)
         )
@@ -600,6 +611,17 @@ private struct AppearanceSettingsView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle("Mute notifications", isOn: $model.notificationsMuted)
                         Toggle("Only needs-you by default", isOn: $model.onlyNeedsYou)
+                        Toggle(
+                            "Hold phone pushes while you're at this Mac",
+                            isOn: $settings.holdPushesWhileAtMac
+                        )
+                        Text(
+                            "The phone buzzes only if a pane still needs you "
+                                + "after ~2 minutes without keyboard or mouse input. "
+                                + "Mac notifications are unaffected."
+                        )
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
                         Divider().overlay(Theme.hairline)
                         soundPicker(
                             "Needs you",

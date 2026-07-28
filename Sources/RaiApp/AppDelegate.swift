@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Panes we posted a "Needs you" notification for — retracted when the
     /// pane stops being blocked (handled at the desk).
     private var notifiedBlockedPanes: Set<String> = []
+    /// Phone pushes held while the user is active at the Mac, keyed by pane.
+    private var heldPushes: [String: Task<Void, Never>] = [:]
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
 
@@ -324,14 +326,52 @@ extension AppDelegate: RaiSnapshotObserver {
             notifiedBlockedPanes.insert(pane.paneID)
         }
         postNotification(for: transition, pane: pane, in: snapshot)
-        model.bridgeServer.sendPush(
-            title: title,
-            subtitle: workspace,
-            body: body,
-            paneID: pane.paneID,
-            workspaceID: pane.workspaceID,
-            workspace: workspace,
-            requiresAttention: transition.newStatus == .blocked
-        )
+
+        let sendPush = { [weak model] in
+            model?.bridgeServer.sendPush(
+                title: title,
+                subtitle: workspace,
+                body: body,
+                paneID: pane.paneID,
+                workspaceID: pane.workspaceID,
+                workspace: workspace,
+                requiresAttention: transition.newStatus == .blocked
+            )
+        }
+        heldPushes.removeValue(forKey: pane.paneID)?.cancel()
+        guard SettingsStore.shared.holdPushesWhileAtMac,
+              UserPresence.idleSeconds < UserPresence.awayAfter else {
+            sendPush()
+            return
+        }
+        // User is at the Mac: hold the push. It fires only if the pane still
+        // wants the same attention after they go idle; handled at the desk
+        // (status changed, pane selected, pane gone) means it dies quietly.
+        let paneID = pane.paneID
+        let expected = transition.newStatus
+        heldPushes[paneID] = Task { [weak self, weak model] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(UserPresence.pollInterval))
+                guard let self, let model, !Task.isCancelled else { return }
+                let decision = HeldPushDecision.evaluate(
+                    paneStatus: model.snapshot?.panes
+                        .first { $0.paneID == paneID }?.agentStatus,
+                    expectedStatus: expected,
+                    isSelectedOnMac: model.selectedPaneID == paneID,
+                    idleSeconds: UserPresence.idleSeconds,
+                    awayAfter: UserPresence.awayAfter
+                )
+                switch decision {
+                case .wait:
+                    continue
+                case .push:
+                    sendPush()
+                    fallthrough
+                case .cancel:
+                    self.heldPushes.removeValue(forKey: paneID)
+                    return
+                }
+            }
+        }
     }
 }
