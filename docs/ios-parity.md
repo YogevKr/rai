@@ -30,6 +30,29 @@ Audited 2026-07-28 against `main` (bridge protocol v5).
 | Settings (fonts, plugins, integrations, server ops) | full settings window | — | ⏸ skip: Mac-admin concerns; phone stays thin |
 | Command palette | ⌘K | — | ⏸ skip: the herd list *is* the palette at phone scale |
 
+## Mac side LANDED (2026-07-28, feat/bridge-parity) — phone UI now unblocked
+
+All additive, no version bump (old phones skip unknown message types):
+
+- `renameWorkspace {workspaceID, label}` / `closeWorkspace {workspaceID}`
+  (client→server) → applied directly; confirm destructive intent phone-side.
+- `broadcastInput {tabID, text}` (client→server) → sends text+Enter to every
+  pane in the tab.
+- `listSessions` (client→server) → replies `sessions` with
+  `[{name, is_running, is_current}]`; `selectSession {name}` switches the
+  herd the Mac (and phone) watches.
+- `backgroundWork` (server→client, pushed on refresh ~10s):
+  `{type:"backgroundWork", work:[{pane_id, summaries:[String]}]}` — the
+  pane's pending shells/monitors/subagents/workflows as kind-labeled
+  human summaries (e.g. `[monitor] merge-queue watch`). Panes absent from
+  the list have no pending work. **Phone UI wanted:** ⏳ badge + count on
+  the pane row, summaries in a detail view — a waiting agent must not
+  read as plain Idle.
+- Mac notifications now use stable per-pane identifiers and are RETRACTED
+  when a pane stops being blocked or is selected on the Mac (phone-side
+  mirror of this retraction is a future nicety; APNs can't recall a
+  delivered push without a service extension).
+
 ## Backlog (value order)
 
 1. **Workspace ops over the bridge** — `renameWorkspace` / `closeWorkspace`

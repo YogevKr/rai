@@ -65,4 +65,36 @@ final class BridgeProtocolTests: XCTestCase {
     func testBridgeProtocolVersionIsFive() {
         XCTAssertEqual(bridgeProtocolVersion, 5)
     }
+
+    // Additive-only messages (workspace ops, broadcast, sessions, background
+    // work) round-trip and stay valid JSON — old clients skip unknown types.
+    func testParityBatchMessagesRoundTrip() throws {
+        let messages: [BridgeMessage] = [
+            .renameWorkspace(workspaceID: "w7", label: "renamed"),
+            .closeWorkspace(workspaceID: "w7"),
+            .broadcastInput(tabID: "w7:t1", text: "git status"),
+            .listSessions,
+            .selectSession(name: "default"),
+            .backgroundWork([
+                PaneBackgroundWork(
+                    paneID: "w7:p1",
+                    summaries: ["[monitor] merge-queue watch", "[subagent] Audit iOS app"]
+                ),
+            ]),
+            .sessions([
+                BridgeSessionInfo(name: "default", isRunning: true, isCurrent: true),
+                BridgeSessionInfo(name: "lab", isRunning: false, isCurrent: false),
+            ]),
+        ]
+
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        for message in messages {
+            let encoded = try encoder.encode(message)
+            XCTAssertEqual(
+                try decoder.decode(BridgeMessage.self, from: encoded),
+                message
+            )
+        }
+    }
 }

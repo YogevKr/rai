@@ -31,6 +31,42 @@ public struct BridgeEvent: Codable, Equatable, Sendable {
 /// One discriminated envelope is used in both directions. A flat `type` field
 /// keeps frames easy to inspect and permits clients in languages other than
 /// Swift without relying on Swift enum synthesis.
+/// One pane's pending background work (shells, monitors, subagents,
+/// workflows) as human-readable summaries — the phone's ⏳ signal.
+public struct PaneBackgroundWork: Codable, Equatable, Sendable {
+    public let paneID: String
+    public let summaries: [String]
+
+    public init(paneID: String, summaries: [String]) {
+        self.paneID = paneID
+        self.summaries = summaries
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case paneID = "pane_id"
+        case summaries
+    }
+}
+
+/// A herdr session the Mac can attach to, for the phone's session switcher.
+public struct BridgeSessionInfo: Codable, Equatable, Sendable {
+    public let name: String
+    public let isRunning: Bool
+    public let isCurrent: Bool
+
+    public init(name: String, isRunning: Bool, isCurrent: Bool) {
+        self.name = name
+        self.isRunning = isRunning
+        self.isCurrent = isCurrent
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case isRunning = "is_running"
+        case isCurrent = "is_current"
+    }
+}
+
 public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
     case hello(token: String, client: ClientInfo)
@@ -53,6 +89,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// companion can seed its local buffer before the live frame stream —
     /// agent TUIs run on the alt screen, which never produces local scrollback.
     case readScrollback(paneID: String, lines: Int, rows: Int)
+    case renameWorkspace(workspaceID: String, label: String)
+    case closeWorkspace(workspaceID: String)
+    case broadcastInput(tabID: String, text: String)
+    case listSessions
+    case selectSession(name: String)
 
     // Server -> client
     case welcome(protocolVersion: Int, sessionName: String?)
@@ -63,6 +104,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// ANSI-formatted scrollback history for a pane, sent before its stream's
     /// first frame. Clients that never sent readScrollback never receive it.
     case scrollback(paneID: String, bytesBase64: String)
+    case backgroundWork([PaneBackgroundWork])
+    case sessions([BridgeSessionInfo])
     case error(message: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -76,6 +119,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case reason, snapshot, event, message
         case deviceToken, environment
         case lines
+        case text, name, work, sessions
     }
 
     private enum MessageType: String, Codable {
@@ -84,6 +128,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
         case readScrollback, scrollback
+        case renameWorkspace, closeWorkspace, broadcastInput
+        case listSessions, selectSession
+        case backgroundWork, sessions
         case welcome, authFailed, snapshot, event, paneFrame, error
     }
 
@@ -165,6 +212,32 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .scrollback(
                 paneID: try container.decode(String.self, forKey: .paneID),
                 bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
+            )
+        case .renameWorkspace:
+            self = .renameWorkspace(
+                workspaceID: try container.decode(String.self, forKey: .workspaceID),
+                label: try container.decode(String.self, forKey: .label)
+            )
+        case .closeWorkspace:
+            self = .closeWorkspace(
+                workspaceID: try container.decode(String.self, forKey: .workspaceID)
+            )
+        case .broadcastInput:
+            self = .broadcastInput(
+                tabID: try container.decode(String.self, forKey: .tabID),
+                text: try container.decode(String.self, forKey: .text)
+            )
+        case .listSessions:
+            self = .listSessions
+        case .selectSession:
+            self = .selectSession(name: try container.decode(String.self, forKey: .name))
+        case .backgroundWork:
+            self = .backgroundWork(
+                try container.decode([PaneBackgroundWork].self, forKey: .work)
+            )
+        case .sessions:
+            self = .sessions(
+                try container.decode([BridgeSessionInfo].self, forKey: .sessions)
             )
         case .welcome:
             self = .welcome(
@@ -261,6 +334,28 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.scrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(bytesBase64, forKey: .bytesBase64)
+        case let .renameWorkspace(workspaceID, label):
+            try container.encode(MessageType.renameWorkspace, forKey: .type)
+            try container.encode(workspaceID, forKey: .workspaceID)
+            try container.encode(label, forKey: .label)
+        case let .closeWorkspace(workspaceID):
+            try container.encode(MessageType.closeWorkspace, forKey: .type)
+            try container.encode(workspaceID, forKey: .workspaceID)
+        case let .broadcastInput(tabID, text):
+            try container.encode(MessageType.broadcastInput, forKey: .type)
+            try container.encode(tabID, forKey: .tabID)
+            try container.encode(text, forKey: .text)
+        case .listSessions:
+            try container.encode(MessageType.listSessions, forKey: .type)
+        case let .selectSession(name):
+            try container.encode(MessageType.selectSession, forKey: .type)
+            try container.encode(name, forKey: .name)
+        case let .backgroundWork(work):
+            try container.encode(MessageType.backgroundWork, forKey: .type)
+            try container.encode(work, forKey: .work)
+        case let .sessions(sessions):
+            try container.encode(MessageType.sessions, forKey: .type)
+            try container.encode(sessions, forKey: .sessions)
         case let .welcome(protocolVersion, sessionName):
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)

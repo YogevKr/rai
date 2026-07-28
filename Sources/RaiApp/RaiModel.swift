@@ -1906,6 +1906,7 @@ final class RaiModel: ObservableObject {
             }
             guard generation == connectionGeneration else { return }
             backgroundWork = result
+            bridgeServer.relay(backgroundWork: result)
         }
     }
 
@@ -2113,6 +2114,49 @@ final class RaiModel: ObservableObject {
         let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { return false }
         return await runHerdr(["tab", "rename", tabID, label])
+    }
+
+    /// Workspace rename requested by the phone. The phone confirms
+    /// destructive/renaming intents on its side; this applies directly.
+    func renameWorkspaceFromBridge(workspaceID: String, label rawLabel: String) {
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return }
+        runAction(["workspace", "rename", workspaceID, label], followFocus: false)
+    }
+
+    /// Workspace close requested by the phone (already confirmed there).
+    func closeWorkspaceFromBridge(workspaceID: String) {
+        runAction(["workspace", "close", workspaceID], followFocus: false)
+    }
+
+    /// Broadcast text to every pane in a tab, for the phone's compose bar.
+    func broadcastFromBridge(tabID: String, text: String) {
+        guard !text.isEmpty, let snapshot else { return }
+        let paneIDs = snapshot.panes.filter { $0.tabID == tabID }.map(\.paneID)
+        guard !paneIDs.isEmpty else { return }
+        Task {
+            for paneID in paneIDs {
+                guard await runHerdr(["pane", "send-text", paneID, text]) else { continue }
+                _ = await runHerdr(["pane", "send-keys", paneID, "Enter"])
+            }
+        }
+    }
+
+    /// The session list in the bridge's wire shape.
+    func bridgeSessionList() -> [BridgeSessionInfo] {
+        sessions.map {
+            BridgeSessionInfo(
+                name: $0.name,
+                isRunning: $0.isRunning,
+                isCurrent: isCurrentSession($0)
+            )
+        }
+    }
+
+    /// Switch the herd the Mac (and therefore the phone) is attached to.
+    func selectSessionFromBridge(named name: String) {
+        guard let session = sessions.first(where: { $0.name == name }) else { return }
+        switchSession(session)
     }
 
     func closePaneFromBridge(paneID: String) async -> Bool {

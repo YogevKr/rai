@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private weak var model: RaiModel?
     private var pendingPaneID: String?
+    /// Panes we posted a "Needs you" notification for — retracted when the
+    /// pane stops being blocked (handled at the desk).
+    private var notifiedBlockedPanes: Set<String> = []
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
 
@@ -224,12 +227,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NotificationKey.workspace: snapshot.workspaceLabel(for: pane),
         ]
 
+        // Stable per-pane identifier: a newer notification for the same pane
+        // REPLACES the older one in Notification Center instead of stacking
+        // ("Needs you" superseded by "Finished" reads as one story, not two).
         let request = UNNotificationRequest(
-            identifier: "agent-\(pane.paneID)-\(transition.newStatus.rawValue)-\(UUID())",
+            identifier: Self.notificationIdentifier(paneID: pane.paneID),
             content: content,
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    static func notificationIdentifier(paneID: String) -> String {
+        "agent-\(paneID)"
     }
 
     private static func notificationSound(
@@ -255,6 +265,25 @@ extension AppDelegate: RaiSnapshotObserver {
         updateDockBadge(
             count: snapshot.panes.lazy.filter { $0.agentStatus == .blocked }.count
         )
+
+        // Retract notifications the user has implicitly handled: the pane
+        // they're looking at, and any pane that is no longer blocked (answered
+        // at the desk means the phoneside banner shouldn't linger either).
+        var retractIDs: [String] = []
+        if let selected = model.selectedPaneID {
+            retractIDs.append(Self.notificationIdentifier(paneID: selected))
+        }
+        let blockedNow = Set(
+            snapshot.panes.lazy.filter { $0.agentStatus == .blocked }.map(\.paneID)
+        )
+        for paneID in notifiedBlockedPanes.subtracting(blockedNow) {
+            retractIDs.append(Self.notificationIdentifier(paneID: paneID))
+            notifiedBlockedPanes.remove(paneID)
+        }
+        if !retractIDs.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: retractIDs)
+        }
 
         focusPendingPane(in: snapshot, model: model)
         microController?.update(snapshot: snapshot)
@@ -291,6 +320,9 @@ extension AppDelegate: RaiSnapshotObserver {
         let title = snapshot.displayName(for: pane)
         let body = transition.newStatus == .blocked ? "Needs you" : "Finished"
         let workspace = snapshot.workspaceLabel(for: pane)
+        if transition.newStatus == .blocked {
+            notifiedBlockedPanes.insert(pane.paneID)
+        }
         postNotification(for: transition, pane: pane, in: snapshot)
         model.bridgeServer.sendPush(
             title: title,

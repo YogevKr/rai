@@ -253,6 +253,16 @@ final class RaiBridgeServer: ObservableObject {
         broadcast(.snapshot(snapshot), onlyToSubscribers: true)
     }
 
+    /// Pushes the panes' pending background work (⏳) to subscribed phones —
+    /// summaries only, kind-labeled, so an idle-but-waiting agent reads as
+    /// waiting instead of finished.
+    func relay(backgroundWork: [String: [AgentBackgroundTask]]) {
+        let work = backgroundWork
+            .map { PaneBackgroundWork(paneID: $0.key, summaries: $0.value.map(\.displaySummary)) }
+            .sorted { $0.paneID < $1.paneID }
+        broadcast(.backgroundWork(work), onlyToSubscribers: true)
+    }
+
     func sendPush(
         title: String,
         subtitle: String?,
@@ -438,6 +448,16 @@ final class RaiBridgeServer: ObservableObject {
             await perform(for: client) {
                 try await self.model.client.focusPane(paneID)
             }
+        case let .renameWorkspace(workspaceID, label):
+            model.renameWorkspaceFromBridge(workspaceID: workspaceID, label: label)
+        case let .closeWorkspace(workspaceID):
+            model.closeWorkspaceFromBridge(workspaceID: workspaceID)
+        case let .broadcastInput(tabID, text):
+            model.broadcastFromBridge(tabID: tabID, text: text)
+        case .listSessions:
+            send(.sessions(model.bridgeSessionList()), to: client)
+        case let .selectSession(name):
+            model.selectSessionFromBridge(named: name)
         case let .selectPane(paneID):
             guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
                 send(.error(message: "Unknown pane \(paneID)."), to: client)
@@ -537,7 +557,8 @@ final class RaiBridgeServer: ObservableObject {
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
-        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error:
+        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
+             .backgroundWork, .sessions:
             send(.error(message: "Server-to-client message received from client."), to: client)
         }
     }
