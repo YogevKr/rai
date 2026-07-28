@@ -1594,6 +1594,7 @@ final class RaiModel: ObservableObject {
                 transitions: transitions
             )
             bridgeServer.relay(snapshot: newSnapshot)
+            refreshBackgroundWork()
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)
@@ -1693,6 +1694,90 @@ final class RaiModel: ObservableObject {
         return label.isEmpty
             ? ["pane", "rename", paneID, "--clear"]
             : ["pane", "rename", paneID, label]
+    }
+
+    /// paneID → live background shells/monitors the pane's Claude session has
+    /// registered (see BackgroundWorkParser). Refreshed with the snapshot,
+    /// throttled; drives the sidebar badge and gates "Finished" notifications.
+    @Published private(set) var backgroundWork: [String: [AgentBackgroundTask]] = [:]
+    private var lastBackgroundWorkRefresh = Date.distantPast
+
+    /// One system-wide ps listing (pid, ppid, command).
+    nonisolated private static func psRows() -> [BackgroundWorkParser.PSRow] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-Ao", "pid=,ppid=,command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count >= 3, let pid = Int(parts[0]), let ppid = Int(parts[1]) else {
+                return nil
+            }
+            return .init(pid: pid, ppid: ppid, command: String(parts[2]))
+        }
+    }
+
+    /// Live check for one pane — used before posting a "Finished" notification:
+    /// a session with background work pending isn't finished, just waiting.
+    func pendingBackgroundWork(forPane paneID: String) async -> [AgentBackgroundTask] {
+        guard let info = await processInfo(for: paneID) else { return [] }
+        let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
+        guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes) else {
+            return []
+        }
+        let rows = await Task.detached { Self.psRows() }.value
+        return BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+    }
+
+    /// Refreshes the sidebar's background-work map for every pane (throttled).
+    func refreshBackgroundWork(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastBackgroundWorkRefresh) > 10 else { return }
+        lastBackgroundWorkRefresh = Date()
+        guard let snapshot else { return }
+        let paneIDs = snapshot.panes.map(\.paneID)
+        let generation = connectionGeneration
+        Task {
+            let rows = await Task.detached { Self.psRows() }.value
+            var result: [String: [AgentBackgroundTask]] = [:]
+            for paneID in paneIDs {
+                guard let info = await processInfo(for: paneID) else { continue }
+                let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
+                guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes)
+                else { continue }
+                let tasks = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+                if !tasks.isEmpty { result[paneID] = tasks }
+            }
+            guard generation == connectionGeneration else { return }
+            backgroundWork = result
+        }
+    }
+
+    func backgroundWork(forTab tabID: String) -> [AgentBackgroundTask] {
+        guard let snapshot else { return [] }
+        return snapshot.panes
+            .filter { $0.tabID == tabID }
+            .flatMap { backgroundWork[$0.paneID] ?? [] }
+    }
+
+    /// Opens the explanation sheet listing a tab's background work definitions.
+    func showBackgroundWork(forTab tab: HerdrTab) {
+        let tasks = backgroundWork(forTab: tab.tabID)
+        guard !tasks.isEmpty else { return }
+        let text = tasks
+            .map { "pid \($0.pid):\n\($0.definition)" }
+            .joined(separator: "\n\n————————————\n\n")
+        statusExplanation = StatusExplanation(
+            id: UUID(),
+            title: "Background work — the session is waiting on this",
+            text: text
+        )
     }
 
     func processInfo(for paneID: String) async -> PaneProcessInfo? {

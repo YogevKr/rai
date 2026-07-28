@@ -264,19 +264,42 @@ extension AppDelegate: RaiSnapshotObserver {
             guard let pane = snapshot.panes.first(where: {
                 $0.paneID == transition.paneID
             }) else { continue }
-            let title = snapshot.displayName(for: pane)
-            let body = transition.newStatus == .blocked ? "Needs you" : "Finished"
-            let workspace = snapshot.workspaceLabel(for: pane)
-            postNotification(for: transition, pane: pane, in: snapshot)
-            model.bridgeServer.sendPush(
-                title: title,
-                subtitle: workspace,
-                body: body,
-                paneID: pane.paneID,
-                workspaceID: pane.workspaceID,
-                workspace: workspace,
-                requiresAttention: transition.newStatus == .blocked
-            )
+            if transition.newStatus == .done {
+                // herdr derives "done" from working→idle, so a session that
+                // paused to wait on a background shell/monitor reports done
+                // while it isn't finished. Check for pending background work
+                // and swallow the false "Finished"; the real one fires after
+                // the background work completes and the session wraps up.
+                Task { [weak self, weak model] in
+                    guard let self, let model else { return }
+                    let pending = await model.pendingBackgroundWork(forPane: pane.paneID)
+                    guard pending.isEmpty else { return }
+                    self.deliver(transition: transition, pane: pane, in: snapshot, model: model)
+                }
+            } else {
+                deliver(transition: transition, pane: pane, in: snapshot, model: model)
+            }
         }
+    }
+
+    private func deliver(
+        transition: PaneStatusTransition,
+        pane: Pane,
+        in snapshot: SessionSnapshot,
+        model: RaiModel
+    ) {
+        let title = snapshot.displayName(for: pane)
+        let body = transition.newStatus == .blocked ? "Needs you" : "Finished"
+        let workspace = snapshot.workspaceLabel(for: pane)
+        postNotification(for: transition, pane: pane, in: snapshot)
+        model.bridgeServer.sendPush(
+            title: title,
+            subtitle: workspace,
+            body: body,
+            paneID: pane.paneID,
+            workspaceID: pane.workspaceID,
+            workspace: workspace,
+            requiresAttention: transition.newStatus == .blocked
+        )
     }
 }

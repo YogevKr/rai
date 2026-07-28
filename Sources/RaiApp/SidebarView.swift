@@ -790,6 +790,23 @@ private struct AgentRow: View {
             onCancelRename: { model.cancelInlineRename() },
             onRename: { model.beginInlineRename(tab: tab) }
         ) {
+            let bgTasks = model.backgroundWork(forTab: tab.tabID)
+            if !bgTasks.isEmpty {
+                // The session registered background shells/monitors: an "idle"
+                // agent with this badge is waiting, not finished.
+                HStack(spacing: 3) {
+                    Image(systemName: "clock.arrow.2.circlepath")
+                    Text("\(bgTasks.count)")
+                }
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(Theme.status(.working))
+                .help(
+                    "Waiting on background work:\n"
+                        + bgTasks
+                            .map { BackgroundWorkParser.summary(of: $0.definition) }
+                            .joined(separator: "\n")
+                )
+            }
             if tab.paneCount > 1 {
                 HStack(spacing: 3) {
                     Image(systemName: "rectangle.split.2x1")
@@ -857,6 +874,9 @@ private struct AgentRow: View {
                 }
             }
             Divider()
+            if !model.backgroundWork(forTab: tab.tabID).isEmpty {
+                Button("Show Background Work…") { model.showBackgroundWork(forTab: tab) }
+            }
             Button("Explain Status") { model.explainStatus(tab: tab) }
         }
     }
