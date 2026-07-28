@@ -53,9 +53,10 @@ Audited 2026-07-28 against rai iOS build 10.
 4. **Agent statusline surfaced** (model · ctx% · cwd · branch · tokens):
    collie strips Claude's statusline from the mirror and pins it above the
    composer. We already stream those rows; we render them as pixels.
-5. **Load older scrollback**: paging past the initial seed (+600 lines per
-   tap up to 5 000, scroll-anchored). rai seeds once (500-line SwiftTerm
-   cap) with no way to reach further back.
+5. ~~**Load older scrollback**~~ — resolved without paging: the seed now
+   carries herdr's full ~1000-line history into a 2000-line SwiftTerm
+   buffer (build 13). Paging UI dropped by decision; going deeper than
+   that is a herdr history-size question, not an app one.
 6. **Triage grouping with counts**: Needs you / Working / Idle·done as
    first-class groups (blocked always first), worst-status dots on space
    headers, per-session counts. rai has a Needs-you section, then a flat
