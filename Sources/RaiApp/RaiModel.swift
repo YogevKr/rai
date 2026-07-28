@@ -1729,11 +1729,16 @@ final class RaiModel: ObservableObject {
     func pendingBackgroundWork(forPane paneID: String) async -> [AgentBackgroundTask] {
         guard let info = await processInfo(for: paneID) else { return [] }
         let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
-        guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes) else {
+        guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes),
+              let claude = info.foregroundProcesses.first(where: { $0.pid == claudePID }) else {
             return []
         }
         let rows = await Task.detached { Self.psRows() }.value
-        return BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+        let shells = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+        let async = await Task.detached {
+            Self.transcriptPendingWork(claudeCmdline: claude.cmdline, claudeCWD: claude.cwd)
+        }.value
+        return shells + async
     }
 
     /// Recovers the session's own human descriptions for background tasks from
@@ -1813,6 +1818,62 @@ final class RaiModel: ObservableObject {
         }
     }
 
+    /// Transcript-recovered async work that has no observable process:
+    /// subagents and workflows run inside the claude process itself, so the
+    /// session transcript is the only place their lifecycle shows. Session
+    /// file: the `--resume <uuid>` in claude's argv when present, else the
+    /// newest transcript in the project folder for claude's cwd.
+    nonisolated private static func transcriptPendingWork(
+        claudeCmdline: String,
+        claudeCWD: String
+    ) -> [AgentBackgroundTask] {
+        var slug = claudeCWD
+        for ch in ["/", ".", "_", " "] {
+            slug = slug.replacingOccurrences(of: ch, with: "-")
+        }
+        let dir = NSHomeDirectory() + "/.claude/projects/" + slug
+        let fm = FileManager.default
+
+        var file: String?
+        if let range = claudeCmdline.range(
+            of: "--resume [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            options: .regularExpression
+        ) {
+            let uuid = claudeCmdline[range].dropFirst("--resume ".count)
+            file = dir + "/" + uuid + ".jsonl"
+        } else if let names = try? fm.contentsOfDirectory(atPath: dir) {
+            file = names.filter { $0.hasSuffix(".jsonl") }
+                .map { dir + "/" + $0 }
+                .max {
+                    let a = (try? fm.attributesOfItem(atPath: $0)[.modificationDate] as? Date) ?? .distantPast
+                    let b = (try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast
+                    return (a ?? .distantPast) < (b ?? .distantPast)
+                }
+        }
+        guard let file, let handle = FileHandle(forReadingAtPath: file) else { return [] }
+        defer { try? handle.close() }
+        // Tail window: recent enough for anything still in flight.
+        let tailBytes: UInt64 = 6 * 1024 * 1024
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > tailBytes ? size - tailBytes : 0)
+        guard let data = try? handle.readToEnd(),
+              let text = String(data: data, encoding: .utf8) else { return [] }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        if size > tailBytes, !lines.isEmpty { lines.removeFirst() }   // partial first line
+
+        return TranscriptWorkParser.pendingAsyncWork(jsonlLines: lines)
+            // Shells/monitors are covered live by process detection; the
+            // transcript contributes only the process-less kinds.
+            .filter { $0.kind == .subagent || $0.kind == .workflow }
+            .map { work in
+                AgentBackgroundTask(
+                    pid: -abs(work.toolUseID.hashValue % 1_000_000),
+                    definition: "[\(work.kind.rawValue)] \(work.description)",
+                    summary: "[\(work.kind.rawValue)] \(work.description)"
+                )
+            }
+    }
+
     /// Refreshes the sidebar's background-work map for every pane (throttled).
     func refreshBackgroundWork(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastBackgroundWorkRefresh) > 10 else { return }
@@ -1829,10 +1890,16 @@ final class RaiModel: ObservableObject {
                 guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes)
                 else { continue }
                 var tasks = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
-                if !tasks.isEmpty,
-                   let claudeCWD = info.foregroundProcesses.first(where: { $0.pid == claudePID })?.cwd {
+                if let claude = info.foregroundProcesses.first(where: { $0.pid == claudePID }) {
+                    let shellTasks = tasks
                     tasks = await Task.detached {
-                        Self.transcriptSummaries(for: tasks, claudeCWD: claudeCWD)
+                        var enriched = shellTasks.isEmpty
+                            ? shellTasks
+                            : Self.transcriptSummaries(for: shellTasks, claudeCWD: claude.cwd)
+                        enriched += Self.transcriptPendingWork(
+                            claudeCmdline: claude.cmdline, claudeCWD: claude.cwd
+                        )
+                        return enriched
                     }.value
                 }
                 if !tasks.isEmpty { result[paneID] = tasks }
@@ -1854,7 +1921,14 @@ final class RaiModel: ObservableObject {
         let tasks = backgroundWork(forTab: tab.tabID)
         guard !tasks.isEmpty else { return }
         let text = tasks
-            .map { "▸ \($0.displaySummary)  (pid \($0.pid))\n\n\($0.definition)" }
+            .map { task in
+                let heading = task.pid > 0
+                    ? "▸ \(task.displaySummary)  (pid \(task.pid))"
+                    : "▸ \(task.displaySummary)"
+                return task.definition == task.summary
+                    ? heading
+                    : heading + "\n\n\(task.definition)"
+            }
             .joined(separator: "\n\n————————————\n\n")
         statusExplanation = StatusExplanation(
             id: UUID(),
