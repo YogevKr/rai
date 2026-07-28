@@ -36,7 +36,7 @@ targets:
     info:
       path: rai-ios/Info.plist
       properties:
-        CFBundleDisplayName: rai
+        CFBundleDisplayName: Rai Remote
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "10"
         ITSAppUsesNonExemptEncryption: false
