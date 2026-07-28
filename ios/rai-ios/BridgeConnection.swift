@@ -29,6 +29,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var requiresRepair = false
     @Published private(set) var actionError: String?
+    @Published private(set) var sessionName: String?
     var didConnect: (() -> Void)?
 
     var host: String {
@@ -304,19 +305,31 @@ final class BridgeConnection: ObservableObject {
             @unknown default:
                 continue
             }
-            handle(try decoder.decode(BridgeMessage.self, from: data))
+            // A message this client can't decode (e.g. a newer Mac added a
+            // message type) must not kill the connection: throwing here would
+            // reconnect, replay the same message, and loop forever. Skip it —
+            // true incompatibility is caught by the welcome version check.
+            do {
+                handle(try decoder.decode(BridgeMessage.self, from: data))
+            } catch {
+                NSLog(
+                    "rai-ios: skipping undecodable bridge message: %@",
+                    String(describing: error)
+                )
+            }
         }
     }
 
     private func handle(_ message: BridgeMessage) {
         switch message {
-        case let .welcome(protocolVersion, _):
+        case let .welcome(protocolVersion, sessionName):
             guard protocolVersion == bridgeProtocolVersion else {
                 stopWithFailure("Unsupported bridge protocol \(protocolVersion)")
                 return
             }
             reconnectAttempt = 0
             status = .connected
+            self.sessionName = sessionName
             didConnect?()
             for (paneID, size) in desiredStreams {
                 Task {
@@ -385,6 +398,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func scheduleReconnect(after error: Error) {
+        NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
         task = nil
         receiveTask = nil
@@ -421,6 +435,7 @@ final class BridgeConnection: ObservableObject {
         status = .disconnected
         requiresRepair = false
         snapshot = nil
+        sessionName = nil
         desiredStreams.removeAll()
         if clearPairing { pairing = nil }
     }

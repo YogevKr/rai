@@ -8,7 +8,7 @@ struct RootView: View {
             if appModel.pairing == nil {
                 PairingView()
             } else {
-                MonitorView(appModel: appModel) {
+                MonitorView(appModel: appModel, connection: appModel.connection) {
                     appModel.forgetPairing()
                 }
             }

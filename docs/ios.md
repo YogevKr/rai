@@ -57,12 +57,12 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 Push delivery requires an Apple Developer Program membership and a real device:
 
 1. Enroll in the Apple Developer Program.
-2. Enable **Push Notifications** for the `gr.krig.rai.ios` App ID.
+2. Enable **Push Notifications** for the `com.whetstone.rai.ios` App ID.
 3. Create an APNs Auth Key, download its `.p8` file, and note its Key ID and
    your developer Team ID.
 4. In rai, open **Settings → iPhone → Push Notifications**, enter the Team ID,
    Key ID, and paste the `.p8` contents. The bundle ID defaults to
-   `gr.krig.rai.ios`.
+   `com.whetstone.rai.ios`.
 5. Select your Team in Xcode signing, run rai on your iPhone, and grant
    notification permission.
 
@@ -90,11 +90,25 @@ Skip the pairing UI with a launch env var:
 ```sh
 xcrun simctl install <udid> /tmp/rai-ios-dd/Build/Products/Debug-iphonesimulator/rai.app
 SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&token=<token>" \
-  xcrun simctl launch <udid> gr.krig.rai.ios
+  xcrun simctl launch <udid> com.whetstone.rai.ios
 ```
+
+Add `SIMCTL_CHILD_RAI_OPEN_PANE=<paneID>` to auto-open a pane's terminal on
+launch, and `xcrun simctl push <udid> com.whetstone.rai.ios payload.json` to
+exercise the notification banner + tap-to-open without APNs (include `paneID`
+and `"Simulator Target Bundle"` in the payload).
 
 (Keychain persistence fails in unsigned simulator builds, so pairing there is
 per‑session — fine for testing; real signed device builds persist it.)
+
+Caveats learned end to end:
+
+- **Don't run a second rai instance as a "test bridge"** while the real one is
+  open: both GUIs `herdr terminal attach --takeover` the focused pane and kick
+  each other in a loop. `RAI_BRIDGE_PORT` isolates the *port*, not the
+  terminal attach. Point the simulator at the one running rai instead.
+- The pairing token lives in the `gr.krig.rai` defaults domain
+  (`companionBridgePairingToken`), handy for scripting the pair URL.
 
 ## Status
 

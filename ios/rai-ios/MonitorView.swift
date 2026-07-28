@@ -3,6 +3,10 @@ import SwiftUI
 
 struct MonitorView: View {
     @ObservedObject var appModel: AppModel
+    // Observed directly: BridgeConnection is its own ObservableObject, and
+    // observing only AppModel would miss status/snapshot updates entirely —
+    // the view would sit on "Connecting…" while the connection is live.
+    @ObservedObject var connection: BridgeConnection
     let forgetPairing: () -> Void
     @State private var path: [String] = []
     @State private var didAutoOpen = false
@@ -10,8 +14,6 @@ struct MonitorView: View {
     @State private var renameTarget: RenameTarget?
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
-
-    private var connection: BridgeConnection { appModel.connection }
 
     var body: some View {
         AnyView(NavigationStack(path: $path) {
@@ -53,6 +55,11 @@ struct MonitorView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if let sessionName = connection.sessionName {
+                            Text("Session: \(sessionName)")
+                        }
+                        Text("Mac: \(connection.host)")
+                        Divider()
                         if connection.requiresRepair {
                             Button("Pair Again", action: forgetPairing)
                         } else {
@@ -92,8 +99,8 @@ struct MonitorView: View {
         .sheet(isPresented: $showingAgentLauncher) {
             AgentLauncherSheet(
                 workspaces: connection.snapshot?.workspaces ?? []
-            ) { workspaceID, agent in
-                connection.launchAgent(workspaceID: workspaceID, agent: agent)
+            ) { workspaceID, agent, cwd in
+                connection.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd)
             }
         }
         .alert(renameTarget?.title ?? "Rename", isPresented: renameBinding) {
@@ -349,10 +356,11 @@ private enum CloseTarget {
 
 private struct AgentLauncherSheet: View {
     let workspaces: [Workspace]
-    let launch: (String?, String) -> Void
+    let launch: (String?, String, String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var agent = "claude"
     @State private var workspaceID: String?
+    @State private var directory = ""
 
     var body: some View {
         NavigationStack {
@@ -373,6 +381,14 @@ private struct AgentLauncherSheet: View {
                         .tag(Optional(workspace.workspaceID))
                     }
                 }
+
+                // Only meaningful when starting a fresh workspace; an existing
+                // workspace keeps its own directory (matches the Mac launcher).
+                if workspaceID == nil {
+                    TextField("Directory on Mac (optional)", text: $directory)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
             }
             .navigationTitle("Launch Agent")
             .navigationBarTitleDisplayMode(.inline)
@@ -382,7 +398,12 @@ private struct AgentLauncherSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Launch") {
-                        launch(workspaceID, agent)
+                        let cwd = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+                        launch(
+                            workspaceID,
+                            agent,
+                            workspaceID == nil && !cwd.isEmpty ? cwd : nil
+                        )
                         dismiss()
                     }
                 }
