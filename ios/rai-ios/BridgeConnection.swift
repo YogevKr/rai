@@ -47,6 +47,11 @@ final class BridgeConnection: ObservableObject {
     private var paneFrameHandlers: [String: [UUID: (Data, Bool) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
+    // Panes whose scrollback seed actually arrived. Tracked separately from
+    // desiredStreams so a seed lost to a dropped connection (opening a pane
+    // while reconnecting is routine on a phone) is retried on the next
+    // welcome instead of being skipped forever.
+    private var seededPanes: Set<String> = []
 
     func connect(to pairing: Pairing) {
         disconnect(clearPairing: false)
@@ -89,11 +94,8 @@ final class BridgeConnection: ObservableObject {
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
-        // Only a fresh attach seeds scrollback: re-attaches (resize, reconnect)
-        // keep the buffer they already have, and feeding history twice would
-        // duplicate it.
-        let isFreshAttach = desiredStreams[paneID] == nil
-        if isFreshAttach {
+        let needsSeed = !seededPanes.contains(paneID)
+        if desiredStreams[paneID] == nil {
             desiredStreams[paneID] = (cols, rows)
         }
         Task {
@@ -106,7 +108,7 @@ final class BridgeConnection: ObservableObject {
                 // panes with no active stream — attaching with a stale size
                 // would leave the stream permanently smaller than the view.
                 let size = desiredStreams[paneID] ?? (cols, rows)
-                if isFreshAttach {
+                if needsSeed {
                     // Sent before attachStream: the server handles messages in
                     // order, so history arrives before the first full frame.
                     try await send(
@@ -124,6 +126,8 @@ final class BridgeConnection: ObservableObject {
 
     func detachPane(paneID: String) {
         desiredStreams.removeValue(forKey: paneID)
+        // Re-opening the pane later should seed fresh history again.
+        seededPanes.remove(paneID)
         Task {
             do {
                 try await send(.detachStream(paneID: paneID))
@@ -367,8 +371,18 @@ final class BridgeConnection: ObservableObject {
             self.sessionName = sessionName
             didConnect?()
             for (paneID, size) in desiredStreams {
+                let needsSeed = !seededPanes.contains(paneID)
                 Task {
                     do {
+                        if needsSeed {
+                            try await send(
+                                .readScrollback(
+                                    paneID: paneID,
+                                    lines: 600,
+                                    rows: size.rows
+                                )
+                            )
+                        }
                         try await send(
                             .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
                         )
@@ -389,6 +403,7 @@ final class BridgeConnection: ObservableObject {
                 handler(data, full)
             }
         case let .scrollback(paneID, bytesBase64):
+            seededPanes.insert(paneID)
             guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else { return }
             guard let handlers = paneScrollbackHandlers[paneID]?.values else { return }
             for handler in handlers {
@@ -484,6 +499,7 @@ final class BridgeConnection: ObservableObject {
         snapshot = nil
         sessionName = nil
         desiredStreams.removeAll()
+        seededPanes.removeAll()
         if clearPairing { pairing = nil }
     }
 

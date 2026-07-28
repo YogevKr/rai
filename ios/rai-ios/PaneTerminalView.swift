@@ -226,19 +226,20 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
-        ) { [weak terminal, weak coordinator = context.coordinator] data in
+        ) { [weak terminal] data in
             // Remote history (herdr's `pane read --source recent`) seeds the
             // local buffer so the user can scroll up — agent TUIs live on the
             // alt screen and never produce scrollback via the frame stream.
-            // Only useful before the first frame paints; after that, feeding
-            // it would append below live content.
-            guard let coordinator, !coordinator.hasReceivedFrames else { return }
+            // A seed can also follow a reconnect, with stale grid content and
+            // older history already in the buffer: full-reset first (ESC c
+            // clears screen, modes, and scrollback) so the seed plus the
+            // stream's next full frame rebuild one clean copy.
+            terminal?.feed(byteArray: [0x1B, 0x63][...])
             terminal?.feed(byteArray: Self.normalizedHistory(data)[...])
         }
 
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak terminal, weak coordinator = context.coordinator] data, full in
-            coordinator?.hasReceivedFrames = true
+            [weak terminal] data, full in
             // A `full` frame starts a fresh stream (initial attach, or a restart
             // after resize/reconnect). Clear the visible screen + home the cursor
             // first so stale cells/styles from the previous stream don't bleed
@@ -343,7 +344,6 @@ private struct StreamingTerminalView: UIViewRepresentable {
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
         var scrollbackHandlerID: UUID?
-        var hasReceivedFrames = false
         weak var terminal: TerminalView?
         let search: TerminalSearchController
 
