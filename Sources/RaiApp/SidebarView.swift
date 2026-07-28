@@ -772,6 +772,12 @@ private struct AgentRow: View {
     @State private var dropTargeted = false
 
     private var subtitleContext: String {
+        // A session waiting on background work says so right in the row —
+        // hover tooltips are too fragile under constant snapshot re-renders
+        // to be the only carrier.
+        if let first = model.backgroundWork(forTab: tab.tabID).first {
+            return "⏳ " + BackgroundWorkParser.summary(of: first.displaySummary, maxLength: 44)
+        }
         guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
             return ""
         }
@@ -869,7 +875,11 @@ private struct AgentRow: View {
         }
         // Hovering the row surfaces the session's own background-work
         // summaries (falls back to the full title for truncated labels).
-        .help(rowTooltip)
+        // AppKit-backed: SwiftUI's .help() re-registers its tooltip region on
+        // every re-render, and herd snapshots re-render rows constantly — the
+        // tooltip's arming timer never fires. An NSView's toolTip persists
+        // because the view instance is reused across updates.
+        .background(ToolTipBackground(text: rowTooltip))
     }
 
     private var rowTooltip: String {
@@ -1429,5 +1439,26 @@ private struct ConnectionPill: View {
         case .connected(let version, let proto): "Live · Herdr \(version), protocol \(proto)"
         case .disconnected(let message): "Offline · \(message)"
         }
+    }
+}
+
+
+/// A transparent, click-through NSView whose only job is carrying an AppKit
+/// tooltip that survives SwiftUI re-renders (see AgentRow).
+private struct ToolTipBackground: NSViewRepresentable {
+    let text: String
+
+    final class ClickThroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> ClickThroughView {
+        let view = ClickThroughView()
+        view.toolTip = text
+        return view
+    }
+
+    func updateNSView(_ view: ClickThroughView, context: Context) {
+        if view.toolTip != text { view.toolTip = text }
     }
 }
