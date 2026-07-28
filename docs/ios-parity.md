@@ -25,7 +25,7 @@ Audited 2026-07-28 against `main` (bridge protocol v5).
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
 | Reorder tabs / spaces | drag | — | ⏸ skip: low value on phone, high UI cost |
 | Split panes / zoom / drag dividers | full layout engine | — | ⏸ skip: pane layout is a desktop concern; phone shows one pane at a time |
-| Session switcher (named/remote sessions) | Phase-4 switcher | — | ⚠️ gap: bridge is pinned to the Mac app's current session; a `listSessions`/`selectSession` pair would let the phone follow |
+| Session switcher (named/remote sessions) | Phase-4 switcher | connection-menu picker (build 20) | ✅ parity |
 | Worktree create/open | sidebar + palette | — | ⏸ defer: needs worktree list + create over bridge; revisit after workspace ops |
 | Settings (fonts, plugins, integrations, server ops) | full settings window | — | ⏸ skip: Mac-admin concerns; phone stays thin |
 | Command palette | ⌘K | — | ⏸ skip: the herd list *is* the palette at phone scale |
