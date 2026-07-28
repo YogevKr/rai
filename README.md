@@ -58,6 +58,35 @@ terminal widget**.
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
   that hands screenshots straight to Claude Code.
 - **Settings** for the herdr server, appearance, plugins, and integrations.
+- **Rai Remote, an iPhone companion** — the whole herd in your pocket. See
+  below.
+
+## Rai Remote — iPhone companion
+
+A native iOS app (`ios/`) that pairs with the Mac over your LAN or Tailscale
+(QR code, deep link, or manual entry) and turns the phone into a shepherd's
+crook for the herd:
+
+- **Triage first** — agents that *need you* float to the top, with Working /
+  Idle groups and per-workspace status.
+- **Live terminals** — the real pane, streamed and colored, with ~1000 lines
+  of scrollback seeded from herdr's history; swipe through what happened
+  while you were away.
+- **Answer Claude without reading a TUI** — permission and choice dialogs
+  render as native tappable buttons, race-guarded so a stale tap can never
+  answer the wrong prompt.
+- **Type for real** — a compose bar with quick replies and an agent-aware
+  slash-command palette, or put the keyboard straight into the pty; input
+  rides herdr's key semantics, so Enter submits and Backspace erases.
+- **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
+  workspace or a fresh one at a chosen directory.
+- **Push notifications** (APNs) when an agent blocks or finishes, with
+  Approve / Deny / Reply actions right on the notification.
+
+The Mac side is the hub: a token-authenticated WebSocket bridge
+(**Settings → iPhone**) that the phone reaches over the LAN or through
+`tailscale serve`. Build, pairing, and push setup live in
+[docs/ios.md](docs/ios.md).
 
 ## Requirements
 
@@ -151,10 +180,14 @@ to reorder.
   rai (native macOS app)
    ├─ HerdrClient   session.snapshot + events.subscribe → an observable model
    ├─ Sidebar/Tabs  SwiftUI/AppKit views bound to that model
-   └─ PaneView      terminal widget:
-                      content   ← pane read / terminal frame stream
-                      keystrokes → pane input
-                      splits     ← layout snapshots + ratios
+   ├─ PaneView      terminal widget:
+   │                  content   ← pane read / terminal frame stream
+   │                  keystrokes → pane input
+   │                  splits     ← layout snapshots + ratios
+   └─ Bridge        token-authenticated WebSocket for Rai Remote
+        ▲
+        │  ws:// on the LAN · wss:// via tailscale serve
+  Rai Remote (iPhone)
 ```
 
 rai speaks herdr's documented `herdr.sock` RPC: `session.snapshot` for the tree,
@@ -184,7 +217,10 @@ Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
 Tests/RaiCoreTests unit tests
 scripts/bundle.sh  builds and installs Rai.app
 poc/               reference Python herdr socket client
+ios/               Rai Remote — the iPhone companion (xcodegen project)
 docs/ios.md        iOS companion app — build, run on device, pairing
+docs/ios-parity.md macOS ↔ iOS parity matrix + backlog
+docs/collie-gap.md feature-gap audit vs collie (the herdr phone PWA)
 docs/TESTING.md    build, screenshot, and safe end-to-end verification workflow
 docs/ROADMAP.md    herdr API coverage + build plan
 ```
