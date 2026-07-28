@@ -234,9 +234,9 @@ final class CodexMicroTests: XCTestCase {
             for: [.idle, .working, .blocked, .done, nil, .idle]
         )
         XCTAssertEqual(initial.map(\.id), [0, 1, 2, 3, 4, 5])
-        // `e` is the numeric OAILightingEffect, not an effect name.
-        XCTAssertEqual(initial[1].e, MicroLightingEffect.breath.rawValue)
-        XCTAssertEqual(initial[1].e, 4)
+        // `e` is the numeric OAILightingEffect, not an effect name. Working is
+        // steady blue (solid), not breath — pulsing keys read as alarm.
+        XCTAssertEqual(initial[1].e, MicroLightingEffect.solid.rawValue)
         XCTAssertEqual(lighting.changes(
             for: [.idle, .working, .blocked, .done, nil, .idle]
         ), [])

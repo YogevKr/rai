@@ -84,8 +84,10 @@ public enum MicroLightingPalette {
     public static let idle = MicroLightingStyle(
         color: 0xFFFFFF, brightness: 1, effect: .solid, speed: 0
     )
+    // Steady, not breathing: a working agent is the normal state on a busy
+    // herd, and six pulsing keys read as a fire alarm rather than status.
     public static let working = MicroLightingStyle(
-        color: 0x0066FF, brightness: 1, effect: .breath, speed: 1
+        color: 0x0066FF, brightness: 1, effect: .solid, speed: 0
     )
     public static let blocked = MicroLightingStyle(
         color: 0xFFBF00, brightness: 1, effect: .solid, speed: 0
