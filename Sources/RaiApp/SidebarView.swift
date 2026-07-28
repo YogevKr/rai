@@ -867,6 +867,16 @@ private struct AgentRow: View {
             }
             Button("Explain Status") { model.explainStatus(tab: tab) }
         }
+        // Hovering the row surfaces the session's own background-work
+        // summaries (falls back to the full title for truncated labels).
+        .help(rowTooltip)
+    }
+
+    private var rowTooltip: String {
+        let tasks = model.backgroundWork(forTab: tab.tabID)
+        guard !tasks.isEmpty else { return label }
+        return "Waiting on background work:\n"
+            + tasks.map { "▸ " + $0.displaySummary }.joined(separator: "\n")
     }
 }
 
