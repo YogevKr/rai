@@ -9,6 +9,24 @@ enum MicroControllerIntent: Equatable {
 }
 
 enum MicroControllerDecisions {
+    /// Whether a pad press may drive the terminal session. A press must never
+    /// reach the session while the user is interacting with a different
+    /// context: the binding editor, the command palette, a rename sheet, or
+    /// any key window that doesn't host the session terminal (e.g. Settings).
+    /// `keyWindowHostsTerminal` is nil when the app has no key window (rai in
+    /// the background) — pad presses are the point of a macropad, so allow.
+    static func shouldSuppressPadAction(
+        bindingEditorActive: Bool,
+        palettePresented: Bool,
+        renamePresented: Bool,
+        keyWindowHostsTerminal: Bool?
+    ) -> Bool {
+        bindingEditorActive
+            || palettePresented
+            || renamePresented
+            || keyWindowHostsTerminal == false
+    }
+
     static func assignments(from snapshot: SessionSnapshot) -> [MicroSlotAssignment] {
         snapshot.workspaces.flatMap { workspace in
             snapshot.tabs
@@ -155,9 +173,13 @@ final class MicroController {
         // A pad press must not drive the session while the user is configuring
         // the pad or typing into a rai-owned transient surface. The independent
         // pressed handler still records the control for Settings learn mode.
-        let suppress = MicroStatusCenter.shared.isBindingEditorActive
-            || model.isCommandPalettePresented
-            || model.renameRequest != nil
+        let keyWindow = NSApp.keyWindow
+        let suppress = MicroControllerDecisions.shouldSuppressPadAction(
+            bindingEditorActive: MicroStatusCenter.shared.isBindingEditorActive,
+            palettePresented: model.isCommandPalettePresented,
+            renamePresented: model.renameRequest != nil,
+            keyWindowHostsTerminal: keyWindow.map { Self.hostsTerminal($0.contentView) }
+        )
         if suppress { return }
 
         // A press on the pad pulls rai to the front so you act on the agent
@@ -497,5 +519,16 @@ private final class Worker: @unchecked Sendable {
             bindings: bindings
         ) else { return }
         intentHandler(intent, slots, orderedPanes)
+    }
+}
+
+
+extension MicroController {
+    /// Whether a view hierarchy contains a session terminal. Used to tell the
+    /// main window (hosts panes) apart from auxiliary key windows (Settings).
+    static func hostsTerminal(_ view: NSView?) -> Bool {
+        guard let view else { return false }
+        if view is FocusAwareTerminalView { return true }
+        return view.subviews.contains { hostsTerminal($0) }
     }
 }

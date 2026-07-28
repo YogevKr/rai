@@ -96,10 +96,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // SwiftTerm's keyDown is not overridable from this module, so intercept the
     // Ghostty line-editing combos (⌘⌫ etc.) and non-ASCII text (Hebrew) here and
     // route them to whichever terminal pane is focused.
+    //
+    // The routing is deliberately strict: a keystroke reaches the terminal only
+    // when it was aimed at the terminal's OWN key window with the terminal as
+    // first responder, and no transient surface (command palette, rename sheet)
+    // is open — a local monitor sees every window's events (Settings included),
+    // and anything looser leaks typed text into the session behind the scenes.
     private func installTerminalKeyMonitor() {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event -> NSEvent? in
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event -> NSEvent? in
             MainActor.assumeIsolated {
-                guard let term = NSApp.keyWindow?.firstResponder as? FocusAwareTerminalView,
+                guard let window = event.window,
+                      let term = window.firstResponder as? FocusAwareTerminalView,
+                      KeyRoutingDecision.shouldRouteToTerminal(
+                          eventWindowIsKey: window.isKeyWindow,
+                          terminalIsInEventWindow: term.window === window,
+                          palettePresented: self?.model?.isCommandPalettePresented ?? false,
+                          renamePresented: self?.model?.renameRequest != nil
+                      ),
                       term.handleInterceptedKey(event) else {
                     return event
                 }
