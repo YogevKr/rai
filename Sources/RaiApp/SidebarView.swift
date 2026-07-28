@@ -772,12 +772,6 @@ private struct AgentRow: View {
     @State private var dropTargeted = false
 
     private var subtitleContext: String {
-        // A session waiting on background work says so right in the row —
-        // hover tooltips are too fragile under constant snapshot re-renders
-        // to be the only carrier.
-        if let first = model.backgroundWork(forTab: tab.tabID).first {
-            return "⏳ " + BackgroundWorkParser.summary(of: first.displaySummary, maxLength: 44)
-        }
         guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
             return ""
         }
