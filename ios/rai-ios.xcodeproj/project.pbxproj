@@ -16,6 +16,7 @@
 		420DC582A71B10CCB2BC28A6 /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E9B4094B34953B946FDDDD /* Composer.swift */; };
 		45DB2BF7F6DB981D2556E39A /* PromptDetection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9104D912B4487B9223AD236C /* PromptDetection.swift */; };
 		48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */; };
+		496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */; };
 		8485449A51E1C585A0439512 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28A9944E5B3DBD0E0B55C06 /* RootView.swift */; };
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
 		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
@@ -46,6 +47,7 @@
 		4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTerminalView.swift; sourceTree = "<group>"; };
 		7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetectionTests.swift; sourceTree = "<group>"; };
 		9104D912B4487B9223AD236C /* PromptDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetection.swift; sourceTree = "<group>"; };
+		970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A94AED5CC385FC1F5FD41FE9 /* rai */ = {isa = PBXFileReference; lastKnownFileType = folder; name = rai; path = ..; sourceTree = SOURCE_ROOT; };
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -80,6 +82,7 @@
 			isa = PBXGroup;
 			children = (
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
+				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
 			);
 			path = "rai-iosTests";
 			sourceTree = "<group>";
@@ -221,6 +224,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
+				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

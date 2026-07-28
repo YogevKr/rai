@@ -263,6 +263,29 @@ struct PaneTerminalView: View {
     }
 }
 
+/// The pane terminal's width contract. The 80-column width is a FLOOR, not a
+/// fixed size: narrower viewports (portrait) scroll horizontally to reach the
+/// full grid, wider ones (landscape) stretch the terminal edge-to-edge instead
+/// of parking it left with a dead strip on the right.
+enum TerminalPaneLayout {
+    static func constraints(
+        terminal: UIView, in scroll: UIScrollView, minWidth: CGFloat
+    ) -> [NSLayoutConstraint] {
+        let fill = terminal.widthAnchor.constraint(
+            equalTo: scroll.frameLayoutGuide.widthAnchor)
+        fill.priority = UILayoutPriority(999)   // yields to the floor below
+        return [
+            terminal.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            terminal.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            terminal.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            terminal.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            fill,
+            terminal.widthAnchor.constraint(greaterThanOrEqualToConstant: minWidth),
+            terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+        ]
+    }
+}
+
 private struct StreamingTerminalView: UIViewRepresentable {
     let paneID: String
     let connection: BridgeConnection
@@ -270,9 +293,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let prompts: TerminalPromptController
     let send: ([UInt8]) -> Void
 
-    // Render the pane at a faithful fixed width (agent TUIs assume ~80 cols) and
-    // let the user scroll horizontally, rather than reflowing to phone-width and
-    // mangling the layout.
+    // Render the pane at a faithful MINIMUM width (agent TUIs assume ~80 cols):
+    // narrower screens (portrait) scroll horizontally rather than reflowing to
+    // phone-width and mangling the layout; wider ones (landscape) grow the grid
+    // so the TUI reflows to fill the screen.
     static let columns = 80
     private static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private static let background = ui(0x212121)
@@ -351,9 +375,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
             }
         }
 
-        // Fix the grid to `columns` and host it in a horizontally-scrolling view.
-        // The terminal keeps its own vertical scrollback; the outer scroll view
-        // only moves left/right so wide output is reachable on a narrow screen.
+        // Give the grid a `columns`-wide floor and host it in a horizontally-
+        // scrolling view. The terminal keeps its own vertical scrollback; the
+        // outer scroll view only moves left/right when the screen is narrower
+        // than the floor (portrait).
         let charWidth = ("W" as NSString)
             .size(withAttributes: [.font: Self.font]).width
         let terminalWidth = ceil(charWidth * CGFloat(Self.columns)) + 4
@@ -365,16 +390,11 @@ private struct StreamingTerminalView: UIViewRepresentable {
         scroll.alwaysBounceVertical = false
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.addSubview(terminal)
-        NSLayoutConstraint.activate([
-            terminal.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            terminal.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            terminal.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            terminal.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            terminal.widthAnchor.constraint(equalToConstant: terminalWidth),
-            terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-        ])
+        NSLayoutConstraint.activate(
+            TerminalPaneLayout.constraints(terminal: terminal, in: scroll, minWidth: terminalWidth))
         return scroll
     }
+
 
     private static func ui(_ hex: UInt32) -> UIColor {
         UIColor(
@@ -459,13 +479,15 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            // Width is fixed to `columns`; only the row count varies with height.
+            // `columns` is a floor: portrait keeps the faithful 80-col grid
+            // (scrolling horizontally), landscape stretches the view, so the
+            // pty grows with it and the agent TUI reflows edge-to-edge.
             // SwiftTerm fires this on the main thread, but it is a nonisolated
             // protocol method, so hop onto the main actor to touch the connection.
             Task { @MainActor [connection, paneID] in
                 connection.resizePane(
                     paneID: paneID,
-                    cols: StreamingTerminalView.columns,
+                    cols: max(StreamingTerminalView.columns, newCols),
                     rows: newRows
                 )
             }
