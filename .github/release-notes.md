@@ -2,12 +2,10 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Reverts v0.1.12's terminal‑selection changes.** Those changes assumed the
-  pane terminal had its own scrollback, but rai renders panes through herdr's
-  full‑screen attach (the scrollback lives in herdr), so the selection
-  auto‑scroll had nothing local to move and the wheel change interfered with
-  scrolling while text was selected. Reverted to the prior, working behavior.
-  Proper selection‑scrolling needs a deeper terminal change and is in progress.
+- **Copy‑on‑select** — finish a drag‑selection in a terminal and it's copied to
+  your clipboard automatically, so a quick drag is all it takes. The highlight
+  stays put (rai keeps selections through a program repainting), so you can
+  still re‑copy or extend it.
 
 ### Install
 
