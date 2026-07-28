@@ -13,6 +13,8 @@ struct PaneTerminalView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isSendingImage = false
     @State private var imageError: String?
+    @State private var showingCommandPalette = false
+    @State private var destructiveArmed = false
     @StateObject private var terminalSearch = TerminalSearchController()
 
     var body: some View {
@@ -74,19 +76,34 @@ struct PaneTerminalView: View {
                 }
                 .disabled(isSendingImage)
                 .accessibilityLabel("Send photo")
+                if pane.agent != nil {
+                    Button {
+                        showingCommandPalette = true
+                    } label: {
+                        Image(systemName: "slash.circle")
+                    }
+                    .accessibilityLabel("Slash commands")
+                }
                 TextField("Send a line…", text: $composedLine)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.send)
                     .onSubmit(sendComposedLine)
-                Button("Send", action: sendComposedLine)
+                Button(destructiveArmed ? "Sure?" : "Send", action: sendComposedLine)
                     .buttonStyle(.borderedProminent)
+                    .tint(destructiveArmed ? .red : nil)
                     .disabled(composedLine.isEmpty)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
             .background(.bar)
+
+            if pane.agent != nil {
+                QuickReplyRow { text in
+                    sendLine(text)
+                }
+            }
 
             TerminalControlToolbar { connection.sendInput($0, to: pane.paneID) }
         }
@@ -135,6 +152,13 @@ struct PaneTerminalView: View {
             guard let item else { return }
             Task { await sendPhoto(item) }
         }
+        .sheet(isPresented: $showingCommandPalette) {
+            CommandPaletteSheet(
+                agent: pane.agent,
+                insert: { composedLine = $0 },
+                sendNow: { sendLine($0) }
+            )
+        }
         .alert(
             "Could Not Send Photo",
             isPresented: Binding(
@@ -149,9 +173,24 @@ struct PaneTerminalView: View {
     }
 
     private func sendComposedLine() {
-        guard !composedLine.isEmpty else { return }
-        connection.sendInput(Array(composedLine.utf8) + [0x0D], to: pane.paneID)
+        let text = composedLine
+        guard !text.isEmpty else { return }
+        // Destructive shell input takes a second tap: the Send button turns
+        // into a red "Sure?" for three seconds.
+        if DestructiveInput.isDestructive(text), !destructiveArmed {
+            destructiveArmed = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                destructiveArmed = false
+            }
+            return
+        }
+        destructiveArmed = false
+        sendLine(text)
         composedLine = ""
+    }
+
+    private func sendLine(_ text: String) {
+        connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
     }
 
     private func sendPhoto(_ item: PhotosPickerItem) async {
@@ -515,6 +554,11 @@ private struct TerminalControlToolbar: View {
         ("↓", [0x1B, 0x5B, 0x42]),
         ("←", [0x1B, 0x5B, 0x44]),
         ("→", [0x1B, 0x5B, 0x43]),
+        ("Ctrl-R", [0x12]),
+        ("Ctrl-D", [0x04]),
+        ("Ctrl-Z", [0x1A]),
+        ("Ctrl-L", [0x0C]),
+        ("Shift-Tab", [0x1B, 0x5B, 0x5A]),
     ]
 
     var body: some View {

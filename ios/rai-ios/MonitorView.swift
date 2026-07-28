@@ -267,7 +267,8 @@ struct MonitorView: View {
 
     private func herdList(_ snapshot: SessionSnapshot) -> some View {
         List {
-            let needsYou = needsYouAgents(in: snapshot)
+            let needsYou = agents(in: snapshot) { $0 == .blocked || $0 == .done }
+            let working = agents(in: snapshot) { $0 == .working }
             if !needsYou.isEmpty {
                 Section {
                     ForEach(needsYou) { item in
@@ -280,6 +281,24 @@ struct MonitorView: View {
                         Text("Needs you")
                         Spacer()
                         Text("\(needsYou.count) need you")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
+                    }
+                }
+            }
+            if !working.isEmpty {
+                Section {
+                    ForEach(working) { item in
+                        NavigationLink(value: item.pane.paneID) {
+                            NeedsYouRow(item: item)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Working")
+                        Spacer()
+                        Text("\(working.count) working")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textCase(nil)
@@ -311,12 +330,16 @@ struct MonitorView: View {
         .refreshable { await connection.refreshSnapshot() }
     }
 
-    private func needsYouAgents(in snapshot: SessionSnapshot) -> [NeedsYouAgent] {
+    private func agents(
+        in snapshot: SessionSnapshot,
+        where matches: (AgentStatus) -> Bool
+    ) -> [NeedsYouAgent] {
         let workspaces = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map { ($0.workspaceID, $0) })
         let tabs = Dictionary(uniqueKeysWithValues: snapshot.tabs.map { ($0.tabID, $0) })
 
         return snapshot.panes.compactMap { pane in
-            guard pane.agentStatus == .blocked || pane.agentStatus == .done,
+            guard matches(pane.agentStatus),
+                  pane.agent != nil,
                   let workspace = workspaces[pane.workspaceID],
                   let tab = tabs[pane.tabID] else {
                 return nil
