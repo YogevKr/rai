@@ -268,21 +268,39 @@ struct PaneTerminalView: View {
 /// full grid, wider ones (landscape) stretch the terminal edge-to-edge instead
 /// of parking it left with a dead strip on the right.
 enum TerminalPaneLayout {
-    static func constraints(
+    struct Built {
+        let all: [NSLayoutConstraint]
+        /// The `width >= minWidth` floor. Its constant grows past the 80-col
+        /// base when the streamed grid is wider, so horizontal panning can
+        /// reach every column of the remote pane.
+        let widthFloor: NSLayoutConstraint
+    }
+
+    static func build(
         terminal: UIView, in scroll: UIScrollView, minWidth: CGFloat
-    ) -> [NSLayoutConstraint] {
+    ) -> Built {
         let fill = terminal.widthAnchor.constraint(
             equalTo: scroll.frameLayoutGuide.widthAnchor)
         fill.priority = UILayoutPriority(999)   // yields to the floor below
-        return [
-            terminal.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            terminal.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            terminal.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            terminal.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            fill,
-            terminal.widthAnchor.constraint(greaterThanOrEqualToConstant: minWidth),
-            terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-        ]
+        let floor = terminal.widthAnchor.constraint(greaterThanOrEqualToConstant: minWidth)
+        return Built(
+            all: [
+                terminal.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+                terminal.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+                terminal.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+                terminal.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+                fill,
+                floor,
+                terminal.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            ],
+            widthFloor: floor
+        )
+    }
+
+    static func constraints(
+        terminal: UIView, in scroll: UIScrollView, minWidth: CGFloat
+    ) -> [NSLayoutConstraint] {
+        build(terminal: terminal, in: scroll, minWidth: minWidth).all
     }
 }
 
@@ -352,7 +370,16 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
 
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak terminal] data, full in
+            [weak terminal] data, full, grid in
+            // Newer Macs stream the pane's FULL grid and stamp each frame with
+            // its dimensions. Pin the emulator to them so cell-addressed
+            // paints land where herdr rendered them; when the grid is taller
+            // or wider than the view (keyboard up, portrait), the view scrolls
+            // over it instead of clipping the bottom rows — prompt included.
+            if let grid {
+                terminal?.pinGridSize(cols: grid.cols, rows: grid.rows)
+                context.coordinator.updateWidthFloor(cols: grid.cols)
+            }
             // A `full` frame starts a fresh stream (initial attach, or a restart
             // after resize/reconnect). Clear the visible screen + home the cursor
             // first so stale cells/styles from the previous stream don't bleed
@@ -390,8 +417,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
         scroll.alwaysBounceVertical = false
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.addSubview(terminal)
-        NSLayoutConstraint.activate(
-            TerminalPaneLayout.constraints(terminal: terminal, in: scroll, minWidth: terminalWidth))
+        let layout = TerminalPaneLayout.build(
+            terminal: terminal, in: scroll, minWidth: terminalWidth)
+        NSLayoutConstraint.activate(layout.all)
+        context.coordinator.widthFloor = layout.widthFloor
+        context.coordinator.baseWidthFloor = terminalWidth
+        context.coordinator.charWidth = charWidth
         return scroll
     }
 
@@ -459,6 +490,19 @@ private struct StreamingTerminalView: UIViewRepresentable {
         weak var terminal: TerminalView?
         let search: TerminalSearchController
         let prompts: TerminalPromptController
+        var widthFloor: NSLayoutConstraint?
+        var baseWidthFloor: CGFloat = 0
+        var charWidth: CGFloat = 0
+
+        /// Widen the view's width floor when the streamed grid outgrows the
+        /// 80-column base, so the outer scroll view can pan to every column.
+        func updateWidthFloor(cols: Int) {
+            guard let widthFloor, charWidth > 0 else { return }
+            let needed = max(baseWidthFloor, ceil(charWidth * CGFloat(cols)) + 4)
+            if abs(widthFloor.constant - needed) > 0.5 {
+                widthFloor.constant = needed
+            }
+        }
 
         init(
             paneID: String,
@@ -664,14 +708,13 @@ private final class TerminalSearchController: ObservableObject {
 
     func toggleKeyboard() {
         if keyboardVisible {
-            // Resign whichever field owns the keyboard — the terminal or the
-            // compose bar — without needing a reference to it.
-            UIApplication.shared.sendAction(
-                #selector(UIResponder.resignFirstResponder),
-                to: nil,
-                from: nil,
-                for: nil
-            )
+            // Ask the window to end editing: it resigns whichever field owns
+            // the keyboard — the terminal or the compose bar. Dispatching
+            // resignFirstResponder through UIApplication.sendAction does NOT
+            // work here: SwiftTerm's canPerformAction whitelist rejects the
+            // selector, so UIKit walks past the terminal and "resigns" an
+            // ancestor that never held the keyboard.
+            terminal?.window?.endEditing(true)
         } else {
             focusKeyboard()
         }

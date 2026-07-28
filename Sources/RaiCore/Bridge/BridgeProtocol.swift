@@ -71,7 +71,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
     case hello(token: String, client: ClientInfo)
     case subscribe
-    case attachStream(paneID: String, cols: Int, rows: Int)
+    /// `fullGrid: true` (newer clients) opts into a stream that is never
+    /// smaller than the pane's own grid: the server clamps the requested
+    /// rows up to the pane height and the client scrolls a viewport over
+    /// the full grid. Absent for older clients, whose emulator is sized
+    /// to their view and would garble frames taller than it.
+    case attachStream(paneID: String, cols: Int, rows: Int, fullGrid: Bool)
     case detachStream(paneID: String)
     case input(paneID: String, bytesBase64: String)
     case sendImage(paneID: String, bytesBase64: String, filename: String)
@@ -88,7 +93,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// Request the pane's recent scrollback (herdr's remote history) so the
     /// companion can seed its local buffer before the live frame stream —
     /// agent TUIs run on the alt screen, which never produces local scrollback.
-    case readScrollback(paneID: String, lines: Int, rows: Int)
+    case readScrollback(paneID: String, lines: Int, rows: Int, fullGrid: Bool)
     /// Named keypresses (herdr key names: "enter", "1", "ctrl+c", …) that must
     /// act as keystrokes, not pasted text — e.g. answering a Claude dialog.
     case sendKeys(paneID: String, keys: [String])
@@ -103,7 +108,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case authFailed(reason: String)
     case snapshot(SessionSnapshot)
     case event(BridgeEvent)
-    case paneFrame(paneID: String, bytesBase64: String, full: Bool, seq: Int)
+    /// `cols`/`rows` are the frame's grid dimensions (present on newer
+    /// Macs): the client pins its emulator grid to them so a pane larger
+    /// than the phone viewport scrolls instead of clipping.
+    case paneFrame(paneID: String, bytesBase64: String, full: Bool, seq: Int, cols: Int?, rows: Int?)
     /// ANSI-formatted scrollback history for a pane, sent before its stream's
     /// first frame. Clients that never sent readScrollback never receive it.
     case scrollback(paneID: String, bytesBase64: String)
@@ -114,6 +122,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case type
         case token, client
+        case fullGrid
         case paneID, tabID, workspaceID, agent, cwd, label
         case bytesBase64, filename
         case cols, rows
@@ -151,7 +160,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .attachStream(
                 paneID: try container.decode(String.self, forKey: .paneID),
                 cols: try container.decode(Int.self, forKey: .cols),
-                rows: try container.decode(Int.self, forKey: .rows)
+                rows: try container.decode(Int.self, forKey: .rows),
+                fullGrid: try container.decodeIfPresent(Bool.self, forKey: .fullGrid) ?? false
             )
         case .detachStream:
             self = .detachStream(paneID: try container.decode(String.self, forKey: .paneID))
@@ -209,7 +219,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .readScrollback(
                 paneID: try container.decode(String.self, forKey: .paneID),
                 lines: try container.decode(Int.self, forKey: .lines),
-                rows: try container.decode(Int.self, forKey: .rows)
+                rows: try container.decode(Int.self, forKey: .rows),
+                fullGrid: try container.decodeIfPresent(Bool.self, forKey: .fullGrid) ?? false
             )
         case .sendKeys:
             self = .sendKeys(
@@ -263,7 +274,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 paneID: try container.decode(String.self, forKey: .paneID),
                 bytesBase64: try container.decode(String.self, forKey: .bytesBase64),
                 full: try container.decode(Bool.self, forKey: .full),
-                seq: try container.decode(Int.self, forKey: .seq)
+                seq: try container.decode(Int.self, forKey: .seq),
+                cols: try container.decodeIfPresent(Int.self, forKey: .cols),
+                rows: try container.decodeIfPresent(Int.self, forKey: .rows)
             )
         case .error:
             self = .error(message: try container.decode(String.self, forKey: .message))
@@ -279,11 +292,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(client, forKey: .client)
         case .subscribe:
             try container.encode(MessageType.subscribe, forKey: .type)
-        case let .attachStream(paneID, cols, rows):
+        case let .attachStream(paneID, cols, rows, fullGrid):
             try container.encode(MessageType.attachStream, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(cols, forKey: .cols)
             try container.encode(rows, forKey: .rows)
+            try container.encode(fullGrid, forKey: .fullGrid)
         case let .detachStream(paneID):
             try container.encode(MessageType.detachStream, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
@@ -333,11 +347,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .unregisterPush(deviceToken):
             try container.encode(MessageType.unregisterPush, forKey: .type)
             try container.encode(deviceToken, forKey: .deviceToken)
-        case let .readScrollback(paneID, lines, rows):
+        case let .readScrollback(paneID, lines, rows, fullGrid):
             try container.encode(MessageType.readScrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(lines, forKey: .lines)
             try container.encode(rows, forKey: .rows)
+            try container.encode(fullGrid, forKey: .fullGrid)
         case let .sendKeys(paneID, keys):
             try container.encode(MessageType.sendKeys, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
@@ -381,12 +396,14 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .event(event):
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(event, forKey: .event)
-        case let .paneFrame(paneID, bytesBase64, full, seq):
+        case let .paneFrame(paneID, bytesBase64, full, seq, cols, rows):
             try container.encode(MessageType.paneFrame, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(bytesBase64, forKey: .bytesBase64)
             try container.encode(full, forKey: .full)
             try container.encode(seq, forKey: .seq)
+            try container.encodeIfPresent(cols, forKey: .cols)
+            try container.encodeIfPresent(rows, forKey: .rows)
         case let .error(message):
             try container.encode(MessageType.error, forKey: .type)
             try container.encode(message, forKey: .message)

@@ -16,10 +16,12 @@ let package = Package(
     dependencies: [
         // Fork of SwiftTerm 1.15.0 (branch rai-selection-autoscroll) adding
         // public getSelectionRange/setSelectionRange + a pointer-based edge
-        // auto-scroll fix; used by the remote-scrollback selection engine.
+        // auto-scroll fix (remote-scrollback selection engine), and
+        // pinGridSize (iOS) so the phone mirrors a pane's full grid and
+        // scrolls a viewport over it instead of clipping.
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "ec8f8f258497a8087b9c1f73c131eca342ea8063"
+            revision: "a0a91a613108caa36484dd3e47f1261e56aefddf"
         ),
     ],
     targets: [

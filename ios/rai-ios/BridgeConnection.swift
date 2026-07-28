@@ -2,6 +2,13 @@ import Foundation
 import RaiCore
 import UIKit
 
+/// Grid dimensions of a streamed pane frame — the size the emulator must be
+/// for the frame's cell-addressed paints to land where herdr rendered them.
+struct PaneGridSize: Equatable {
+    let cols: Int
+    let rows: Int
+}
+
 @MainActor
 final class BridgeConnection: ObservableObject {
     enum Status: Equatable {
@@ -46,7 +53,7 @@ final class BridgeConnection: ObservableObject {
     private var shouldReconnect = false
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private var paneFrameHandlers: [String: [UUID: (Data, Bool) -> Void]] = [:]
+    private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     // A seed can land before the terminal view has registered its handler
     // (openPane fires from onAppear, which can precede makeUIView). Hold the
@@ -118,11 +125,16 @@ final class BridgeConnection: ObservableObject {
                     // Sent before attachStream: the server handles messages in
                     // order, so history arrives before the first full frame.
                     try await send(
-                        .readScrollback(paneID: paneID, lines: 1000, rows: size.rows)
+                        .readScrollback(
+                            paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true)
                     )
                 }
+                // fullGrid: the stream is never smaller than the pane's grid;
+                // frames carry their dimensions and the emulator pins to them,
+                // scrolling a viewport instead of clipping the pane's bottom.
                 try await send(
-                    .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
+                    .attachStream(
+                        paneID: paneID, cols: size.cols, rows: size.rows, fullGrid: true)
                 )
             } catch {
                 handleSocketFailure(error)
@@ -201,7 +213,7 @@ final class BridgeConnection: ObservableObject {
 
     func addPaneFrameHandler(
         for paneID: String,
-        handler: @escaping (Data, Bool) -> Void
+        handler: @escaping (Data, Bool, PaneGridSize?) -> Void
     ) -> UUID {
         let id = UUID()
         paneFrameHandlers[paneID, default: [:]][id] = handler
@@ -405,12 +417,18 @@ final class BridgeConnection: ObservableObject {
                                 .readScrollback(
                                     paneID: paneID,
                                     lines: 1000,
-                                    rows: size.rows
+                                    rows: size.rows,
+                                    fullGrid: true
                                 )
                             )
                         }
                         try await send(
-                            .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
+                            .attachStream(
+                                paneID: paneID,
+                                cols: size.cols,
+                                rows: size.rows,
+                                fullGrid: true
+                            )
                         )
                     } catch {
                         handleSocketFailure(error)
@@ -429,11 +447,18 @@ final class BridgeConnection: ObservableObject {
             }
         case let .backgroundWork(work):
             didReceiveBackgroundWork?(work)
-        case let .paneFrame(paneID, bytesBase64, full, _):
+        case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
+            // Older Macs omit the frame's grid dimensions; clients then fall
+            // back to sizing the emulator from the view.
+            let grid: PaneGridSize? = if let cols, let rows, cols > 0, rows > 0 {
+                PaneGridSize(cols: cols, rows: rows)
+            } else {
+                nil
+            }
             for handler in handlers {
-                handler(data, full)
+                handler(data, full, grid)
             }
         case let .scrollback(paneID, bytesBase64):
             seededPanes.insert(paneID)

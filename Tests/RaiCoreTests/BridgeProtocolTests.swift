@@ -19,7 +19,8 @@ final class BridgeProtocolTests: XCTestCase {
         let messages: [BridgeMessage] = [
             .hello(token: "pair-token", client: client),
             .subscribe,
-            .attachStream(paneID: "pane-1", cols: 80, rows: 24),
+            .attachStream(paneID: "pane-1", cols: 80, rows: 24, fullGrid: false),
+            .attachStream(paneID: "pane-1", cols: 80, rows: 24, fullGrid: true),
             .detachStream(paneID: "pane-1"),
             .input(paneID: "pane-1", bytesBase64: bytes),
             .sendImage(paneID: "pane-1", bytesBase64: bytes, filename: "photo.png"),
@@ -34,7 +35,8 @@ final class BridgeProtocolTests: XCTestCase {
             .closeTab(tabID: "tab-1"),
             .registerPush(deviceToken: "012345abcdef", environment: "sandbox"),
             .unregisterPush(deviceToken: "012345abcdef"),
-            .readScrollback(paneID: "pane-1", lines: 600, rows: 39),
+            .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false),
+            .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
@@ -44,7 +46,12 @@ final class BridgeProtocolTests: XCTestCase {
                 name: "layout.updated",
                 payload: ["tab_id": .string("tab-1")]
             )),
-            .paneFrame(paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1),
+            .paneFrame(
+                paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1,
+                cols: nil, rows: nil),
+            .paneFrame(
+                paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1,
+                cols: 80, rows: 29),
             .scrollback(paneID: "pane-1", bytesBase64: bytes),
             .error(message: "Herdr is unavailable"),
         ]
@@ -61,6 +68,37 @@ final class BridgeProtocolTests: XCTestCase {
                 try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
             )
         }
+    }
+
+    // A message from an OLD peer (no full_grid / frame dimension keys)
+    // must decode with the compatibility defaults, not fail.
+    func testLegacyMessagesWithoutNewKeysDecode() throws {
+        let attach = Data(
+            """
+            {"type":"attachStream","paneID":"pane-1","cols":80,"rows":24}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: attach),
+            .attachStream(paneID: "pane-1", cols: 80, rows: 24, fullGrid: false)
+        )
+        let frame = Data(
+            """
+            {"type":"paneFrame","paneID":"pane-1","bytesBase64":"AA==","full":true,"seq":7}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: frame),
+            .paneFrame(
+                paneID: "pane-1", bytesBase64: "AA==", full: true, seq: 7,
+                cols: nil, rows: nil)
+        )
+        let scrollback = Data(
+            """
+            {"type":"readScrollback","paneID":"pane-1","lines":600,"rows":39}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: scrollback),
+            .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false)
+        )
     }
 
     func testBridgeProtocolVersionIsFive() {

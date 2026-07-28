@@ -426,7 +426,7 @@ final class RaiBridgeServer: ObservableObject {
             } else {
                 send(.error(message: "Herdr is not connected."), to: client)
             }
-        case let .attachStream(paneID, cols, rows):
+        case let .attachStream(paneID, cols, rows, fullGrid):
             guard client.isSubscribed else {
                 send(.error(message: "Subscribe before attaching a pane stream."), to: client)
                 return
@@ -435,7 +435,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Pane dimensions must be positive."), to: client)
                 return
             }
-            startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
+            startObserveStream(
+                paneID: paneID, cols: cols, rows: rows, fullGrid: fullGrid, for: client)
         case let .detachStream(paneID):
             stopObserveStream(paneID: paneID, for: client)
         case let .input(paneID, bytesBase64):
@@ -489,8 +490,10 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             let clientID = ObjectIdentifier(client.connection)
-            guard observeStreams[clientID]?[paneID] != nil else { return }
-            startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
+            // A restarted stream keeps the attach-time full-grid opt-in.
+            guard let existing = observeStreams[clientID]?[paneID] else { return }
+            startObserveStream(
+                paneID: paneID, cols: cols, rows: rows, fullGrid: existing.fullGrid, for: client)
         case let .launchAgent(workspaceID, agent, cwd):
             if let workspaceID,
                model.snapshot?.workspaces.contains(where: {
@@ -546,18 +549,23 @@ final class RaiBridgeServer: ObservableObject {
             await perform(for: client) {
                 try await self.model.client.sendKeys(paneID: paneID, keys: keys)
             }
-        case let .readScrollback(paneID, lines, rows):
-            guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+        case let .readScrollback(paneID, lines, rows, fullGrid):
+            guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
                 send(.error(message: "Unknown pane \(paneID)."), to: client)
                 return
             }
+            // A full-grid client's frame stream repaints the pane's WHOLE
+            // grid, so the seed must drop that many rows from the tail — not
+            // just the client's screenful — or the seam duplicates the rows
+            // between viewport height and pane height.
+            let seamRows = fullGrid ? max(rows, pane.scroll?.viewportRows ?? rows) : rows
             // Awaited inline so the reply reaches the client before any
             // subsequent attachStream starts its frame stream — the phone
             // relies on scrollback arriving before the first full frame.
             let payload = await readScrollbackPayload(
                 paneID: paneID,
                 lines: min(max(lines, 1), 2_000),
-                clientRows: min(max(rows, 0), 200)
+                clientRows: min(max(seamRows, 0), 200)
             )
             guard let payload else {
                 send(.error(message: "Could not read scrollback for \(paneID)."), to: client)
@@ -679,25 +687,35 @@ final class RaiBridgeServer: ObservableObject {
         paneID: String,
         cols: Int,
         rows: Int,
+        fullGrid: Bool,
         for client: BridgeClient
     ) {
-        guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+        guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
             send(.error(message: "Unknown pane \(paneID)."), to: client)
             return
         }
 
         stopObserveStream(paneID: paneID, for: client)
 
+        // herdr renders the observe frame as a top-left window of the pane's
+        // grid, so a stream shorter than the pane silently drops the BOTTOM
+        // rows — prompt and cursor included. For clients that opted in
+        // (fullGrid), never stream fewer rows than the pane actually has; the
+        // client scrolls a viewport over the full grid (frames carry their
+        // dimensions so it knows the grid size). Legacy clients size their
+        // emulator to the view and would garble a taller stream.
+        let streamRows = fullGrid ? max(rows, pane.scroll?.viewportRows ?? rows) : rows
+
         let process = Process()
         let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
         process.arguments = [
             "terminal", "session", "observe", paneID,
-            "--cols", String(cols), "--rows", String(rows),
+            "--cols", String(cols), "--rows", String(streamRows),
         ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdout
-        let stream = ObserveStream(process: process, stdout: stdout)
+        let stream = ObserveStream(process: process, stdout: stdout, fullGrid: fullGrid)
         let clientID = ObjectIdentifier(client.connection)
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self, weak client, weak stream] handle in
@@ -717,7 +735,9 @@ final class RaiBridgeServer: ObservableObject {
                             paneID: paneID,
                             bytesBase64: frame.bytes,
                             full: frame.full,
-                            seq: frame.seq
+                            seq: frame.seq,
+                            cols: frame.width,
+                            rows: frame.height
                         ),
                         to: client
                     )
@@ -883,17 +903,23 @@ private struct ObserveFrame: Decodable {
     let seq: Int
     let full: Bool
     let bytes: String
+    let width: Int?
+    let height: Int?
 }
 
 private final class ObserveStream: @unchecked Sendable {
     let process: Process
     let stdout: Pipe
+    /// Whether the attaching client opted into pane-sized (full-grid) frames;
+    /// restarts triggered by resizePane must preserve it.
+    let fullGrid: Bool
     private var buffer = Data()
     private(set) var isStopping = false
 
-    init(process: Process, stdout: Pipe) {
+    init(process: Process, stdout: Pipe, fullGrid: Bool) {
         self.process = process
         self.stdout = stdout
+        self.fullGrid = fullGrid
     }
 
     func consume(_ data: Data) -> [ObserveFrame] {
