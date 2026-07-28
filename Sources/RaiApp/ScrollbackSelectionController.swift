@@ -42,6 +42,8 @@ final class ScrollbackSelectionController {
     private var probeFailed = false
     private var lastScroll: PaneScroll?
     private var tickBusy = false
+    private var pointerCol = 0
+    private var lastAppliedHighlight: (Int, Int, Int, Int)?
 
     // MARK: gesture lifecycle
 
@@ -60,6 +62,7 @@ final class ScrollbackSelectionController {
     /// the viewport).
     func dragUpdate(edge: EdgeDirection?, distance: CGFloat, visibleRow: Int, visibleCol: Int) {
         self.distance = distance
+        self.pointerCol = visibleCol
         if engaged, edge == nil, let scroll = lastScroll {
             // Pointer back inside: the head follows it directly.
             model.extendHead(visibleRow: visibleRow, col: visibleCol, scroll: scroll)
@@ -144,13 +147,17 @@ final class ScrollbackSelectionController {
                 m.ingest(pageText: page1.text, scroll: after)
                 m.extendHead(
                     visibleRow: edge == .up ? 0 : after.viewportRows - 1,
-                    col: edge == .up ? 0 : ScrollbackSelectionModel.clampedEndColumn,
+                    col: self.pointerCol,
                     scroll: after
                 )
                 self.model = m
                 self.lastScroll = after
                 self.engaged = true
                 self.probing = false
+                // The engine owns the gesture from here; SwiftTerm's own
+                // selection auto-scroll timer (started by the pre-engage
+                // drags) would keep re-extending toward a stale pointer.
+                self.view?.cancelSelectionAutoScroll()
                 self.applyHighlight()
                 if self.edge != nil { self.startTimer() }
             } catch {
@@ -196,10 +203,11 @@ final class ScrollbackSelectionController {
                 self.model.ingest(pageText: page.text, scroll: scroll)
                 self.model.extendHead(
                     visibleRow: edge == .up ? 0 : scroll.viewportRows - 1,
-                    col: edge == .up ? 0 : ScrollbackSelectionModel.clampedEndColumn,
+                    col: self.pointerCol,
                     scroll: scroll
                 )
                 self.lastScroll = scroll
+                self.view?.cancelSelectionAutoScroll()
                 self.applyHighlight()
             } catch {
                 // Transient RPC failure: skip this tick, keep the gesture.
@@ -210,6 +218,9 @@ final class ScrollbackSelectionController {
     private func applyHighlight() {
         guard let view, let scroll = lastScroll,
               let hl = model.visibleHighlight(scroll: scroll) else { return }
+        let signature = (hl.startRow, hl.startCol, hl.endRow, hl.endCol)
+        guard lastAppliedHighlight == nil || lastAppliedHighlight! != signature else { return }
+        lastAppliedHighlight = signature
         view.setSelectionRange(
             start: Position(col: hl.startCol, row: hl.startRow),
             end: Position(col: hl.endCol, row: hl.endRow)

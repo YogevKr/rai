@@ -19,7 +19,7 @@ let package = Package(
         // auto-scroll fix; used by the remote-scrollback selection engine.
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "8befeeb876812f3cbb6232459beb8a6d727a6a08"
+            revision: "f7a8ff07031fa70137d64726f38f4db1e8eadfb7"
         ),
     ],
     targets: [
