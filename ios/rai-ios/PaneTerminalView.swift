@@ -17,6 +17,7 @@ struct PaneTerminalView: View {
     @State private var destructiveArmed = false
     @State private var broadcastsToTab = false
     @StateObject private var terminalSearch = TerminalSearchController()
+    @StateObject private var promptController = TerminalPromptController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +25,7 @@ struct PaneTerminalView: View {
                 paneID: pane.paneID,
                 connection: connection,
                 search: terminalSearch,
+                prompts: promptController,
                 send: { connection.sendInput($0, to: pane.paneID) }
             )
             // Breathing room between the last terminal row and the compose
@@ -65,6 +67,24 @@ struct PaneTerminalView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
                 .background(.bar)
+            }
+
+            if let prompt = promptController.prompt {
+                PromptBar(
+                    prompt: prompt,
+                    select: { option in
+                        promptController.send(
+                            option: option,
+                            through: { connection.sendInput($0, to: pane.paneID) }
+                        )
+                    },
+                    escape: {
+                        promptController.sendEscape(
+                            through: { connection.sendInput($0, to: pane.paneID) }
+                        )
+                    },
+                    dismiss: promptController.dismiss
+                )
             }
 
             HStack(spacing: 8) {
@@ -251,6 +271,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let paneID: String
     let connection: BridgeConnection
     let search: TerminalSearchController
+    let prompts: TerminalPromptController
     let send: ([UInt8]) -> Void
 
     // Render the pane at a faithful fixed width (agent TUIs assume ~80 cols) and
@@ -266,11 +287,17 @@ private struct StreamingTerminalView: UIViewRepresentable {
     ]
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(paneID: paneID, connection: connection, search: search, send: send)
+        Coordinator(
+            paneID: paneID,
+            connection: connection,
+            search: search,
+            prompts: prompts,
+            send: send
+        )
     }
 
     func makeUIView(context: Context) -> UIScrollView {
-        let terminal = TerminalView(frame: .zero, font: Self.font)
+        let terminal = GridReadableTerminalView(frame: .zero, font: Self.font)
         terminal.terminalDelegate = context.coordinator
         terminal.nativeBackgroundColor = Self.background
         terminal.nativeForegroundColor = Self.foreground
@@ -286,6 +313,9 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.translatesAutoresizingMaskIntoConstraints = false
         context.coordinator.terminal = terminal
         search.terminal = terminal
+        prompts.readGrid = { [weak terminal] in
+            terminal?.liveGridText() ?? ""
+        }
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
@@ -311,6 +341,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
+            context.coordinator.prompts.refresh()
             if full {
                 // A stream (re)start means "show me the live screen": park the
                 // viewport at the bottom, above the seeded scrollback. Async so
@@ -319,6 +350,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                     guard let terminal else { return }
                     let bottom = max(0, terminal.contentSize.height - terminal.bounds.height)
                     terminal.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+                    context.coordinator.prompts.refresh()
                 }
             }
         }
@@ -383,6 +415,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             )
         }
         coordinator.search.terminal = nil
+        coordinator.prompts.readGrid = nil
     }
 
     /// History text uses bare `\n`; the emulator needs `\r\n` or every line
@@ -409,16 +442,19 @@ private struct StreamingTerminalView: UIViewRepresentable {
         var scrollbackHandlerID: UUID?
         weak var terminal: TerminalView?
         let search: TerminalSearchController
+        let prompts: TerminalPromptController
 
         init(
             paneID: String,
             connection: BridgeConnection,
             search: TerminalSearchController,
+            prompts: TerminalPromptController,
             send: @escaping ([UInt8]) -> Void
         ) {
             self.paneID = paneID
             self.connection = connection
             self.search = search
+            self.prompts = prompts
             self.send = send
         }
 
@@ -443,6 +479,127 @@ private struct StreamingTerminalView: UIViewRepresentable {
         func scrolled(source: TerminalView, position: Double) {}
         func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
         func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    }
+}
+
+/// Captures SwiftTerm's active buffer object through its delegate callbacks,
+/// then reads the bottom `rows` rendered grid lines. This deliberately ignores
+/// the user's scrollback viewport: historical prompts must never become live
+/// native actions.
+private final class GridReadableTerminalView: TerminalView {
+    private weak var gridTerminal: SwiftTerm.Terminal?
+
+    override func bufferActivated(source: SwiftTerm.Terminal) {
+        gridTerminal = source
+        super.bufferActivated(source: source)
+    }
+
+    override func linefeed(source: SwiftTerm.Terminal) {
+        gridTerminal = source
+        super.linefeed(source: source)
+    }
+
+    func liveGridText() -> String {
+        guard let terminal = gridTerminal,
+              let text = String(data: terminal.getBufferAsData(), encoding: .utf8)
+        else { return "" }
+
+        var lines = text.components(separatedBy: "\n")
+        if lines.last == "" {
+            lines.removeLast()
+        }
+        return lines.suffix(terminal.rows).joined(separator: "\n")
+    }
+}
+
+@MainActor
+private final class TerminalPromptController: ObservableObject {
+    @Published private(set) var prompt: PromptModel?
+    var readGrid: (() -> String)?
+    private var dismissedSignature: String?
+
+    func refresh() {
+        guard let grid = readGrid?() else {
+            prompt = nil
+            return
+        }
+        let detected = PromptDetector.detect(in: grid)
+        if detected?.signature != dismissedSignature {
+            dismissedSignature = nil
+        }
+        prompt = detected?.signature == dismissedSignature ? nil : detected
+    }
+
+    func dismiss() {
+        dismissedSignature = prompt?.signature
+        prompt = nil
+    }
+
+    func send(option: PromptOption, through send: ([UInt8]) -> Void) {
+        guard let current = prompt,
+              let grid = readGrid?(),
+              PromptDetector.signatureMatches(current, currentGridText: grid)
+        else {
+            refresh()
+            return
+        }
+        send(Array(String(option.digit).utf8))
+        dismiss()
+    }
+
+    func sendEscape(through send: ([UInt8]) -> Void) {
+        guard let current = prompt,
+              let grid = readGrid?(),
+              PromptDetector.signatureMatches(current, currentGridText: grid)
+        else {
+            refresh()
+            return
+        }
+        send([0x1B])
+        dismiss()
+    }
+}
+
+private struct PromptBar: View {
+    let prompt: PromptModel
+    let select: (PromptOption) -> Void
+    let escape: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(prompt.options) { option in
+                    Button {
+                        select(option)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("\(option.digit)")
+                                .font(.caption.monospacedDigit().weight(.bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.secondary.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+                            Text(option.label)
+                                .lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Button("Esc", action: escape)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Dismiss prompt controls")
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+        }
+        .background(.bar)
     }
 }
 

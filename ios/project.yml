@@ -7,6 +7,15 @@ options:
 packages:
   Rai:
     path: ../
+schemes:
+  rai-ios:
+    build:
+      targets:
+        rai-ios: all
+        rai-iosTests: [test]
+    test:
+      targets:
+        - rai-iosTests
 targets:
   rai-ios:
     type: application
@@ -61,3 +70,22 @@ targets:
           - CFBundleURLName: com.whetstone.rai.pair
             CFBundleURLSchemes:
               - rai
+  rai-iosTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: rai-iosTests
+    dependencies:
+      - target: rai-ios
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.whetstone.rai.ios.tests
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/rai.app/rai"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+        Release:
+          CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
