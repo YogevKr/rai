@@ -2,29 +2,12 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Select into scrollback** — drag a selection past the top or bottom edge of
-  a terminal and hold: the pane scrolls, the selection keeps growing across
-  pages, and ⌘C copies the whole thing. Selections are sticky (Ghostty‑style);
-  prefer the herdr gesture instead? Settings → Terminal → **Copy on select**
-  makes releasing the drag copy and clear. Either way a small
-  "Copied to clipboard" toast confirms it. (Works on panes herdr can
-  host‑scroll; agent panes that own the mouse still select the visible screen.)
-- **Agents that are waiting no longer claim to be finished** — rai now detects
-  the background shells and monitors a Claude Code session leaves running.
-  Waiting agents wear a ⏳ badge with the session's own task descriptions in
-  the tooltip (right‑click → *Show Background Work…* for the full
-  definitions), and the false "Finished" notification a waiting agent used to
-  fire — on Mac and iOS — is suppressed until the work actually completes.
-- **Right‑click everywhere** — panes get a context menu (Copy/Paste, splits,
-  zoom, close, new tab — with their shortcuts), and the sidebar gets
-  context‑aware menus: New Tab / New Space on spaces, tabs, and empty space.
-  Broadcast now lives in the tab menu instead of a row button.
-- **Pane close button** — split panes show an ✕ (⌘⇧W) in their bar.
-- **One sidebar look** — single‑tab spaces render exactly like multi‑tab
-  spaces: header + tab row, same menus, same drag‑reorder, collapsible.
-- **Typing stays where you're looking** — keystrokes and Codex Micro pad
-  presses can no longer leak into the terminal behind Settings or the
-  command palette.
+- **Waiting agents now count subagents and workflows** — background‑work
+  detection (the ⏳ badge, hover summaries, *Show Background Work…*, and the
+  false‑"Finished" suppression) now also sees in‑flight **subagents** and
+  **workflows**, recovered from the session transcript with the session's own
+  descriptions — e.g. *[subagent] Map case‑closure lifecycle paths* — alongside
+  the process‑backed background shells and monitors.
 
 ### Install
 
