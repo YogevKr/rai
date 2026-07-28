@@ -2,11 +2,15 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Fixes heavy background CPU/disk use from v0.1.17's background‑work
-  detection** — a cache that never matched live session transcripts meant rai
-  re‑scanned megabytes of history every few seconds, felt as typing and
-  scrolling lag (especially on loaded machines). Detection now caches
-  properly: steady‑state cost is effectively zero, with the same ⏳ accuracy.
+- **Selections stay glued to their text while you scroll** — select something,
+  scroll the pane, and the highlight now moves with its content: it hides when
+  its text scrolls off‑screen and comes back when you return, re‑anchoring at
+  scroll speed (driven by herdr's live scroll events, ~30 ms). On panes where
+  the running app owns the wheel (e.g. Claude scrolling its own view), a
+  selection whose text moved away clears honestly instead of highlighting the
+  wrong lines.
+- **Codex Micro: the "working" key is steady blue** — no more breathing pulse
+  for the herd's normal state.
 
 ### Install
 
