@@ -368,6 +368,7 @@ private struct AgentLauncherSheet: View {
                 Picker("Agent", selection: $agent) {
                     Text("Claude").tag("claude")
                     Text("Codex").tag("codex")
+                    Text("Terminal").tag("terminal")
                 }
                 .pickerStyle(.segmented)
 
@@ -382,9 +383,10 @@ private struct AgentLauncherSheet: View {
                     }
                 }
 
-                // Only meaningful when starting a fresh workspace; an existing
-                // workspace keeps its own directory (matches the Mac launcher).
-                if workspaceID == nil {
+                // Agents into an existing workspace inherit its directory
+                // (matches the Mac launcher); a fresh workspace — or a plain
+                // terminal anywhere — can start where you point it.
+                if workspaceID == nil || agent == "terminal" {
                     TextField("Directory on Mac (optional)", text: $directory)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -397,12 +399,13 @@ private struct AgentLauncherSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Launch") {
+                    Button(agent == "terminal" ? "Open" : "Launch") {
                         let cwd = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let cwdApplies = workspaceID == nil || agent == "terminal"
                         launch(
                             workspaceID,
                             agent,
-                            workspaceID == nil && !cwd.isEmpty ? cwd : nil
+                            cwdApplies && !cwd.isEmpty ? cwd : nil
                         )
                         dismiss()
                     }

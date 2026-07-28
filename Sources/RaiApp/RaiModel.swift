@@ -2082,6 +2082,23 @@ final class RaiModel: ObservableObject {
         )
     }
 
+    /// Companion "open a Terminal": a plain shell pane, no agent. herdr seeds
+    /// a default shell pane in every new workspace and tab, so this is a
+    /// create, not an `agent start`.
+    func createTerminalFromBridge(workspaceID: String?, cwd: String?) async -> Bool {
+        var arguments: [String]
+        if let workspaceID {
+            arguments = ["tab", "create", "--workspace", workspaceID]
+        } else {
+            arguments = ["workspace", "create"]
+        }
+        if let cwd {
+            arguments += ["--cwd", cwd]
+        }
+        arguments.append("--no-focus")
+        return await runHerdr(arguments)
+    }
+
     func renamePaneFromBridge(paneID: String, label rawLabel: String) async -> Bool {
         guard snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
             return false

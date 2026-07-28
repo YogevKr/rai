@@ -95,6 +95,14 @@ struct PaneTerminalView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    terminalSearch.focusKeyboard()
+                } label: {
+                    Image(systemName: "keyboard")
+                }
+                .accessibilityLabel("Type directly in terminal")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
                     isSearching.toggle()
                     if !isSearching { terminalSearch.clear() }
                 } label: {
@@ -103,7 +111,17 @@ struct PaneTerminalView: View {
                 .accessibilityLabel("Find in terminal")
             }
         }
-        .onAppear { connection.openPane(paneID: pane.paneID) }
+        .onAppear {
+            connection.openPane(paneID: pane.paneID)
+            // A plain terminal pane (no detected agent) is for typing: put the
+            // keyboard straight into the pty. Agent panes keep the calmer
+            // compose-bar default — the toolbar keyboard button opts in.
+            if pane.agent == nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    terminalSearch.focusKeyboard()
+                }
+            }
+        }
         .onDisappear { connection.detachPane(paneID: pane.paneID) }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
@@ -369,6 +387,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
 private final class TerminalSearchController: ObservableObject {
     @Published private(set) var summary = "0/0"
     weak var terminal: TerminalView?
+
+    /// Raise the system keyboard in direct mode: keystrokes go straight to the
+    /// pty (SwiftTerm is the first responder), not the compose bar.
+    func focusKeyboard() {
+        _ = terminal?.becomeFirstResponder()
+    }
 
     func search(_ query: String) {
         terminal?.clearSearch()

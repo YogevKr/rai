@@ -453,15 +453,25 @@ final class RaiBridgeServer: ObservableObject {
             guard observeStreams[clientID]?[paneID] != nil else { return }
             startObserveStream(paneID: paneID, cols: cols, rows: rows, for: client)
         case let .launchAgent(workspaceID, agent, cwd):
-            guard let kind = AgentLaunchKind(rawValue: agent) else {
-                send(.error(message: "Agent must be claude or codex."), to: client)
-                return
-            }
             if let workspaceID,
                model.snapshot?.workspaces.contains(where: {
                    $0.workspaceID == workspaceID
                }) != true {
                 send(.error(message: "Unknown workspace \(workspaceID)."), to: client)
+                return
+            }
+            // "terminal" is a plain shell pane, not an agent — routed through
+            // the same message so older phones and Macs stay compatible.
+            if agent == "terminal" {
+                guard await model.createTerminalFromBridge(workspaceID: workspaceID, cwd: cwd)
+                else {
+                    send(.error(message: "Could not launch \(agent)."), to: client)
+                    return
+                }
+                return
+            }
+            guard let kind = AgentLaunchKind(rawValue: agent) else {
+                send(.error(message: "Agent must be claude or codex."), to: client)
                 return
             }
             guard await model.launchAgentFromBridge(kind, workspaceID: workspaceID, cwd: cwd)
