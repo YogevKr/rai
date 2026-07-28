@@ -95,11 +95,19 @@ struct PaneTerminalView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    terminalSearch.focusKeyboard()
+                    terminalSearch.toggleKeyboard()
                 } label: {
-                    Image(systemName: "keyboard")
+                    Image(
+                        systemName: terminalSearch.keyboardVisible
+                            ? "keyboard.chevron.compact.down"
+                            : "keyboard"
+                    )
                 }
-                .accessibilityLabel("Type directly in terminal")
+                .accessibilityLabel(
+                    terminalSearch.keyboardVisible
+                        ? "Hide keyboard"
+                        : "Type directly in terminal"
+                )
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -220,6 +228,9 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.selectedTextForegroundColor = Self.ui(0x545454)
         terminal.installColors(Self.palette.map(Self.st))
         terminal.indicatorStyle = .white
+        // Dragging down through the terminal tucks the keyboard away, the
+        // same gesture Messages and Notes use.
+        terminal.keyboardDismissMode = .interactive
         terminal.translatesAutoresizingMaskIntoConstraints = false
         context.coordinator.terminal = terminal
         search.terminal = terminal
@@ -386,12 +397,57 @@ private struct StreamingTerminalView: UIViewRepresentable {
 @MainActor
 private final class TerminalSearchController: ObservableObject {
     @Published private(set) var summary = "0/0"
+    /// Tracks the system keyboard globally (terminal-direct or compose bar) so
+    /// the toolbar button can flip between summon and dismiss.
+    @Published private(set) var keyboardVisible = false
     weak var terminal: TerminalView?
+    private var keyboardObservers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        keyboardObservers = [
+            center.addObserver(
+                forName: UIResponder.keyboardWillShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.keyboardVisible = true }
+            },
+            center.addObserver(
+                forName: UIResponder.keyboardWillHideNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.keyboardVisible = false }
+            },
+        ]
+    }
+
+    deinit {
+        for observer in keyboardObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     /// Raise the system keyboard in direct mode: keystrokes go straight to the
     /// pty (SwiftTerm is the first responder), not the compose bar.
     func focusKeyboard() {
         _ = terminal?.becomeFirstResponder()
+    }
+
+    func toggleKeyboard() {
+        if keyboardVisible {
+            // Resign whichever field owns the keyboard — the terminal or the
+            // compose bar — without needing a reference to it.
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil,
+                from: nil,
+                for: nil
+            )
+        } else {
+            focusKeyboard()
+        }
     }
 
     func search(_ query: String) {
