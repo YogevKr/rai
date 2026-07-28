@@ -2,15 +2,17 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Selections stay glued to their text while you scroll** — select something,
-  scroll the pane, and the highlight now moves with its content: it hides when
-  its text scrolls off‑screen and comes back when you return, re‑anchoring at
-  scroll speed (driven by herdr's live scroll events, ~30 ms). On panes where
-  the running app owns the wheel (e.g. Claude scrolling its own view), a
-  selection whose text moved away clears honestly instead of highlighting the
-  wrong lines.
-- **Codex Micro: the "working" key is steady blue** — no more breathing pulse
-  for the herd's normal state.
+- **"Back to live" pill** — scrolling a pane (or a selection drag past the
+  edge) used to leave it silently parked in scrollback, looking frozen. When a
+  pane's viewport is off the live tail, a clickable pill now appears at its
+  bottom-right and one click returns you to the tail (typing always did).
+- **Tailscale pairing QR is back** — the bridge now finds the standalone
+  `tailscale` CLI even without a shell PATH (the GUI app's binary can't run
+  headless and made detection silently fail), and it retries instead of
+  checking once at startup.
+- **Push failures are visible** — if the APNs auth key goes missing while
+  phones are registered, the bridge status says so instead of dropping pushes
+  silently.
 
 ### Install
 
