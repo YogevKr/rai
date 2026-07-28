@@ -206,8 +206,21 @@ private struct StreamingTerminalView: UIViewRepresentable {
         context.coordinator.terminal = terminal
         search.terminal = terminal
 
+        context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
+            for: paneID
+        ) { [weak terminal, weak coordinator = context.coordinator] data in
+            // Remote history (herdr's `pane read --source recent`) seeds the
+            // local buffer so the user can scroll up — agent TUIs live on the
+            // alt screen and never produce scrollback via the frame stream.
+            // Only useful before the first frame paints; after that, feeding
+            // it would append below live content.
+            guard let coordinator, !coordinator.hasReceivedFrames else { return }
+            terminal?.feed(byteArray: Self.normalizedHistory(data)[...])
+        }
+
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak terminal] data, full in
+            [weak terminal, weak coordinator = context.coordinator] data, full in
+            coordinator?.hasReceivedFrames = true
             // A `full` frame starts a fresh stream (initial attach, or a restart
             // after resize/reconnect). Clear the visible screen + home the cursor
             // first so stale cells/styles from the previous stream don't bleed
@@ -216,6 +229,16 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
+            if full {
+                // A stream (re)start means "show me the live screen": park the
+                // viewport at the bottom, above the seeded scrollback. Async so
+                // the feed's layout/contentSize update lands first.
+                DispatchQueue.main.async { [weak terminal] in
+                    guard let terminal else { return }
+                    let bottom = max(0, terminal.contentSize.height - terminal.bounds.height)
+                    terminal.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+                }
+            }
         }
 
         // Fix the grid to `columns` and host it in a horizontally-scrolling view.
@@ -271,7 +294,29 @@ private struct StreamingTerminalView: UIViewRepresentable {
         if let id = coordinator.frameHandlerID {
             coordinator.connection.removePaneFrameHandler(for: coordinator.paneID, id: id)
         }
+        if let id = coordinator.scrollbackHandlerID {
+            coordinator.connection.removePaneScrollbackHandler(
+                for: coordinator.paneID,
+                id: id
+            )
+        }
         coordinator.search.terminal = nil
+    }
+
+    /// History text uses bare `\n`; the emulator needs `\r\n` or every line
+    /// inherits the previous line's indent.
+    private static func normalizedHistory(_ data: Data) -> [UInt8] {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(data.count + data.count / 16)
+        var previous: UInt8 = 0
+        for byte in data {
+            if byte == 0x0A, previous != 0x0D {
+                bytes.append(0x0D)
+            }
+            bytes.append(byte)
+            previous = byte
+        }
+        return bytes
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
@@ -279,6 +324,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
         let connection: BridgeConnection
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
+        var scrollbackHandlerID: UUID?
+        var hasReceivedFrames = false
         weak var terminal: TerminalView?
         let search: TerminalSearchController
 

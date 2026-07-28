@@ -45,6 +45,7 @@ final class BridgeConnection: ObservableObject {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var paneFrameHandlers: [String: [UUID: (Data, Bool) -> Void]] = [:]
+    private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
 
     func connect(to pairing: Pairing) {
@@ -88,12 +89,30 @@ final class BridgeConnection: ObservableObject {
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
-        let size = desiredStreams[paneID] ?? (cols, rows)
-        desiredStreams[paneID] = size
+        // Only a fresh attach seeds scrollback: re-attaches (resize, reconnect)
+        // keep the buffer they already have, and feeding history twice would
+        // duplicate it.
+        let isFreshAttach = desiredStreams[paneID] == nil
+        if isFreshAttach {
+            desiredStreams[paneID] = (cols, rows)
+        }
         Task {
             do {
                 try await send(.selectPane(paneID: paneID))
                 try await send(.focusPane(paneID: paneID))
+                // Read the size at send time, not at entry: the terminal's
+                // layout often lands (and updates desiredStreams) between
+                // openPane and this send, and the server drops resizes for
+                // panes with no active stream — attaching with a stale size
+                // would leave the stream permanently smaller than the view.
+                let size = desiredStreams[paneID] ?? (cols, rows)
+                if isFreshAttach {
+                    // Sent before attachStream: the server handles messages in
+                    // order, so history arrives before the first full frame.
+                    try await send(
+                        .readScrollback(paneID: paneID, lines: 600, rows: size.rows)
+                    )
+                }
                 try await send(
                     .attachStream(paneID: paneID, cols: size.cols, rows: size.rows)
                 )
@@ -171,6 +190,22 @@ final class BridgeConnection: ObservableObject {
         paneFrameHandlers[paneID]?.removeValue(forKey: id)
         if paneFrameHandlers[paneID]?.isEmpty == true {
             paneFrameHandlers.removeValue(forKey: paneID)
+        }
+    }
+
+    func addPaneScrollbackHandler(
+        for paneID: String,
+        handler: @escaping (Data) -> Void
+    ) -> UUID {
+        let id = UUID()
+        paneScrollbackHandlers[paneID, default: [:]][id] = handler
+        return id
+    }
+
+    func removePaneScrollbackHandler(for paneID: String, id: UUID) {
+        paneScrollbackHandlers[paneID]?.removeValue(forKey: id)
+        if paneScrollbackHandlers[paneID]?.isEmpty == true {
+            paneScrollbackHandlers.removeValue(forKey: paneID)
         }
     }
 
@@ -353,8 +388,20 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data, full)
             }
+        case let .scrollback(paneID, bytesBase64):
+            guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else { return }
+            guard let handlers = paneScrollbackHandlers[paneID]?.values else { return }
+            for handler in handlers {
+                handler(data)
+            }
         case let .error(message):
-            if Self.isActionError(message) {
+            if message.hasPrefix("Invalid bridge message")
+                || message.hasPrefix("Could not read scrollback") {
+                // Old Mac that predates readScrollback, or a transient history
+                // read failure. Scrollback is progressive enhancement; don't
+                // drop or flag a healthy connection over it.
+                NSLog("rai-ios: scrollback unavailable: %@", message)
+            } else if Self.isActionError(message) {
                 actionError = message
             } else {
                 status = .failed(reason: message)
@@ -364,7 +411,7 @@ final class BridgeConnection: ObservableObject {
         case .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
-             .registerPush, .unregisterPush:
+             .registerPush, .unregisterPush, .readScrollback:
             break
         }
     }

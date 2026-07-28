@@ -489,6 +489,27 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Could not close tab \(tabID)."), to: client)
                 return
             }
+        case let .readScrollback(paneID, lines, rows):
+            guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
+                send(.error(message: "Unknown pane \(paneID)."), to: client)
+                return
+            }
+            // Awaited inline so the reply reaches the client before any
+            // subsequent attachStream starts its frame stream — the phone
+            // relies on scrollback arriving before the first full frame.
+            let payload = await readScrollbackPayload(
+                paneID: paneID,
+                lines: min(max(lines, 1), 2_000),
+                clientRows: min(max(rows, 0), 200)
+            )
+            guard let payload else {
+                send(.error(message: "Could not read scrollback for \(paneID)."), to: client)
+                return
+            }
+            send(
+                .scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()),
+                to: client
+            )
         case let .registerPush(deviceToken, environment):
             guard environment == "sandbox" || environment == "production" else {
                 send(.error(message: "Push environment must be sandbox or production."), to: client)
@@ -506,9 +527,56 @@ final class RaiBridgeServer: ObservableObject {
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
-        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .error:
+        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error:
             send(.error(message: "Server-to-client message received from client."), to: client)
         }
+    }
+
+    /// Recent pane history from herdr, ANSI-formatted, with the client's
+    /// screenful dropped from the tail — the live frame stream repaints the
+    /// last `clientRows` lines, and keeping them would show that screen twice
+    /// at the seam between seeded history and the live grid.
+    private func readScrollbackPayload(
+        paneID: String,
+        lines: Int,
+        clientRows: Int
+    ) async -> Data? {
+        guard let recent = await Self.runHerdrCapture([
+            "pane", "read", paneID,
+            "--source", "recent", "--lines", String(lines), "--format", "ansi",
+        ]), let recentText = String(data: recent, encoding: .utf8) else {
+            return nil
+        }
+        let history = recentText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .dropLast(clientRows)
+            .joined(separator: "\n")
+        guard !history.isEmpty else { return Data() }
+        // Trailing attribute reset so partial styling can't bleed into the
+        // live frames fed after this history.
+        return Data((history + "\n\u{1B}[0m").utf8)
+    }
+
+    private static func runHerdrCapture(_ arguments: [String]) async -> Data? {
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        // Drain stdout concurrently with the exit wait: the payload can exceed
+        // the pipe buffer, and reading only after exit would deadlock herdr.
+        let data = await Task.detached {
+            stdout.fileHandleForReading.readDataToEndOfFile()
+        }.value
+        await Task.detached { process.waitUntilExit() }.value
+        return process.terminationStatus == 0 ? data : nil
     }
 
     private func writeTemporaryImage(_ data: Data, filename: String) throws -> URL {

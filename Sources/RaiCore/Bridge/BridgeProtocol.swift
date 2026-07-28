@@ -49,6 +49,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case closeTab(tabID: String)
     case registerPush(deviceToken: String, environment: String)
     case unregisterPush(deviceToken: String)
+    /// Request the pane's recent scrollback (herdr's remote history) so the
+    /// companion can seed its local buffer before the live frame stream —
+    /// agent TUIs run on the alt screen, which never produces local scrollback.
+    case readScrollback(paneID: String, lines: Int, rows: Int)
 
     // Server -> client
     case welcome(protocolVersion: Int, sessionName: String?)
@@ -56,6 +60,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case snapshot(SessionSnapshot)
     case event(BridgeEvent)
     case paneFrame(paneID: String, bytesBase64: String, full: Bool, seq: Int)
+    /// ANSI-formatted scrollback history for a pane, sent before its stream's
+    /// first frame. Clients that never sent readScrollback never receive it.
+    case scrollback(paneID: String, bytesBase64: String)
     case error(message: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -68,6 +75,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case protocolVersion, sessionName
         case reason, snapshot, event, message
         case deviceToken, environment
+        case lines
     }
 
     private enum MessageType: String, Codable {
@@ -75,6 +83,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
+        case readScrollback, scrollback
         case welcome, authFailed, snapshot, event, paneFrame, error
     }
 
@@ -145,6 +154,17 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case .unregisterPush:
             self = .unregisterPush(
                 deviceToken: try container.decode(String.self, forKey: .deviceToken)
+            )
+        case .readScrollback:
+            self = .readScrollback(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                lines: try container.decode(Int.self, forKey: .lines),
+                rows: try container.decode(Int.self, forKey: .rows)
+            )
+        case .scrollback:
+            self = .scrollback(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                bytesBase64: try container.decode(String.self, forKey: .bytesBase64)
             )
         case .welcome:
             self = .welcome(
@@ -232,6 +252,15 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .unregisterPush(deviceToken):
             try container.encode(MessageType.unregisterPush, forKey: .type)
             try container.encode(deviceToken, forKey: .deviceToken)
+        case let .readScrollback(paneID, lines, rows):
+            try container.encode(MessageType.readScrollback, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(lines, forKey: .lines)
+            try container.encode(rows, forKey: .rows)
+        case let .scrollback(paneID, bytesBase64):
+            try container.encode(MessageType.scrollback, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(bytesBase64, forKey: .bytesBase64)
         case let .welcome(protocolVersion, sessionName):
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)

@@ -34,6 +34,7 @@ final class BridgeProtocolTests: XCTestCase {
             .closeTab(tabID: "tab-1"),
             .registerPush(deviceToken: "012345abcdef", environment: "sandbox"),
             .unregisterPush(deviceToken: "012345abcdef"),
+            .readScrollback(paneID: "pane-1", lines: 600, rows: 39),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
             .authFailed(reason: "Invalid pairing token"),
@@ -43,6 +44,7 @@ final class BridgeProtocolTests: XCTestCase {
                 payload: ["tab_id": .string("tab-1")]
             )),
             .paneFrame(paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1),
+            .scrollback(paneID: "pane-1", bytesBase64: bytes),
             .error(message: "Herdr is unavailable"),
         ]
 
