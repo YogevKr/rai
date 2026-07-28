@@ -188,6 +188,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         super.mouseUp(with: event)
         if wasPlainClick {
             onPlainClick?()
+        } else if let selected = getSelection(), !selected.isEmpty {
+            // Copy-on-select (herdr/Ghostty parity): finishing a drag-selection
+            // puts it on the clipboard immediately, so a quick drag = copied.
+            // The highlight stays (rai keeps sticky selections through streaming),
+            // so you can still re-copy or extend it.
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(selected, forType: .string)
         }
     }
 
