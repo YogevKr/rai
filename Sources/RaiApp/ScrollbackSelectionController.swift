@@ -45,16 +45,29 @@ final class ScrollbackSelectionController {
     private var pointerCol = 0
     private var lastAppliedHighlight: (Int, Int, Int, Int)?
 
+    // Sticky selection across scrolling: after mouseUp the selection must stay
+    // glued to its TEXT, not its screen rows. For host-scrollable panes we
+    // re-derive the visible highlight from absolute coordinates on every
+    // scroll; for app-scrolled panes (Claude owns the wheel) offsets never
+    // move, so we verify the text under the highlight and clear when it no
+    // longer matches — an honest clear beats a highlight on the wrong text.
+    private var stickyText: String?
+    private var stickyStart: Position?
+    private var stickyEnd: Position?
+    private var wheelReconcileTask: Task<Void, Never>?
+
     // MARK: gesture lifecycle
 
     func mouseDown() {
         stopTimer()
+        wheelReconcileTask?.cancel()
         engaged = false
         probing = false
         probeFailed = false
         model.reset()
         lastScroll = nil
         edge = nil
+        clearSticky()
     }
 
     /// Pointer moved during a drag. `edge` is non-nil while the pointer is past
@@ -96,6 +109,79 @@ final class ScrollbackSelectionController {
     }
 
     var hasExtendedSelection: Bool { engaged && model.isActive }
+
+    /// Records a finalized visible-only selection so scrolling can keep it
+    /// anchored to content. (Engaged selections already carry the model.)
+    func captureStickySelection() {
+        guard !engaged, let view, let range = view.getSelectionRange(),
+              let paneID else { return }
+        stickyText = view.getSelection()
+        stickyStart = range.start
+        stickyEnd = range.end
+        Task { [weak self] in
+            guard let self else { return }
+            guard let scroll = try? await self.paneScroll(paneID) else { return }
+            // Anchor in absolute coordinates for offset-based tracking.
+            var m = ScrollbackSelectionModel()
+            m.begin(anchorVisibleRow: range.start.row, col: range.start.col, scroll: scroll)
+            m.extendHead(visibleRow: range.end.row, col: range.end.col, scroll: scroll)
+            self.model = m
+            self.lastScroll = scroll
+            self.lastAppliedHighlight = nil
+        }
+    }
+
+    /// Called for every wheel event over the pane; reconciles the highlight
+    /// with wherever the content actually moved, after the scroll settles.
+    func noteWheel() {
+        guard model.isActive || stickyText != nil else { return }
+        wheelReconcileTask?.cancel()
+        wheelReconcileTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.reconcileAfterScroll()
+        }
+    }
+
+    private func reconcileAfterScroll() async {
+        guard let view, let paneID else { return }
+        guard let scroll = try? await self.paneScroll(paneID) else { return }
+        if model.isActive, let previous = lastScroll {
+            if scroll != previous {
+                // Host scrolled (or output appended): recompute the visible
+                // slice from absolute coordinates.
+                lastScroll = scroll
+                lastAppliedHighlight = nil
+                if let hl = model.visibleHighlight(scroll: scroll) {
+                    view.setSelectionRange(
+                        start: Position(col: hl.startCol, row: hl.startRow),
+                        end: Position(col: hl.endCol, row: hl.endRow)
+                    )
+                } else if view.selectionActive {
+                    // Scrolled out of view: hide the highlight but keep the
+                    // model so scrolling back restores it (and ⌘C still works).
+                    view.selectNone()
+                }
+                return
+            }
+        }
+        // Offsets unchanged — if the app scrolled its own viewport (Claude),
+        // the grid changed under a screen-anchored highlight. Verify.
+        if let text = stickyText, let start = stickyStart, let end = stickyEnd,
+           view.selectionActive {
+            let current = view.getTerminal().getText(start: start, end: end)
+            if current != text {
+                view.selectNone()
+                clearSticky()
+            }
+        }
+    }
+
+    private func clearSticky() {
+        stickyText = nil
+        stickyStart = nil
+        stickyEnd = nil
+    }
 
     func assembledText() -> String? { model.assembledText() }
 

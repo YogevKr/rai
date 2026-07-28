@@ -237,6 +237,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         allowMouseReporting = true
         scrollWheel(with: event)
         allowMouseReporting = false
+        // Keep a finalized selection glued to its text while content scrolls.
+        scrollbackSelection.noteWheel()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -303,8 +305,11 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             // herdr-style gesture (Settings → Terminal → Copy on select):
             // finishing a drag copies it; the highlight lingers, then clears.
             copyToClipboard(selected)
+        } else if selectionActive {
+            // Ghostty-style sticky selection: anchor it to content so
+            // scrolling doesn't drag the highlight onto different text.
+            scrollbackSelection.captureStickySelection()
         }
-        // Default: selection stays highlighted; ⌘C copies it.
     }
 
     /// ⌘C. When the scrollback engine holds a selection wider than the screen,
