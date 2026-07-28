@@ -46,7 +46,17 @@ struct MonitorView: View {
                 openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
             .navigationTitle("rai")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The logo replaces the text title (the title string stays for
+                // VoiceOver and the back button label).
+                ToolbarItem(placement: .principal) {
+                    Image("LogoMark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 26)
+                        .accessibilityHidden(true)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showingAgentLauncher = true } label: {
                         Image(systemName: "plus")
