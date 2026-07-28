@@ -23,6 +23,10 @@ struct PaneTerminalView: View {
                 search: terminalSearch,
                 send: { connection.sendInput($0, to: pane.paneID) }
             )
+            // Breathing room between the last terminal row and the compose
+            // bar / keyboard stack; padding sits inside the background so the
+            // gap stays terminal-colored.
+            .padding(.bottom, 2)
             .background(Color(red: 33 / 255, green: 33 / 255, blue: 33 / 255))
 
             if isSearching {
