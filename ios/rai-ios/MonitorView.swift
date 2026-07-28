@@ -494,21 +494,37 @@ private struct TabGroup: View {
     }
 
     var body: some View {
-        DisclosureGroup {
-            ForEach(panes) { pane in
-                NavigationLink(value: pane.paneID) {
-                    PaneRow(pane: pane)
+        // A tab is almost always a single pane on a phone — flatten it to one
+        // tappable row named after the tab. Only real splits get a header row
+        // with their panes beneath; nothing collapses.
+        if panes.count == 1, let pane = panes.first {
+            NavigationLink(value: pane.paneID) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tab.label.isEmpty
+                            ? (pane.agent ?? pane.terminalTitleStripped ?? "Tab \(tab.number)")
+                            : tab.label
+                        )
+                        .font(.body)
+                        Text(pane.foregroundCWD ?? pane.cwd)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    StatusPill(status: pane.agentStatus)
                 }
-                .contextMenu {
-                    Button("Rename", systemImage: "pencil") {
-                        rename(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? ""))
-                    }
-                    Button("Close", systemImage: "xmark", role: .destructive) {
-                        close(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? "pane"))
-                    }
+                .padding(.vertical, 2)
+            }
+            .contextMenu {
+                Button("Rename", systemImage: "pencil") {
+                    rename(.tab(tab.tabID, tab.label))
+                }
+                Button("Close", systemImage: "xmark", role: .destructive) {
+                    close(.tab(tab.tabID, label))
                 }
             }
-        } label: {
+        } else {
             HStack(spacing: 12) {
                 Image(systemName: tab.focused ? "rectangle.fill" : "rectangle")
                     .foregroundStyle(.secondary)
@@ -524,6 +540,20 @@ private struct TabGroup: View {
                 }
                 Button("Close", systemImage: "xmark", role: .destructive) {
                     close(.tab(tab.tabID, label))
+                }
+            }
+            ForEach(panes) { pane in
+                NavigationLink(value: pane.paneID) {
+                    PaneRow(pane: pane)
+                        .padding(.leading, 16)
+                }
+                .contextMenu {
+                    Button("Rename", systemImage: "pencil") {
+                        rename(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? ""))
+                    }
+                    Button("Close", systemImage: "xmark", role: .destructive) {
+                        close(.pane(pane.paneID, pane.terminalTitleStripped ?? pane.agent ?? "pane"))
+                    }
                 }
             }
         }
