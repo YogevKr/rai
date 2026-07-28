@@ -47,6 +47,10 @@ final class BridgeConnection: ObservableObject {
     private let decoder = JSONDecoder()
     private var paneFrameHandlers: [String: [UUID: (Data, Bool) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
+    // A seed can land before the terminal view has registered its handler
+    // (openPane fires from onAppear, which can precede makeUIView). Hold the
+    // payload and deliver it on registration instead of dropping it.
+    private var pendingScrollback: [String: Data] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
     // Panes whose scrollback seed actually arrived. Tracked separately from
     // desiredStreams so a seed lost to a dropped connection (opening a pane
@@ -113,7 +117,7 @@ final class BridgeConnection: ObservableObject {
                     // Sent before attachStream: the server handles messages in
                     // order, so history arrives before the first full frame.
                     try await send(
-                        .readScrollback(paneID: paneID, lines: 600, rows: size.rows)
+                        .readScrollback(paneID: paneID, lines: 1000, rows: size.rows)
                     )
                 }
                 try await send(
@@ -216,6 +220,9 @@ final class BridgeConnection: ObservableObject {
     ) -> UUID {
         let id = UUID()
         paneScrollbackHandlers[paneID, default: [:]][id] = handler
+        if let pending = pendingScrollback.removeValue(forKey: paneID) {
+            handler(pending)
+        }
         return id
     }
 
@@ -391,7 +398,7 @@ final class BridgeConnection: ObservableObject {
                             try await send(
                                 .readScrollback(
                                     paneID: paneID,
-                                    lines: 600,
+                                    lines: 1000,
                                     rows: size.rows
                                 )
                             )
@@ -420,7 +427,11 @@ final class BridgeConnection: ObservableObject {
         case let .scrollback(paneID, bytesBase64):
             seededPanes.insert(paneID)
             guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else { return }
-            guard let handlers = paneScrollbackHandlers[paneID]?.values else { return }
+            guard let handlers = paneScrollbackHandlers[paneID]?.values,
+                  !handlers.isEmpty else {
+                pendingScrollback[paneID] = data
+                return
+            }
             for handler in handlers {
                 handler(data)
             }

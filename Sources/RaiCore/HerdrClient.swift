@@ -178,21 +178,34 @@ public actor HerdrClient {
     }
 
     public func sendInput(paneID: String, bytes: [UInt8]) async throws {
-        if bytes == [0x0D] || bytes == [0x0A] {
-            let _: JSONValue = try call(
-                method: "pane.send_input",
-                params: [
-                    "pane_id": .string(paneID),
-                    "keys": .array([.string("enter")]),
-                ]
-            )
-            return
+        let tokens = PaneInputTokenizer.tokenize(bytes)
+        var previousWasText = false
+        for token in tokens {
+            switch token {
+            case let .text(text):
+                let _: JSONValue = try call(
+                    method: "pane.send_input",
+                    params: ["pane_id": .string(paneID), "text": .string(text)]
+                )
+                previousWasText = true
+            case let .keys(keys):
+                // "message⏎" arrives as one burst. Let the pasted text settle
+                // before the submit keypress: agent TUIs treat a same-instant
+                // enter as part of the paste and insert a newline instead of
+                // submitting.
+                if previousWasText, keys.first == "enter" {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                }
+                let _: JSONValue = try call(
+                    method: "pane.send_input",
+                    params: [
+                        "pane_id": .string(paneID),
+                        "keys": .array(keys.map { .string($0) }),
+                    ]
+                )
+                previousWasText = false
+            }
         }
-        let text = String(decoding: bytes, as: UTF8.self)
-        let _: JSONValue = try call(
-            method: "pane.send_input",
-            params: ["pane_id": .string(paneID), "text": .string(text)]
-        )
     }
 
     public func focusPane(_ paneID: String) async throws {

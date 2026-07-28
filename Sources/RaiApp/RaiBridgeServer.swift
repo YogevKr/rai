@@ -578,7 +578,13 @@ final class RaiBridgeServer: ObservableObject {
         ]), let recentText = String(data: recent, encoding: .utf8) else {
             return nil
         }
-        let history = recentText
+        // Shell panes come back CRLF-terminated, and Swift treats "\r\n" as a
+        // single grapheme — split(separator: "\n") sees ONE line and the
+        // dropLast wipes the whole payload. Normalize endings first.
+        let normalized = recentText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let history = normalized
             .split(separator: "\n", omittingEmptySubsequences: false)
             .dropLast(clientRows)
             .joined(separator: "\n")
