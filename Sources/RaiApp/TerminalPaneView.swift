@@ -73,6 +73,19 @@ enum HerdrCLI {
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     private var draggedSinceMouseDown = false
+    private var copiedPanel: NSPanel?
+
+    /// Extends drag-selections into herdr-side scrollback (see the controller).
+    let scrollbackSelection = ScrollbackSelectionController()
+
+    /// The herdr pane this terminal is attached to, for pane.read/snapshot.
+    var paneID: String? {
+        get { scrollbackSelection.paneID }
+        set {
+            scrollbackSelection.paneID = newValue
+            scrollbackSelection.view = self
+        }
+    }
 
     // SwiftTerm's keyDown is `public` (not `open`), so we can't override it from
     // this module. Instead an app-wide key monitor (installed in AppDelegate) calls
@@ -175,26 +188,148 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
+        scrollbackSelection.mouseDown()
         super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         draggedSinceMouseDown = true
+        let point = convert(event.locationInWindow, from: nil)
+        // Unflipped view: y grows upward — above bounds.maxY is past the TOP.
+        let edge: ScrollbackSelectionController.EdgeDirection?
+        let distance: CGFloat
+        if point.y > bounds.maxY {
+            edge = .up; distance = point.y - bounds.maxY
+        } else if point.y < bounds.minY {
+            edge = .down; distance = bounds.minY - point.y
+        } else {
+            edge = nil; distance = 0
+        }
+        let clamped = CGPoint(x: point.x, y: min(max(point.y, bounds.minY), bounds.maxY))
+        let cell = cellPosition(at: clamped)
+
+        if scrollbackSelection.engaged {
+            // The scrollback engine owns the gesture: SwiftTerm's own drag
+            // logic would fight the externally-scrolled highlight.
+            scrollbackSelection.dragUpdate(
+                edge: edge, distance: distance,
+                visibleRow: cell.row, visibleCol: cell.col
+            )
+            return
+        }
         super.mouseDragged(with: event)
+        if edge != nil, selectionActive {
+            scrollbackSelection.dragUpdate(
+                edge: edge, distance: distance,
+                visibleRow: cell.row, visibleCol: cell.col
+            )
+        } else {
+            scrollbackSelection.dragUpdate(
+                edge: nil, distance: 0,
+                visibleRow: cell.row, visibleCol: cell.col
+            )
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         let wasPlainClick = !draggedSinceMouseDown
+        let copyOnSelect = SettingsStore.shared.copyOnSelect
+        if scrollbackSelection.engaged {
+            let assembled = scrollbackSelection.finishGesture(copyOnSelect: copyOnSelect)
+            super.mouseUp(with: event)
+            if copyOnSelect, let assembled, !assembled.isEmpty {
+                copyToClipboard(assembled)
+            }
+            // Ghostty-style (default): highlight + model stay for ⌘C.
+            return
+        }
         super.mouseUp(with: event)
         if wasPlainClick {
             onPlainClick?()
-        } else if let selected = getSelection(), !selected.isEmpty {
-            // Copy-on-select (herdr/Ghostty parity): finishing a drag-selection
-            // puts it on the clipboard immediately, so a quick drag = copied.
-            // The highlight stays (rai keeps sticky selections through streaming),
-            // so you can still re-copy or extend it.
+        } else if copyOnSelect, let selected = getSelection(), !selected.isEmpty {
+            // herdr-style gesture (Settings → Terminal → Copy on select):
+            // finishing a drag copies it; the highlight lingers, then clears.
+            copyToClipboard(selected)
+        }
+        // Default: selection stays highlighted; ⌘C copies it.
+    }
+
+    /// ⌘C. When the scrollback engine holds a selection wider than the screen,
+    /// copy the assembled multi-page text instead of the visible slice.
+    override func copy(_ sender: Any) {
+        if scrollbackSelection.hasExtendedSelection,
+           let text = scrollbackSelection.assembledText(), !text.isEmpty {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(selected, forType: .string)
+            NSPasteboard.general.setString(text, forType: .string)
+            showCopiedToast()
+            return
+        }
+        super.copy(sender)
+    }
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        showCopiedToast()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.selectNone()
+        }
+    }
+
+    /// A small "Copied to clipboard" pill that fades in near the pane's bottom
+    /// and fades out on its own — the same confirmation herdr shows. It lives in
+    /// a floating child NSPanel because the terminal renders through a
+    /// CAMetalLayer that paints over any in-view subview or SwiftUI overlay.
+    private func showCopiedToast() {
+        copiedPanel?.orderOut(nil)
+        guard let win = window else { return }
+
+        let text = "Copied to clipboard"
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let ts = (text as NSString).size(withAttributes: [.font: font])
+        let padX: CGFloat = 11, padY: CGFloat = 5
+        let w = ceil(ts.width) + padX * 2, h = ceil(ts.height) + padY * 2
+
+        let pill = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.8).cgColor
+        pill.layer?.cornerRadius = 6
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = .white
+        label.drawsBackground = false
+        label.isBezeled = false
+        label.isEditable = false
+        label.frame = NSRect(x: padX, y: padY, width: ceil(ts.width), height: ceil(ts.height))
+        pill.addSubview(label)
+
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.contentView = pill
+
+        // Anchor at the pane's visual bottom-center, in screen coordinates.
+        let bottomY = isFlipped ? bounds.maxY - 48 : bounds.minY + 48
+        let inScreen = win.convertPoint(toScreen: convert(NSPoint(x: bounds.midX, y: bottomY), to: nil))
+        panel.setFrameOrigin(NSPoint(x: inScreen.x - w / 2, y: inScreen.y - h / 2))
+        win.addChildWindow(panel, ordered: .above)
+        copiedPanel = panel
+
+        panel.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; panel.animator().alphaValue = 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak panel] in
+            guard let panel else { return }
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.35; panel.animator().alphaValue = 0 },
+                completionHandler: {
+                    panel.parent?.removeChildWindow(panel)
+                    panel.orderOut(nil)
+                })
         }
     }
 
@@ -207,6 +342,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 /// view between containers preserves its terminal contents and process.
 struct TerminalPaneView: NSViewRepresentable {
     let terminalID: String
+    var paneID: String?
     let isFocused: Bool
     let pool: TerminalPool
     let onPlainClick: () -> Void
@@ -237,6 +373,7 @@ struct TerminalPaneView: NSViewRepresentable {
     private func update(_ container: TerminalContainerView) {
         let view = pool.view(for: terminalID)
         view.onPlainClick = onPlainClick
+        view.paneID = paneID
         container.install(view)
         if isFocused, view.window?.firstResponder !== view {
             DispatchQueue.main.async { [weak container, weak view] in

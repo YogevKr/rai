@@ -42,6 +42,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// herdr-style copy gesture: finishing a drag-selection copies it and
+    /// clears the highlight. Off (default) = Ghostty-style: the selection
+    /// stays until you copy explicitly or click elsewhere.
+    @Published var copyOnSelect: Bool {
+        didSet {
+            userDefaults.set(copyOnSelect, forKey: Self.copyOnSelectKey)
+        }
+    }
+
     @Published private(set) var systemThemeVariant: ThemeVariant
 
     private static let terminalFontFamilyKey = "terminalFontFamily"
@@ -50,6 +59,7 @@ final class SettingsStore: ObservableObject {
     private static let colorOverridesKey = "themeColorOverrides"
     private static let blockedSoundKey = "blockedNotificationSound"
     private static let doneSoundKey = "doneNotificationSound"
+    private static let copyOnSelectKey = "terminalCopyOnSelect"
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -68,6 +78,7 @@ final class SettingsStore: ObservableObject {
         doneNotificationSound = NotificationSoundChoice(
             rawValue: userDefaults.string(forKey: Self.doneSoundKey) ?? ""
         ) ?? .default
+        copyOnSelect = userDefaults.bool(forKey: Self.copyOnSelectKey)
         colorOverrides = Self.loadColorOverrides(
             from: userDefaults.data(forKey: Self.colorOverridesKey)
         )
@@ -567,6 +578,17 @@ private struct AppearanceSettingsView: View {
                         }
 
                         Text("Font changes apply to new terminals. Colors apply immediately.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+
+                        Toggle("Copy on select", isOn: $settings.copyOnSelect)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        Text(
+                            settings.copyOnSelect
+                                ? "Finishing a drag-selection copies it and clears the highlight (herdr-style)."
+                                : "Selections stay highlighted; copy with ⌘C (Ghostty-style)."
+                        )
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.textTertiary)
                     }

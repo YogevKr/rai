@@ -14,7 +14,13 @@ let package = Package(
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0"),
+        // Fork of SwiftTerm 1.15.0 (branch rai-selection-autoscroll) adding
+        // public getSelectionRange/setSelectionRange + a pointer-based edge
+        // auto-scroll fix; used by the remote-scrollback selection engine.
+        .package(
+            url: "https://github.com/YogevKr/SwiftTerm.git",
+            revision: "8befeeb876812f3cbb6232459beb8a6d727a6a08"
+        ),
     ],
     targets: [
         .target(name: "RaiCore"),

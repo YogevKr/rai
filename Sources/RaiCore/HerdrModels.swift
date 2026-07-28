@@ -64,6 +64,20 @@ public struct HerdrTab: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+/// Scrollback position of a pane, straight from herdr's snapshot: how far the
+/// viewport sits above the live bottom, and how far it can go.
+public struct PaneScroll: Codable, Sendable, Equatable {
+    public let offsetFromBottom: Int
+    public let maxOffsetFromBottom: Int
+    public let viewportRows: Int
+
+    enum CodingKeys: String, CodingKey {
+        case offsetFromBottom = "offset_from_bottom"
+        case maxOffsetFromBottom = "max_offset_from_bottom"
+        case viewportRows = "viewport_rows"
+    }
+}
+
 public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let paneID: String
     public let terminalID: String
@@ -77,6 +91,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let terminalTitleStripped: String?
     public let agentStatus: AgentStatus
     public let revision: UInt64
+    public let scroll: PaneScroll?
 
     public var id: String { paneID }
 
@@ -85,7 +100,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
         case terminalID = "terminal_id"
         case workspaceID = "workspace_id"
         case tabID = "tab_id"
-        case focused, cwd, agent, revision
+        case focused, cwd, agent, revision, scroll
         case foregroundCWD = "foreground_cwd"
         case terminalTitle = "terminal_title"
         case terminalTitleStripped = "terminal_title_stripped"

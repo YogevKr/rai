@@ -161,13 +161,14 @@ public actor HerdrClient {
         paneID: String,
         source: String = "visible",
         lines: Int? = nil,
-        format: String = "ansi"
+        format: String = "ansi",
+        stripANSI: Bool = false
     ) async throws -> PaneRead {
         var params: [String: JSONValue] = [
             "pane_id": .string(paneID),
             "source": .string(source),
             "format": .string(format),
-            "strip_ansi": .bool(false),
+            "strip_ansi": .bool(stripANSI),
         ]
         if let lines {
             params["lines"] = .number(Double(lines))
