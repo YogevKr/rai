@@ -108,6 +108,8 @@ final class TerminalPool {
     private func evict(_ terminalID: String) {
         guard let entry = entries.removeValue(forKey: terminalID) else { return }
         recency.remove(terminalID)
+        // Stops the pane's scroll-event stream and hides its pill.
+        (entry.view as? FocusAwareTerminalView)?.paneID = nil
         entry.view.removeFromSuperview()
         entry.coordinator.stop(entry.view)
     }

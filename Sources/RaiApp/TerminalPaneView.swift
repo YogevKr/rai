@@ -76,11 +76,26 @@ enum PaneMenuAction {
     case splitRight, splitDown, zoomPane, closePane, newTab
 }
 
+/// When a pane's viewport is scrolled away from the live tail (an edge-drag
+/// selection or a manual wheel leaves herdr scrolled), the pane silently looks
+/// frozen — new output lands below the fold. A floating "back to live" pill
+/// makes the state visible and offers the way out. Hidden while the mouse is
+/// down: mid-drag the selection engine itself is doing the scrolling.
+enum ScrolledPillDecision {
+    static func shouldShow(offsetFromBottom: Int, mouseIsDown: Bool, inWindow: Bool) -> Bool {
+        offsetFromBottom > 0 && !mouseIsDown && inWindow
+    }
+}
+
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
     private var draggedSinceMouseDown = false
     private var copiedPanel: NSPanel?
+    private var scrolledPanel: NSPanel?
+    private var scrolledOffset = 0
+    private var mouseIsDown = false
+    private var frameObserverInstalled = false
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -135,8 +150,16 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     var paneID: String? {
         get { scrollbackSelection.paneID }
         set {
+            if scrollbackSelection.paneID != newValue {
+                scrolledOffset = 0
+                updateScrolledPill()
+            }
             scrollbackSelection.paneID = newValue
             scrollbackSelection.view = self
+            scrollbackSelection.onScrollOffsetChanged = { [weak self] scroll in
+                self?.scrolledOffset = scroll.offsetFromBottom
+                self?.updateScrolledPill()
+            }
         }
     }
 
@@ -243,6 +266,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     override func mouseDown(with event: NSEvent) {
         draggedSinceMouseDown = false
+        mouseIsDown = true
+        updateScrolledPill()
         scrollbackSelection.mouseDown()
         super.mouseDown(with: event)
     }
@@ -287,6 +312,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        mouseIsDown = false
+        defer { updateScrolledPill() }
         let wasPlainClick = !draggedSinceMouseDown
         let copyOnSelect = SettingsStore.shared.copyOnSelect
         if scrollbackSelection.engaged {
@@ -389,6 +416,103 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
                     panel.orderOut(nil)
                 })
         }
+    }
+
+    // MARK: "back to live" pill
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Pooled views move between windows/containers; keep the pill (a child
+        // panel of the OLD window) from lingering over unrelated content.
+        updateScrolledPill()
+    }
+
+    private func updateScrolledPill() {
+        if ScrolledPillDecision.shouldShow(
+            offsetFromBottom: scrolledOffset, mouseIsDown: mouseIsDown,
+            inWindow: window != nil
+        ) {
+            showScrolledPill()
+        } else {
+            hideScrolledPill()
+        }
+    }
+
+    /// Same floating-child-panel trick as the copied toast (the Metal layer
+    /// paints over in-view subviews), but persistent and clickable.
+    private func showScrolledPill() {
+        guard let win = window else { return }
+        let panel = scrolledPanel ?? makeScrolledPill()
+        scrolledPanel = panel
+        if panel.parent !== win {
+            panel.parent?.removeChildWindow(panel)
+            win.addChildWindow(panel, ordered: .above)
+        }
+        // Bottom-right of the pane, inset so it clears the scroller edge.
+        let size = panel.frame.size
+        let inset: CGFloat = 12
+        let bottomY = isFlipped ? bounds.maxY - inset : bounds.minY + inset
+        let corner = win.convertPoint(
+            toScreen: convert(NSPoint(x: bounds.maxX - inset, y: bottomY), to: nil))
+        panel.setFrameOrigin(NSPoint(x: corner.x - size.width, y: corner.y))
+        if panel.alphaValue < 1 {
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.12; panel.animator().alphaValue = 1 }
+        }
+        if !frameObserverInstalled {
+            frameObserverInstalled = true
+            postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(paneGeometryChanged),
+                name: NSView.frameDidChangeNotification, object: self)
+        }
+    }
+
+    private func hideScrolledPill() {
+        guard let panel = scrolledPanel else { return }
+        panel.alphaValue = 0
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+    }
+
+    @objc private func paneGeometryChanged() {
+        if scrolledPanel?.parent != nil { updateScrolledPill() }
+    }
+
+    @objc private func scrolledPillClicked() {
+        scrollbackSelection.returnToLive()
+    }
+
+    private func makeScrolledPill() -> NSPanel {
+        let text = "↓ Back to live"
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let ts = (text as NSString).size(withAttributes: [.font: font])
+        let padX: CGFloat = 11, padY: CGFloat = 5
+        let w = ceil(ts.width) + padX * 2, h = ceil(ts.height) + padY * 2
+
+        let pill = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.8).cgColor
+        pill.layer?.cornerRadius = 6
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = .white
+        label.frame = NSRect(x: padX, y: padY, width: ceil(ts.width), height: ceil(ts.height))
+        pill.addSubview(label)
+        pill.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(scrolledPillClicked)))
+
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = false
+        panel.contentView = pill
+        panel.alphaValue = 0
+        return panel
     }
 
 }

@@ -27,7 +27,18 @@ final class ScrollbackSelectionController {
     enum EdgeDirection { case up, down }
 
     weak var view: FocusAwareTerminalView?
-    var paneID: String?
+    var paneID: String? {
+        didSet {
+            guard paneID != oldValue else { return }
+            stopScrollEventStream()
+            lastScroll = nil
+            if paneID != nil { startScrollEventStream() }
+        }
+    }
+
+    /// Pushed on every pane.scroll_changed event (offsetFromBottom == 0 means
+    /// the pane follows the live tail). Drives the pane's "back to live" pill.
+    var onScrollOffsetChanged: ((PaneScroll) -> Void)?
 
     private static let wheelUp = "\u{1b}[<64;1;1M"
     private static let wheelDown = "\u{1b}[<65;1;1M"
@@ -56,13 +67,13 @@ final class ScrollbackSelectionController {
     private var stickyEnd: Position?
     private var wheelReconcileTask: Task<Void, Never>?
     private var scrollEventTask: Task<Void, Never>?
+    private var returnToLiveTask: Task<Void, Never>?
 
     // MARK: gesture lifecycle
 
     func mouseDown() {
         stopTimer()
         wheelReconcileTask?.cancel()
-        stopScrollEventStream()
         engaged = false
         probing = false
         probeFailed = false
@@ -137,24 +148,31 @@ final class ScrollbackSelectionController {
     }
 
     /// Follows herdr's pane.scroll_changed events (delivered the instant the
-    /// pane scrolls, payload carries the offsets) so the highlight re-anchors
-    /// at scroll speed — no polling, no settle delay.
+    /// pane scrolls, payload carries the offsets). Runs for the pane's whole
+    /// life: sticky highlights re-anchor at scroll speed, and the pane always
+    /// knows whether its viewport left the live tail (the "back to live" pill).
     private func startScrollEventStream() {
         guard scrollEventTask == nil, let paneID else { return }
-        let stream = client.events(
-            subscriptions: ["pane.scroll_changed"], paneIDs: [paneID]
-        )
+        let client = self.client
         scrollEventTask = Task { [weak self] in
-            do {
-                for try await event in stream {
-                    guard !Task.isCancelled else { return }
-                    guard event.name == "pane.scroll_changed",
-                          let scroll = event.scroll else { continue }
-                    await MainActor.run { self?.applyScroll(scroll) }
+            while !Task.isCancelled {
+                let stream = client.events(
+                    subscriptions: ["pane.scroll_changed"], paneIDs: [paneID]
+                )
+                do {
+                    for try await event in stream {
+                        guard !Task.isCancelled else { return }
+                        guard event.name == "pane.scroll_changed",
+                              let scroll = event.scroll else { continue }
+                        await MainActor.run { self?.applyScroll(scroll) }
+                    }
+                } catch {
+                    // Fall through to the retry below; the debounced wheel
+                    // reconcile covers the gap meanwhile.
                 }
-            } catch {
-                // Stream ended (reconnect, herd switch): the debounced wheel
-                // reconcile remains as the fallback path.
+                if Task.isCancelled { return }
+                // Stream ended (server restart, herd switch): retry quietly.
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -165,8 +183,9 @@ final class ScrollbackSelectionController {
     }
 
     private func applyScroll(_ scroll: PaneScroll) {
-        guard model.isActive, let view else { return }
         lastScroll = scroll
+        onScrollOffsetChanged?(scroll)
+        guard model.isActive, let view else { return }
         lastAppliedHighlight = nil
         if let hl = model.visibleHighlight(scroll: scroll) {
             view.setSelectionRange(
@@ -234,9 +253,48 @@ final class ScrollbackSelectionController {
 
     func clear() {
         stopTimer()
-        stopScrollEventStream()
         model.reset()
         engaged = false
+    }
+
+    // MARK: back to live
+
+    /// herdr scrolls 3 lines per SGR wheel event; one batch covers the current
+    /// offset, capped so a deep scrollback unwinds across a few batches.
+    static func wheelDownEvents(forOffset offset: Int) -> Int {
+        guard offset > 0 else { return 0 }
+        return min(50, (offset + 2) / 3)
+    }
+
+    /// Unsticks a viewport left scrolled away from the live tail (by an
+    /// edge-drag selection or a manual wheel): injects wheel-down through the
+    /// attach until the offset reaches zero. Bails on no-progress — the
+    /// pane's app owns the wheel, nothing to unstick.
+    func returnToLive() {
+        guard returnToLiveTask == nil, let paneID else { return }
+        returnToLiveTask = Task { [weak self] in
+            defer { self?.returnToLiveTask = nil }
+            var previous = Int.max
+            var stalls = 0
+            for _ in 0..<100 {
+                guard let self, !Task.isCancelled else { return }
+                guard let scroll = (try? await self.paneScroll(paneID)) ?? nil,
+                      scroll.offsetFromBottom > 0 else { return }
+                let offset = scroll.offsetFromBottom
+                if offset >= previous {
+                    stalls += 1
+                    if stalls >= 3 { return }
+                } else {
+                    stalls = 0
+                }
+                previous = offset
+                self.inject(String(
+                    repeating: Self.wheelDown,
+                    count: Self.wheelDownEvents(forOffset: offset)
+                ))
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
+        }
     }
 
     // MARK: internals
