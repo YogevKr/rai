@@ -59,3 +59,27 @@ final class BackgroundWorkParserTests: XCTestCase {
         XCTAssertEqual(BackgroundWorkParser.summary(of: long).count, 91) // 90 + ellipsis
     }
 }
+
+extension BackgroundWorkParserTests {
+    func testCommandMatchingIsWhitespaceInsensitiveAndPrefixTolerant() {
+        let original = "while true; do\n  gh api \"repos/x/y\"\n  sleep 180\ndone"
+        // Whitespace differences (spaces vs newlines) must not break the match.
+        let recovered = "while true; do gh api \"repos/x/y\" sleep 180 done"
+        XCTAssertTrue(BackgroundWorkParser.matches(definition: recovered, command: original))
+        let recoveredExact = "while true; do\ngh api \"repos/x/y\"\nsleep 180\ndone"
+        XCTAssertTrue(BackgroundWorkParser.matches(definition: recoveredExact, command: original))
+        // ps truncation: recovered is a prefix of the original
+        XCTAssertTrue(BackgroundWorkParser.matches(
+            definition: "while true; do\ngh api \"repos/x/y\"",
+            command: original
+        ))
+        XCTAssertFalse(BackgroundWorkParser.matches(definition: "", command: original))
+    }
+
+    func testDisplaySummaryPrefersSessionDescription() {
+        let task = AgentBackgroundTask(pid: 1, definition: "while true; do x; done", summary: "Watch CI")
+        XCTAssertEqual(task.displaySummary, "Watch CI")
+        let bare = AgentBackgroundTask(pid: 2, definition: "while true; do x; done")
+        XCTAssertEqual(bare.displaySummary, "while true; do x; done")
+    }
+}

@@ -5,13 +5,24 @@ import Foundation
 /// While one of these is alive, an "idle" agent isn't finished; it's waiting.
 public struct AgentBackgroundTask: Sendable, Equatable, Identifiable {
     public let pid: Int
-    /// The human-readable definition (the command/loop the session registered).
+    /// The command/loop the session registered (recovered from the process).
     public let definition: String
+    /// The session's own human description of the task, when the transcript
+    /// records one (the Bash tool's `description` field) — e.g.
+    /// "Watch staging roll to 0.1.1103 and verify health".
+    public var summary: String?
     public var id: Int { pid }
 
-    public init(pid: Int, definition: String) {
+    public init(pid: Int, definition: String, summary: String? = nil) {
         self.pid = pid
         self.definition = definition
+        self.summary = summary
+    }
+
+    /// Best human-readable one-liner: the session's own description, else the
+    /// definition's first line.
+    public var displaySummary: String {
+        summary ?? BackgroundWorkParser.summary(of: definition)
     }
 }
 
@@ -81,6 +92,22 @@ public enum BackgroundWorkParser {
         text = text.replacingOccurrences(of: "\\012", with: "\n")
         text = text.replacingOccurrences(of: "'\"'\"'", with: "'")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whitespace-insensitive key for matching a recovered process definition
+    /// against the transcript's original command (ps re-encodes newlines and
+    /// quoting, so only the non-whitespace content is stable).
+    public static func normalizedCommandKey(_ text: String, limit: Int = 300) -> String {
+        String(text.filter { !$0.isWhitespace }.prefix(limit))
+    }
+
+    /// Whether a process-recovered definition and a transcript command are the
+    /// same task. Prefix matching tolerates ps argument-length truncation.
+    public static func matches(definition: String, command: String) -> Bool {
+        let a = normalizedCommandKey(definition)
+        let b = normalizedCommandKey(command)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        return a == b || a.hasPrefix(b) || b.hasPrefix(a)
     }
 
     /// One-line summary of a definition, for compact UI.

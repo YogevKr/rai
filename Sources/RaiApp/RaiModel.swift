@@ -1736,6 +1736,83 @@ final class RaiModel: ObservableObject {
         return BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
     }
 
+    /// Recovers the session's own human descriptions for background tasks from
+    /// the Claude Code transcript: every backgrounded Bash tool call records a
+    /// `description` alongside its `command`. Matched by whitespace-insensitive
+    /// command content. `cwd` is the claude process's working directory, which
+    /// names the transcript project folder.
+    nonisolated private static func transcriptSummaries(
+        for tasks: [AgentBackgroundTask],
+        claudeCWD: String
+    ) -> [AgentBackgroundTask] {
+        guard !tasks.isEmpty else { return tasks }
+        var slug = claudeCWD
+        for ch in ["/", ".", "_", " "] {
+            slug = slug.replacingOccurrences(of: ch, with: "-")
+        }
+        let dir = NSHomeDirectory() + "/.claude/projects/" + slug
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return tasks }
+        // Newest transcripts last, so later (fresher) descriptions win.
+        let files = names.filter { $0.hasSuffix(".jsonl") }
+            .map { dir + "/" + $0 }
+            .sorted {
+                let a = (try? fm.attributesOfItem(atPath: $0)[.modificationDate] as? Date) ?? .distantPast
+                let b = (try? fm.attributesOfItem(atPath: $1)[.modificationDate] as? Date) ?? .distantPast
+                return (a ?? .distantPast) < (b ?? .distantPast)
+            }
+            .suffix(12)
+        guard !files.isEmpty else { return tasks }
+
+        let grep = Process()
+        grep.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
+        // Backgrounded Bash calls AND Monitor tool calls both carry a
+        // command + human description in the transcript.
+        grep.arguments = ["-hE", "\"run_in_background\":true|\"name\":\"Monitor\""] + files
+        let pipe = Pipe()
+        grep.standardOutput = pipe
+        grep.standardError = FileHandle.nullDevice
+        guard (try? grep.run()) != nil else { return tasks }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        grep.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return tasks }
+
+        var described: [(command: String, description: String)] = []
+        for line in text.split(separator: "\n") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
+            collectBackgroundBashInputs(obj, into: &described)
+        }
+        guard !described.isEmpty else { return tasks }
+        return tasks.map { task in
+            var task = task
+            for entry in described.reversed()
+            where BackgroundWorkParser.matches(definition: task.definition, command: entry.command) {
+                task.summary = entry.description
+                break
+            }
+            return task
+        }
+    }
+
+    nonisolated private static func collectBackgroundBashInputs(
+        _ object: Any,
+        into result: inout [(command: String, description: String)]
+    ) {
+        if let dict = object as? [String: Any] {
+            let name = dict["name"] as? String
+            if name == "Bash" || name == "Monitor",
+               let input = dict["input"] as? [String: Any],
+               name == "Monitor" || input["run_in_background"] as? Bool == true,
+               let command = input["command"] as? String,
+               let description = input["description"] as? String {
+                result.append((command, description))
+            }
+            for value in dict.values { collectBackgroundBashInputs(value, into: &result) }
+        } else if let array = object as? [Any] {
+            for value in array { collectBackgroundBashInputs(value, into: &result) }
+        }
+    }
+
     /// Refreshes the sidebar's background-work map for every pane (throttled).
     func refreshBackgroundWork(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastBackgroundWorkRefresh) > 10 else { return }
@@ -1751,7 +1828,13 @@ final class RaiModel: ObservableObject {
                 let processes = info.foregroundProcesses.map { (pid: $0.pid, cmdline: $0.cmdline) }
                 guard let claudePID = BackgroundWorkParser.claudePID(inCommandLines: processes)
                 else { continue }
-                let tasks = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+                var tasks = BackgroundWorkParser.backgroundShells(psRows: rows, claudePID: claudePID)
+                if !tasks.isEmpty,
+                   let claudeCWD = info.foregroundProcesses.first(where: { $0.pid == claudePID })?.cwd {
+                    tasks = await Task.detached {
+                        Self.transcriptSummaries(for: tasks, claudeCWD: claudeCWD)
+                    }.value
+                }
                 if !tasks.isEmpty { result[paneID] = tasks }
             }
             guard generation == connectionGeneration else { return }
@@ -1771,7 +1854,7 @@ final class RaiModel: ObservableObject {
         let tasks = backgroundWork(forTab: tab.tabID)
         guard !tasks.isEmpty else { return }
         let text = tasks
-            .map { "pid \($0.pid):\n\($0.definition)" }
+            .map { "▸ \($0.displaySummary)  (pid \($0.pid))\n\n\($0.definition)" }
             .joined(separator: "\n\n————————————\n\n")
         statusExplanation = StatusExplanation(
             id: UUID(),

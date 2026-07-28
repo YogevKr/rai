@@ -802,9 +802,7 @@ private struct AgentRow: View {
                 .foregroundStyle(Theme.status(.working))
                 .help(
                     "Waiting on background work:\n"
-                        + bgTasks
-                            .map { BackgroundWorkParser.summary(of: $0.definition) }
-                            .joined(separator: "\n")
+                        + bgTasks.map { "▸ " + $0.displaySummary }.joined(separator: "\n")
                 )
             }
             if tab.paneCount > 1 {
