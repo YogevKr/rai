@@ -2073,14 +2073,40 @@ final class RaiModel: ObservableObject {
         workspaceID: String?,
         cwd: String?
     ) async -> Bool {
-        await runHerdr(
+        // The companion's "New workspace" choice must actually create one:
+        // `agent start` without --workspace lands in the *currently focused*
+        // workspace, dropping surprise agents into whatever the user is
+        // looking at.
+        var targetWorkspace = workspaceID
+        if targetWorkspace == nil {
+            var createArgs = ["workspace", "create", "--no-focus"]
+            if let cwd {
+                createArgs += ["--cwd", cwd]
+            }
+            guard let output = await runHerdrCapture(createArgs),
+                  let created = Self.workspaceID(fromCreateOutput: output) else {
+                return false
+            }
+            targetWorkspace = created
+        }
+        return await runHerdr(
             PaneActionPlanner.agentStartArguments(
                 name: Self.defaultAgentName(kind),
                 executable: kind.rawValue,
-                workspaceID: workspaceID,
+                workspaceID: targetWorkspace,
                 cwd: cwd
             )
         )
+    }
+
+    static func workspaceID(fromCreateOutput output: String) -> String? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let rootPane = result["root_pane"] as? [String: Any],
+              let workspaceID = rootPane["workspace_id"] as? String
+        else { return nil }
+        return workspaceID
     }
 
     /// Companion "open a Terminal": a plain shell pane, no agent. herdr seeds
