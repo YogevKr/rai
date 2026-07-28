@@ -1643,7 +1643,10 @@ final class RaiModel: ObservableObject {
     // spawns for attach), then we adopt herdr's resulting focus.
     func newTab() {
         guard let workspace = selectedWorkspace?.workspaceID else { return }
-        runAction(["tab", "create", "--workspace", workspace, "--focus"])
+        newTab(inWorkspace: workspace)
+    }
+    func newTab(inWorkspace workspaceID: String) {
+        runAction(["tab", "create", "--workspace", workspaceID, "--focus"])
     }
     func reopenClosedTab() {
         guard let record = closedTabs.popLast() else { return }

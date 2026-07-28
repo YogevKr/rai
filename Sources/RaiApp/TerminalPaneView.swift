@@ -70,10 +70,57 @@ enum HerdrCLI {
 /// Reports a completed click without intercepting SwiftTerm's mouse handling.
 /// SwiftTerm still receives every down/drag/up event, so selection, links, and
 /// terminal mouse-reporting behavior remain unchanged.
+/// Pane-level operations offered by the terminal's right-click menu; the
+/// SwiftUI layer maps them onto RaiModel actions.
+enum PaneMenuAction {
+    case splitRight, splitDown, zoomPane, closePane, newTab
+}
+
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
+    var onContextAction: ((PaneMenuAction) -> Void)?
     private var draggedSinceMouseDown = false
     private var copiedPanel: NSPanel?
+
+    /// Right-click on the pane: select it (like cmux), then offer the pane
+    /// controls. AppKit-native so it works over the Metal-backed terminal.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onPlainClick?()
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.isEnabled = selectionActive || scrollbackSelection.hasExtendedSelection
+        menu.addItem(copyItem)
+
+        let pasteItem = NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        pasteItem.target = self
+        menu.addItem(pasteItem)
+
+        menu.addItem(.separator())
+        menu.addItem(contextItem("Split Right", #selector(menuSplitRight)))
+        menu.addItem(contextItem("Split Down", #selector(menuSplitDown)))
+        menu.addItem(.separator())
+        menu.addItem(contextItem("Zoom Pane", #selector(menuZoomPane)))
+        menu.addItem(contextItem("Close Pane", #selector(menuClosePane)))
+        menu.addItem(.separator())
+        menu.addItem(contextItem("New Tab", #selector(menuNewTab)))
+        return menu
+    }
+
+    private func contextItem(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func menuSplitRight() { onContextAction?(.splitRight) }
+    @objc private func menuSplitDown() { onContextAction?(.splitDown) }
+    @objc private func menuZoomPane() { onContextAction?(.zoomPane) }
+    @objc private func menuClosePane() { onContextAction?(.closePane) }
+    @objc private func menuNewTab() { onContextAction?(.newTab) }
 
     /// Extends drag-selections into herdr-side scrollback (see the controller).
     let scrollbackSelection = ScrollbackSelectionController()
@@ -346,6 +393,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let isFocused: Bool
     let pool: TerminalPool
     let onPlainClick: () -> Void
+    var onContextAction: (PaneMenuAction) -> Void = { _ in }
 
     static var font: NSFont {
         let settings = SettingsStore.shared
@@ -373,6 +421,7 @@ struct TerminalPaneView: NSViewRepresentable {
     private func update(_ container: TerminalContainerView) {
         let view = pool.view(for: terminalID)
         view.onPlainClick = onPlainClick
+        view.onContextAction = onContextAction
         view.paneID = paneID
         container.install(view)
         if isFocused, view.window?.firstResponder !== view {

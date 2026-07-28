@@ -292,6 +292,15 @@ private struct PaneSurface: View {
                         pool: model.terminalPool,
                         onPlainClick: {
                             model.select(paneID: paneID, focusInHerdr: true)
+                        },
+                        onContextAction: { action in
+                            switch action {
+                            case .splitRight: model.splitRight()
+                            case .splitDown: model.splitDown()
+                            case .zoomPane: model.zoomPane(paneID)
+                            case .closePane: model.closePane()
+                            case .newTab: model.newTab()
+                            }
                         }
                     )
                         .padding(.horizontal, 10)

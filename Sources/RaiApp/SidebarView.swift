@@ -83,6 +83,11 @@ struct SidebarView: View {
                     .padding(.bottom, 16)
                 }
                 .scrollIndicators(.hidden)
+                // Right-click on empty sidebar space: the create actions.
+                .contextMenu {
+                    Button("New Tab") { model.newTab() }
+                    Button("New Space") { model.newWorkspace() }
+                }
             } else {
                 Spacer()
                 HStack(spacing: 8) {
@@ -711,6 +716,9 @@ private struct WorkspaceRow: View {
             )
         )
         .contextMenu {
+            Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
+            Button("New Space") { model.newWorkspace() }
+            Divider()
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
@@ -844,6 +852,9 @@ private struct WorkspaceHeader: View {
             )
         )
         .contextMenu {
+            Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
+            Button("New Space") { model.newWorkspace() }
+            Divider()
             Button("Focus") { model.select(workspace: workspace) }
             Button("Rename") { model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
@@ -962,6 +973,8 @@ private struct AgentRow: View {
             )
         )
         .contextMenu {
+            Button("New Tab") { model.newTab(inWorkspace: tab.workspaceID) }
+            Divider()
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }
             Button("Close", role: .destructive) { model.close(tab: tab) }
