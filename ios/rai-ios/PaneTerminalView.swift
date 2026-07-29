@@ -109,7 +109,10 @@ struct PaneTerminalView: View {
                     Button {
                         showingCommandPalette = true
                     } label: {
-                        Image(systemName: "slash.circle")
+                        // A bare slash, sized to sit alongside the SF-symbol
+                        // photo icon (there is no un-circled slash symbol).
+                        Text("/")
+                            .font(.title2.weight(.medium))
                     }
                     .accessibilityLabel("Slash commands")
                 }
