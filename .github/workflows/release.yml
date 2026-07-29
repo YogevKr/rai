@@ -75,6 +75,26 @@ jobs:
           echo "signing identity: $IDENTITY"
           echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
 
+          # Surface the expiry while there's still time to act. Apple caps a
+          # Developer ID cert at the Apple Developer Program membership end
+          # date, so a short window usually means the membership is what needs
+          # renewing — the cert is reissued from it.
+          EXPIRY="$(security find-certificate -c 'Developer ID Application' -p "$KEYCHAIN" \
+            | openssl x509 -noout -enddate | cut -d= -f2)"
+          EXPIRY_EPOCH="$(date -j -f '%b %d %H:%M:%S %Y %Z' "$EXPIRY" +%s 2>/dev/null || echo 0)"
+          if [ "$EXPIRY_EPOCH" -gt 0 ]; then
+            DAYS=$(( (EXPIRY_EPOCH - $(date +%s)) / 86400 ))
+            echo "certificate expires $EXPIRY (${DAYS} days)"
+            if [ "$DAYS" -lt 0 ]; then
+              echo "::error::Developer ID certificate EXPIRED on $EXPIRY. Renew the Apple Developer Program membership, issue a new cert, and update APPLE_CERT_P12/APPLE_CERT_PASSWORD."
+              exit 1
+            elif [ "$DAYS" -lt 45 ]; then
+              echo "::warning::Developer ID certificate expires in ${DAYS} days ($EXPIRY). Renew the membership and reissue before it lapses, or releases stop notarizing."
+            fi
+          else
+            echo "::warning::Could not parse the certificate expiry date."
+          fi
+
       - name: Build universal Rai.app
         env:
           RAI_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
