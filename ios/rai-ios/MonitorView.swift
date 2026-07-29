@@ -539,7 +539,7 @@ enum HerdFilter {
         case .needsYou: "Needs you"
         case .finished: "Finished"
         case .working: "Working"
-        case .quiet: "Quiet"
+        case .quiet: "Idle"
         }
     }
 }
@@ -706,7 +706,7 @@ private struct PulseLine: View {
             }
             segment("\(working) working", .working, Night.dim)
             sep
-            segment("\(quiet) quiet", .quiet, Night.faint)
+            segment("\(quiet) idle", .quiet, Night.faint)
         }
         .font(.footnote.monospaced())
         .textCase(nil)
