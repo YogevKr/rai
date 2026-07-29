@@ -698,7 +698,11 @@ private struct PaneDropDelegate: DropDelegate {
                     .first(where: { $0.paneID == paneID })?.terminalID
                 else { return }
                 model.select(paneID: paneID, focusInHerdr: true)
-                model.terminalPool.view(for: terminalID).send(txt: line)
+                // Paste semantics, not typing: applications that enable
+                // bracketed paste treat the payload as pasted content —
+                // Claude Code attaches a dropped image's path as [Image #N]
+                // on submit instead of echoing a raw path.
+                model.terminalPool.view(for: terminalID).sendPaste(line)
             }
         }
         guard let sourcePaneID = draggedPaneID,
