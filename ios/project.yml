@@ -47,7 +47,7 @@ targets:
       properties:
         CFBundleDisplayName: Rai Remote
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "20"
+        CFBundleVersion: "21"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
