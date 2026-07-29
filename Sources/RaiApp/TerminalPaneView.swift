@@ -127,6 +127,24 @@ enum FileDrop {
     }
 }
 
+/// A terminal row is painted to its full width, so a copied line drags a
+/// pty's worth of trailing spaces along (264 columns on a big display); in
+/// any wrapping editor every pasted line then folds into a bonus blank row.
+/// Rendering artifacts, not content — strip them per line.
+enum CopiedText {
+    static func trimmed(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                var l = line
+                while let last = l.last, last == " " || last == "\t" || last == "\u{00A0}" {
+                    l = l.dropLast()
+                }
+                return l
+            }
+            .joined(separator: "\n")
+    }
+}
+
 /// Ghostty-parity escaping for paths dropped onto a terminal: backslash-escape
 /// every character the shell (or Claude's @-path parsing) would otherwise
 /// interpret, leaving common path characters readable.
@@ -402,8 +420,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if scrollbackSelection.hasExtendedSelection,
            let text = scrollbackSelection.assembledText(), !text.isEmpty {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            NSPasteboard.general.setString(CopiedText.trimmed(text), forType: .string)
             showCopiedToast()
+            return
+        }
+        if let selected = getSelection(), !selected.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(CopiedText.trimmed(selected), forType: .string)
             return
         }
         super.copy(sender)
@@ -411,7 +434,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        NSPasteboard.general.setString(CopiedText.trimmed(text), forType: .string)
         showCopiedToast()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.selectNone()
