@@ -2,17 +2,11 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Drop an image onto a Claude pane and it attaches as `[Image #N]`** —
-  instantly, exactly like pasting a screenshot (the image also lands on your
-  clipboard). Non-image files drop as shell-escaped paths with proper paste
-  semantics.
-- **Copying terminal text no longer drags row padding along.** Copied lines
-  used to carry a full pty width of trailing spaces, so pasting into anything
-  that wraps produced a blank row under every line.
-- **Phone pane streams mirror the pane's native size and heal themselves.**
-  The companion sees the whole pane (all columns and rows, scrollable), a
-  stream that dies restarts on its own instead of freezing the phone on stale
-  content, and the viewport follows the cursor.
+- **Reopen Closed Tab brings the agent back with its original flags.** The
+  close captures the agent's live command line, and reopen resumes with it —
+  bypass-permissions mode, model picks, everything — instead of a bare
+  `claude --continue`. Unrecognized command lines still fall back to the safe
+  default.
 
 ### Install
 
