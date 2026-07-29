@@ -43,7 +43,10 @@ final class ScrollbackSelectionController {
     private static let wheelUp = "\u{1b}[<64;1;1M"
     private static let wheelDown = "\u{1b}[<65;1;1M"
 
-    private let client = HerdrClient()
+    /// RPC + event transport for scroll events and scrollback reads. The pool
+    /// rebinds this to the ACTIVE herd's socket when it creates the pane view;
+    /// the default is only correct for the default herd.
+    var client = HerdrClient()
     private var model = ScrollbackSelectionModel()
     private var timer: Timer?
     private var edge: EdgeDirection?

@@ -68,6 +68,10 @@ final class TerminalPool {
         // lines a long Claude stream makes a held selection crawl. A deep
         // scrollback keeps trimming (and the drift) out of normal use.
         view.getTerminal().changeScrollback(10_000)
+        // Bind the scrollback controller to THIS pool's herd. Its default
+        // client points at the default socket, which is wrong the moment the
+        // app is attached to another session (remote herd, herd switch).
+        view.scrollbackSelection.client = HerdrClient(socketPath: socketPath)
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
