@@ -209,6 +209,10 @@ final class RaiModel: ObservableObject {
     private var eventTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
+    private var trailingRefreshTask: Task<Void, Never>?
+    /// Connection generation whose plugin actions were already fetched, so the
+    /// herdr CLI spawn happens once per connection, not once per snapshot.
+    private var pluginActionsGeneration: UUID?
     private var lastObservedPaneStatuses: [String: AgentStatus]?
     private var connectionGeneration = UUID()
     private var connectionAttemptID = UUID()
@@ -585,6 +589,8 @@ final class RaiModel: ObservableObject {
         eventTask = nil
         flushTask?.cancel()
         flushTask = nil
+        trailingRefreshTask?.cancel()
+        trailingRefreshTask = nil
         pendingEvents.removeAll(keepingCapacity: false)
         client.disconnect()
         terminalPool.removeAll()
@@ -1575,6 +1581,10 @@ final class RaiModel: ObservableObject {
     private func queue(_ event: HerdrEvent, generation: UUID) {
         guard generation == connectionGeneration else { return }
         pendingEvents.append(event)
+        scheduleFlush(generation: generation)
+    }
+
+    private func scheduleFlush(generation: UUID) {
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
@@ -1583,20 +1593,55 @@ final class RaiModel: ObservableObject {
         }
     }
 
+    /// Whether a herdr event implies the session's structure changed and the
+    /// snapshot must be re-fetched. Output rides on `pane.updated`: protocol 16
+    /// cannot subscribe to `pane.output_changed`, so `events()` substitutes it —
+    /// treating `pane.updated` as structural made every output burst refresh
+    /// the full snapshot, spawn a herdr CLI, and re-render the whole UI while
+    /// the user typed.
+    static func isStructuralEvent(_ name: String) -> Bool {
+        name != "pane.output_changed" && name != "pane.updated"
+    }
+
     private func flushEvents(generation: UUID) async {
         guard generation == connectionGeneration else { return }
         let events = pendingEvents
         pendingEvents.removeAll(keepingCapacity: true)
-        flushTask = nil
-        guard !events.isEmpty else { return }
+        guard !events.isEmpty else {
+            flushTask = nil
+            return
+        }
         bridgeServer.relay(events: events)
 
         // The terminal content itself is rendered by each pane's attach process,
         // so we only need to re-snapshot on structural changes (create/close/move/
         // focus/status) — never on raw output.
-        let structural = events.contains { $0.name != "pane.output_changed" }
-        if structural {
+        if events.contains(where: { Self.isStructuralEvent($0.name) }) {
+            trailingRefreshTask?.cancel()
+            trailingRefreshTask = nil
             await refreshSnapshot(keepSelection: true)
+        } else {
+            scheduleTrailingRefresh(generation: generation)
+        }
+        // Cleared only after the refresh completes: a flush scheduled mid-refresh
+        // would otherwise stack a second snapshot fetch on top of the running one.
+        flushTask = nil
+        if !pendingEvents.isEmpty {
+            scheduleFlush(generation: generation)
+        }
+    }
+
+    /// Output-only flushes still deserve an eventual snapshot (pane titles and
+    /// cwd ride on it), just not one per burst: coalesce to at most one refresh
+    /// every few seconds while output streams.
+    private func scheduleTrailingRefresh(generation: UUID) {
+        guard trailingRefreshTask == nil else { return }
+        trailingRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, !Task.isCancelled else { return }
+            self.trailingRefreshTask = nil
+            guard generation == self.connectionGeneration else { return }
+            await self.refreshSnapshot(keepSelection: true)
         }
     }
 
@@ -1634,7 +1679,12 @@ final class RaiModel: ObservableObject {
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
             )
-            await refreshPluginActions(generation: generation)
+            // Once per connection, not once per snapshot: this spawns a herdr
+            // CLI process, and snapshot refreshes ride the event stream.
+            if pluginActionsGeneration != generation {
+                pluginActionsGeneration = generation
+                await refreshPluginActions(generation: generation)
+            }
             guard generation == connectionGeneration else { return }
 
             let selectionStillValid = selectedPaneID.map { id in
