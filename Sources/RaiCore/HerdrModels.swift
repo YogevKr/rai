@@ -231,6 +231,78 @@ public struct PaneLayoutSnapshot: Codable, Sendable, Equatable {
     }
 }
 
+/// Where pane.move puts a pane (protocol 16). `tab.move` can only reorder
+/// within a workspace, so relocating a whole tab across spaces is built from
+/// these: lead pane → `newTab`/`newWorkspace`, remaining panes → `tab`.
+public enum PaneMoveDestination: Sendable, Equatable {
+    case tab(tabID: String, split: SplitDirection, targetPaneID: String? = nil)
+    case newTab(workspaceID: String?, label: String?)
+    case newWorkspace(label: String?, tabLabel: String?)
+
+    public var jsonValue: JSONValue {
+        switch self {
+        case let .tab(tabID, split, targetPaneID):
+            var object: [String: JSONValue] = [
+                "type": .string("tab"),
+                "tab_id": .string(tabID),
+                "split": .string(split.rawValue),
+            ]
+            if let targetPaneID {
+                object["target_pane_id"] = .string(targetPaneID)
+            }
+            return .object(object)
+        case let .newTab(workspaceID, label):
+            var object: [String: JSONValue] = ["type": .string("new_tab")]
+            if let workspaceID {
+                object["workspace_id"] = .string(workspaceID)
+            }
+            if let label {
+                object["label"] = .string(label)
+            }
+            return .object(object)
+        case let .newWorkspace(label, tabLabel):
+            var object: [String: JSONValue] = ["type": .string("new_workspace")]
+            if let label {
+                object["label"] = .string(label)
+            }
+            if let tabLabel {
+                object["tab_label"] = .string(tabLabel)
+            }
+            return .object(object)
+        }
+    }
+}
+
+/// The slice of pane.move's result the app acts on. `createdTab` is the tab a
+/// `newTab`/`newWorkspace` destination made — the anchor for moving a
+/// multi-pane tab's remaining panes. `pane` is the moved pane AFTER the move:
+/// crossing workspaces rewrites pane ids (w1:p2 → w2:p5), so selection must
+/// follow this id, not the one the request was made with.
+public struct PaneMoveOutcome: Codable, Sendable {
+    public let changed: Bool
+    public let pane: Pane
+    public let createdTab: HerdrTab?
+    public let closedTabID: String?
+    public let closedWorkspaceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case changed, pane
+        case createdTab = "created_tab"
+        case closedTabID = "closed_tab_id"
+        case closedWorkspaceID = "closed_workspace_id"
+    }
+}
+
+// pane.move's wire result wraps the payload:
+// {"type": "pane_move", "move_result": {...}}.
+struct PaneMoveResult: Codable {
+    let moveResult: PaneMoveOutcome
+
+    enum CodingKeys: String, CodingKey {
+        case moveResult = "move_result"
+    }
+}
+
 struct SnapshotResult: Codable {
     let snapshot: SessionSnapshot
 }

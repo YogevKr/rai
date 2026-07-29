@@ -52,50 +52,52 @@ final class SidebarDropRulesTests: XCTestCase {
         )
     }
 
-    // MARK: reorderEligible — dropUpdated/performDrop's decision
+    // MARK: tabRowAction — dropUpdated/performDrop's decision on tab rows
 
-    func testTabReorderEligibleWithinSameWorkspace() {
-        XCTAssertTrue(
-            SidebarDropRules.reorderEligible(
-                draggedID: "w1:t4",
-                targetID: "w1:t2",
-                hasReorderType: true,
+    func testTabDropWithinSameWorkspaceReorders() {
+        XCTAssertEqual(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: "w1:t4",
+                targetTabID: "w1:t2",
+                hasTabType: true,
                 sourceWorkspaceID: "w1",
                 targetWorkspaceID: "w1"
-            )
+            ),
+            .reorder
         )
     }
 
     func testSelfDropIsNotEligible() {
-        XCTAssertFalse(
-            SidebarDropRules.reorderEligible(
-                draggedID: "w1:t4",
-                targetID: "w1:t4",
-                hasReorderType: true,
+        XCTAssertNil(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: "w1:t4",
+                targetTabID: "w1:t4",
+                hasTabType: true,
                 sourceWorkspaceID: "w1",
                 targetWorkspaceID: "w1"
             )
         )
     }
 
-    func testCrossWorkspaceTabDropIsNotEligible() {
-        XCTAssertFalse(
-            SidebarDropRules.reorderEligible(
-                draggedID: "w1:t4",
-                targetID: "w2:t1",
-                hasReorderType: true,
+    func testCrossWorkspaceTabDropMovesInFrontOfTargetRow() {
+        XCTAssertEqual(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: "w1:t4",
+                targetTabID: "w2:t1",
+                hasTabType: true,
                 sourceWorkspaceID: "w1",
                 targetWorkspaceID: "w2"
-            )
+            ),
+            .moveTabToWorkspace(workspaceID: "w2", insertBeforeTabID: "w2:t1")
         )
     }
 
     func testMissingDraggedIDIsNotEligible() {
-        XCTAssertFalse(
-            SidebarDropRules.reorderEligible(
-                draggedID: nil,
-                targetID: "w1:t2",
-                hasReorderType: true,
+        XCTAssertNil(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: nil,
+                targetTabID: "w1:t2",
+                hasTabType: true,
                 sourceWorkspaceID: "w1",
                 targetWorkspaceID: "w1"
             )
@@ -103,25 +105,83 @@ final class SidebarDropRulesTests: XCTestCase {
     }
 
     func testWrongPayloadTypeIsNotEligible() {
-        XCTAssertFalse(
-            SidebarDropRules.reorderEligible(
-                draggedID: "w1:t4",
-                targetID: "w1:t2",
-                hasReorderType: false,
+        XCTAssertNil(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: "w1:t4",
+                targetTabID: "w1:t2",
+                hasTabType: false,
                 sourceWorkspaceID: "w1",
                 targetWorkspaceID: "w1"
             )
         )
     }
 
-    func testWorkspaceReorderEligibleWithoutWorkspaceConstraint() {
-        XCTAssertTrue(
-            SidebarDropRules.reorderEligible(
-                draggedID: "w1",
-                targetID: "w2",
-                hasReorderType: true,
+    // A dragged tab whose workspace can't be resolved from the snapshot must
+    // not move anywhere.
+    func testUnknownWorkspaceIsNotEligible() {
+        XCTAssertNil(
+            SidebarDropRules.tabRowAction(
+                draggedTabID: "w1:t4",
+                targetTabID: "w2:t1",
+                hasTabType: true,
                 sourceWorkspaceID: nil,
-                targetWorkspaceID: nil
+                targetWorkspaceID: "w2"
+            )
+        )
+    }
+
+    // MARK: headerAction — drops landing on a workspace header
+
+    func testWorkspacePayloadOnHeaderReorders() {
+        XCTAssertEqual(
+            SidebarDropRules.headerAction(
+                draggedWorkspaceID: "w1",
+                draggedTabID: nil,
+                tabWorkspaceID: nil,
+                targetWorkspaceID: "w2",
+                hasWorkspaceType: true,
+                hasTabType: false
+            ),
+            .reorder
+        )
+    }
+
+    func testWorkspaceSelfDropOnHeaderIsNotEligible() {
+        XCTAssertNil(
+            SidebarDropRules.headerAction(
+                draggedWorkspaceID: "w1",
+                draggedTabID: nil,
+                tabWorkspaceID: nil,
+                targetWorkspaceID: "w1",
+                hasWorkspaceType: true,
+                hasTabType: false
+            )
+        )
+    }
+
+    func testTabPayloadOnForeignHeaderAppendsToThatSpace() {
+        XCTAssertEqual(
+            SidebarDropRules.headerAction(
+                draggedWorkspaceID: nil,
+                draggedTabID: "w1:t4",
+                tabWorkspaceID: "w1",
+                targetWorkspaceID: "w2",
+                hasWorkspaceType: false,
+                hasTabType: true
+            ),
+            .moveTabToWorkspace(workspaceID: "w2", insertBeforeTabID: nil)
+        )
+    }
+
+    func testTabPayloadOnOwnHeaderIsNotEligible() {
+        XCTAssertNil(
+            SidebarDropRules.headerAction(
+                draggedWorkspaceID: nil,
+                draggedTabID: "w1:t4",
+                tabWorkspaceID: "w1",
+                targetWorkspaceID: "w1",
+                hasWorkspaceType: false,
+                hasTabType: true
             )
         )
     }

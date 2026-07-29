@@ -262,6 +262,35 @@ public actor HerdrClient {
         )
     }
 
+    /// pane.move silently no-ops (changed: false, reason: zoomed_tab) when the
+    /// pane's tab is zoomed — un-zoom before moving panes out of a zoomed tab.
+    public func unzoomPane(_ paneID: String) throws {
+        let _: JSONValue = try call(
+            method: "pane.zoom",
+            params: [
+                "pane_id": .string(paneID),
+                "mode": .string("off"),
+            ]
+        )
+    }
+
+    @discardableResult
+    public func movePane(
+        _ paneID: String,
+        to destination: PaneMoveDestination,
+        focus: Bool = false
+    ) throws -> PaneMoveOutcome {
+        let result: PaneMoveResult = try call(
+            method: "pane.move",
+            params: [
+                "pane_id": .string(paneID),
+                "destination": destination.jsonValue,
+                "focus": .bool(focus),
+            ]
+        )
+        return result.moveResult
+    }
+
     public nonisolated func events(
         subscriptions: [String] = HerdrClient.defaultSubscriptions,
         paneIDs: [String] = []

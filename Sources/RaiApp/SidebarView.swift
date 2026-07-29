@@ -709,8 +709,10 @@ private struct WorkspaceHeader: View {
             model.draggedWorkspaceID = workspace.workspaceID
             return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
         }
+        // Headers take workspace payloads (reorder spaces) AND tab payloads:
+        // dropping a tab from another space here moves it into this space.
         .onDrop(
-            of: [.raiWorkspace],
+            of: [.raiWorkspace, .raiTab],
             delegate: SidebarReorderDropDelegate(
                 targetID: workspace.workspaceID,
                 type: .raiWorkspace,
@@ -849,6 +851,20 @@ private struct AgentRow: View {
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }
             Button("Broadcast…", action: onBroadcast)
+            Menu("Move to Space") {
+                let others = (model.snapshot?.workspaces ?? [])
+                    .filter { $0.workspaceID != tab.workspaceID }
+                ForEach(others) { workspace in
+                    Button(
+                        workspace.label.isEmpty
+                            ? "Space \(workspace.number)" : workspace.label
+                    ) {
+                        model.moveTab(tab.tabID, toWorkspaceID: workspace.workspaceID)
+                    }
+                }
+                if !others.isEmpty { Divider() }
+                Button("New Space") { model.moveTabToNewWorkspace(tab.tabID) }
+            }
             Button("Close", role: .destructive) { model.close(tab: tab) }
             let actions = model.pluginActions(for: .tab)
             if !actions.isEmpty {
@@ -1299,21 +1315,62 @@ enum SidebarDropRules {
         paneDrag ? supportsPaneHover : hasReorderType
     }
 
-    // Whether dropping HERE would actually reorder: a real payload, a
-    // different row, and matching workspaces — herdr's tab.move (and
-    // RaiModel.moveTab) reject cross-space moves, so don't advertise them.
-    // Workspace reorders pass nil for both workspace ids (no constraint).
-    static func reorderEligible(
-        draggedID: String?,
-        targetID: String,
-        hasReorderType: Bool,
+    // What dropping HERE does. Same-space tab drops reorder via herdr's
+    // tab.move; cross-space drops relocate the tab through the pane.move
+    // sequence (RaiModel.moveTab(_:toWorkspaceID:)) since tab.move cannot
+    // cross workspaces.
+    enum Action: Equatable {
+        case reorder
+        case moveTabToWorkspace(workspaceID: String, insertBeforeTabID: String?)
+    }
+
+    // Tab rows: a drop from the same space reorders onto this row; a drop
+    // from another space moves the tab here, slotted in front of this row.
+    static func tabRowAction(
+        draggedTabID: String?,
+        targetTabID: String,
+        hasTabType: Bool,
         sourceWorkspaceID: String?,
         targetWorkspaceID: String?
-    ) -> Bool {
-        guard hasReorderType, let src = draggedID, src != targetID else {
-            return false
+    ) -> Action? {
+        guard hasTabType,
+              let src = draggedTabID,
+              src != targetTabID,
+              let sourceWorkspaceID,
+              let targetWorkspaceID else {
+            return nil
         }
         return sourceWorkspaceID == targetWorkspaceID
+            ? .reorder
+            : .moveTabToWorkspace(
+                workspaceID: targetWorkspaceID,
+                insertBeforeTabID: targetTabID
+            )
+    }
+
+    // Workspace headers: a workspace payload reorders spaces; a tab payload
+    // from another space appends that tab to this space.
+    static func headerAction(
+        draggedWorkspaceID: String?,
+        draggedTabID: String?,
+        tabWorkspaceID: String?,
+        targetWorkspaceID: String,
+        hasWorkspaceType: Bool,
+        hasTabType: Bool
+    ) -> Action? {
+        if hasTabType, draggedTabID != nil,
+           let tabWorkspaceID, tabWorkspaceID != targetWorkspaceID {
+            return .moveTabToWorkspace(
+                workspaceID: targetWorkspaceID,
+                insertBeforeTabID: nil
+            )
+        }
+        guard hasWorkspaceType,
+              let src = draggedWorkspaceID,
+              src != targetWorkspaceID else {
+            return nil
+        }
+        return .reorder
     }
 }
 
@@ -1332,38 +1389,49 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     @Binding var targeted: Bool
     var onPaneDragHover: (() -> Void)?
 
-    private var draggedID: String? {
-        type == .raiTab ? model.draggedTabID : model.draggedWorkspaceID
-    }
-
     private func isPaneDrag(_ info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.raiPane.identifier])
     }
 
-    private func reorderEligible(_ info: DropInfo) -> Bool {
-        var sourceWorkspaceID: String?
-        var targetWorkspaceID: String?
+    // Headers handle two payloads: workspace reorders and tab relocations.
+    private var handledTypeIdentifiers: [String] {
+        type == .raiTab
+            ? [UTType.raiTab.identifier]
+            : [UTType.raiWorkspace.identifier, UTType.raiTab.identifier]
+    }
+
+    private func draggedTabWorkspaceID(_ tabs: [HerdrTab]?) -> String? {
+        tabs?.first { $0.tabID == model.draggedTabID }?.workspaceID
+    }
+
+    private func action(_ info: DropInfo) -> SidebarDropRules.Action? {
+        let hasTabType = info.hasItemsConforming(to: [UTType.raiTab.identifier])
+        let tabs = model.snapshot?.tabs
         if type == .raiTab {
-            let tabs = model.snapshot?.tabs
-            sourceWorkspaceID = tabs?.first { $0.tabID == draggedID }?.workspaceID
-            targetWorkspaceID = tabs?.first { $0.tabID == targetID }?.workspaceID
-            guard sourceWorkspaceID != nil, targetWorkspaceID != nil else {
-                return false
-            }
+            return SidebarDropRules.tabRowAction(
+                draggedTabID: model.draggedTabID,
+                targetTabID: targetID,
+                hasTabType: hasTabType,
+                sourceWorkspaceID: draggedTabWorkspaceID(tabs),
+                targetWorkspaceID: tabs?.first { $0.tabID == targetID }?.workspaceID
+            )
         }
-        return SidebarDropRules.reorderEligible(
-            draggedID: draggedID,
-            targetID: targetID,
-            hasReorderType: info.hasItemsConforming(to: [type.identifier]),
-            sourceWorkspaceID: sourceWorkspaceID,
-            targetWorkspaceID: targetWorkspaceID
+        return SidebarDropRules.headerAction(
+            draggedWorkspaceID: model.draggedWorkspaceID,
+            draggedTabID: model.draggedTabID,
+            tabWorkspaceID: draggedTabWorkspaceID(tabs),
+            targetWorkspaceID: targetID,
+            hasWorkspaceType: info.hasItemsConforming(
+                to: [UTType.raiWorkspace.identifier]
+            ),
+            hasTabType: hasTabType
         )
     }
 
     func validateDrop(info: DropInfo) -> Bool {
         SidebarDropRules.acceptsSession(
             paneDrag: isPaneDrag(info),
-            hasReorderType: info.hasItemsConforming(to: [type.identifier]),
+            hasReorderType: info.hasItemsConforming(to: handledTypeIdentifiers),
             supportsPaneHover: onPaneDragHover != nil
         )
     }
@@ -1373,12 +1441,12 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             onPaneDragHover?()
             return
         }
-        targeted = reorderEligible(info)
+        targeted = action(info) != nil
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         if isPaneDrag(info) { return DropProposal(operation: .cancel) }
-        let ok = reorderEligible(info)
+        let ok = action(info) != nil
         targeted = ok
         return DropProposal(operation: ok ? .move : .cancel)
     }
@@ -1394,11 +1462,21 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             model.draggedTabID = nil
             model.draggedWorkspaceID = nil
         }
-        guard reorderEligible(info), let src = draggedID else { return false }
-        if type == .raiTab {
-            model.moveTab(sourceTabID: src, onto: targetID)
-        } else {
-            model.moveWorkspace(sourceWorkspaceID: src, onto: targetID)
+        guard let action = action(info) else { return false }
+        switch action {
+        case .reorder:
+            if type == .raiTab, let src = model.draggedTabID {
+                model.moveTab(sourceTabID: src, onto: targetID)
+            } else if let src = model.draggedWorkspaceID {
+                model.moveWorkspace(sourceWorkspaceID: src, onto: targetID)
+            }
+        case let .moveTabToWorkspace(workspaceID, insertBeforeTabID):
+            guard let src = model.draggedTabID else { return false }
+            model.moveTab(
+                src,
+                toWorkspaceID: workspaceID,
+                insertBeforeTabID: insertBeforeTabID
+            )
         }
         return true
     }

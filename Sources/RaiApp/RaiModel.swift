@@ -1482,6 +1482,124 @@ final class RaiModel: ObservableObject {
         }
     }
 
+    /// Relocates a whole tab into another workspace. herdr's tab.move cannot
+    /// cross spaces, so this is a pane.move sequence (see TabMovePlanner);
+    /// `insertBeforeTabID` then reorders the landing tab to where the drop
+    /// happened — omitted, the tab lands at the end of the target space.
+    func moveTab(
+        _ tabID: String,
+        toWorkspaceID targetWorkspaceID: String,
+        insertBeforeTabID: String? = nil
+    ) {
+        guard let snapshot,
+              let tab = snapshot.tabs.first(where: { $0.tabID == tabID }),
+              tab.workspaceID != targetWorkspaceID,
+              snapshot.workspaces.contains(where: {
+                  $0.workspaceID == targetWorkspaceID
+              }) else {
+            return
+        }
+        let layout = snapshot.layouts.first { $0.tabID == tabID }
+        guard let plan = TabMovePlanner.plan(
+            tab: tab,
+            panes: snapshot.panes,
+            layout: layout
+        ) else {
+            return
+        }
+        // Index within the target workspace's tab list, the same coordinate
+        // space the same-space reorder feeds tab.move.
+        let insertIndex = insertBeforeTabID.flatMap { before in
+            snapshot.tabs
+                .filter { $0.workspaceID == targetWorkspaceID }
+                .firstIndex { $0.tabID == before }
+        }
+        performTabMove(
+            plan: plan,
+            leadDestination: .newTab(
+                workspaceID: targetWorkspaceID,
+                label: plan.carriedLabel
+            ),
+            insertIndex: insertIndex,
+            unzoomFirst: layout?.zoomed == true
+        )
+    }
+
+    /// Moves a tab into a brand-new workspace of its own.
+    func moveTabToNewWorkspace(_ tabID: String) {
+        guard let snapshot,
+              let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) else {
+            return
+        }
+        let layout = snapshot.layouts.first { $0.tabID == tabID }
+        guard let plan = TabMovePlanner.plan(
+            tab: tab,
+            panes: snapshot.panes,
+            layout: layout
+        ) else {
+            return
+        }
+        performTabMove(
+            plan: plan,
+            leadDestination: .newWorkspace(label: nil, tabLabel: plan.carriedLabel),
+            insertIndex: nil,
+            unzoomFirst: layout?.zoomed == true
+        )
+    }
+
+    private func performTabMove(
+        plan: TabMovePlanner.Plan,
+        leadDestination: PaneMoveDestination,
+        insertIndex: Int?,
+        unzoomFirst: Bool
+    ) {
+        let client = client
+        let generation = connectionGeneration
+        // Crossing workspaces rewrites pane ids, so a selection inside the
+        // moved tab must follow the ids the move responses hand back.
+        let selectedBeforeMove = selectedPaneID
+        Task {
+            do {
+                var remappedSelection: String?
+                // A zoomed source tab makes pane.move a silent no-op
+                // (changed: false, reason: zoomed_tab) — un-zoom first.
+                if unzoomFirst {
+                    try await client.unzoomPane(plan.leadPaneID)
+                }
+                let outcome = try await client.movePane(
+                    plan.leadPaneID,
+                    to: leadDestination
+                )
+                if plan.leadPaneID == selectedBeforeMove {
+                    remappedSelection = outcome.pane.paneID
+                }
+                if let landingTabID = outcome.createdTab?.tabID {
+                    for paneID in plan.followerPaneIDs {
+                        let followed = try await client.movePane(
+                            paneID,
+                            to: .tab(tabID: landingTabID, split: .right)
+                        )
+                        if paneID == selectedBeforeMove {
+                            remappedSelection = followed.pane.paneID
+                        }
+                    }
+                    if let insertIndex {
+                        try await client.moveTab(landingTabID, insertIndex: insertIndex)
+                    }
+                }
+                guard generation == connectionGeneration else { return }
+                if let remappedSelection, selectedPaneID == selectedBeforeMove {
+                    selectedPaneID = remappedSelection
+                }
+                await refreshSnapshot(keepSelection: true)
+            } catch {
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
+            }
+        }
+    }
+
     func moveWorkspace(sourceWorkspaceID: String, onto targetWorkspaceID: String) {
         guard sourceWorkspaceID != targetWorkspaceID, let snapshot else { return }
         let workspaces = snapshot.workspaces
