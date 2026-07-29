@@ -136,7 +136,10 @@ jobs:
           ls -lh Rai-*
 
       # The app inside already carries its ticket; the disk image needs its own
-      # or Gatekeeper still balks when the user opens the download.
+      # or Gatekeeper still balks when the user opens the download. The dmg must
+      # be codesigned FIRST — notarizing an unsigned image staples a ticket that
+      # Gatekeeper has no signature to bind to, and `spctl --type open` then
+      # rejects it with "no usable signature".
       - name: Notarize and staple the dmg
         if: steps.signing.outputs.identity != ''
         env:
@@ -147,6 +150,7 @@ jobs:
           KEY="$RUNNER_TEMP/notary.p8"
           printf '%s' "${API_KEY_P8}" | base64 --decode > "$KEY"
           DMG="dist/Rai-${{ steps.v.outputs.version }}-macos.dmg"
+          codesign --force --sign "${{ steps.signing.outputs.identity }}" --timestamp "$DMG"
           xcrun notarytool submit "$DMG" \
             --key "$KEY" --key-id "${API_KEY_ID}" --issuer "${API_ISSUER_ID}" \
             --wait --timeout 30m
