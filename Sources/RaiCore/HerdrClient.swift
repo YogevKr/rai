@@ -295,7 +295,11 @@ public actor HerdrClient {
         // detached (concurrently-executing) closure under strict concurrency.
         let subscriptionsPayload = wireSubscriptions
         return AsyncThrowingStream { continuation in
-            let worker = Task.detached {
+            // A dedicated thread, NOT Task.detached: the read below blocks in
+            // read(2) for the stream's whole life, and the cooperative pool is
+            // capped at the core count. One stream per pane parked there
+            // starves every other async task in the app.
+            let worker = Thread {
                 do {
                     let socket = try UnixSocket(path: path)
                     guard state.install(socket) else { return }
@@ -308,7 +312,7 @@ public actor HerdrClient {
                     )
                     try socket.writeLine(JSONEncoder().encode(request))
 
-                    while !Task.isCancelled && !state.isStopped {
+                    while !state.isStopped {
                         let line = try socket.readLine()
                         let envelope = try JSONDecoder().decode(RPCEnvelope.self, from: line)
                         if let error = envelope.error {
@@ -350,9 +354,11 @@ public actor HerdrClient {
                     }
                 }
             }
+            worker.name = "rai.herdr-events"
+            worker.start()
             continuation.onTermination = { _ in
+                // Closing the socket fails the blocked read; the thread exits.
                 state.stop()
-                worker.cancel()
             }
         }
     }
