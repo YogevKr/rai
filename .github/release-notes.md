@@ -2,18 +2,17 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Drop a file onto a pane to type its path.** Drag a file from Finder onto
-  any terminal pane (Ghostty parity): the pane is focused and the
-  shell-escaped path is typed into its pty — ready for Claude's input or any
-  shell prompt. Works alongside pane-swap dragging.
-- **The phone now mirrors a pane's full grid.** Streams are never smaller
-  than the pane, so on the phone the live prompt stays visible with the
-  keyboard up, output follows the bottom, and you can scroll the whole pane.
-  (Companion app fixes ship in TestFlight build 21; older phone builds keep
-  working unchanged.)
-- **App icon badge on the phone is a real count.** Pushes delivered since the
-  phone last connected set the badge; opening the app clears it — no more
-  stale "1" stuck on the icon.
+- **Drop an image onto a Claude pane and it attaches as `[Image #N]`** —
+  instantly, exactly like pasting a screenshot (the image also lands on your
+  clipboard). Non-image files drop as shell-escaped paths with proper paste
+  semantics.
+- **Copying terminal text no longer drags row padding along.** Copied lines
+  used to carry a full pty width of trailing spaces, so pasting into anything
+  that wraps produced a blank row under every line.
+- **Phone pane streams mirror the pane's native size and heal themselves.**
+  The companion sees the whole pane (all columns and rows, scrollable), a
+  stream that dies restarts on its own instead of freezing the phone on stale
+  content, and the viewport follows the cursor.
 
 ### Install
 
