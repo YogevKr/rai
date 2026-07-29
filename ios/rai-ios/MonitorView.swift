@@ -1,6 +1,30 @@
 import RaiCore
 import SwiftUI
 
+/// Nightwatch palette: the Mac terminal's Dracula+ identity on the phone.
+/// Status is ANSI-derived — green working, amber needs-you, gray quiet.
+enum Night {
+    static let ground = Color(red: 0x16 / 255, green: 0x17 / 255, blue: 0x1D / 255)
+    static let row = Color(red: 0x1C / 255, green: 0x1D / 255, blue: 0x25 / 255)
+    static let hotRow = Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x14 / 255)
+    static let hotEdge = Color(red: 0x4A / 255, green: 0x3B / 255, blue: 0x1A / 255)
+    static let text = Color(red: 0xE8 / 255, green: 0xE6 / 255, blue: 0xE3 / 255)
+    static let dim = Color(red: 0x8A / 255, green: 0x8C / 255, blue: 0x98 / 255)
+    static let faint = Color(red: 0x6A / 255, green: 0x6C / 255, blue: 0x78 / 255)
+    static let amber = Color(red: 1.0, green: 0xCB / 255, blue: 0x6B / 255)
+    static let green = Color(red: 0x69 / 255, green: 1.0, blue: 0x94 / 255)
+    static let shellGreen = Color(red: 0x50 / 255, green: 0xFA / 255, blue: 0x7B / 255)
+    static let repoBlue = Color(red: 0x82 / 255, green: 0xAA / 255, blue: 1.0)
+    static let idleDot = Color(red: 0x4A / 255, green: 0x4C / 255, blue: 0x57 / 255)
+
+    /// The repo is the "where" — the last path component, never /Users/….
+    static func repoName(_ path: String?) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+}
+
 struct MonitorView: View {
     @ObservedObject var appModel: AppModel
     // Observed directly: BridgeConnection is its own ObservableObject, and
@@ -159,6 +183,7 @@ struct MonitorView: View {
         } message: {
             Text(connection.actionError ?? "")
         }
+        .preferredColorScheme(.dark)
     }
 
     static let appVersion = Bundle.main.object(
@@ -302,51 +327,63 @@ struct MonitorView: View {
     }
 
     private func herdList(_ snapshot: SessionSnapshot) -> some View {
-        List {
-            let needsYou = agents(in: snapshot) { $0 == .blocked || $0 == .done }
-            let working = agents(in: snapshot) { $0 == .working }
+        let needsYou = agents(in: snapshot) { $0 == .blocked || $0 == .done }
+        let working = agents(in: snapshot) { $0 == .working }
+        let quiet = max(0, snapshot.panes.count - needsYou.count - working.count)
+        return List {
+            Section {
+            } header: {
+                PulseLine(
+                    needsYou: needsYou.filter { $0.pane.agentStatus == .blocked }.count,
+                    finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
+                    working: working.count,
+                    quiet: quiet
+                )
+            }
+            .listRowInsets(EdgeInsets())
             if !needsYou.isEmpty {
                 Section {
                     ForEach(needsYou) { item in
                         NavigationLink(value: item.pane.paneID) {
-                            NeedsYouRow(
+                            NightAgentRow(
                                 item: item,
-                                backgroundWork: backgroundWork(for: item.pane)
+                                backgroundWork: backgroundWork(for: item.pane),
+                                approve: item.pane.agentStatus == .blocked
+                                    ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                                    : nil,
+                                deny: item.pane.agentStatus == .blocked
+                                    ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                                    : nil
                             )
                         }
+                        .listRowBackground(
+                            item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
+                        )
                         .contextMenu { backgroundWorkButton(for: item.pane) }
                     }
                 } header: {
-                    HStack {
-                        Text("Needs you")
-                        Spacer()
-                        Text("\(needsYou.count) need you")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(nil)
-                    }
+                    let anyBlocked = needsYou.contains { $0.pane.agentStatus == .blocked }
+                    NightSectionHeader(
+                        title: anyBlocked ? "Needs you" : "Finished",
+                        detail: "\(needsYou.count)",
+                        hot: anyBlocked
+                    )
                 }
             }
             if !working.isEmpty {
                 Section {
                     ForEach(working) { item in
                         NavigationLink(value: item.pane.paneID) {
-                            NeedsYouRow(
+                            NightAgentRow(
                                 item: item,
                                 backgroundWork: backgroundWork(for: item.pane)
                             )
                         }
+                        .listRowBackground(Night.row)
                         .contextMenu { backgroundWorkButton(for: item.pane) }
                     }
                 } header: {
-                    HStack {
-                        Text("Working")
-                        Spacer()
-                        Text("\(working.count) working")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(nil)
-                    }
+                    NightSectionHeader(title: "Working", detail: "\(working.count)")
                 }
             }
 
@@ -362,10 +399,13 @@ struct MonitorView: View {
                             close: { closeTarget = $0 },
                             showBackgroundWork: { backgroundWorkTarget = $0 }
                         )
+                        .listRowBackground(Night.row)
                     }
                 } header: {
                     HStack {
                         Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
+                            .font(.caption.monospaced().weight(.semibold))
+                            .foregroundStyle(Night.faint)
                         Spacer()
                         StatusPill(status: workspace.agentStatus)
                     }
@@ -385,6 +425,8 @@ struct MonitorView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Night.ground)
         .refreshable { await connection.refreshSnapshot() }
     }
 
@@ -565,32 +607,189 @@ private struct NeedsYouAgent: Identifiable {
     var id: String { pane.paneID }
 }
 
-private struct NeedsYouRow: View {
-    let item: NeedsYouAgent
-    let backgroundWork: [String]
+/// The herd in one glance: "1 needs you · 4 working · 2 quiet".
+private struct PulseLine: View {
+    let needsYou: Int
+    let finished: Int
+    let working: Int
+    let quiet: Int
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if needsYou > 0 {
+                Text("\(needsYou) needs you")
+                    .foregroundStyle(Night.amber)
+                    .fontWeight(.semibold)
+                Text(" · ").foregroundStyle(Night.faint)
+            }
+            if finished > 0 {
+                Text("\(finished) finished")
+                    .foregroundStyle(Night.green)
+                Text(" · ").foregroundStyle(Night.faint)
+            }
+            Text("\(working) working").foregroundStyle(Night.dim)
+            Text(" · ").foregroundStyle(Night.faint)
+            Text("\(quiet) quiet").foregroundStyle(Night.faint)
+        }
+        .font(.footnote.monospaced())
+        .textCase(nil)
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct NightSectionHeader: View {
+    let title: String
+    let detail: String
+    var hot = false
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.pane.agent ?? item.pane.terminalTitleStripped ?? "Pane")
-                    .font(.headline)
-                Text("\(workspaceLabel) · \(tabLabel)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(title)
+                .font(.caption.monospaced().weight(.semibold))
+                .foregroundStyle(hot ? Night.amber : Night.faint)
             Spacer()
-            PaneStatus(status: item.pane.agentStatus, backgroundWorkCount: backgroundWork.count)
+            Text(detail)
+                .font(.caption.monospaced())
+                .foregroundStyle(Night.faint)
+                .textCase(nil)
         }
-        .padding(.vertical, 2)
+    }
+}
+
+/// Task first, repo second, the live activity line third — the binary name
+/// ("claude") never leads. Blocked panes grow inline Approve / Deny.
+private struct NightAgentRow: View {
+    let item: NeedsYouAgent
+    let backgroundWork: [String]
+    var approve: (() -> Void)?
+    var deny: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                StatusGlowDot(status: item.pane.agentStatus)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Night.text)
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        if let repo = Night.repoName(item.pane.foregroundCWD ?? item.pane.cwd) {
+                            Text(repo)
+                                .foregroundStyle(Night.repoBlue)
+                        }
+                        Text("· \(statusWord)")
+                            .foregroundStyle(Night.faint)
+                    }
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    if let activity {
+                        (Text("❯ ").foregroundStyle(Night.shellGreen)
+                            + Text(activity).foregroundStyle(Night.faint))
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if backgroundWork.count > 0 {
+                    Text("⏳ \(backgroundWork.count)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(Night.amber)
+                }
+            }
+            if approve != nil || deny != nil {
+                HStack(spacing: 8) {
+                    if let approve {
+                        Button(action: approve) {
+                            Text("Approve")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(Night.amber, in: RoundedRectangle(cornerRadius: 7))
+                                .foregroundStyle(Night.hotRow)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    if let deny {
+                        Button(action: deny) {
+                            Text("Deny")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                                .foregroundStyle(Night.text)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .padding(.leading, 17)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
-    private var workspaceLabel: String {
-        item.workspace.label.isEmpty ? "Space \(item.workspace.number)" : item.workspace.label
+    /// The task name: the tab's label (herdr names tabs after the task),
+    /// falling back to the terminal title, only then the agent binary.
+    private var title: String {
+        if !item.tab.label.isEmpty { return item.tab.label }
+        return item.pane.terminalTitleStripped ?? item.pane.agent ?? "Pane"
     }
 
-    private var tabLabel: String {
-        item.tab.label.isEmpty ? "Tab \(item.tab.number)" : item.tab.label
+    /// The terminal title doubles as the live activity when it says something
+    /// beyond the row title (Claude keeps it set to the current step).
+    private var activity: String? {
+        guard let stripped = item.pane.terminalTitleStripped, !stripped.isEmpty
+        else { return nil }
+        // The title is often the same text — or herdr's own "…"-truncated
+        // copy of it. Strip the ellipsis before comparing, or the line just
+        // repeats the row title.
+        var head = title
+        if head.hasSuffix("…") { head.removeLast() }
+        if head.hasSuffix("...") { head.removeLast(3) }
+        if stripped.hasPrefix(head) || head.hasPrefix(stripped) { return nil }
+        return stripped
+    }
+
+    private var statusWord: String {
+        switch item.pane.agentStatus {
+        case .blocked: "waiting on you"
+        case .done: "finished"
+        case .working: "working"
+        case .idle: "idle"
+        case .unknown: "—"
+        }
+    }
+}
+
+private struct StatusGlowDot: View {
+    let status: AgentStatus
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 7, height: 7)
+            .shadow(color: glow, radius: 4)
+            .accessibilityHidden(true)
+    }
+
+    private var color: Color {
+        switch status {
+        case .working: Night.green
+        case .blocked: Night.amber
+        case .done: Night.green
+        case .idle, .unknown: Night.idleDot
+        }
+    }
+
+    private var glow: Color {
+        switch status {
+        case .working: Night.green.opacity(0.55)
+        case .blocked: Night.amber.opacity(0.6)
+        case .done: Night.green.opacity(0.35)
+        case .idle, .unknown: .clear
+        }
     }
 }
 
@@ -612,16 +811,19 @@ private struct TabGroup: View {
         // with their panes beneath; nothing collapses.
         if panes.count == 1, let pane = panes.first {
             NavigationLink(value: pane.paneID) {
-                HStack {
+                HStack(spacing: 10) {
+                    StatusGlowDot(status: pane.agentStatus)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(tab.label.isEmpty
-                            ? (pane.agent ?? pane.terminalTitleStripped ?? "Tab \(tab.number)")
+                            ? (pane.terminalTitleStripped ?? pane.agent ?? "Tab \(tab.number)")
                             : tab.label
                         )
-                        .font(.body)
-                        Text(pane.foregroundCWD ?? pane.cwd)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Night.text)
+                        .lineLimit(1)
+                        Text(Night.repoName(pane.foregroundCWD ?? pane.cwd) ?? "")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(Night.repoBlue)
                             .lineLimit(1)
                     }
                     Spacer()
@@ -702,13 +904,16 @@ private struct PaneRow: View {
     let backgroundWork: [String]
 
     var body: some View {
-        HStack {
+        HStack(spacing: 10) {
+            StatusGlowDot(status: pane.agentStatus)
             VStack(alignment: .leading, spacing: 3) {
-                Text(pane.agent ?? pane.terminalTitleStripped ?? "Pane")
-                    .font(.body)
-                Text(pane.foregroundCWD ?? pane.cwd)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Night.text)
+                    .lineLimit(1)
+                Text(Night.repoName(pane.foregroundCWD ?? pane.cwd) ?? "")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Night.repoBlue)
                     .lineLimit(1)
             }
             Spacer()
@@ -796,11 +1001,11 @@ private struct StatusPill: View {
 
     private var color: Color {
         switch status {
-        case .idle: .secondary
-        case .working: .blue
-        case .blocked: .orange
-        case .done: .green
-        case .unknown: .secondary
+        case .idle: Night.dim
+        case .working: Night.green
+        case .blocked: Night.amber
+        case .done: Night.green
+        case .unknown: Night.dim
         }
     }
 }
