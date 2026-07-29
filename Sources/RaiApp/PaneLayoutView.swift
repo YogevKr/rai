@@ -693,16 +693,31 @@ private struct PaneDropDelegate: DropDelegate {
             let providers = info.itemProviders(for: [UTType.fileURL.identifier])
             let paneID = targetPaneID
             let model = self.model
-            return FileDrop.deliver(providers) { line in
+            return FileDrop.deliverURLs(providers) { urls in
                 guard let terminalID = model.snapshot?.panes
                     .first(where: { $0.paneID == paneID })?.terminalID
                 else { return }
                 model.select(paneID: paneID, focusInHerdr: true)
-                // Paste semantics, not typing: applications that enable
-                // bracketed paste treat the payload as pasted content —
-                // Claude Code attaches a dropped image's path as [Image #N]
-                // on submit instead of echoing a raw path.
-                model.terminalPool.view(for: terminalID).sendPaste(line)
+                let view = model.terminalPool.view(for: terminalID)
+                if let images = FileDrop.imageOnlyURLs(urls) {
+                    // Behave like an image paste: the pane shows [Image #N]
+                    // right away. Ctrl-V makes Claude read the clipboard
+                    // image itself (same route as pasting a screenshot); one
+                    // image per keystroke, spaced so each read completes.
+                    for (index, url) in images.enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45 * Double(index)) {
+                            guard let image = NSImage(contentsOf: url) else { return }
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.writeObjects([image])
+                            view.send([0x16])
+                        }
+                    }
+                } else {
+                    // Paste semantics, not typing: shells highlight it as a
+                    // paste, Claude keeps it as pasted text.
+                    view.sendPaste(DroppedPathEscaper.line(for: urls))
+                }
             }
         }
         guard let sourcePaneID = draggedPaneID,

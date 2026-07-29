@@ -34,3 +34,13 @@ final class FileDropTests: XCTestCase {
         })
     }
 }
+
+extension FileDropTests {
+    func testImageOnlyDetection() {
+        let images = [URL(fileURLWithPath: "/tmp/a.PNG"), URL(fileURLWithPath: "/tmp/b.heic")]
+        XCTAssertEqual(FileDrop.imageOnlyURLs(images), images)
+        XCTAssertNil(FileDrop.imageOnlyURLs([URL(fileURLWithPath: "/tmp/a.png"),
+                                            URL(fileURLWithPath: "/tmp/notes.txt")]))
+        XCTAssertNil(FileDrop.imageOnlyURLs([]))
+    }
+}

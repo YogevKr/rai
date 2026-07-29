@@ -96,9 +96,25 @@ enum ScrolledPillDecision {
 /// the whole window (`_PlatformDraggingDestinationView`), which wins the drop
 /// before the terminal view's NSDraggingDestination is ever consulted.
 enum FileDrop {
-    static func deliver(
+    /// Extensions Claude (and the clipboard) treat as images. A drop made
+    /// entirely of these goes through the clipboard + Ctrl-V route so the
+    /// pane shows [Image #N] immediately — exactly like pasting a screenshot.
+    static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff",
+    ]
+
+    static func imageOnlyURLs(_ urls: [URL]) -> [URL]? {
+        guard !urls.isEmpty,
+              urls.allSatisfy({ imageExtensions.contains($0.pathExtension.lowercased()) })
+        else { return nil }
+        return urls
+    }
+
+    /// Collects the drop's file URLs (async, per-item) and hands them over
+    /// in provider order on the main actor.
+    static func deliverURLs(
         _ providers: [NSItemProvider],
-        send: @escaping @MainActor (String) -> Void
+        handle: @escaping @MainActor ([URL]) -> Void
     ) -> Bool {
         let candidates = providers.filter {
             $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
@@ -120,10 +136,19 @@ enum FileDrop {
             let found = urls.compactMap { $0 }
             guard !found.isEmpty else { return }
             MainActor.assumeIsolated {
-                send(DroppedPathEscaper.line(for: found))
+                handle(found)
             }
         }
         return true
+    }
+
+    static func deliver(
+        _ providers: [NSItemProvider],
+        send: @escaping @MainActor (String) -> Void
+    ) -> Bool {
+        deliverURLs(providers) { urls in
+            send(DroppedPathEscaper.line(for: urls))
+        }
     }
 }
 
