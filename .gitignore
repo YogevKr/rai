@@ -13,3 +13,6 @@
 
 # Claude Code local dir (agent worktrees, etc.)
 .claude/
+
+# swift test scratch path (see docs/TESTING.md)
+.build-tests/
