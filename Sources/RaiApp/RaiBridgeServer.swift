@@ -102,6 +102,9 @@ final class RaiBridgeServer: ObservableObject {
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
+    /// Consecutive unexpected observe exits per (client, pane); reset when a
+    /// stream produces frames again. Guards the auto-restart loop below.
+    private var observeRestarts: [ObjectIdentifier: [String: Int]] = [:]
     private var pushRegistrations: Set<PushRegistration> = []
     /// Pushes delivered since a phone last connected; sent as the APNs badge
     /// so the app icon shows how many notifications await. Reset when a
@@ -502,10 +505,11 @@ final class RaiBridgeServer: ObservableObject {
             guard let existing = observeStreams[clientID]?[paneID] else { return }
             // Full-grid streams mirror the pane's native size — the client's
             // viewport dimensions don't shape them, so a restart would only
-            // interrupt the stream for an identical one.
-            if existing.fullGrid { return }
+            // interrupt a LIVE stream for an identical one. A dead one,
+            // though, is a free recovery opportunity.
+            if existing.fullGrid && existing.isRunning { return }
             startObserveStream(
-                paneID: paneID, cols: cols, rows: rows, fullGrid: false, for: client)
+                paneID: paneID, cols: cols, rows: rows, fullGrid: existing.fullGrid, for: client)
         case let .launchAgent(workspaceID, agent, cwd):
             if let workspaceID,
                model.snapshot?.workspaces.contains(where: {
@@ -730,7 +734,8 @@ final class RaiBridgeServer: ObservableObject {
             ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdout
-        let stream = ObserveStream(process: process, stdout: stdout, fullGrid: fullGrid)
+        let stream = ObserveStream(
+            process: process, stdout: stdout, fullGrid: fullGrid, cols: cols, rows: rows)
         let clientID = ObjectIdentifier(client.connection)
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self, weak client, weak stream] handle in
@@ -744,6 +749,8 @@ final class RaiBridgeServer: ObservableObject {
             guard !frames.isEmpty else { return }
             Task { @MainActor in
                 guard self.observeStreams[clientID]?[paneID] === stream else { return }
+                // Frames flowing again — the stream is healthy.
+                self.observeRestarts[clientID]?[paneID] = 0
                 for frame in frames {
                     self.send(
                         .paneFrame(
@@ -765,12 +772,36 @@ final class RaiBridgeServer: ObservableObject {
                       self.observeStreams[clientID]?[paneID] === stream
                 else { return }
                 self.removeObserveStream(paneID: paneID, clientID: clientID)
-                if !stream.isStopping {
+                guard !stream.isStopping else { return }
+                // An observe can die under it (pane resized away, herdr
+                // hiccup). The phone can't tell — its viewport just goes
+                // silently stale — and full-grid clients no longer restart
+                // streams on resize, so recovery is OUR job: restart with
+                // backoff, and only surface an error once that keeps failing.
+                let attempt = (self.observeRestarts[clientID]?[paneID] ?? 0) + 1
+                guard attempt <= 5 else {
+                    self.observeRestarts[clientID]?[paneID] = 0
                     self.send(
                         .error(
                             message: "Pane stream \(paneID) exited with status \(process.terminationStatus)."
                         ),
                         to: client
+                    )
+                    return
+                }
+                self.observeRestarts[clientID, default: [:]][paneID] = attempt
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 * Double(attempt)) {
+                    [weak self, weak client] in
+                    guard let self, let client,
+                          self.clients[clientID] === client,
+                          self.observeStreams[clientID]?[paneID] == nil
+                    else { return }
+                    self.startObserveStream(
+                        paneID: paneID,
+                        cols: stream.cols,
+                        rows: stream.rows,
+                        fullGrid: stream.fullGrid,
+                        for: client
                     )
                 }
             }
@@ -926,15 +957,21 @@ private final class ObserveStream: @unchecked Sendable {
     let process: Process
     let stdout: Pipe
     /// Whether the attaching client opted into pane-sized (full-grid) frames;
-    /// restarts triggered by resizePane must preserve it.
+    /// restarts must preserve it, along with the originally requested size.
     let fullGrid: Bool
+    let cols: Int
+    let rows: Int
     private var buffer = Data()
     private(set) var isStopping = false
 
-    init(process: Process, stdout: Pipe, fullGrid: Bool) {
+    var isRunning: Bool { process.isRunning }
+
+    init(process: Process, stdout: Pipe, fullGrid: Bool, cols: Int, rows: Int) {
         self.process = process
         self.stdout = stdout
         self.fullGrid = fullGrid
+        self.cols = cols
+        self.rows = rows
     }
 
     func consume(_ data: Data) -> [ObserveFrame] {

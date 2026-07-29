@@ -21,7 +21,7 @@ let package = Package(
         // scrolls a viewport over it instead of clipping.
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "91d7fcad1e09cdc68d27eb562340b71ed6e28a4f"
+            revision: "599ddab6e46ccabfb45f1bc568fa28dd44cc9e87"
         ),
     ],
     targets: [

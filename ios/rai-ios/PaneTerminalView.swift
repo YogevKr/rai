@@ -401,13 +401,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
             terminal?.feed(byteArray: [UInt8](data)[...])
             context.coordinator.prompts.refresh()
             if full {
-                // A stream (re)start means "show me the live screen": park the
-                // viewport at the bottom, above the seeded scrollback. Async so
-                // the feed's layout/contentSize update lands first.
+                // A stream (re)start means "show me the live screen": follow
+                // the cursor region (NOT the geometric bottom — a pinned grid
+                // taller than its content has nothing but empty rows there).
+                // Async so the feed's layout/contentSize update lands first.
                 DispatchQueue.main.async { [weak terminal] in
-                    guard let terminal else { return }
-                    let bottom = max(0, terminal.contentSize.height - terminal.bounds.height)
-                    terminal.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+                    terminal?.scrollToLive()
                     context.coordinator.prompts.refresh()
                 }
             }
