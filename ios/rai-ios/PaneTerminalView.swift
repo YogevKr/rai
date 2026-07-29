@@ -799,6 +799,11 @@ private struct TerminalControlToolbar: View {
                     Button(label) { send(bytes) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        // Key chips, not actions: in accent blue the ↑ chip
+                        // reads as a second Send button. Neutral gray keeps
+                        // Send as the compose bar's only prominent action.
+                        .tint(.gray)
+                        .foregroundStyle(.primary)
                 }
             }
             .padding(.horizontal)
