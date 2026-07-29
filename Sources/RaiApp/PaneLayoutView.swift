@@ -305,6 +305,18 @@ private struct PaneSurface: View {
                     )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
+                        // Claimed here, at the SwiftUI layer, because the
+                        // sidebar's reorder .onDrop makes SwiftUI own the
+                        // window's drag destination — a file dragged onto the
+                        // pane never reaches the terminal view's own AppKit
+                        // drop handling. Ghostty parity: type the escaped
+                        // path(s) into the pane's pty.
+                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                            FileDrop.deliver(providers) { line in
+                                model.select(paneID: paneID, focusInHerdr: true)
+                                model.terminalPool.view(for: terminalID).send(txt: line)
+                            }
+                        }
                 }
             }
         }

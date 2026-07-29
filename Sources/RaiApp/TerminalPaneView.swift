@@ -2,6 +2,7 @@ import AppKit
 import RaiCore
 import SwiftTerm
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Resolves the `herdr` CLI, which rai spawns per pane to bridge the remote
 /// terminal. A GUI app launched via LaunchServices gets a minimal PATH, so we
@@ -84,6 +85,45 @@ enum PaneMenuAction {
 enum ScrolledPillDecision {
     static func shouldShow(offsetFromBottom: Int, mouseIsDown: Bool, inWindow: Bool) -> Bool {
         offsetFromBottom > 0 && !mouseIsDown && inWindow
+    }
+}
+
+/// Collects the file URLs of a SwiftUI drop (NSItemProvider loading is async
+/// and per-item) and delivers ONE escaped path line, in provider order.
+///
+/// The SwiftUI layer must claim file drops itself: the sidebar's reorder
+/// `.onDrop` makes SwiftUI install its own AppKit dragging destination over
+/// the whole window (`_PlatformDraggingDestinationView`), which wins the drop
+/// before the terminal view's NSDraggingDestination is ever consulted.
+enum FileDrop {
+    static func deliver(
+        _ providers: [NSItemProvider],
+        send: @escaping @MainActor (String) -> Void
+    ) -> Bool {
+        let candidates = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !candidates.isEmpty else { return false }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls = [URL?](repeating: nil, count: candidates.count)
+        for (index, provider) in candidates.enumerated() {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                lock.lock()
+                urls[index] = url
+                lock.unlock()
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            let found = urls.compactMap { $0 }
+            guard !found.isEmpty else { return }
+            MainActor.assumeIsolated {
+                send(DroppedPathEscaper.line(for: found))
+            }
+        }
+        return true
     }
 }
 
