@@ -21,6 +21,10 @@ struct ClosedTabRecord: Equatable {
     let cwd: String
     let agentKind: AgentLaunchKind?
     let label: String
+    /// The agent's full command line at close time (from pane process-info):
+    /// reopen relaunches with the SAME flags — bypass permissions, model
+    /// picks — not a bare default invocation.
+    var agentArgv: [String]?
 }
 
 struct PaneProcessInfo: Decodable, Equatable, Sendable {
@@ -1073,13 +1077,68 @@ final class RaiModel: ObservableObject {
     }
 
     func close(tab: HerdrTab) {
-        guard let record = closedTabRecord(for: tab) else { return }
-        closedTabs.append(record)
-        if closedTabs.count > 10 {
-            closedTabs.removeFirst(closedTabs.count - 10)
-        }
+        guard var record = closedTabRecord(for: tab) else { return }
         guard let arguments = closeTabArguments(tabID: tab.tabID) else { return }
-        runAction(arguments)
+        // Capture the agent's command line BEFORE the close kills it, so
+        // reopen can bring the session back with all its original flags.
+        let agentPaneID = snapshot?.panes.first {
+            $0.tabID == tab.tabID && $0.agent != nil
+        }?.paneID
+        let generation = connectionGeneration
+        Task {
+            if let agentPaneID, let kind = record.agentKind,
+               let info = await processInfo(for: agentPaneID) {
+                record.agentArgv = Self.agentArgv(from: info, kind: kind)
+            }
+            guard generation == connectionGeneration else { return }
+            closedTabs.append(record)
+            if closedTabs.count > 10 {
+                closedTabs.removeFirst(closedTabs.count - 10)
+            }
+            runAction(arguments)
+        }
+    }
+
+    /// The argv of the tab's running agent process, when it is recognizably
+    /// the agent binary (basename match) — anything murkier reopens with the
+    /// safe default instead of replaying an arbitrary command line.
+    static func agentArgv(from info: PaneProcessInfo, kind: AgentLaunchKind) -> [String]? {
+        let binary = kind.rawValue
+        let process = info.foregroundProcesses.first { process in
+            guard let first = process.argv.first else { return false }
+            return (first as NSString).lastPathComponent == binary
+        }
+        guard let argv = process?.argv, !argv.isEmpty else { return nil }
+        return argv
+    }
+
+    /// The shell command that resumes a reopened tab's agent. With a captured
+    /// argv, resume carries every original flag and falls back to the same
+    /// flags without the resume switch; without one, the bare defaults.
+    static func resumeCommand(kind: AgentLaunchKind, argv: [String]?) -> String {
+        guard let argv, !argv.isEmpty,
+              (argv[0] as NSString).lastPathComponent == kind.rawValue
+        else {
+            switch kind {
+            case .claude: return "claude --continue || claude"
+            case .codex: return "codex resume --last || codex"
+            }
+        }
+        var tokens = argv
+        tokens[0] = (tokens[0] as NSString).lastPathComponent
+        let escaped = tokens.map { DroppedPathEscaper.escape($0) }
+        let base = escaped.joined(separator: " ")
+        switch kind {
+        case .claude:
+            let hasResume = tokens.contains { ["--continue", "-c", "--resume", "-r"].contains($0) }
+            return hasResume ? base : "\(base) --continue || \(base)"
+        case .codex:
+            let flags = escaped.dropFirst().joined(separator: " ")
+            let withFlags = flags.isEmpty ? "" : " \(flags)"
+            return tokens.contains("resume")
+                ? base
+                : "codex\(withFlags) resume --last || \(base)"
+        }
     }
 
     private func closeTabArguments(tabID: String) -> [String]? {
@@ -2387,10 +2446,7 @@ final class RaiModel: ObservableObject {
             // Their current CLIs support these flags, but Rai cannot verify that
             // a resumable session still exists after herdr killed it. Fall back
             // to a fresh client only when the resume command exits unsuccessfully.
-            let resumeCommand: String = switch agentKind {
-            case .claude: "claude --continue || claude"
-            case .codex: "codex resume --last || codex"
-            }
+            let resumeCommand = Self.resumeCommand(kind: agentKind, argv: record.agentArgv)
             // `tab create` already gave the tab a default shell pane, and
             // `agent start` puts the agent in a SECOND pane beside it. Capture
             // that default pane up front and close it once the agent is running,
