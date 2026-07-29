@@ -69,6 +69,13 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         return true
     }
 
+    // The badge counts pushes that arrived while away; opening the app is
+    // "I looked" — clear it. Without this a stale count sticks to the icon
+    // forever (there is no other clearer).
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        UNUserNotificationCenter.current().setBadgeCount(0)
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data

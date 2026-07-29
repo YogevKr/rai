@@ -103,6 +103,11 @@ final class RaiBridgeServer: ObservableObject {
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
     private var pushRegistrations: Set<PushRegistration> = []
+    /// Pushes delivered since a phone last connected; sent as the APNs badge
+    /// so the app icon shows how many notifications await. Reset when a
+    /// client authenticates — opening the app reconnects the bridge, which
+    /// is the closest signal we have for "the user looked".
+    private var outstandingPushCount = 0
     private let apnsPusher = APNsPusher()
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
@@ -295,6 +300,8 @@ final class RaiBridgeServer: ObservableObject {
             return
         }
         let pusher = apnsPusher
+        outstandingPushCount += 1
+        let badge = outstandingPushCount
 
         let delivery = Task.detached {
             await withTaskGroup(of: String?.self, returning: [String].self) { group in
@@ -310,7 +317,8 @@ final class RaiBridgeServer: ObservableObject {
                             paneID: paneID,
                             workspaceID: workspaceID,
                             workspace: workspace,
-                            category: requiresAttention ? "agent-attention" : nil
+                            category: requiresAttention ? "agent-attention" : nil,
+                            badge: badge
                         )
                         return result == .deadToken ? registration.deviceToken : nil
                     }
@@ -406,6 +414,7 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             client.isAuthenticated = true
+            outstandingPushCount = 0
             client.info = info
             updateConnectedDeviceCount()
             send(

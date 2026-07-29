@@ -58,6 +58,7 @@ actor APNsPusher {
             let alert: Alert
             let sound: String
             let category: String?
+            let badge: Int?
         }
 
         let aps: APS
@@ -83,7 +84,8 @@ actor APNsPusher {
         paneID: String,
         workspaceID: String,
         workspace: String?,
-        category: String?
+        category: String?,
+        badge: Int? = nil
     ) async -> Result {
         do {
             let jwt = try providerJWT(for: configuration)
@@ -105,7 +107,8 @@ actor APNsPusher {
                 aps: .init(
                     alert: .init(title: title, subtitle: subtitle, body: body),
                     sound: "default",
-                    category: category
+                    category: category,
+                    badge: badge
                 ),
                 paneID: paneID,
                 workspaceID: workspaceID,
