@@ -69,13 +69,6 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         return true
     }
 
-    // The badge counts pushes that arrived while away; opening the app is
-    // "I looked" — clear it. Without this a stale count sticks to the icon
-    // forever (there is no other clearer).
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        UNUserNotificationCenter.current().setBadgeCount(0)
-    }
-
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -151,6 +144,7 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 struct RaiIOSApp: App {
     @UIApplicationDelegateAdaptor(IOSAppDelegate.self) private var appDelegate
     @StateObject private var appModel = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -164,6 +158,16 @@ struct RaiIOSApp: App {
                         appModel.pair(pairing)
                     }
                 }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The badge counts pushes that arrived while away; opening the
+            // app is "I looked" — clear it. This must hang off scenePhase:
+            // SwiftUI apps run the scene lifecycle, so UIKit never calls the
+            // app delegate's applicationDidBecomeActive (the first version
+            // of this fix silently did nothing).
+            if phase == .active {
+                UNUserNotificationCenter.current().setBadgeCount(0)
+            }
         }
     }
 }
