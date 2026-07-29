@@ -1082,24 +1082,38 @@ final class RaiModel: ObservableObject {
         runAction(["workspace", "rename", workspace.workspaceID, label], followFocus: false)
     }
 
+    /// Test seam: stages a snapshot without a live herd so snapshot-derived
+    /// bookkeeping (e.g. close(tab:)'s reopen record) is testable in isolation.
+    func adoptSnapshotForTesting(_ newSnapshot: SessionSnapshot) {
+        snapshot = newSnapshot
+    }
+
     func close(tab: HerdrTab) {
-        guard var record = closedTabRecord(for: tab) else { return }
+        guard let record = closedTabRecord(for: tab) else { return }
         guard let arguments = closeTabArguments(tabID: tab.tabID) else { return }
-        // Capture the agent's command line BEFORE the close kills it, so
-        // reopen can bring the session back with all its original flags.
+        // The record lands BEFORE any async hop: reopen (⌘⇧T) must always
+        // find it, even when the argv capture below is slow, fails, or the
+        // connection drops mid-close.
+        closedTabs.append(record)
+        if closedTabs.count > 10 {
+            closedTabs.removeFirst(closedTabs.count - 10)
+        }
         let agentPaneID = snapshot?.panes.first {
             $0.tabID == tab.tabID && $0.agent != nil
         }?.paneID
-        let generation = connectionGeneration
+        guard let agentPaneID, let kind = record.agentKind else {
+            runAction(arguments)
+            return
+        }
         Task {
-            if let agentPaneID, let kind = record.agentKind,
-               let info = await processInfo(for: agentPaneID) {
-                record.agentArgv = Self.agentArgv(from: info, kind: kind)
-            }
-            guard generation == connectionGeneration else { return }
-            closedTabs.append(record)
-            if closedTabs.count > 10 {
-                closedTabs.removeFirst(closedTabs.count - 10)
+            // Capture the agent's command line BEFORE the close kills it, so
+            // reopen can bring the session back with all its original flags —
+            // but bounded: a slow herd must not wedge the close, and a missed
+            // capture only costs the flags, not the reopen.
+            if let info = await processInfo(for: agentPaneID, timeout: .seconds(2)),
+               let argv = Self.agentArgv(from: info, kind: kind),
+               let index = closedTabs.lastIndex(of: record) {
+                closedTabs[index].agentArgv = argv
             }
             runAction(arguments)
         }
@@ -2178,6 +2192,27 @@ final class RaiModel: ObservableObject {
             .result.processInfo
     }
 
+    /// Bounded process-info lookup: gives up (and terminates the CLI call)
+    /// after `timeout`, so callers on an interactive path never wedge on a
+    /// slow herd.
+    func processInfo(
+        for paneID: String,
+        timeout: Duration
+    ) async -> PaneProcessInfo? {
+        await withTaskGroup(of: PaneProcessInfo?.self) { group in
+            group.addTask { await self.processInfo(for: paneID) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            // Cancelling the loser terminates the herdr subprocess (see
+            // runHerdrCapture), so the group's implicit wait stays short.
+            group.cancelAll()
+            return first
+        }
+    }
+
     // Codex Micro: send Return to the currently focused pane (the mic-adjacent key).
     func microSendReturnToSelectedPane() {
         guard let paneID = selectedPaneID else { return }
@@ -2640,27 +2675,36 @@ final class RaiModel: ObservableObject {
     }
 
     private func runHerdrCapture(_ args: [String]) async -> String? {
-        await withCheckedContinuation { continuation in
-            let process = configuredHerdrProcess(args)
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(returning: nil)
-                return
-            }
-            DispatchQueue.global(qos: .userInitiated).async {
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else {
+        let process = configuredHerdrProcess(args)
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                do {
+                    try process.run()
+                } catch {
                     continuation.resume(returning: nil)
                     return
                 }
-                let string = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: string?.isEmpty == false ? string : nil)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    guard process.terminationStatus == 0 else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    let string = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    continuation.resume(returning: string?.isEmpty == false ? string : nil)
+                }
+            }
+        } onCancel: {
+            // A terminated capture resumes through the exit path above with a
+            // non-zero status → nil. Callers that time out (processInfo) rely
+            // on this to end the subprocess instead of leaking it.
+            if process.isRunning {
+                process.terminate()
             }
         }
     }
