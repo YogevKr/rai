@@ -102,12 +102,16 @@ The Mac side is the hub: a token-authenticated WebSocket bridge
 brew install --cask yogevkr/tap/rai
 ```
 
-rai isn't notarized, so if Gatekeeper blocks the first launch, right-click
-**Rai.app → Open**, or install with `--no-quarantine`:
+rai isn't notarized, so macOS quarantines it on install. Clear the flag before
+the first launch:
 
 ```sh
-brew install --cask --no-quarantine yogevkr/tap/rai
+xattr -dr com.apple.quarantine /Applications/Rai.app
 ```
+
+Homebrew 6 dropped the `--no-quarantine` flag, and macOS 15 dropped the
+right-click **→ Open** bypass. If Gatekeeper still blocks the app, open
+**System Settings → Privacy & Security** and click **Open Anyway**.
 
 ### Download
 
@@ -116,12 +120,14 @@ Grab the latest `.dmg` from the
 drag **Rai** into Applications. The build is a universal binary (Apple Silicon +
 Intel).
 
-rai isn't notarized yet (no paid Apple Developer account), so on first launch
-Gatekeeper will block it — either **right-click `Rai.app` → Open → Open**, or run:
+rai isn't notarized yet, so on first launch Gatekeeper will block it. Run:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Rai.app
 ```
+
+On macOS 15 and newer the right-click **→ Open** bypass is gone; the fallback is
+**System Settings → Privacy & Security → Open Anyway**.
 
 ### Build from source
 
