@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         connect(to: RaiApp.sharedModel)
         installTerminalKeyMonitor()
         installTerminalScrollMonitor()
+        disableWindowSnapshots()
         microEnabledObserver = MicroStatusCenter.shared.$isEnabled
             .removeDuplicates()
             .sink { [weak self] enabled in
@@ -96,6 +97,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         microController?.stop()
+    }
+
+    // macOS's window-restoration snapshotter re-captures the entire window
+    // bitmap whenever streaming output dirties it — a full core of memmove on
+    // a large display. Rai rebuilds its UI from herd state at launch, so the
+    // OS snapshot buys nothing; window frame restoration is unaffected.
+    private func disableWindowSnapshots() {
+        for window in NSApp.windows {
+            window.disableSnapshotRestoration()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            MainActor.assumeIsolated {
+                (notification.object as? NSWindow)?.disableSnapshotRestoration()
+            }
+        }
     }
 
     // SwiftTerm's keyDown is not overridable from this module, so intercept the
