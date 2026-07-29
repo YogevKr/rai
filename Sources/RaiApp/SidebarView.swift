@@ -846,7 +846,9 @@ private struct AgentRow: View {
             )
         )
         .contextMenu {
-            Button("New Tab") { model.newTab(inWorkspace: tab.workspaceID) }
+            Button("New Tab") {
+                model.newTab(inWorkspace: tab.workspaceID, afterTabID: tab.tabID)
+            }
             Divider()
             Button("Focus", action: onSelect)
             Button("Rename") { model.beginRename(tab: tab) }

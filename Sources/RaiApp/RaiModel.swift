@@ -65,6 +65,22 @@ private struct PaneProcessInfoResponse: Decodable {
     let result: Result
 }
 
+private struct TabCreateResponse: Decodable {
+    struct Result: Decodable {
+        struct Tab: Decodable {
+            let tabID: String
+
+            enum CodingKeys: String, CodingKey {
+                case tabID = "tab_id"
+            }
+        }
+
+        let tab: Tab
+    }
+
+    let result: Result
+}
+
 private struct PluginActionListResponse: Decodable {
     struct Result: Decodable {
         let actions: [Action]
@@ -1885,10 +1901,42 @@ final class RaiModel: ObservableObject {
     // spawns for attach), then we adopt herdr's resulting focus.
     func newTab() {
         guard let workspace = selectedWorkspace?.workspaceID else { return }
-        newTab(inWorkspace: workspace)
+        newTab(inWorkspace: workspace, afterTabID: selectedTabID)
     }
-    func newTab(inWorkspace workspaceID: String) {
-        runAction(["tab", "create", "--workspace", workspaceID, "--focus"])
+    /// herdr appends created tabs at the end of the space; with an anchor the
+    /// new tab is reordered to sit right after it (browser-style).
+    func newTab(inWorkspace workspaceID: String, afterTabID: String? = nil) {
+        let insertIndex = NewTabPlacement.insertIndex(
+            tabs: snapshot?.tabs ?? [],
+            workspaceID: workspaceID,
+            afterTabID: afterTabID
+        )
+        guard let insertIndex else {
+            runAction(["tab", "create", "--workspace", workspaceID, "--focus"])
+            return
+        }
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            let output = await runHerdrCapture(
+                ["tab", "create", "--workspace", workspaceID, "--focus"]
+            )
+            guard generation == connectionGeneration else { return }
+            if let data = output?.data(using: .utf8),
+               let response = try? JSONDecoder().decode(
+                   TabCreateResponse.self,
+                   from: data
+               ) {
+                // Best-effort: a failed reorder still leaves a usable tab at
+                // the end of the space.
+                try? await client.moveTab(
+                    response.result.tab.tabID,
+                    insertIndex: insertIndex
+                )
+            }
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(keepSelection: false)
+        }
     }
     func reopenClosedTab() {
         guard let record = closedTabs.popLast() else { return }
