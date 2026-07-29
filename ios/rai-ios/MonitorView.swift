@@ -39,6 +39,7 @@ struct MonitorView: View {
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
     @State private var backgroundWorkTarget: BackgroundWorkTarget?
+    @State private var filter: HerdFilter?
 
     var body: some View {
         AnyView(NavigationStack(path: $path) {
@@ -337,10 +338,19 @@ struct MonitorView: View {
                     needsYou: needsYou.filter { $0.pane.agentStatus == .blocked }.count,
                     finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
                     working: working.count,
-                    quiet: quiet
+                    quiet: quiet,
+                    filter: $filter
                 )
             }
             .listRowInsets(EdgeInsets())
+            if let filter {
+                filteredSection(
+                    filter,
+                    snapshot: snapshot,
+                    needsYou: needsYou,
+                    working: working
+                )
+            } else {
             if !needsYou.isEmpty {
                 Section {
                     ForEach(needsYou) { item in
@@ -423,6 +433,7 @@ struct MonitorView: View {
                     }
                 }
             }
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -449,6 +460,7 @@ struct MonitorView: View {
 
     private func agents(
         in snapshot: SessionSnapshot,
+        requireAgent: Bool = true,
         where matches: (AgentStatus) -> Bool
     ) -> [NeedsYouAgent] {
         let workspaces = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map { ($0.workspaceID, $0) })
@@ -456,12 +468,78 @@ struct MonitorView: View {
 
         return snapshot.panes.compactMap { pane in
             guard matches(pane.agentStatus),
-                  pane.agent != nil,
+                  !requireAgent || pane.agent != nil,
                   let workspace = workspaces[pane.workspaceID],
                   let tab = tabs[pane.tabID] else {
                 return nil
             }
             return NeedsYouAgent(pane: pane, workspace: workspace, tab: tab)
+        }
+    }
+
+    /// One flat section while a pulse-line filter is active.
+    @ViewBuilder
+    private func filteredSection(
+        _ filter: HerdFilter,
+        snapshot: SessionSnapshot,
+        needsYou: [NeedsYouAgent],
+        working: [NeedsYouAgent]
+    ) -> some View {
+        let items: [NeedsYouAgent] = {
+            switch filter {
+            case .needsYou: needsYou.filter { $0.pane.agentStatus == .blocked }
+            case .finished: needsYou.filter { $0.pane.agentStatus == .done }
+            case .working: working
+            case .quiet: agents(in: snapshot, requireAgent: false) {
+                $0 == .idle || $0 == .unknown
+            }
+            }
+        }()
+        Section {
+            if items.isEmpty {
+                Text("none right now")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Night.faint)
+                    .listRowBackground(Night.row)
+            } else {
+                ForEach(items) { item in
+                    NavigationLink(value: item.pane.paneID) {
+                        NightAgentRow(
+                            item: item,
+                            backgroundWork: backgroundWork(for: item.pane),
+                            approve: item.pane.agentStatus == .blocked
+                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                                : nil,
+                            deny: item.pane.agentStatus == .blocked
+                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                                : nil
+                        )
+                    }
+                    .listRowBackground(
+                        item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
+                    )
+                    .contextMenu { backgroundWorkButton(for: item.pane) }
+                }
+            }
+        } header: {
+            NightSectionHeader(
+                title: filter.title,
+                detail: "\(items.count)",
+                hot: filter == .needsYou
+            )
+        }
+    }
+}
+
+enum HerdFilter {
+    case needsYou, finished, working, quiet
+
+    var title: String {
+        switch self {
+        case .needsYou: "Needs you"
+        case .finished: "Finished"
+        case .working: "Working"
+        case .quiet: "Quiet"
         }
     }
 }
@@ -607,34 +685,59 @@ private struct NeedsYouAgent: Identifiable {
     var id: String { pane.paneID }
 }
 
-/// The herd in one glance: "1 needs you · 4 working · 2 quiet".
+/// The herd in one glance — and the filter bar: tap a segment to see only
+/// that state, tap it again to see everything.
 private struct PulseLine: View {
     let needsYou: Int
     let finished: Int
     let working: Int
     let quiet: Int
+    @Binding var filter: HerdFilter?
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             if needsYou > 0 {
-                Text("\(needsYou) needs you")
-                    .foregroundStyle(Night.amber)
-                    .fontWeight(.semibold)
-                Text(" · ").foregroundStyle(Night.faint)
+                segment("\(needsYou) needs you", .needsYou, Night.amber)
+                sep
             }
             if finished > 0 {
-                Text("\(finished) finished")
-                    .foregroundStyle(Night.green)
-                Text(" · ").foregroundStyle(Night.faint)
+                segment("\(finished) finished", .finished, Night.green)
+                sep
             }
-            Text("\(working) working").foregroundStyle(Night.dim)
-            Text(" · ").foregroundStyle(Night.faint)
-            Text("\(quiet) quiet").foregroundStyle(Night.faint)
+            segment("\(working) working", .working, Night.dim)
+            sep
+            segment("\(quiet) quiet", .quiet, Night.faint)
         }
         .font(.footnote.monospaced())
         .textCase(nil)
         .padding(.bottom, 2)
-        .accessibilityElement(children: .combine)
+    }
+
+    private var sep: some View {
+        Text("·").foregroundStyle(Night.faint)
+    }
+
+    private func segment(_ label: String, _ target: HerdFilter, _ color: Color) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                filter = filter == target ? nil : target
+            }
+        } label: {
+            Text(label)
+                .fontWeight(target == .needsYou ? .semibold : .regular)
+                .foregroundStyle(
+                    filter == nil || filter == target ? color : Night.faint.opacity(0.55)
+                )
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    filter == target ? Color.white.opacity(0.09) : .clear,
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("\(label)\(filter == target ? ", filtered" : "")")
+        .accessibilityHint(filter == target ? "Shows everything" : "Shows only these")
     }
 }
 
