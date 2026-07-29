@@ -2,11 +2,18 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Phone pushes wait until you leave the Mac.** If an agent needs you while
-  you're actively working at the Mac, the Mac notification fires but the
-  phone stays quiet; handle the pane at the desk and the phone never buzzes.
-  Step away with the pane still waiting and the push arrives once you've been
-  idle ~2 minutes. Toggle in Settings → Notifications (on by default).
+- **Drop a file onto a pane to type its path.** Drag a file from Finder onto
+  any terminal pane (Ghostty parity): the pane is focused and the
+  shell-escaped path is typed into its pty — ready for Claude's input or any
+  shell prompt. Works alongside pane-swap dragging.
+- **The phone now mirrors a pane's full grid.** Streams are never smaller
+  than the pane, so on the phone the live prompt stays visible with the
+  keyboard up, output follows the bottom, and you can scroll the whole pane.
+  (Companion app fixes ship in TestFlight build 21; older phone builds keep
+  working unchanged.)
+- **App icon badge on the phone is a real count.** Pushes delivered since the
+  phone last connected set the badge; opening the app clears it — no more
+  stale "1" stuck on the icon.
 
 ### Install
 
