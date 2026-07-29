@@ -72,10 +72,23 @@ PLIST
 # Monitoring for the Codex Micro pad) persist across rebuilds. Falls back to
 # ad-hoc where the identity isn't present (CI, other machines).
 SIGN_ID="${RAI_SIGN_IDENTITY:-rai-dev-signing}"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
-  echo "==> sign ($SIGN_ID)"
-  codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE" >/dev/null 2>&1 || \
-    codesign --force --sign "$SIGN_ID" "$STAGE"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  case "$SIGN_ID" in
+    "Developer ID Application"*)
+      # Notarization rejects anything without a hardened runtime and a secure
+      # timestamp, so a Developer ID build must have both — no silent fallback
+      # to an unstamped signature, or the release ships unnotarizable.
+      echo "==> sign ($SIGN_ID) + hardened runtime"
+      codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$STAGE"
+      ;;
+    *)
+      # Local dev identity: skip both. The timestamp server needs network, and
+      # the hardened runtime only matters for distribution.
+      echo "==> sign ($SIGN_ID)"
+      codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE" >/dev/null 2>&1 || \
+        codesign --force --sign "$SIGN_ID" "$STAGE"
+      ;;
+  esac
 else
   echo "==> ad-hoc sign"
   codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \

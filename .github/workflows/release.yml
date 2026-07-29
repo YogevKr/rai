@@ -38,8 +38,72 @@ jobs:
       - name: Test
         run: swift test
 
+      # Import the Developer ID cert into a throwaway keychain so bundle.sh can
+      # sign with it. Without the secrets the step is a no-op and the build
+      # stays ad-hoc signed, exactly as it was before notarization existed.
+      - name: Import Developer ID certificate
+        id: signing
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          if [ -z "${CERT_P12}" ]; then
+            echo "::warning::APPLE_CERT_P12 not set — ad-hoc signing, release will NOT be notarized."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          # Random per-run password: this keychain only lives for the job.
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "${CERT_P12}" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "${CERT_PASSWORD}" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Let codesign use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity in APPLE_CERT_P12."
+            exit 1
+          fi
+          echo "signing identity: $IDENTITY"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+
       - name: Build universal Rai.app
+        env:
+          RAI_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
         run: RAI_UNIVERSAL=1 RAI_VERSION="${{ steps.v.outputs.version }}" RAI_APP_DEST="$PWD/dist" ./scripts/bundle.sh
+
+      # Notarize the app itself before packaging, then staple the ticket into
+      # the bundle — the zip and dmg built afterwards both inherit it, so a
+      # download works offline with no xattr dance.
+      - name: Notarize and staple Rai.app
+        if: steps.signing.outputs.identity != ''
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          if [ -z "${API_KEY_P8}" ] || [ -z "${API_KEY_ID}" ] || [ -z "${API_ISSUER_ID}" ]; then
+            echo "::error::Signed with Developer ID but the notarization secrets are missing."
+            exit 1
+          fi
+          KEY="$RUNNER_TEMP/notary.p8"
+          printf '%s' "${API_KEY_P8}" | base64 --decode > "$KEY"
+          # notarytool only accepts zip/dmg/pkg, so submit a throwaway zip and
+          # staple the ticket onto the .app it came from.
+          /usr/bin/ditto -c -k --keepParent dist/Rai.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$KEY" --key-id "${API_KEY_ID}" --issuer "${API_ISSUER_ID}" \
+            --wait --timeout 30m
+          xcrun stapler staple dist/Rai.app
+          rm -f "$KEY" "$RUNNER_TEMP/notarize.zip"
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -70,6 +134,28 @@ jobs:
           }
           rm -rf dmgsrc
           ls -lh Rai-*
+
+      # The app inside already carries its ticket; the disk image needs its own
+      # or Gatekeeper still balks when the user opens the download.
+      - name: Notarize and staple the dmg
+        if: steps.signing.outputs.identity != ''
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          KEY="$RUNNER_TEMP/notary.p8"
+          printf '%s' "${API_KEY_P8}" | base64 --decode > "$KEY"
+          DMG="dist/Rai-${{ steps.v.outputs.version }}-macos.dmg"
+          xcrun notarytool submit "$DMG" \
+            --key "$KEY" --key-id "${API_KEY_ID}" --issuer "${API_ISSUER_ID}" \
+            --wait --timeout 30m
+          xcrun stapler staple "$DMG"
+          rm -f "$KEY"
+          # Prove the shipped artifacts pass the same check a user's Mac runs.
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature -vv "$DMG"
+          spctl --assess --type execute -vv dist/Rai.app
 
       - name: Create GitHub Release
         env:
