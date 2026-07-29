@@ -499,10 +499,13 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             let clientID = ObjectIdentifier(client.connection)
-            // A restarted stream keeps the attach-time full-grid opt-in.
             guard let existing = observeStreams[clientID]?[paneID] else { return }
+            // Full-grid streams mirror the pane's native size — the client's
+            // viewport dimensions don't shape them, so a restart would only
+            // interrupt the stream for an identical one.
+            if existing.fullGrid { return }
             startObserveStream(
-                paneID: paneID, cols: cols, rows: rows, fullGrid: existing.fullGrid, for: client)
+                paneID: paneID, cols: cols, rows: rows, fullGrid: false, for: client)
         case let .launchAgent(workspaceID, agent, cwd):
             if let workspaceID,
                model.snapshot?.workspaces.contains(where: {
@@ -564,10 +567,10 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             // A full-grid client's frame stream repaints the pane's WHOLE
-            // grid, so the seed must drop that many rows from the tail — not
-            // just the client's screenful — or the seam duplicates the rows
-            // between viewport height and pane height.
-            let seamRows = fullGrid ? max(rows, pane.scroll?.viewportRows ?? rows) : rows
+            // grid (native size), so the seed must drop the pane's rows from
+            // the tail — not the client's screenful — or the seam duplicates
+            // the rows between viewport height and pane height.
+            let seamRows = fullGrid ? (pane.scroll?.viewportRows ?? rows) : rows
             // Awaited inline so the reply reaches the client before any
             // subsequent attachStream starts its frame stream — the phone
             // relies on scrollback arriving before the first full frame.
@@ -699,7 +702,7 @@ final class RaiBridgeServer: ObservableObject {
         fullGrid: Bool,
         for client: BridgeClient
     ) {
-        guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
+        guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
             send(.error(message: "Unknown pane \(paneID)."), to: client)
             return
         }
@@ -707,21 +710,24 @@ final class RaiBridgeServer: ObservableObject {
         stopObserveStream(paneID: paneID, for: client)
 
         // herdr renders the observe frame as a top-left window of the pane's
-        // grid, so a stream shorter than the pane silently drops the BOTTOM
-        // rows — prompt and cursor included. For clients that opted in
-        // (fullGrid), never stream fewer rows than the pane actually has; the
-        // client scrolls a viewport over the full grid (frames carry their
-        // dimensions so it knows the grid size). Legacy clients size their
-        // emulator to the view and would garble a taller stream.
-        let streamRows = fullGrid ? max(rows, pane.scroll?.viewportRows ?? rows) : rows
+        // grid, so a stream smaller than the pane silently drops the BOTTOM
+        // rows (prompt, cursor) and the RIGHT columns (panning on the phone
+        // rubber-bands off a wall where the pane continues). For clients that
+        // opted in (fullGrid), omit the size flags entirely: observe then
+        // mirrors the pane at its NATIVE size, frames carry their dimensions,
+        // and the client scrolls a viewport over the full grid. Legacy
+        // clients size their emulator to the view and would garble a stream
+        // bigger than it, so they keep view-sized frames.
 
         let process = Process()
         let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
-        process.arguments = [
-            "terminal", "session", "observe", paneID,
-            "--cols", String(cols), "--rows", String(streamRows),
-        ]
+        process.arguments = fullGrid
+            ? ["terminal", "session", "observe", paneID]
+            : [
+                "terminal", "session", "observe", paneID,
+                "--cols", String(cols), "--rows", String(rows),
+            ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdout
         let stream = ObserveStream(process: process, stdout: stdout, fullGrid: fullGrid)

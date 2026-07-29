@@ -496,9 +496,16 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
         /// Widen the view's width floor when the streamed grid outgrows the
         /// 80-column base, so the outer scroll view can pan to every column.
+        /// Sized from SwiftTerm's OWN cell metrics (getOptimalFrameSize):
+        /// a parallel NSString measurement drifts a fraction of a point per
+        /// cell, which across a wide grid leaves the view narrower than the
+        /// terminal's content — the terminal then scrolls horizontally inside
+        /// the outer pan and every follow-update snaps it back to column 0.
         func updateWidthFloor(cols: Int) {
-            guard let widthFloor, charWidth > 0 else { return }
-            let needed = max(baseWidthFloor, ceil(charWidth * CGFloat(cols)) + 4)
+            guard let widthFloor else { return }
+            let gridWidth = terminal.map { ceil($0.getOptimalFrameSize().width) + 4 }
+            let fallback = charWidth > 0 ? ceil(charWidth * CGFloat(cols)) + 4 : 0
+            let needed = max(baseWidthFloor, gridWidth ?? fallback)
             if abs(widthFloor.constant - needed) > 0.5 {
                 widthFloor.constant = needed
             }
