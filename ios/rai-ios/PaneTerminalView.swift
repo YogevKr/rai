@@ -15,6 +15,7 @@ struct PaneTerminalView: View {
     @State private var imageError: String?
     @State private var showingCommandPalette = false
     @State private var destructiveArmed = false
+    @FocusState private var composeFocused: Bool
     @StateObject private var terminalSearch = TerminalSearchController()
     @StateObject private var promptController = TerminalPromptController()
 
@@ -118,10 +119,17 @@ struct PaneTerminalView: View {
                     .autocorrectionDisabled()
                     .submitLabel(.send)
                     .onSubmit(sendComposedLine)
-                Button(destructiveArmed ? "Sure?" : "Send", action: sendComposedLine)
-                    .buttonStyle(.borderedProminent)
-                    .tint(destructiveArmed ? .red : nil)
-                    .disabled(composedLine.isEmpty)
+                    .focused($composeFocused)
+                // While the field is focused the keyboard's blue ↑ IS the
+                // send button — showing a second one beside it reads as a
+                // double send. The button appears when it's the only way to
+                // send (keyboard away, drafted text) or as the red "Sure?"
+                // destructive confirmation.
+                if destructiveArmed || (!composeFocused && !composedLine.isEmpty) {
+                    Button(destructiveArmed ? "Sure?" : "Send", action: sendComposedLine)
+                        .buttonStyle(.borderedProminent)
+                        .tint(destructiveArmed ? .red : nil)
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
