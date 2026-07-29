@@ -1563,6 +1563,69 @@ final class RaiModel: ObservableObject {
         )
     }
 
+    /// Moves one pane into a new sidebar tab.
+    func movePaneToNewTab(
+        _ paneID: String,
+        toWorkspaceID targetWorkspaceID: String,
+        insertBeforeTabID: String? = nil
+    ) {
+        guard let snapshot,
+              let pane = snapshot.panes.first(where: { $0.paneID == paneID }),
+              snapshot.workspaces.contains(where: {
+                  $0.workspaceID == targetWorkspaceID
+              }) else {
+            return
+        }
+        let sourceLayout = snapshot.layouts.first { $0.tabID == pane.tabID }
+        let targetTabs = snapshot.tabs.filter {
+            $0.workspaceID == targetWorkspaceID
+        }
+        let sourceIndex = targetTabs.firstIndex {
+            $0.tabID == pane.tabID
+        }
+        let insertIndex = insertBeforeTabID.flatMap { before in
+            targetTabs.firstIndex { $0.tabID == before }
+        }
+        let label = displayTitle(for: pane)
+        let client = client
+        let generation = connectionGeneration
+
+        Task {
+            do {
+                if sourceLayout?.zoomed == true {
+                    try await client.unzoomPane(paneID)
+                }
+                let outcome = try await client.movePane(
+                    paneID,
+                    to: .newTab(
+                        workspaceID: targetWorkspaceID,
+                        label: label
+                    ),
+                    focus: true
+                )
+                if let newTabID = outcome.createdTab?.tabID,
+                   var destinationIndex = insertIndex {
+                    if outcome.closedTabID == pane.tabID,
+                       let sourceIndex,
+                       sourceIndex < destinationIndex {
+                        destinationIndex -= 1
+                    }
+                    try await client.moveTab(
+                        newTabID,
+                        insertIndex: destinationIndex
+                    )
+                }
+                guard generation == connectionGeneration else { return }
+                selectedPaneID = outcome.pane.paneID
+                await refreshSnapshot(keepSelection: true)
+            } catch {
+                if generation == connectionGeneration {
+                    connectionState = .disconnected(error.localizedDescription)
+                }
+            }
+        }
+    }
+
     private func performTabMove(
         plan: TabMovePlanner.Plan,
         leadDestination: PaneMoveDestination,

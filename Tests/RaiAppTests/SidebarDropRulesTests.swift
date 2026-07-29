@@ -13,14 +13,14 @@ final class SidebarDropRulesTests: XCTestCase {
             SidebarDropRules.acceptsSession(
                 paneDrag: false,
                 hasReorderType: true,
-                supportsPaneHover: true
+                supportsPaneDrop: true
             )
         )
         XCTAssertTrue(
             SidebarDropRules.acceptsSession(
                 paneDrag: false,
                 hasReorderType: true,
-                supportsPaneHover: false
+                supportsPaneDrop: false
             )
         )
     }
@@ -30,24 +30,62 @@ final class SidebarDropRulesTests: XCTestCase {
             SidebarDropRules.acceptsSession(
                 paneDrag: false,
                 hasReorderType: false,
-                supportsPaneHover: true
+                supportsPaneDrop: true
             )
         )
     }
 
-    func testPaneSessionAcceptedOnlyWithHoverSupport() {
+    func testPaneSessionAcceptedOnlyWithDropSupport() {
         XCTAssertTrue(
             SidebarDropRules.acceptsSession(
                 paneDrag: true,
                 hasReorderType: false,
-                supportsPaneHover: true
+                supportsPaneDrop: true
             )
         )
         XCTAssertFalse(
             SidebarDropRules.acceptsSession(
                 paneDrag: true,
                 hasReorderType: false,
-                supportsPaneHover: false
+                supportsPaneDrop: false
+            )
+        )
+    }
+
+    func testPaneDropOnTabRowCreatesTabBeforeTarget() {
+        XCTAssertEqual(
+            SidebarDropRules.paneAction(
+                draggedPaneID: "w1:p2",
+                targetWorkspaceID: "w2",
+                insertBeforeTabID: "w2:t3"
+            ),
+            .movePaneToNewTab(
+                workspaceID: "w2",
+                insertBeforeTabID: "w2:t3"
+            )
+        )
+    }
+
+    func testPaneDropOnWorkspaceHeaderAppendsTab() {
+        XCTAssertEqual(
+            SidebarDropRules.paneAction(
+                draggedPaneID: "w1:p2",
+                targetWorkspaceID: "w2",
+                insertBeforeTabID: nil
+            ),
+            .movePaneToNewTab(
+                workspaceID: "w2",
+                insertBeforeTabID: nil
+            )
+        )
+    }
+
+    func testPaneDropWithoutDraggedPaneIsNotEligible() {
+        XCTAssertNil(
+            SidebarDropRules.paneAction(
+                draggedPaneID: nil,
+                targetWorkspaceID: "w2",
+                insertBeforeTabID: nil
             )
         )
     }

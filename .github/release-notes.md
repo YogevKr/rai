@@ -2,19 +2,9 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **rai is now signed and notarized by Apple.** Gatekeeper accepts it on the
-  first launch — no right-click → Open, no `xattr` incantation. The notarization
-  ticket is stapled into both the app and the disk image, so it works offline.
-- **New tabs open next to the focused tab** instead of at the end of the space.
-  Applies to Cmd+T, the app and pane menus, and a tab row's context menu;
-  "New Tab in Space" from a space header still appends at the end.
-
-### Upgrading
-
-The app is now signed with a Developer ID instead of ad-hoc, so macOS treats it
-as a new identity and resets its privacy grants. If you use the Codex Micro pad,
-re-approve rai under **System Settings → Privacy & Security → Input Monitoring**
-after updating.
+- **Drag a split pane into the sidebar to make it a tab.** Drop it on a tab row
+  to place it before that tab. Drop it on a space header to append it there.
+  rai keeps the pane title and selects the new tab.
 
 ### Install
 

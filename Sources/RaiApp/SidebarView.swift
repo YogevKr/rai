@@ -709,15 +709,15 @@ private struct WorkspaceHeader: View {
             model.draggedWorkspaceID = workspace.workspaceID
             return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
         }
-        // Headers take workspace payloads (reorder spaces) AND tab payloads:
-        // dropping a tab from another space here moves it into this space.
+        // Headers accept spaces, tabs, and panes. A pane becomes a new tab.
         .onDrop(
-            of: [.raiWorkspace, .raiTab],
+            of: [.raiWorkspace, .raiTab, .raiPane],
             delegate: SidebarReorderDropDelegate(
                 targetID: workspace.workspaceID,
                 type: .raiWorkspace,
                 model: model,
-                targeted: $dropTargeted
+                targeted: $dropTargeted,
+                paneDropWorkspaceID: workspace.workspaceID
             )
         )
         .contextMenu {
@@ -832,9 +832,7 @@ private struct AgentRow: View {
             model.draggedTabID = tab.tabID
             return sidebarDragProvider(id: tab.tabID, type: .raiTab)
         }
-        // ONE drop destination per row: it reorders tabs AND previews the tab
-        // under a pane drag. A second stacked `.onDrop` would shadow this one
-        // (macOS honors only the innermost), which is what broke reordering.
+        // One destination handles tab reorder and pane-to-tab conversion.
         .onDrop(
             of: [.raiTab, UTType.raiPane],
             delegate: SidebarReorderDropDelegate(
@@ -842,7 +840,9 @@ private struct AgentRow: View {
                 type: .raiTab,
                 model: model,
                 targeted: $dropTargeted,
-                onPaneDragHover: onPaneDragHover
+                onPaneDragHover: onPaneDragHover,
+                paneDropWorkspaceID: tab.workspaceID,
+                paneInsertBeforeTabID: tab.tabID
             )
         )
         .contextMenu {
@@ -1307,23 +1307,35 @@ enum SidebarDropRules {
     // Whether a row accepts the drop SESSION at all. A reorder session must be
     // accepted purely on payload type: a reorder drag always starts over its
     // own row, and refusing that first validateDrop ends delegate callbacks
-    // for the entire session — no other row ever sees the drag. Pane drags are
-    // accepted only where a hover-preview handler exists.
+    // for the entire session — no other row ever sees the drag.
     static func acceptsSession(
         paneDrag: Bool,
         hasReorderType: Bool,
-        supportsPaneHover: Bool
+        supportsPaneDrop: Bool
     ) -> Bool {
-        paneDrag ? supportsPaneHover : hasReorderType
+        paneDrag ? supportsPaneDrop : hasReorderType
     }
 
-    // What dropping HERE does. Same-space tab drops reorder via herdr's
+    // What dropping here does. Same-space tab drops reorder via herdr's
     // tab.move; cross-space drops relocate the tab through the pane.move
     // sequence (RaiModel.moveTab(_:toWorkspaceID:)) since tab.move cannot
     // cross workspaces.
     enum Action: Equatable {
         case reorder
         case moveTabToWorkspace(workspaceID: String, insertBeforeTabID: String?)
+        case movePaneToNewTab(workspaceID: String, insertBeforeTabID: String?)
+    }
+
+    static func paneAction(
+        draggedPaneID: String?,
+        targetWorkspaceID: String?,
+        insertBeforeTabID: String?
+    ) -> Action? {
+        guard draggedPaneID != nil, let targetWorkspaceID else { return nil }
+        return .movePaneToNewTab(
+            workspaceID: targetWorkspaceID,
+            insertBeforeTabID: insertBeforeTabID
+        )
     }
 
     // Tab rows: a drop from the same space reorders onto this row; a drop
@@ -1380,16 +1392,16 @@ enum SidebarDropRules {
 // synchronously (like PaneDropDelegate) rather than round-tripping through
 // NSItemProvider's async load, and drives the drop-target highlight.
 //
-// It also doubles as the pane-drag hover target: hovering a pane over a row
-// previews that row's tab but never accepts the pane. Both roles live in ONE
-// delegate because macOS honors only a single `.onDrop` destination per view —
-// stacking a second `.onDrop` for panes shadowed the reorder drop entirely.
+// It also handles pane drops. Rows preview their tab before the pane becomes
+// a new tab. Both roles stay in one delegate because macOS uses one destination.
 private struct SidebarReorderDropDelegate: DropDelegate {
     let targetID: String
     let type: UTType
     @ObservedObject var model: RaiModel
     @Binding var targeted: Bool
     var onPaneDragHover: (() -> Void)?
+    var paneDropWorkspaceID: String?
+    var paneInsertBeforeTabID: String?
 
     private func isPaneDrag(_ info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.raiPane.identifier])
@@ -1407,6 +1419,13 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     }
 
     private func action(_ info: DropInfo) -> SidebarDropRules.Action? {
+        if isPaneDrag(info) {
+            return SidebarDropRules.paneAction(
+                draggedPaneID: model.draggedPaneID,
+                targetWorkspaceID: paneDropWorkspaceID,
+                insertBeforeTabID: paneInsertBeforeTabID
+            )
+        }
         let hasTabType = info.hasItemsConforming(to: [UTType.raiTab.identifier])
         let tabs = model.snapshot?.tabs
         if type == .raiTab {
@@ -1434,20 +1453,18 @@ private struct SidebarReorderDropDelegate: DropDelegate {
         SidebarDropRules.acceptsSession(
             paneDrag: isPaneDrag(info),
             hasReorderType: info.hasItemsConforming(to: handledTypeIdentifiers),
-            supportsPaneHover: onPaneDragHover != nil
+            supportsPaneDrop: paneDropWorkspaceID != nil
         )
     }
 
     func dropEntered(info: DropInfo) {
         if isPaneDrag(info) {
             onPaneDragHover?()
-            return
         }
         targeted = action(info) != nil
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        if isPaneDrag(info) { return DropProposal(operation: .cancel) }
         let ok = action(info) != nil
         targeted = ok
         return DropProposal(operation: ok ? .move : .cancel)
@@ -1458,11 +1475,11 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard !isPaneDrag(info) else { return false }
         defer {
             targeted = false
             model.draggedTabID = nil
             model.draggedWorkspaceID = nil
+            model.draggedPaneID = nil
         }
         guard let action = action(info) else { return false }
         switch action {
@@ -1476,6 +1493,13 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             guard let src = model.draggedTabID else { return false }
             model.moveTab(
                 src,
+                toWorkspaceID: workspaceID,
+                insertBeforeTabID: insertBeforeTabID
+            )
+        case let .movePaneToNewTab(workspaceID, insertBeforeTabID):
+            guard let paneID = model.draggedPaneID else { return false }
+            model.movePaneToNewTab(
+                paneID,
                 toWorkspaceID: workspaceID,
                 insertBeforeTabID: insertBeforeTabID
             )
