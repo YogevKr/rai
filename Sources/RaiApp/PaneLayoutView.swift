@@ -246,8 +246,12 @@ private struct PaneSurface: View {
         GeometryReader { geometry in
             surface
                 .overlay { dropOverlay }
+                // One zone for BOTH pane-swap drags and Finder file drops:
+                // overlapping SwiftUI drop zones shadow each other (see the
+                // sidebar's reorder delegate), so a separate .onDrop for
+                // files underneath this one would never be consulted.
                 .onDrop(
-                    of: [UTType.raiPane],
+                    of: [UTType.raiPane, UTType.fileURL],
                     delegate: PaneDropDelegate(
                         targetPaneID: paneID,
                         targetSize: geometry.size,
@@ -305,18 +309,6 @@ private struct PaneSurface: View {
                     )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
-                        // Claimed here, at the SwiftUI layer, because the
-                        // sidebar's reorder .onDrop makes SwiftUI own the
-                        // window's drag destination — a file dragged onto the
-                        // pane never reaches the terminal view's own AppKit
-                        // drop handling. Ghostty parity: type the escaped
-                        // path(s) into the pane's pty.
-                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                            FileDrop.deliver(providers) { line in
-                                model.select(paneID: paneID, focusInHerdr: true)
-                                model.terminalPool.view(for: terminalID).send(txt: line)
-                            }
-                        }
                 }
             }
         }
@@ -657,7 +649,16 @@ private struct PaneDropDelegate: DropDelegate {
     @Binding var draggedPaneID: String?
     @Binding var indicator: PaneDropIndicator?
 
+    /// A Finder (or other external) file drag, as opposed to an internal
+    /// pane-swap drag. Ghostty parity: dropping a file types its escaped
+    /// path into the pane's pty.
+    private func isFileDrag(_ info: DropInfo) -> Bool {
+        !info.hasItemsConforming(to: [UTType.raiPane.identifier])
+            && info.hasItemsConforming(to: [UTType.fileURL.identifier])
+    }
+
     func validateDrop(info: DropInfo) -> Bool {
+        if isFileDrag(info) { return true }
         guard info.hasItemsConforming(to: [UTType.raiPane.identifier]),
               let sourcePaneID = draggedPaneID else {
             return false
@@ -670,6 +671,10 @@ private struct PaneDropDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        if isFileDrag(info) {
+            indicator = nil
+            return DropProposal(operation: .copy)
+        }
         guard validateDrop(info: info) else {
             indicator = nil
             return DropProposal(operation: .cancel)
@@ -683,6 +688,19 @@ private struct PaneDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        if isFileDrag(info) {
+            indicator = nil
+            let providers = info.itemProviders(for: [UTType.fileURL.identifier])
+            let paneID = targetPaneID
+            let model = self.model
+            return FileDrop.deliver(providers) { line in
+                guard let terminalID = model.snapshot?.panes
+                    .first(where: { $0.paneID == paneID })?.terminalID
+                else { return }
+                model.select(paneID: paneID, focusInHerdr: true)
+                model.terminalPool.view(for: terminalID).send(txt: line)
+            }
+        }
         guard let sourcePaneID = draggedPaneID,
               let proposed = proposedIndicator(at: info.location) else {
             indicator = nil
