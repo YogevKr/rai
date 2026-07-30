@@ -196,10 +196,18 @@ struct PaneTerminalView: View {
         }
         .onAppear {
             connection.openPane(paneID: pane.paneID)
+            // Testing/automation affordance mirroring RAI_OPEN_PANE: put the
+            // keyboard in the compose field so an end-to-end run can screenshot
+            // the composing state without synthesizing a tap. Never set in
+            // normal use.
+            if ProcessInfo.processInfo.environment["RAI_FOCUS_COMPOSER"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    composeFocused = true
+                }
             // A plain terminal pane (no detected agent) is for typing: put the
             // keyboard straight into the pty. Agent panes keep the calmer
             // compose-bar default — the toolbar keyboard button opts in.
-            if pane.agent == nil {
+            } else if pane.agent == nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     terminalSearch.focusKeyboard()
                 }
