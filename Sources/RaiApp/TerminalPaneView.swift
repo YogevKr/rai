@@ -690,7 +690,9 @@ struct TerminalPaneView: NSViewRepresentable {
     }
 
     private func update(_ container: TerminalContainerView) {
-        let view = pool.view(for: terminalID)
+        // nil once herdr has dropped the terminal: this is the outgoing
+        // container of a pane that just closed, and it is on its way out too.
+        guard let view = pool.view(for: terminalID) else { return }
         view.onPlainClick = onPlainClick
         view.onContextAction = onContextAction
         view.paneID = paneID
@@ -719,9 +721,49 @@ struct TerminalPaneView: NSViewRepresentable {
 final class TerminalContainerView: NSView {
     private weak var terminalView: FocusAwareTerminalView?
 
+    /// Creation order, used to arbitrate which container owns a pooled
+    /// terminal. Relaying a tab (split, close, swap, zoom) makes SwiftUI build
+    /// the replacement container *before* it tears the outgoing one down, so a
+    /// higher serial always means "the newer, live host".
+    private static var nextSerial = 0
+    private let serial: Int
+
+    /// The terminal this container currently hosts, for tests.
+    var hostedTerminalView: FocusAwareTerminalView? { terminalView }
+
+    override init(frame: NSRect) {
+        serial = Self.nextSerial
+        Self.nextSerial += 1
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
     func install(_ view: FocusAwareTerminalView) {
-        guard terminalView !== view || view.superview !== self else { return }
+        if view.superview === self {
+            terminalView = view
+            return
+        }
+        // SwiftUI updates the outgoing container one last time *after* the
+        // replacement has already adopted the pooled terminal. Letting that
+        // final update steal the view back left it parented to a container
+        // about to be dismantled — `detach()` then pulled it out of the window
+        // entirely and the live pane stayed blank forever, because SwiftUI had
+        // no reason to update the surviving container again. A newer host wins.
+        if let host = view.superview as? TerminalContainerView, host.serial > serial {
+            return
+        }
+        adopt(view)
+    }
+
+    private func adopt(_ view: FocusAwareTerminalView) {
         detach()
+        // Exactly one container claims a terminal: leaving the previous host
+        // pointing at it would let that host's `layout()` re-adopt it later.
+        (view.superview as? TerminalContainerView)?.terminalView = nil
         view.removeFromSuperview()
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view)
@@ -740,5 +782,17 @@ final class TerminalContainerView: NSView {
             terminalView.removeFromSuperview()
         }
         self.terminalView = nil
+    }
+
+    /// Safety net: a pooled terminal that ends up parented nowhere (an
+    /// outgoing container that pulled it out, an eviction that raced a
+    /// relayout) can only be re-hosted here, because SwiftUI will not
+    /// necessarily update this representable again. Layout is the one callback
+    /// that is guaranteed to run while this container is on screen.
+    override func layout() {
+        if let terminalView, terminalView.superview == nil, window != nil {
+            adopt(terminalView)
+        }
+        super.layout()
     }
 }

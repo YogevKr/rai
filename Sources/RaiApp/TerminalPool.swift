@@ -19,6 +19,12 @@ final class TerminalPool {
     private var recency: LRUTracker<String>
     private var socketPath: String
     private var themeObserver: AnyCancellable?
+    /// Terminals herdr reported in the last snapshot, once one has been seen.
+    /// Closing a pane evicts its terminal, but SwiftUI still updates the
+    /// outgoing pane's container once on its way out; without this the pool
+    /// would re-create the entry and spawn an attach for a terminal that no
+    /// longer exists (which then retries its way to nothing).
+    private var knownTerminalIDs: Set<String>?
 
     init(
         capacity: Int = 8,
@@ -44,7 +50,10 @@ final class TerminalPool {
         }
     }
 
-    func view(for terminalID: String) -> FocusAwareTerminalView {
+    /// The live terminal view for `terminalID`, creating and attaching one on
+    /// first use. Returns nil for a terminal herdr has already dropped, so a
+    /// closing pane's last SwiftUI update cannot resurrect it.
+    func view(for terminalID: String) -> FocusAwareTerminalView? {
         if let entry = entries[terminalID] {
             recency.touch(terminalID)
             // Don't re-theme here: this runs on every SwiftUI render, and each
@@ -52,6 +61,10 @@ final class TerminalPool {
             // fight an active text selection while a program streams output.
             // The palette is applied on creation and re-applied on theme changes.
             return entry.view
+        }
+
+        if let knownTerminalIDs, !knownTerminalIDs.contains(terminalID) {
+            return nil
         }
 
         let view = FocusAwareTerminalView(frame: .zero)
@@ -88,6 +101,7 @@ final class TerminalPool {
     }
 
     func retain(terminalIDs liveTerminalIDs: Set<String>) {
+        knownTerminalIDs = liveTerminalIDs
         let staleTerminalIDs = entries.keys.filter {
             !liveTerminalIDs.contains($0)
         }

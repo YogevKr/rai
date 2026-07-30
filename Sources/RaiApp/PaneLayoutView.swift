@@ -14,11 +14,31 @@ struct PaneLayoutView: View {
     // is already fully described by the header above it.
     private var isSplit: Bool { model.visiblePanes.count > 1 }
 
+    /// The pane a zoomed tab should show alone, or nil when the tab is not
+    /// zoomed (or is zoomed with nothing to hide, where zoom is meaningless).
+    static func zoomedPaneID(in layout: PaneLayoutSnapshot) -> String? {
+        guard layout.zoomed, layout.panes.count > 1 else { return nil }
+        return layout.panes.first { $0.paneID == layout.focusedPaneID }?.paneID
+            ?? layout.panes.first { $0.focused }?.paneID
+    }
+
     var body: some View {
         Group {
             if let layout = model.selectedLayout,
                model.visiblePanes.isEmpty == false {
-                if let tree = PaneLayoutTreeBuilder.build(from: layout) {
+                if let zoomedPaneID = Self.zoomedPaneID(in: layout) {
+                    // herdr reports a zoomed tab with its *unzoomed* rects, so
+                    // rendering the layout verbatim left every pane at its split
+                    // size and made zoom a no-op with a badge. Zoom means one
+                    // pane owns the tab; chrome stays so the badge (and the way
+                    // back out) remains visible.
+                    PaneSurface(
+                        paneID: zoomedPaneID,
+                        model: model,
+                        showChrome: true
+                    )
+                        .padding(8)
+                } else if let tree = PaneLayoutTreeBuilder.build(from: layout) {
                     SplitNodeView(
                         node: tree,
                         model: model,
@@ -698,7 +718,7 @@ private struct PaneDropDelegate: DropDelegate {
                     .first(where: { $0.paneID == paneID })?.terminalID
                 else { return }
                 model.select(paneID: paneID, focusInHerdr: true)
-                let view = model.terminalPool.view(for: terminalID)
+                guard let view = model.terminalPool.view(for: terminalID) else { return }
                 if let images = FileDrop.imageOnlyURLs(urls) {
                     // Behave like an image paste: the pane shows [Image #N]
                     // right away. Ctrl-V makes Claude read the clipboard

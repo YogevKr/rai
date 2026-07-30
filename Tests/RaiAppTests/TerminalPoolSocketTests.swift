@@ -18,7 +18,7 @@ final class TerminalPoolSocketTests: XCTestCase {
         let socket = "/nonexistent/rai-tests-herd.sock"
         let pool = TerminalPool(socketPath: socket)
         let view = pool.view(for: "term-test")
-        XCTAssertEqual(view.scrollbackSelection.client.socketPath, socket)
+        XCTAssertEqual(view?.scrollbackSelection.client.socketPath, socket)
         pool.removeAll()
     }
 }
