@@ -20,131 +20,150 @@ struct PaneTerminalView: View {
     @StateObject private var promptController = TerminalPromptController()
 
     var body: some View {
-        VStack(spacing: 0) {
-            StreamingTerminalView(
-                paneID: pane.paneID,
-                connection: connection,
-                search: terminalSearch,
-                prompts: promptController,
-                send: { connection.sendInput($0, to: pane.paneID) }
-            )
-            // Breathing room between the last terminal row and the compose
-            // bar / keyboard stack; padding sits inside the background so the
-            // gap stays terminal-colored.
-            .padding(.bottom, 2)
-            .background(Color(red: 33 / 255, green: 33 / 255, blue: 33 / 255))
+        StreamingTerminalView(
+            paneID: pane.paneID,
+            connection: connection,
+            search: terminalSearch,
+            prompts: promptController,
+            send: { connection.sendInput($0, to: pane.paneID) }
+        )
+        // Breathing room between the last terminal row and the compose
+        // bar / keyboard stack; padding sits inside the background so the
+        // gap stays terminal-colored.
+        .padding(.bottom, 2)
+        .background(Color(red: 33 / 255, green: 33 / 255, blue: 33 / 255))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The bar stack is one bottom safe-area inset, not the tail of a
+        // VStack. As plain stack children the rows below the compose field
+        // slid under the keyboard when that field took focus — the terminal
+        // key row disappeared — so the stack changed height depending on which
+        // view held the keyboard. An inset rides above the keyboard either
+        // way: rai's compose field, or SwiftTerm's terminal view (which brings
+        // its own esc/ctrl accessory bar).
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if isSearching {
+                    HStack(spacing: 8) {
+                        TextField("Find in scrollback", text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.search)
+                            .onSubmit { terminalSearch.next(searchText) }
+                            .onChange(of: searchText) { _, query in
+                                terminalSearch.search(query)
+                            }
+                        Text(terminalSearch.summary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 36)
+                        Button { terminalSearch.previous(searchText) } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .disabled(searchText.isEmpty)
+                        Button { terminalSearch.next(searchText) } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .disabled(searchText.isEmpty)
+                        Button {
+                            isSearching = false
+                            terminalSearch.clear()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+                }
 
-            if isSearching {
+                if let prompt = promptController.prompt {
+                    PromptBar(
+                        prompt: prompt,
+                        select: { option in
+                            promptController.send(
+                                option: option,
+                                // Dialogs listen for keypresses; a digit sent as
+                                // text arrives as a paste and is ignored. Route
+                                // the answer through herdr's key semantics.
+                                through: { bytes in
+                                    connection.sendKeys(
+                                        [String(decoding: bytes, as: UTF8.self)],
+                                        to: pane.paneID
+                                    )
+                                }
+                            )
+                        },
+                        escape: {
+                            promptController.sendEscape(
+                                through: { connection.sendInput($0, to: pane.paneID) }
+                            )
+                        },
+                        dismiss: promptController.dismiss
+                    )
+                }
+
                 HStack(spacing: 8) {
-                    TextField("Find in scrollback", text: $searchText)
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                        if isSendingImage {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "photo")
+                        }
+                    }
+                    .disabled(isSendingImage)
+                    .accessibilityLabel("Send photo")
+                    if pane.agent != nil {
+                        Button {
+                            showingCommandPalette = true
+                        } label: {
+                            // A bare slash, sized to sit alongside the SF-symbol
+                            // photo icon (there is no un-circled slash symbol).
+                            Text("/")
+                                .font(.title2.weight(.medium))
+                        }
+                        .accessibilityLabel("Slash commands")
+                    }
+                    TextField("Send a line…", text: $composedLine)
                         .textFieldStyle(.roundedBorder)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .submitLabel(.search)
-                        .onSubmit { terminalSearch.next(searchText) }
-                        .onChange(of: searchText) { _, query in
-                            terminalSearch.search(query)
-                        }
-                    Text(terminalSearch.summary)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 36)
-                    Button { terminalSearch.previous(searchText) } label: {
-                        Image(systemName: "chevron.up")
+                        .submitLabel(.send)
+                        .onSubmit(sendComposedLine)
+                        .focused($composeFocused)
+                    // Messaging-app placement: Send sits in the compose row and
+                    // stays there. It used to appear only while the field was
+                    // unfocused — the theory being that the keyboard's blue ↑ was
+                    // already the send — but that reshaped the row the moment you
+                    // started typing and left no visible send target exactly while
+                    // you were composing. The ↑ still sends; this is the second,
+                    // always-present way. Destructive input still arms a red
+                    // confirmation before it goes through.
+                    Button(action: sendComposedLine) {
+                        Image(
+                            systemName: destructiveArmed
+                                ? "exclamationmark.circle.fill"
+                                : "arrow.up.circle.fill"
+                        )
+                        .font(.title)
+                        .symbolRenderingMode(.hierarchical)
                     }
-                    .disabled(searchText.isEmpty)
-                    Button { terminalSearch.next(searchText) } label: {
-                        Image(systemName: "chevron.down")
-                    }
-                    .disabled(searchText.isEmpty)
-                    Button {
-                        isSearching = false
-                        terminalSearch.clear()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
+                    .disabled(composedLine.isEmpty)
+                    .tint(destructiveArmed ? .red : nil)
+                    .accessibilityLabel(destructiveArmed ? "Confirm send" : "Send")
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 8)
                 .background(.bar)
-            }
 
-            if let prompt = promptController.prompt {
-                PromptBar(
-                    prompt: prompt,
-                    select: { option in
-                        promptController.send(
-                            option: option,
-                            // Dialogs listen for keypresses; a digit sent as
-                            // text arrives as a paste and is ignored. Route
-                            // the answer through herdr's key semantics.
-                            through: { bytes in
-                                connection.sendKeys(
-                                    [String(decoding: bytes, as: UTF8.self)],
-                                    to: pane.paneID
-                                )
-                            }
-                        )
-                    },
-                    escape: {
-                        promptController.sendEscape(
-                            through: { connection.sendInput($0, to: pane.paneID) }
-                        )
-                    },
-                    dismiss: promptController.dismiss
-                )
-            }
-
-            HStack(spacing: 8) {
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                    if isSendingImage {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "photo")
+                if pane.agent != nil, promptController.prompt == nil {
+                    QuickReplyRow { text in
+                        sendLine(text)
                     }
                 }
-                .disabled(isSendingImage)
-                .accessibilityLabel("Send photo")
-                if pane.agent != nil {
-                    Button {
-                        showingCommandPalette = true
-                    } label: {
-                        // A bare slash, sized to sit alongside the SF-symbol
-                        // photo icon (there is no un-circled slash symbol).
-                        Text("/")
-                            .font(.title2.weight(.medium))
-                    }
-                    .accessibilityLabel("Slash commands")
-                }
-                TextField("Send a line…", text: $composedLine)
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.send)
-                    .onSubmit(sendComposedLine)
-                    .focused($composeFocused)
-                // While the field is focused the keyboard's blue ↑ IS the
-                // send button — showing a second one beside it reads as a
-                // double send. The button appears when it's the only way to
-                // send (keyboard away, drafted text) or as the red "Sure?"
-                // destructive confirmation.
-                if destructiveArmed || (!composeFocused && !composedLine.isEmpty) {
-                    Button(destructiveArmed ? "Sure?" : "Send", action: sendComposedLine)
-                        .buttonStyle(.borderedProminent)
-                        .tint(destructiveArmed ? .red : nil)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(.bar)
 
-            if pane.agent != nil, promptController.prompt == nil {
-                QuickReplyRow { text in
-                    sendLine(text)
-                }
+                TerminalControlToolbar { connection.sendInput($0, to: pane.paneID) }
             }
-
-            TerminalControlToolbar { connection.sendInput($0, to: pane.paneID) }
         }
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
