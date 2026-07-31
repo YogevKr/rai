@@ -82,34 +82,15 @@ public enum AgentPanel {
     private static func herdOrderEntries(
         in snapshot: SessionSnapshot
     ) -> [AgentPanelEntry] {
-        if let agents = snapshot.agents {
-            return agents.map { agent in
-                let workspace = snapshot.workspaces.first {
-                    $0.workspaceID == agent.workspaceID
-                }
-                let tab = snapshot.tabs.first { $0.tabID == agent.tabID }
-                let tabCount = snapshot.tabs.lazy.filter {
-                    $0.workspaceID == agent.workspaceID
-                }.count
-                let tabLabel = tab.flatMap {
-                    tabCount > 1 || isNamed($0)
-                        ? displayLabel(for: $0, agent: agent)
-                        : nil
-                }
-                return AgentPanelEntry(
-                    paneID: agent.paneID,
-                    tabID: agent.tabID,
-                    workspaceID: agent.workspaceID,
-                    workspaceLabel: workspaceLabel(
-                        workspace,
-                        fallback: agent.workspaceID
-                    ),
-                    tabLabel: tabLabel,
-                    agentLabel: trimmedAgent(agent.agent),
-                    status: agent.agentStatus
-                )
-            }
-        }
+        // `snapshot.agents` carries only panes with a detected agent, and it
+        // enriches them (custom name, display label). It must not become the
+        // list itself: herdr's own agents panel walks every pane
+        // (`ws.pane_details`, src/ui/sidebar.rs), so filtering by it empties the
+        // panel for a herd of plain shells.
+        let agentsByPane = Dictionary(
+            (snapshot.agents ?? []).map { ($0.paneID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         return snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
             let tabs = snapshot.tabs.filter {
                 $0.workspaceID == workspace.workspaceID
@@ -122,14 +103,20 @@ public enum AgentPanel {
                 return snapshot.panes
                     .filter { $0.tabID == tab.tabID }
                     .map { pane in
-                        AgentPanelEntry(
+                        let agent = agentsByPane[pane.paneID]
+                        return AgentPanelEntry(
                             paneID: pane.paneID,
                             tabID: tab.tabID,
                             workspaceID: workspace.workspaceID,
                             workspaceLabel: snapshot.workspaceLabel(for: pane),
                             tabLabel: label,
-                            agentLabel: trimmedAgent(pane.agent),
-                            status: pane.agentStatus
+                            // A renamed agent (`agent.rename`) or a config'd
+                            // custom label beats the raw detection name.
+                            agentLabel: trimmedAgent(agent?.name)
+                                ?? trimmedAgent(agent?.displayAgent)
+                                ?? trimmedAgent(agent?.agent)
+                                ?? trimmedAgent(pane.agent),
+                            status: agent?.agentStatus ?? pane.agentStatus
                         )
                     }
             }

@@ -247,7 +247,9 @@ final class WorkspaceSidebarTests: XCTestCase {
             agentStatus: status,
             worktree: path.map {
                 WorkspaceWorktree(
+                    repoKey: nil,
                     repoName: "rai",
+                    repoRoot: nil,
                     checkoutPath: $0,
                     isLinkedWorktree: linked
                 )
@@ -271,6 +273,7 @@ final class WorkspaceSidebarTests: XCTestCase {
             cwd: cwd,
             foregroundCWD: foregroundCWD,
             agent: nil,
+            agentSession: nil,
             terminalTitle: nil,
             terminalTitleStripped: nil,
             agentStatus: .idle,
@@ -292,6 +295,7 @@ final class WorkspaceSidebarTests: XCTestCase {
             workspaces: workspaces,
             tabs: [],
             panes: panes,
+            agents: nil,
             layouts: []
         )
     }

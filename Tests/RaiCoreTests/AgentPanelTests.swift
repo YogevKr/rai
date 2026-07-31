@@ -181,29 +181,27 @@ final class AgentPanelTests: XCTestCase {
         XCTAssertEqual(entries.map(\.workspaceLabel), ["rai", "needle"])
     }
 
-    func testAgentProjectionWinsOverPaneProjection() {
+    /// The agents projection enriches a pane row; it must not become the list.
+    /// herdr's own panel walks every pane, so filtering by it would empty the
+    /// panel for a herd of plain shells.
+    func testAgentProjectionEnrichesTheMatchingPane() {
         let entries = AgentPanel.entries(
             in: snapshot(
                 workspaces: [workspace("ws-1", label: "rai", paneCount: 2)],
                 tabs: [tab("tab-1", workspaceID: "ws-1", label: "1", paneCount: 2)],
                 panes: [
                     pane(
-                        "stale-agent",
+                        "pane-agent",
                         tabID: "tab-1",
                         workspaceID: "ws-1",
                         agent: "codex",
                         status: .idle
                     ),
-                    pane(
-                        "shell",
-                        tabID: "tab-1",
-                        workspaceID: "ws-1",
-                        agent: nil
-                    ),
+                    pane("shell", tabID: "tab-1", workspaceID: "ws-1", agent: nil),
                 ],
                 agents: [
                     agent(
-                        "live-agent",
+                        "pane-agent",
                         tabID: "tab-1",
                         workspaceID: "ws-1",
                         status: .blocked
@@ -212,22 +210,24 @@ final class AgentPanelTests: XCTestCase {
             ),
             sort: .grouped
         )
-        XCTAssertEqual(entries.map(\.paneID), ["live-agent"])
+        XCTAssertEqual(entries.map(\.paneID), ["pane-agent", "shell"])
+        // The projection's agent and status win over the pane's stale copy.
         XCTAssertEqual(entries.first?.agentLabel, "claude")
         XCTAssertEqual(entries.first?.status, .blocked)
+        XCTAssertNil(entries.last?.agentLabel)
     }
 
-    func testEmptyAgentProjectionIsAuthoritative() {
+    func testPlainShellHerdStillListsItsPanes() {
         let entries = AgentPanel.entries(
             in: snapshot(
                 workspaces: [workspace("ws-1", label: "rai")],
                 tabs: [tab("tab-1", workspaceID: "ws-1", label: "1")],
-                panes: [pane("pane-1", tabID: "tab-1", workspaceID: "ws-1")],
+                panes: [pane("pane-1", tabID: "tab-1", workspaceID: "ws-1", agent: nil)],
                 agents: []
             ),
             sort: .grouped
         )
-        XCTAssertTrue(entries.isEmpty)
+        XCTAssertEqual(entries.map(\.paneID), ["pane-1"])
     }
 
     /// A lone auto-named tab repeats nothing useful next to its space name.
