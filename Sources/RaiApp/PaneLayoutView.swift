@@ -248,6 +248,7 @@ private struct PaneSurface: View {
     @State private var dropIndicator: PaneDropIndicator?
     @State private var renamePresented = false
     @State private var processInfoPresented = false
+    @State private var agentOverridePresented = false
 
     private var pane: Pane? {
         model.snapshot?.panes.first { $0.paneID == paneID }
@@ -295,6 +296,14 @@ private struct PaneSurface: View {
                         paneTitle: pane.map(model.displayTitle(for:)) ?? "Terminal"
                     )
                 }
+                .sheet(isPresented: $agentOverridePresented) {
+                    PaneAgentOverrideSheet(
+                        model: model,
+                        paneID: paneID,
+                        currentAgent: pane?.agent,
+                        currentStatus: pane?.agentStatus ?? .unknown
+                    )
+                }
         }
     }
 
@@ -317,8 +326,22 @@ private struct PaneSurface: View {
                         onPlainClick: {
                             model.select(paneID: paneID, focusInHerdr: true)
                         },
+                        agentDetectionSummary: AgentAuthorityCLI.detectionSummary(
+                            agent: pane?.agent,
+                            status: pane?.agentStatus ?? .unknown
+                        ),
+                        canReleaseAgent: pane?.agent != nil,
                         onContextAction: { action in
                             switch action {
+                            case .setAgentOverride:
+                                agentOverridePresented = true
+                            case .clearAgentOverride:
+                                model.clearAgentOverride(paneID: paneID)
+                            case .releaseAgent:
+                                model.releaseAgent(
+                                    paneID: paneID,
+                                    agent: pane?.agent
+                                )
                             case .splitRight: model.splitRight()
                             case .splitDown: model.splitDown()
                             case .zoomPane: model.zoomPane(paneID)
@@ -390,6 +413,24 @@ private struct PaneSurface: View {
         .onTapGesture(count: 2) { renamePresented = true }   // double-click title → rename (zoom: ⌘⇧↩)
         .onTapGesture { model.select(paneID: paneID, focusInHerdr: true) }
         .contextMenu {
+            Button(
+                AgentAuthorityCLI.detectionSummary(
+                    agent: pane?.agent,
+                    status: pane?.agentStatus ?? .unknown
+                )
+            ) {}
+                .disabled(true)
+            Button("Set Pane Agent…") {
+                agentOverridePresented = true
+            }
+            Button("Clear Agent Override") {
+                model.clearAgentOverride(paneID: paneID)
+            }
+            Button("Release Rai Agent Claim") {
+                model.releaseAgent(paneID: paneID, agent: pane?.agent)
+            }
+            .disabled(pane?.agent == nil)
+            Divider()
             Button("Rename…") {
                 renamePresented = true
             }
@@ -480,6 +521,134 @@ private struct PaneSurface: View {
             .allowsHitTesting(false)
         case nil:
             EmptyView()
+        }
+    }
+}
+
+private struct PaneAgentOverrideSheet: View {
+    @ObservedObject var model: RaiModel
+    let paneID: String
+    let currentAgent: String?
+    let currentStatus: AgentStatus
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var agent: AgentAuthorityAgent
+    @State private var state: AgentAuthorityState
+    @State private var context: AgentAuthorityContext?
+    @State private var contextLoaded = false
+
+    init(
+        model: RaiModel,
+        paneID: String,
+        currentAgent: String?,
+        currentStatus: AgentStatus
+    ) {
+        self.model = model
+        self.paneID = paneID
+        self.currentAgent = currentAgent
+        self.currentStatus = currentStatus
+        _agent = State(
+            initialValue: currentAgent.flatMap(AgentAuthorityAgent.init(rawValue:))
+                ?? .claude
+        )
+        _state = State(initialValue: AgentAuthorityState(status: currentStatus))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Set Pane Agent")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(
+                    AgentAuthorityCLI.detectionSummary(
+                        agent: contextLoaded ? context?.agent : currentAgent,
+                        status: contextLoaded
+                            ? context?.status ?? .unknown
+                            : currentStatus
+                    )
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+            }
+
+            VStack(spacing: 12) {
+                HStack {
+                    Text("Agent")
+                    Spacer()
+                    Picker("", selection: $agent) {
+                        ForEach(AgentAuthorityAgent.allCases, id: \.self) { agent in
+                            Text(agent.displayName).tag(agent)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                HStack {
+                    Text("State")
+                    Spacer()
+                    Picker("", selection: $state) {
+                        ForEach(AgentAuthorityState.allCases, id: \.self) { state in
+                            Text(state.displayName).tag(state)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+            }
+
+            HStack(spacing: 8) {
+                if !contextLoaded {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(availabilityMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Set Override") {
+                    model.setAgentOverride(
+                        paneID: paneID,
+                        agent: agent,
+                        state: state
+                    )
+                    dismiss()
+                }
+                .disabled(reportAvailability != .available)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 430)
+        .background(Theme.raised)
+        .task {
+            context = await model.agentAuthorityContext(for: paneID)
+            contextLoaded = true
+        }
+        .onExitCommand { dismiss() }
+    }
+
+    private var reportAvailability: AgentAuthorityReportAvailability? {
+        context?.reportAvailability
+    }
+
+    private var availabilityMessage: String {
+        guard contextLoaded else {
+            return "Loading Herdr authority information…"
+        }
+        guard let reportAvailability else {
+            return "Herdr authority information is unavailable."
+        }
+        switch reportAvailability {
+        case .available:
+            return "Rai will report this state. Herdr can reject a conflicting foreground agent."
+        case .ownedSession(let source):
+            return "\(source) owns this agent session. Herdr rejects another source."
         }
     }
 }

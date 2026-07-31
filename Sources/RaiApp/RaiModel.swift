@@ -2116,6 +2116,82 @@ final class RaiModel: ObservableObject {
         }
     }
 
+    func setAgentOverride(
+        paneID: String,
+        agent: AgentAuthorityAgent,
+        state: AgentAuthorityState
+    ) {
+        let arguments = AgentAuthorityCLI.reportArguments(
+            paneID: paneID,
+            agent: agent,
+            state: state
+        )
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            guard let context = await agentAuthorityContext(for: paneID),
+                  context.paneID == paneID,
+                  context.reportAvailability == .available,
+                  generation == connectionGeneration else {
+                return
+            }
+            _ = await runHerdr(arguments)
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func agentAuthorityContext(for paneID: String) async -> AgentAuthorityContext? {
+        guard let output = await runHerdrCapture(["pane", "get", paneID]) else {
+            return nil
+        }
+        return AgentAuthorityContextParser.parse(output)
+    }
+
+    func clearAgentOverride(paneID: String) {
+        let socketPath = activeSocketPath
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            // Herdr exposes clear-authority through its socket API, but not its CLI.
+            try? await AgentAuthorityRPC.clearOverride(
+                socketPath: socketPath,
+                paneID: paneID
+            )
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func releaseAgent(paneID: String, agent: String?) {
+        guard let agent,
+              let arguments = AgentAuthorityCLI.releaseArguments(
+                  paneID: paneID,
+                  agent: agent
+              ) else {
+            return
+        }
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            _ = await runHerdr(arguments)
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
     private func renamePaneArguments(paneID: String, label rawLabel: String) -> [String] {
         let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         return label.isEmpty

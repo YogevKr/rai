@@ -74,7 +74,14 @@ enum HerdrCLI {
 /// Pane-level operations offered by the terminal's right-click menu; the
 /// SwiftUI layer maps them onto RaiModel actions.
 enum PaneMenuAction {
-    case splitRight, splitDown, zoomPane, closePane, newTab
+    case setAgentOverride
+    case clearAgentOverride
+    case releaseAgent
+    case splitRight
+    case splitDown
+    case zoomPane
+    case closePane
+    case newTab
 }
 
 /// When a pane's viewport is scrolled away from the live tail (an edge-drag
@@ -189,6 +196,8 @@ enum DroppedPathEscaper {
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
+    var agentDetectionSummary = "Herdr detects: No agent — Unknown"
+    var canReleaseAgent = false
     private var draggedSinceMouseDown = false
     private var copiedPanel: NSPanel?
     private var scrolledPanel: NSPanel?
@@ -215,6 +224,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         menu.addItem(pasteItem)
 
         menu.addItem(.separator())
+        let detectionItem = NSMenuItem(
+            title: agentDetectionSummary,
+            action: nil,
+            keyEquivalent: ""
+        )
+        detectionItem.isEnabled = false
+        menu.addItem(detectionItem)
+        menu.addItem(contextItem("Set Pane Agent…", #selector(menuSetAgentOverride)))
+        menu.addItem(contextItem("Clear Agent Override", #selector(menuClearAgentOverride)))
+        let releaseItem = contextItem("Release Rai Agent Claim", #selector(menuReleaseAgent))
+        releaseItem.isEnabled = canReleaseAgent
+        menu.addItem(releaseItem)
+        menu.addItem(.separator())
         menu.addItem(contextItem("Split Right", #selector(menuSplitRight), "d", [.command]))
         menu.addItem(contextItem("Split Down", #selector(menuSplitDown), "d", [.command, .shift]))
         menu.addItem(.separator())
@@ -237,6 +259,9 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         return item
     }
 
+    @objc private func menuSetAgentOverride() { onContextAction?(.setAgentOverride) }
+    @objc private func menuClearAgentOverride() { onContextAction?(.clearAgentOverride) }
+    @objc private func menuReleaseAgent() { onContextAction?(.releaseAgent) }
     @objc private func menuSplitRight() { onContextAction?(.splitRight) }
     @objc private func menuSplitDown() { onContextAction?(.splitDown) }
     @objc private func menuZoomPane() { onContextAction?(.zoomPane) }
@@ -664,6 +689,8 @@ struct TerminalPaneView: NSViewRepresentable {
     let isFocused: Bool
     let pool: TerminalPool
     let onPlainClick: () -> Void
+    var agentDetectionSummary = "Herdr detects: No agent — Unknown"
+    var canReleaseAgent = false
     var onContextAction: (PaneMenuAction) -> Void = { _ in }
 
     static var font: NSFont {
@@ -695,6 +722,8 @@ struct TerminalPaneView: NSViewRepresentable {
         guard let view = pool.view(for: terminalID) else { return }
         view.onPlainClick = onPlainClick
         view.onContextAction = onContextAction
+        view.agentDetectionSummary = agentDetectionSummary
+        view.canReleaseAgent = canReleaseAgent
         view.paneID = paneID
         container.install(view)
         if isFocused, view.window?.firstResponder !== view {
