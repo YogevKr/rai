@@ -180,6 +180,15 @@ final class RaiModel: ObservableObject {
     // Spaces the user has collapsed in the sidebar. A collapsed space hides its
     // tabs except the ones that need attention (and the selected one).
     @Published var collapsedWorkspaceIDs: Set<String> = []
+    @Published var collapsedSpaceKeys: Set<String> {
+        didSet {
+            userDefaults.set(
+                collapsedSpaceKeys.sorted(),
+                forKey: Self.collapsedSpaceKeysDefaultsKey
+            )
+        }
+    }
+    @Published private(set) var workspaceGitStatuses: [String: WorkspaceGitStatus] = [:]
     @Published var notificationsMuted: Bool {
         didSet {
             userDefaults.set(
@@ -241,11 +250,14 @@ final class RaiModel: ObservableObject {
     private static let agentPanelSortKey = "agentPanelSort"
     private static let agentPanelCollapsedKey = "agentPanelCollapsed"
     private static let sidebarSplitKey = "sidebarSplit"
+    private static let collapsedSpaceKeysDefaultsKey = "collapsedSpaceKeys"
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
+    private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private var started = false
     private var eventTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
+    private var gitStatusTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
     private var trailingRefreshTask: Task<Void, Never>?
     /// Connection generation whose plugin actions were already fetched, so the
@@ -266,6 +278,9 @@ final class RaiModel: ObservableObject {
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
         terminalPool = TerminalPool(socketPath: client.socketPath)
         self.userDefaults = userDefaults
+        collapsedSpaceKeys = Set(
+            userDefaults.stringArray(forKey: Self.collapsedSpaceKeysDefaultsKey) ?? []
+        )
         notificationsMuted = userDefaults.bool(
             forKey: Self.notificationsMutedDefaultsKey
         )
@@ -303,6 +318,7 @@ final class RaiModel: ObservableObject {
     deinit {
         eventTask?.cancel()
         flushTask?.cancel()
+        gitStatusTask?.cancel()
         client.disconnect()
     }
 
@@ -342,6 +358,33 @@ final class RaiModel: ObservableObject {
             collapsedWorkspaceIDs.remove(workspaceID)
         } else {
             collapsedWorkspaceIDs.insert(workspaceID)
+        }
+    }
+
+    var workspaceListEntries: [WorkspaceListEntry] {
+        guard let snapshot else { return [] }
+        return WorkspaceSidebar.entries(
+            in: snapshot,
+            gitStatuses: workspaceGitStatuses,
+            collapsedSpaceKeys: collapsedSpaceKeys,
+            visibleWorkspaceID: selectedWorkspace?.workspaceID
+        )
+    }
+
+    func gitStatus(for workspace: Workspace) -> WorkspaceGitStatus? {
+        guard let snapshot else { return nil }
+        return WorkspaceSidebar.gitStatus(
+            for: workspace,
+            in: snapshot,
+            gitStatuses: workspaceGitStatuses
+        )
+    }
+
+    func toggleSpaceGroupCollapsed(_ key: String) {
+        if collapsedSpaceKeys.contains(key) {
+            collapsedSpaceKeys.remove(key)
+        } else {
+            collapsedSpaceKeys.insert(key)
         }
     }
 
@@ -680,6 +723,8 @@ final class RaiModel: ObservableObject {
         flushTask = nil
         trailingRefreshTask?.cancel()
         trailingRefreshTask = nil
+        gitStatusTask?.cancel()
+        gitStatusTask = nil
         pendingEvents.removeAll(keepingCapacity: false)
         client.disconnect()
         terminalPool.removeAll()
@@ -692,6 +737,7 @@ final class RaiModel: ObservableObject {
         selectedPaneID = nil
         draggedPaneID = nil
         dragRatios.removeAll()
+        workspaceGitStatuses = [:]
         lastObservedPaneStatuses = nil
         isCommandPalettePresented = false
         renameRequest = nil
@@ -1958,6 +2004,7 @@ final class RaiModel: ObservableObject {
             lastObservedPaneStatuses = newStatuses
 
             snapshot = newSnapshot
+            restartGitStatusLoop(generation: generation)
             terminalPool.retain(
                 terminalIDs: Set(newSnapshot.panes.map(\.terminalID))
             )
@@ -1993,6 +2040,29 @@ final class RaiModel: ObservableObject {
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Snapshot changes restart the loop. The cache limits Git work to one
+    /// serial pass every 30 seconds and reads new checkout paths at once.
+    private func restartGitStatusLoop(generation: UUID) {
+        gitStatusTask?.cancel()
+        guard remoteTarget == nil else {
+            gitStatusTask = nil
+            workspaceGitStatuses = [:]
+            return
+        }
+
+        gitStatusTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, generation == connectionGeneration {
+                guard let snapshot else { return }
+                let paths = WorkspaceSidebar.checkoutPaths(in: snapshot)
+                let statuses = await workspaceGitStatusCache.statuses(for: paths)
+                guard !Task.isCancelled, generation == connectionGeneration else { return }
+                workspaceGitStatuses = statuses
+                try? await Task.sleep(for: .seconds(30))
             }
         }
     }
