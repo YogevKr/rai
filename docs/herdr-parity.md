@@ -6,9 +6,19 @@ is implemented, and nothing here is a commitment to implement it.
 Audited 2026-07-31 against herdr 0.7.4 (protocol 16, source checkout at
 `~/.agents/skills/herdr`) and rai v0.1.29 + the unreleased agents panel.
 
-Method coverage: herdr exposes **75 socket methods**; rai drives **43** of them,
+Method coverage: herdr exposes **89 socket methods**; rai drives **43** of them,
 by socket for the hot path (`session.snapshot`, `events.subscribe`, `pane.read`,
 `pane.send_input`, `pane.focus/resize/move/zoom`) and by CLI for the rest.
+
+> **Correction (2026-07-31, after the first implementation wave.)** The first
+> cut of this audit said 75 methods. That was wrong: the extraction regex only
+> matched two-part names, so it missed all 14 three-part ones —
+> `agent.view.set/clear`, `client.window_title.set/clear`,
+> `pane.graphics.set/info/clear/stream`, `plugin.action.list/invoke`,
+> `plugin.log.list`, `plugin.pane.open/close/focus`. Three items below were
+> mis-scoped as a result; each carries a corrected note. Verified against the
+> **installed** server (`herdr api schema --json`, herdr 0.7.4, protocol 16),
+> not only the source checkout — which is 0.7.5 and ahead of what runs here.
 Companion audits: [collie-gap.md](collie-gap.md) (phone), [ROADMAP.md](ROADMAP.md)
 (build order).
 
@@ -27,6 +37,30 @@ the plugin is broken.
    `overlay`: herdr documents a popup as "a singleton session resource rather
    than a Herdr pane", so it never appears in `session.snapshot` and rai cannot
    render it at all. `popup.close` is likewise unimplemented.
+   **Corrected:** `plugin.pane.open`, `plugin.pane.close` and `plugin.pane.focus`
+   are live on 0.7.4 and were missed by the first audit. A popup is still absent
+   from the snapshot, but rai is not blind to it — those three methods are the
+   handle, so this is buildable rather than "cannot render at all".
+> **BLOCKED UPSTREAM (2026-07-31, measured).** Items 2–5 all ride herdr's
+> internal client socket (`herdr-client.sock`), not the JSON-RPC API. Protocol
+> 16 offers exactly two client modes — `App` and `TerminalAttach` — and
+> `headless.rs:2708` makes **every** non-attach client the *foreground* client
+> the moment it connects; `sync_foreground_client_state` then sets
+> `effective_size` from that client, which drives every pane's geometry.
+> Measured on a scratch herd: a client declaring 200×60 reflowed the herd's
+> panes from `54×23` to `174×59` (pane `viewport_rows` 23 → 59) for as long as
+> it stayed connected. A rai that opens this socket to receive toasts would
+> resize the user's live herd — including their TUI and any second rai.
+> `TerminalAttach` avoids foreground but receives no notify stream, so there is
+> no safe path. This needs a passive/observer client mode from herdr, or
+> notification delivery over the documented event stream. Implemented on branch
+> `codexspin/plugin-ui-requests-0731-090005-cem9` and **deliberately not
+> merged**; the wire decoding and its tests are worth keeping for whenever
+> herdr offers a safe mode. Note also that the client-socket protocol version
+> (16 on herdr 0.7.4, 18 in 0.7.5) is a *different* number space from the API
+> protocol version that happens to share the value 16 today — a client that
+> conflates them breaks on the next herdr release.
+
 2. **`ui.toast`** — plugins raise transient toasts. rai has no toast surface, so
    the message is dropped.
 3. **`ui.sound`, `ui.sound.path`, `ui.sound.done_path`, `ui.sound.request_path`**
@@ -45,6 +79,13 @@ the plugin is broken.
    renders it in the agents panel and labels it "filtered". The agents panel I
    just built implements only the two built-in sorts (priority / grouped), so a
    plugin-defined view is ignored.
+   **Corrected:** `agent.view.set` / `agent.view.clear` exist — but only in the
+   0.7.5 source checkout, *not* in the 0.7.4 schema this machine runs, and even
+   there they are a write path: nothing publishes an active view back to a
+   client through the snapshot or the event stream. So rai cannot learn what
+   view herdr's TUI is showing (confirmed), and once 0.7.4 is left behind rai
+   could *set* one. The evaluator built in this wave is the half that survives
+   either way.
 7. **Plugin installation.** rai does list / enable / disable / unlink / log /
    action. herdr's CLI also has `install`, `link`, `uninstall`, `commands`,
    `pane`, `config-dir` — so rai can manage plugins you already have but cannot
@@ -105,6 +146,12 @@ Cheap wins: the bytes are already on the wire.
 20. **Kitty graphics.** herdr renders inline images (`src/kitty_graphics.rs`).
     rai's SwiftTerm handles the kitty *keyboard* protocol only, so image output
     from an agent does not render.
+    **Corrected:** this is the item the first audit got most wrong. `pane.graphics.set`,
+    `pane.graphics.info` and `pane.graphics.clear` are live on 0.7.4 (and 0.7.5
+    adds `pane.graphics.stream`). rai does not have to parse the kitty protocol
+    out of the terminal stream at all — it can ask herdr what graphics a pane
+    holds and composite them over the SwiftTerm view. Scope drops from
+    "needs upstream SwiftTerm work" to "an API rai already knows how to call".
 21. **Custom command keybindings.** herdr binds arbitrary shell commands, a
     `type` action that types literal text, plugin actions, and a whole
     prefix/resize/navigate modal layer, all user-configurable. rai's shortcuts
