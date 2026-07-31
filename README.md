@@ -91,7 +91,8 @@ The Mac side is the hub: a token-authenticated WebSocket bridge
 ## Requirements
 
 - macOS 14 (Sonoma) or newer
-- A running [**herdr**](https://herdr.dev) server (`herdr server`)
+- [**herdr**](https://herdr.dev) on your `PATH` — rai starts the server itself
+  when the herd it points at is not running
 - Xcode command-line tools / Swift 5.9+ toolchain (to build)
 
 ## Install
@@ -138,8 +139,9 @@ daemon without disturbing your running agents.
 
 ## Usage
 
-Launch `rai` with a herdr server running and the sidebar populates with your live
-herd. Click a tab to attach its panes; type as you would in any terminal.
+Launch `rai` and the sidebar populates with your live herd. If that herd's server
+is not running, rai starts it and connects once it is ready. Click a tab to
+attach its panes; type as you would in any terminal.
 
 ### Keyboard shortcuts
 

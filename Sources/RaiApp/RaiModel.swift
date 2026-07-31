@@ -394,6 +394,28 @@ final class RaiModel: ObservableObject {
                 remote: nil
             )
             await reloadSessions()
+            guard attemptID == connectionAttemptID else { return }
+            // Opening rai with a dead herd used to show an empty window. Start
+            // the server rai points at, then connect to it.
+            if snapshot == nil, let target = HerdrServerLaunch.autostartTarget(
+                socketPath: activeSocketPath,
+                sessions: sessions
+            ) {
+                connectionState = .connecting
+                await startSession(
+                    named: target.name,
+                    requireNew: false,
+                    attemptID: attemptID
+                )
+                guard attemptID == connectionAttemptID else { return }
+                // A server that never becomes ready leaves the connection pill
+                // spinning; say it is offline instead.
+                if case .connecting = connectionState, snapshot == nil {
+                    connectionState = .disconnected(
+                        "\(target.name) is not running."
+                    )
+                }
+            }
         }
     }
 
@@ -686,8 +708,10 @@ final class RaiModel: ObservableObject {
             return
         }
 
+        let arguments = existing.map(HerdrServerLaunch.serverArguments(for:))
+            ?? ["--session", name, "server"]
         let process = configuredHerdrProcess(
-            ["--session", name, "server"],
+            arguments,
             usesActiveSocket: false
         )
         process.standardInput = FileHandle.nullDevice
