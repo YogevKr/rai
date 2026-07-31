@@ -201,6 +201,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var draggedSinceMouseDown = false
     private var copiedPanel: NSPanel?
     private var scrolledPanel: NSPanel?
+    private var copyModePanel: NSPanel?
+    private var copyModeStatus: String?
     private var scrolledOffset = 0
     private var mouseIsDown = false
     private var frameObserverInstalled = false
@@ -237,6 +239,15 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         releaseItem.isEnabled = canReleaseAgent
         menu.addItem(releaseItem)
         menu.addItem(.separator())
+        let copyModeItem = contextItem(
+            "Copy Mode", #selector(menuCopyMode), "c", [.command, .shift])
+        copyModeItem.isEnabled = paneID != nil
+        menu.addItem(copyModeItem)
+        let editorItem = contextItem(
+            "Edit Scrollback", #selector(menuEditScrollback), "e", [.command, .shift])
+        editorItem.isEnabled = paneID != nil
+        menu.addItem(editorItem)
+        menu.addItem(.separator())
         menu.addItem(contextItem("Split Right", #selector(menuSplitRight), "d", [.command]))
         menu.addItem(contextItem("Split Down", #selector(menuSplitDown), "d", [.command, .shift]))
         menu.addItem(.separator())
@@ -267,6 +278,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     @objc private func menuZoomPane() { onContextAction?(.zoomPane) }
     @objc private func menuClosePane() { onContextAction?(.closePane) }
     @objc private func menuNewTab() { onContextAction?(.newTab) }
+    @objc private func menuCopyMode() { scrollbackSelection.enterCopyMode() }
+    @objc private func menuEditScrollback() { scrollbackSelection.openScrollbackInEditor() }
 
     /// Extends drag-selections into herdr-side scrollback (see the controller).
     let scrollbackSelection = ScrollbackSelectionController()
@@ -285,6 +298,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
                 self?.scrolledOffset = scroll.offsetFromBottom
                 self?.updateScrolledPill()
             }
+            scrollbackSelection.onCopyModeStatusChanged = { [weak self] status in
+                self?.showCopyModeStatus(status)
+            }
+            scrollbackSelection.onNotice = { [weak self] message in
+                self?.showToast(message)
+            }
         }
     }
 
@@ -293,6 +312,32 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // this on the focused terminal; returning true means we sent bytes to the PTY
     // and the monitor should swallow the event so SwiftTerm doesn't also handle it.
     func handleInterceptedKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        if let command = KeyRoutingDecision.terminalCommand(
+            keyCode: event.keyCode,
+            characters: event.characters,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            command: flags.contains(.command),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            shift: flags.contains(.shift),
+            copyModeActive: scrollbackSelection.isCopyModeActive
+        ) {
+            switch command {
+            case .enterCopyMode:
+                scrollbackSelection.enterCopyMode()
+            case .editScrollback:
+                scrollbackSelection.openScrollbackInEditor()
+            case .copyMode(let key):
+                _ = scrollbackSelection.handleCopyModeKey(key)
+            }
+            return true
+        }
+        if scrollbackSelection.isCopyModeActive {
+            // Command chords stay available to AppKit. Other keys cannot reach the PTY.
+            return !flags.contains(.command)
+        }
+
         // Ghostty line-editing parity — the same ⌘/⌥ combos Ghostty sends,
         // so muscle memory works in Claude/shell.
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -496,10 +541,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// a floating child NSPanel because the terminal renders through a
     /// CAMetalLayer that paints over any in-view subview or SwiftUI overlay.
     private func showCopiedToast() {
+        showToast("Copied to clipboard")
+    }
+
+    private func showToast(_ text: String) {
         copiedPanel?.orderOut(nil)
         guard let win = window else { return }
 
-        let text = "Copied to clipboard"
         let font = NSFont.systemFont(ofSize: 11, weight: .medium)
         let ts = (text as NSString).size(withAttributes: [.font: font])
         let padX: CGFloat = 11, padY: CGFloat = 5
@@ -586,6 +634,9 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         // Pooled views move between windows/containers; keep the pill (a child
         // panel of the OLD window) from lingering over unrelated content.
         updateScrolledPill()
+        if copyModeStatus != nil {
+            showCopyModeStatus(copyModeStatus)
+        }
     }
 
     private func updateScrolledPill() {
@@ -619,13 +670,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if panel.alphaValue < 1 {
             NSAnimationContext.runAnimationGroup { $0.duration = 0.12; panel.animator().alphaValue = 1 }
         }
-        if !frameObserverInstalled {
-            frameObserverInstalled = true
-            postsFrameChangedNotifications = true
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(paneGeometryChanged),
-                name: NSView.frameDidChangeNotification, object: self)
-        }
+        installGeometryObserver()
     }
 
     private func hideScrolledPill() {
@@ -637,6 +682,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     @objc private func paneGeometryChanged() {
         if scrolledPanel?.parent != nil { updateScrolledPill() }
+        if copyModePanel?.parent != nil { positionCopyModePanel() }
+    }
+
+    private func installGeometryObserver() {
+        guard !frameObserverInstalled else { return }
+        frameObserverInstalled = true
+        postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneGeometryChanged),
+            name: NSView.frameDidChangeNotification,
+            object: self
+        )
     }
 
     @objc private func scrolledPillClicked() {
@@ -674,6 +732,75 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         panel.contentView = pill
         panel.alphaValue = 0
         return panel
+    }
+
+    /// Copy mode must stay visible above the terminal's Metal layer.
+    private func showCopyModeStatus(_ status: String?) {
+        copyModeStatus = status
+        if let panel = copyModePanel {
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+        }
+        copyModePanel = nil
+        guard let status, let win = window else { return }
+
+        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        let size = (status as NSString).size(withAttributes: [.font: font])
+        let padX: CGFloat = 12
+        let padY: CGFloat = 6
+        let width = ceil(size.width) + padX * 2
+        let height = ceil(size.height) + padY * 2
+
+        let pill = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.28,
+            green: 0.18,
+            blue: 0.42,
+            alpha: 0.96
+        ).cgColor
+        pill.layer?.cornerRadius = 6
+
+        let label = NSTextField(labelWithString: status)
+        label.font = font
+        label.textColor = .white
+        label.frame = NSRect(
+            x: padX,
+            y: padY,
+            width: ceil(size.width),
+            height: ceil(size.height)
+        )
+        pill.addSubview(label)
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.contentView = pill
+        win.addChildWindow(panel, ordered: .above)
+        copyModePanel = panel
+        positionCopyModePanel()
+        installGeometryObserver()
+    }
+
+    private func positionCopyModePanel() {
+        guard let panel = copyModePanel, let win = window else { return }
+        let topY = isFlipped ? bounds.minY + 14 : bounds.maxY - 14
+        let point = win.convertPoint(
+            toScreen: convert(NSPoint(x: bounds.midX, y: topY), to: nil)
+        )
+        panel.setFrameOrigin(NSPoint(
+            x: point.x - panel.frame.width / 2,
+            y: point.y - panel.frame.height
+        ))
     }
 
 }
