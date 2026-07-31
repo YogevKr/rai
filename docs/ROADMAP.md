@@ -50,7 +50,7 @@ second model or a retain cycle while allowing cold-launch notification routing.
   notification defaults), Herdr Server (status · reload-config · update · stop),
   Plugins (list/enable/disable/unlink/logs), Integrations (install/uninstall),
   Config (edit `config.toml` · check · reload-server).
-- Server "channel" control dropped — no herdr API/CLI for it.
+- Server update channel control uses `herdr channel set stable|preview`.
 
 ### Phase 6 — Terminal power & layouts  ◑ mostly shipped
 - ✅ Scrollback search (⌘F → SwiftTerm find bar via the responder chain).
