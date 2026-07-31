@@ -188,6 +188,24 @@ final class RaiModel: ObservableObject {
             )
         }
     }
+    // Sidebar agents panel: how it sorts, whether it is collapsed, and how much
+    // of the sidebar it takes. All three outlive the launch.
+    @Published var agentPanelSort: AgentPanelSort {
+        didSet {
+            userDefaults.set(agentPanelSort.rawValue, forKey: Self.agentPanelSortKey)
+        }
+    }
+    @Published var agentPanelCollapsed: Bool {
+        didSet {
+            userDefaults.set(agentPanelCollapsed, forKey: Self.agentPanelCollapsedKey)
+        }
+    }
+    /// Share of the sidebar body given to the spaces list, 0…1.
+    @Published var sidebarSplit: Double {
+        didSet {
+            userDefaults.set(sidebarSplit, forKey: Self.sidebarSplitKey)
+        }
+    }
     @Published var isCommandPalettePresented = false
     @Published var isBroadcastPresented = false
     @Published var paletteQuery = ""
@@ -220,6 +238,10 @@ final class RaiModel: ObservableObject {
     weak var snapshotObserver: RaiSnapshotObserver?
 
     private static let notificationsMutedDefaultsKey = "notificationsMuted"
+    private static let agentPanelSortKey = "agentPanelSort"
+    private static let agentPanelCollapsedKey = "agentPanelCollapsed"
+    private static let sidebarSplitKey = "sidebarSplit"
+    static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
     private var started = false
     private var eventTask: Task<Void, Never>?
@@ -247,6 +269,35 @@ final class RaiModel: ObservableObject {
         notificationsMuted = userDefaults.bool(
             forKey: Self.notificationsMutedDefaultsKey
         )
+        agentPanelSort = userDefaults.string(forKey: Self.agentPanelSortKey)
+            .flatMap(AgentPanelSort.init(rawValue:)) ?? .priority
+        agentPanelCollapsed = userDefaults.bool(forKey: Self.agentPanelCollapsedKey)
+        // A missing default reads as 0.0 — treat that as "never set" rather than
+        // opening with the spaces list squeezed to nothing.
+        let storedSplit = userDefaults.double(forKey: Self.sidebarSplitKey)
+        sidebarSplit = storedSplit > 0 ? Self.clampSplit(storedSplit) : 0.62
+    }
+
+    static func clampSplit(_ value: Double) -> Double {
+        min(max(value, sidebarSplitRange.lowerBound), sidebarSplitRange.upperBound)
+    }
+
+    func setSidebarSplit(_ value: Double) {
+        sidebarSplit = Self.clampSplit(value)
+    }
+
+    func toggleAgentPanelSort() {
+        agentPanelSort = agentPanelSort.toggled
+    }
+
+    func toggleAgentPanelCollapsed() {
+        agentPanelCollapsed.toggle()
+    }
+
+    /// The agents panel's rows: every agent pane in the herd, in the panel's sort.
+    var agentPanelEntries: [AgentPanelEntry] {
+        guard let snapshot else { return [] }
+        return AgentPanel.entries(in: snapshot, sort: agentPanelSort)
     }
 
     deinit {

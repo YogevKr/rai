@@ -14,64 +14,26 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if let snapshot = model.snapshot {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                        ForEach(snapshot.workspaces) { workspace in
-                            let allTabs = tabs(in: snapshot, of: workspace)
-                            // A collapsed space hides everything but its
-                            // attention-needing tabs (and the selected one) —
-                            // same predicate as the global "only needs you".
-                            let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
-                            let visibleTabs = allTabs.filter {
-                                AttentionFilter.includes(
-                                    status: $0.agentStatus,
-                                    id: $0.tabID,
-                                    selectedID: model.selectedTabID,
-                                    onlyNeedsYou: model.onlyNeedsYou || collapsed
+            if model.snapshot != nil {
+                // Spaces on top, agents below, a divider between them the user
+                // drags. The agents panel keeps its header when collapsed.
+                GeometryReader { geometry in
+                    let panel = agentPanelHeights(in: geometry.size.height)
+                    VStack(spacing: 0) {
+                        spacesList
+                            .frame(height: max(0, geometry.size.height - panel.total))
+                        AgentPanelSection(
+                            model: model,
+                            listHeight: panel.list,
+                            onDrag: { translation in
+                                guard geometry.size.height > 0 else { return }
+                                model.setSidebarSplit(
+                                    model.sidebarSplit + translation / geometry.size.height
                                 )
                             }
-                            let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
-                            // Every space renders the same way — header + tab
-                            // rows — whether it holds one tab or many.
-                            if collapsed || !visibleTabs.isEmpty {
-                                Section {
-                                    ForEach(visibleTabs) { tab in
-                                        AgentRow(
-                                            model: model,
-                                            tab: tab,
-                                            label: snapshot.displayLabel(for: tab),
-                                            selected: model.selectedTabID == tab.tabID,
-                                            onSelect: { model.select(tab: tab) },
-                                            onPaneDragHover: {
-                                                model.previewTabDuringPaneDrag(tab)
-                                            },
-                                            onBroadcast: { broadcastPresented = true }
-                                        )
-                                    }
-                                } header: {
-                                    WorkspaceHeader(
-                                        model: model,
-                                        workspace: workspace,
-                                        focusedInHerdr: focused,
-                                        collapsed: collapsed,
-                                        hiddenCount: allTabs.count - visibleTabs.count,
-                                        onToggleCollapse: {
-                                            model.toggleWorkspaceCollapsed(workspace.workspaceID)
-                                        }
-                                    )
-                                }
-                            }
-                        }
+                        )
+                        .frame(height: panel.total)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 16)
-                }
-                .scrollIndicators(.hidden)
-                // Right-click on empty sidebar space: the create actions.
-                .contextMenu {
-                    Button("New Tab") { model.newTab() }
-                    Button("New Space") { model.newWorkspace() }
                 }
             } else {
                 Spacer()
@@ -87,6 +49,7 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
+        .modifier(SidebarPresentations(model: model))
         // A little top breathing room, then fill up to the window top (under the
         // transparent title bar); the header's leading padding reserves room for
         // the traffic lights.
@@ -101,36 +64,81 @@ struct SidebarView: View {
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.topHighlight).frame(height: 1).ignoresSafeArea()
         }
-        .sheet(item: $model.renameRequest) { request in
-            RenameSheet(model: model, request: request)
-        }
-        .sheet(item: $model.statusExplanation) { _ in
-            StatusExplanationSheet(model: model)
-        }
-        .sheet(item: $model.worktreeCreateRequest) { request in
-            NewWorktreeSheet(model: model, request: request)
-        }
-        .sheet(item: $model.worktreeOpenRequest) { _ in
-            OpenWorktreeSheet(model: model)
-        }
-        .sheet(item: $model.newSessionRequest) { _ in
-            NewSessionSheet(model: model)
-        }
-        .sheet(item: $model.remoteHerdRequest) { _ in
-            RemoteHerdSheet(model: model)
-        }
-        .alert(item: $model.workspacePendingClose) { workspace in
-            Alert(
-                title: Text("Close “\(workspace.label)”?"),
-                message: Text(
-                    "This space contains \(workspace.tabCount) agents. "
-                        + "Closing it will end every tab in the space."
-                ),
-                primaryButton: .destructive(Text("Close Space")) {
-                    model.confirmCloseWorkspace()
-                },
-                secondaryButton: .cancel()
-            )
+    }
+
+    /// Collapsed, the panel is just its header; expanded, it takes the share of
+    /// the sidebar the divider was dragged to.
+    private func agentPanelHeights(in height: CGFloat) -> (total: CGFloat, list: CGFloat) {
+        let header = AgentPanelSection.headerHeight
+        guard !model.agentPanelCollapsed else { return (header, 0) }
+        let list = max(
+            AgentPanelSection.minimumListHeight,
+            (height * (1 - model.sidebarSplit)) - header
+        )
+        return (min(height, list + header), list)
+    }
+
+    @ViewBuilder
+    private var spacesList: some View {
+        if let snapshot = model.snapshot {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                    ForEach(snapshot.workspaces) { workspace in
+                        let allTabs = tabs(in: snapshot, of: workspace)
+                        // A collapsed space hides everything but its
+                        // attention-needing tabs (and the selected one) —
+                        // same predicate as the global "only needs you".
+                        let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
+                        let visibleTabs = allTabs.filter {
+                            AttentionFilter.includes(
+                                status: $0.agentStatus,
+                                id: $0.tabID,
+                                selectedID: model.selectedTabID,
+                                onlyNeedsYou: model.onlyNeedsYou || collapsed
+                            )
+                        }
+                        let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
+                        // Every space renders the same way — header + tab
+                        // rows — whether it holds one tab or many.
+                        if collapsed || !visibleTabs.isEmpty {
+                            Section {
+                                ForEach(visibleTabs) { tab in
+                                    AgentRow(
+                                        model: model,
+                                        tab: tab,
+                                        label: snapshot.displayLabel(for: tab),
+                                        selected: model.selectedTabID == tab.tabID,
+                                        onSelect: { model.select(tab: tab) },
+                                        onPaneDragHover: {
+                                            model.previewTabDuringPaneDrag(tab)
+                                        },
+                                        onBroadcast: { broadcastPresented = true }
+                                    )
+                                }
+                            } header: {
+                                WorkspaceHeader(
+                                    model: model,
+                                    workspace: workspace,
+                                    focusedInHerdr: focused,
+                                    collapsed: collapsed,
+                                    hiddenCount: allTabs.count - visibleTabs.count,
+                                    onToggleCollapse: {
+                                        model.toggleWorkspaceCollapsed(workspace.workspaceID)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 16)
+            }
+            .scrollIndicators(.hidden)
+            // Right-click on empty sidebar space: the create actions.
+            .contextMenu {
+                Button("New Tab") { model.newTab() }
+                Button("New Space") { model.newWorkspace() }
+            }
         }
     }
 
@@ -138,6 +146,49 @@ struct SidebarView: View {
     // the array, not the `number` field) — preserve it, don't re-sort by number.
     private func tabs(in snapshot: SessionSnapshot, of workspace: Workspace) -> [HerdrTab] {
         snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
+    }
+
+    /// Every sheet and alert the sidebar owns, lifted off the body so the split
+    /// layout above stays readable.
+    private struct SidebarPresentations: ViewModifier {
+        @ObservedObject var model: RaiModel
+
+        func body(content: Content) -> some View {
+            // The broadcast sheet stays on the header — it is presented from
+            // there, and two bindings on one flag fight each other.
+            content
+                .sheet(item: $model.renameRequest) { request in
+                    RenameSheet(model: model, request: request)
+                }
+                .sheet(item: $model.statusExplanation) { _ in
+                    StatusExplanationSheet(model: model)
+                }
+                .sheet(item: $model.worktreeCreateRequest) { request in
+                    NewWorktreeSheet(model: model, request: request)
+                }
+                .sheet(item: $model.worktreeOpenRequest) { _ in
+                    OpenWorktreeSheet(model: model)
+                }
+                .sheet(item: $model.newSessionRequest) { _ in
+                    NewSessionSheet(model: model)
+                }
+                .sheet(item: $model.remoteHerdRequest) { _ in
+                    RemoteHerdSheet(model: model)
+                }
+                .alert(item: $model.workspacePendingClose) { workspace in
+                    Alert(
+                        title: Text("Close “\(workspace.label)”?"),
+                        message: Text(
+                            "This space contains \(workspace.tabCount) agents. "
+                                + "Closing it will end every tab in the space."
+                        ),
+                        primaryButton: .destructive(Text("Close Space")) {
+                            model.confirmCloseWorkspace()
+                        },
+                        secondaryButton: .cancel()
+                    )
+                }
+        }
     }
 
     private var header: some View {
@@ -1505,6 +1556,205 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             )
         }
         return true
+    }
+}
+
+/// The sidebar's agents panel: every agent pane in the herd, flat, ordered by
+/// who needs you (or by herd order). Mirrors herdr's own agents section.
+private struct AgentPanelSection: View {
+    @ObservedObject var model: RaiModel
+    let listHeight: CGFloat
+    let onDrag: (CGFloat) -> Void
+
+    static let headerHeight: CGFloat = 30
+    static let minimumListHeight: CGFloat = 44
+
+    @State private var dividerHovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            divider
+            header
+            if !model.agentPanelCollapsed {
+                list.frame(height: listHeight)
+            }
+        }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(dividerHovering ? Theme.accent.opacity(0.5) : Theme.hairline)
+            .frame(height: 1)
+            // A 1pt line is not a hit target — pad the grab area without moving
+            // anything, so the divider stays visually hairline-thin.
+            .overlay {
+                Rectangle()
+                    .fill(.clear)
+                    .frame(height: 9)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        dividerHovering = hovering && !model.agentPanelCollapsed
+                        guard !model.agentPanelCollapsed else { return }
+                        if hovering {
+                            NSCursor.resizeUpDown.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(coordinateSpace: .global)
+                            .onChanged { value in
+                                guard !model.agentPanelCollapsed else { return }
+                                onDrag(value.translation.height - lastDrag)
+                                lastDrag = value.translation.height
+                            }
+                            .onEnded { _ in lastDrag = 0 }
+                    )
+            }
+            .allowsHitTesting(!model.agentPanelCollapsed)
+    }
+
+    // DragGesture reports a cumulative translation; the split moves by the
+    // delta since the last callback.
+    @State private var lastDrag: CGFloat = 0
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Theme.textTertiary)
+                .rotationEffect(.degrees(model.agentPanelCollapsed ? 0 : 90))
+                .frame(width: 12, height: 12)
+            Text("AGENTS")
+                .font(.system(size: 10.5, weight: .bold))
+                .tracking(1.1)
+                .foregroundStyle(Theme.textSecondary)
+            if model.agentPanelCollapsed, !model.agentPanelEntries.isEmpty {
+                Text("\(model.agentPanelEntries.count)")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            Spacer(minLength: 4)
+            Button(action: model.toggleAgentPanelSort) {
+                Text(model.agentPanelSort.label)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Theme.interactionWash(opacity: 0.05))
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(
+                model.agentPanelSort == .priority
+                    ? "Sorted by who needs you — click for herd order"
+                    : "Sorted in herd order — click for who needs you"
+            )
+        }
+        .padding(.horizontal, 11)
+        .frame(height: Self.headerHeight)
+        .contentShape(Rectangle())
+        // The header itself expands and collapses the panel; the sort button
+        // above claims its own taps first.
+        .onTapGesture { model.toggleAgentPanelCollapsed() }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Agents")
+    }
+
+    @ViewBuilder
+    private var list: some View {
+        let entries = model.agentPanelEntries
+        if entries.isEmpty {
+            Text("No agents in this herd.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.horizontal, 12)
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(entries) { entry in
+                        AgentPanelRow(
+                            model: model,
+                            entry: entry,
+                            selected: model.selectedPaneID == entry.paneID
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 10)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+}
+
+private struct AgentPanelRow: View {
+    @ObservedObject var model: RaiModel
+    let entry: AgentPanelEntry
+    let selected: Bool
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            StatusDot(status: entry.status)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(entry.workspaceLabel)
+                        .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                    if let tabLabel = entry.tabLabel {
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+                        Text(tabLabel)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                if let agentLabel = entry.agentLabel {
+                    Text(agentLabel)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Theme.status(entry.status))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+        }
+        .modifier(SidebarRowChrome(selected: selected, hovering: hovering))
+        .onTapGesture { select() }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { select() }
+        .onHover { hovering = $0 }
+        .help(helpText)
+        .contextMenu {
+            Button("Focus", action: select)
+            Button("Close Pane", role: .destructive) {
+                model.closePane(entry.paneID)
+            }
+        }
+    }
+
+    private var helpText: String {
+        var parts = [entry.workspaceLabel]
+        if let tabLabel = entry.tabLabel { parts.append(tabLabel) }
+        if let agentLabel = entry.agentLabel { parts.append(agentLabel) }
+        return parts.joined(separator: " · ") + " — " + Theme.statusLabel(entry.status)
+    }
+
+    private func select() {
+        model.select(paneID: entry.paneID, focusInHerdr: true)
     }
 }
 
