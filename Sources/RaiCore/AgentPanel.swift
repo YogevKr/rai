@@ -82,7 +82,20 @@ public enum AgentPanel {
     private static func herdOrderEntries(
         in snapshot: SessionSnapshot
     ) -> [AgentPanelEntry] {
-        snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
+        // The panel lists agents, not panes. herdr's own TUI walks every pane
+        // here, but a section labelled "agents" that lists plain shells is
+        // noise — a herd's shells belong to the spaces list above.
+        //
+        // `snapshot.agents` is the server's own answer to "what is an agent",
+        // so it decides membership when present and enriches the row it matches
+        // (a renamed or custom-labelled agent). Older servers omit the array;
+        // there, a pane's own detected agent is the test.
+        let agentsByPane = Dictionary(
+            (snapshot.agents ?? []).map { ($0.paneID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let hasAgentProjection = snapshot.agents != nil
+        return snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
             let tabs = snapshot.tabs.filter {
                 $0.workspaceID == workspace.workspaceID
             }
@@ -93,15 +106,26 @@ public enum AgentPanel {
                     : nil
                 return snapshot.panes
                     .filter { $0.tabID == tab.tabID }
+                    .filter { pane in
+                        hasAgentProjection
+                            ? agentsByPane[pane.paneID] != nil
+                            : trimmedAgent(pane.agent) != nil
+                    }
                     .map { pane in
-                        AgentPanelEntry(
+                        let agent = agentsByPane[pane.paneID]
+                        return AgentPanelEntry(
                             paneID: pane.paneID,
                             tabID: tab.tabID,
                             workspaceID: workspace.workspaceID,
                             workspaceLabel: snapshot.workspaceLabel(for: pane),
                             tabLabel: label,
-                            agentLabel: trimmedAgent(of: pane),
-                            status: pane.agentStatus
+                            // A renamed agent (`agent.rename`) or a config'd
+                            // custom label beats the raw detection name.
+                            agentLabel: trimmedAgent(agent?.name)
+                                ?? trimmedAgent(agent?.displayAgent)
+                                ?? trimmedAgent(agent?.agent)
+                                ?? trimmedAgent(pane.agent),
+                            status: agent?.agentStatus ?? pane.agentStatus
                         )
                     }
             }
@@ -115,8 +139,31 @@ public enum AgentPanel {
         return !label.isEmpty && Int(label) == nil
     }
 
-    private static func trimmedAgent(of pane: Pane) -> String? {
-        guard let agent = pane.agent?
+    private static func displayLabel(
+        for tab: HerdrTab,
+        agent: HerdrAgent
+    ) -> String {
+        let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty, Int(label) == nil { return label }
+        if let title = agent.terminalTitleStripped?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !title.isEmpty {
+            return title
+        }
+        return trimmedAgent(agent.agent) ?? (label.isEmpty ? "shell" : label)
+    }
+
+    private static func workspaceLabel(
+        _ workspace: Workspace?,
+        fallback: String
+    ) -> String {
+        guard let workspace else { return fallback }
+        let label = workspace.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? "Space \(workspace.number)" : label
+    }
+
+    private static func trimmedAgent(_ value: String?) -> String? {
+        guard let agent = value?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !agent.isEmpty else {
             return nil

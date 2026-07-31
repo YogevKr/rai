@@ -33,12 +33,16 @@ public struct Workspace: Codable, Identifiable, Sendable, Equatable {
 }
 
 public struct WorkspaceWorktree: Codable, Sendable, Equatable {
+    public let repoKey: String?
     public let repoName: String
+    public let repoRoot: String?
     public let checkoutPath: String
     public let isLinkedWorktree: Bool
 
     enum CodingKeys: String, CodingKey {
+        case repoKey = "repo_key"
         case repoName = "repo_name"
+        case repoRoot = "repo_root"
         case checkoutPath = "checkout_path"
         case isLinkedWorktree = "is_linked_worktree"
     }
@@ -84,6 +88,214 @@ public struct PaneScroll: Codable, Sendable, Equatable {
     }
 }
 
+public struct AgentResumePlan: Sendable, Equatable {
+    public let resumeArgv: [String]
+    public let fallbackArgv: [String]
+}
+
+public struct AgentSession: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        case id
+        case path
+    }
+
+    public let agent: String
+    public let kind: Kind
+    public let source: String
+    public let value: String
+
+    /// Herdr accepts exact resume ids only from its official agent reporters.
+    /// Keep the same trust boundary before putting a wire value into a shell.
+    public func exactResumePlan(argv: [String]?) -> AgentResumePlan? {
+        guard kind == .id,
+              source == "herdr:\(agent)",
+              ["claude", "codex"].contains(agent),
+              !value.isEmpty,
+              value.utf8.count <= 512,
+              !value.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              })
+        else {
+            return nil
+        }
+        var tokens = argv ?? []
+        if tokens.isEmpty || (tokens[0] as NSString).lastPathComponent != agent {
+            tokens = [agent]
+        } else {
+            tokens[0] = agent
+        }
+        switch agent {
+        case "claude":
+            let fresh = [agent] + Self.claudeLaunchOptions(tokens.dropFirst())
+            return AgentResumePlan(
+                resumeArgv: fresh + ["--resume", value],
+                fallbackArgv: fresh
+            )
+        case "codex":
+            if let resumeIndex = tokens.firstIndex(of: "resume") {
+                let prefix = Self.codexLaunchOptions(
+                    tokens[tokens.index(after: tokens.startIndex)..<resumeIndex]
+                )
+                let suffix = Self.codexLaunchOptions(
+                    tokens[tokens.index(after: resumeIndex)...],
+                    dropping: ["--last", "--all", "--include-non-interactive"]
+                )
+                let fresh = [agent] + prefix + suffix
+                return AgentResumePlan(
+                    resumeArgv: [agent] + prefix + ["resume", value] + suffix,
+                    fallbackArgv: fresh
+                )
+            }
+            let fresh = [agent] + Self.codexLaunchOptions(tokens.dropFirst())
+            return AgentResumePlan(
+                resumeArgv: fresh + ["resume", value],
+                fallbackArgv: fresh
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func claudeLaunchOptions(
+        _ tokens: ArraySlice<String>
+    ) -> [String] {
+        let values: Set<String> = [
+            "--agent", "--agents",
+            "--append-system-prompt",
+            "--debug-file",
+            "--effort",
+            "--fallback-model",
+            "--input-format",
+            "--json-schema",
+            "--max-budget-usd",
+            "--model",
+            "-n", "--name",
+            "--output-format",
+            "--permission-mode",
+            "--plugin-dir", "--plugin-url",
+            "--remote-control-session-name-prefix",
+            "--setting-sources", "--settings",
+            "--system-prompt",
+        ]
+        let optionalValues: Set<String> = [
+            "-d", "--debug",
+            "--from-pr",
+            "--prompt-suggestions",
+            "--remote-control",
+            "-w", "--worktree",
+        ]
+        let variadicValues: Set<String> = [
+            "--add-dir",
+            "--allowedTools", "--allowed-tools",
+            "--betas",
+            "--disallowedTools", "--disallowed-tools",
+            "--file",
+            "--mcp-config",
+            "--tools",
+        ]
+        var filtered: [String] = []
+        var index = tokens.startIndex
+        while index < tokens.endIndex {
+            let token = tokens[index]
+            if token == "--" {
+                break
+            } else if token == "--session-id" {
+                index += min(2, tokens.distance(from: index, to: tokens.endIndex))
+            } else if token.hasPrefix("--session-id=")
+                || token == "--fork-session" {
+                index += 1
+            } else if ["-c", "--continue", "-r", "--resume"].contains(token) {
+                index += 1
+                if ["-r", "--resume"].contains(token),
+                   index < tokens.endIndex,
+                   !tokens[index].hasPrefix("-") {
+                    index += 1
+                }
+            } else if token.hasPrefix("--resume=")
+                || token.hasPrefix("-r=")
+                || token.hasPrefix("-r") && token != "-r" {
+                index += 1
+            } else if values.contains(token) {
+                filtered.append(token)
+                index += 1
+                if index < tokens.endIndex {
+                    filtered.append(tokens[index])
+                    index += 1
+                }
+            } else if optionalValues.contains(token) {
+                filtered.append(token)
+                index += 1
+                if index < tokens.endIndex, !tokens[index].hasPrefix("-") {
+                    filtered.append(tokens[index])
+                    index += 1
+                }
+            } else if variadicValues.contains(token) {
+                filtered.append(token)
+                index += 1
+                while index < tokens.endIndex, !tokens[index].hasPrefix("-") {
+                    filtered.append(tokens[index])
+                    index += 1
+                }
+            } else if token.hasPrefix("-") {
+                filtered.append(token)
+                index += 1
+            } else {
+                index += 1
+            }
+        }
+        return filtered
+    }
+
+    private static func codexLaunchOptions(
+        _ tokens: ArraySlice<String>,
+        dropping dropped: Set<String> = []
+    ) -> [String] {
+        let values: Set<String> = [
+            "-c", "--config",
+            "--enable", "--disable",
+            "--remote", "--remote-auth-token-env",
+            "-m", "--model",
+            "--local-provider",
+            "-p", "--profile",
+            "-s", "--sandbox",
+            "-C", "--cd",
+            "--add-dir",
+            "-a", "--ask-for-approval",
+        ]
+        let variadicValues: Set<String> = ["-i", "--image"]
+        var filtered: [String] = []
+        var index = tokens.startIndex
+        while index < tokens.endIndex {
+            let token = tokens[index]
+            if token == "--" {
+                break
+            } else if dropped.contains(token) {
+                index += 1
+            } else if values.contains(token) {
+                filtered.append(token)
+                index += 1
+                if index < tokens.endIndex {
+                    filtered.append(tokens[index])
+                    index += 1
+                }
+            } else if variadicValues.contains(token) {
+                filtered.append(token)
+                index += 1
+                while index < tokens.endIndex, !tokens[index].hasPrefix("-") {
+                    filtered.append(tokens[index])
+                    index += 1
+                }
+            } else if token.hasPrefix("-") {
+                filtered.append(token)
+                index += 1
+            } else {
+                index += 1
+            }
+        }
+        return filtered
+    }
+}
+
 public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let paneID: String
     public let terminalID: String
@@ -93,6 +305,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let cwd: String
     public let foregroundCWD: String?
     public let agent: String?
+    public let agentSession: AgentSession?
     public let terminalTitle: String?
     public let terminalTitleStripped: String?
     public let agentStatus: AgentStatus
@@ -107,10 +320,47 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
         case workspaceID = "workspace_id"
         case tabID = "tab_id"
         case focused, cwd, agent, revision, scroll
+        case agentSession = "agent_session"
         case foregroundCWD = "foreground_cwd"
         case terminalTitle = "terminal_title"
         case terminalTitleStripped = "terminal_title_stripped"
         case agentStatus = "agent_status"
+    }
+}
+
+public struct HerdrAgent: Codable, Identifiable, Sendable, Equatable {
+    public let terminalID: String
+    public let name: String?
+    public let agent: String?
+    public let title: String?
+    public let terminalTitle: String?
+    public let terminalTitleStripped: String?
+    public let displayAgent: String?
+    public let agentStatus: AgentStatus
+    public let agentSession: AgentSession?
+    public let workspaceID: String
+    public let tabID: String
+    public let paneID: String
+    public let focused: Bool
+    public let cwd: String?
+    public let foregroundCWD: String?
+    public let revision: UInt64
+
+    public var id: String { paneID }
+
+    enum CodingKeys: String, CodingKey {
+        case terminalID = "terminal_id"
+        case name, agent, title
+        case terminalTitle = "terminal_title"
+        case terminalTitleStripped = "terminal_title_stripped"
+        case displayAgent = "display_agent"
+        case agentStatus = "agent_status"
+        case agentSession = "agent_session"
+        case workspaceID = "workspace_id"
+        case tabID = "tab_id"
+        case paneID = "pane_id"
+        case focused, cwd, revision
+        case foregroundCWD = "foreground_cwd"
     }
 }
 
@@ -123,10 +373,11 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
     public let workspaces: [Workspace]
     public let tabs: [HerdrTab]
     public let panes: [Pane]
+    public let agents: [HerdrAgent]?
     public let layouts: [PaneLayoutSnapshot]
 
     enum CodingKeys: String, CodingKey {
-        case version, `protocol`, workspaces, tabs, panes, layouts
+        case version, `protocol`, workspaces, tabs, panes, agents, layouts
         case focusedWorkspaceID = "focused_workspace_id"
         case focusedTabID = "focused_tab_id"
         case focusedPaneID = "focused_pane_id"

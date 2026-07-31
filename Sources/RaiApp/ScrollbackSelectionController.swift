@@ -30,6 +30,12 @@ final class ScrollbackSelectionController {
     var paneID: String? {
         didSet {
             guard paneID != oldValue else { return }
+            viewportRestoreGeneration = UUID()
+            viewportRestoreTask?.cancel()
+            viewportRestoreTask = nil
+            editorTask?.cancel()
+            editorTask = nil
+            cancelCopyMode()
             stopScrollEventStream()
             lastScroll = nil
             if paneID != nil { startScrollEventStream() }
@@ -39,6 +45,8 @@ final class ScrollbackSelectionController {
     /// Pushed on every pane.scroll_changed event (offsetFromBottom == 0 means
     /// the pane follows the live tail). Drives the pane's "back to live" pill.
     var onScrollOffsetChanged: ((PaneScroll) -> Void)?
+    var onCopyModeStatusChanged: ((String?) -> Void)?
+    var onNotice: ((String) -> Void)?
 
     private static let wheelUp = "\u{1b}[<64;1;1M"
     private static let wheelDown = "\u{1b}[<65;1;1M"
@@ -71,10 +79,21 @@ final class ScrollbackSelectionController {
     private var wheelReconcileTask: Task<Void, Never>?
     private var scrollEventTask: Task<Void, Never>?
     private var returnToLiveTask: Task<Void, Never>?
+    private var copyModeState: CopyModeState?
+    private var copyModeStarting = false
+    private var copyModeTask: Task<Void, Never>?
+    private var copyModeGeneration = UUID()
+    private var copyModeEntryScroll: PaneScroll?
+    private var editorTask: Task<Void, Never>?
+    private var viewportRestoreTask: Task<Void, Never>?
+    private var viewportRestoreGeneration = UUID()
 
     // MARK: gesture lifecycle
 
     func mouseDown() {
+        if isCopyModeActive {
+            exitCopyMode()
+        }
         stopTimer()
         wheelReconcileTask?.cancel()
         engaged = false
@@ -258,6 +277,620 @@ final class ScrollbackSelectionController {
         stopTimer()
         model.reset()
         engaged = false
+    }
+
+    // MARK: keyboard copy mode
+
+    var isCopyModeActive: Bool { copyModeStarting || copyModeState != nil }
+
+    func enterCopyMode() {
+        guard !isCopyModeActive, let paneID, let view else { return }
+        clearSticky()
+        view.selectNone()
+        model.reset()
+        copyModeStarting = true
+        copyModeGeneration = UUID()
+        let generation = copyModeGeneration
+        let pendingRestore = viewportRestoreTask
+        onCopyModeStatusChanged?("COPY MODE  Loading…  Esc exits")
+
+        copyModeTask = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            do {
+                await pendingRestore?.value
+                guard !Task.isCancelled, generation == self.copyModeGeneration else {
+                    return
+                }
+                guard let scroll = try await self.paneScroll(paneID) else {
+                    throw CopyModeControllerError.missingScrollMetrics
+                }
+                let read = try await self.client.readPane(
+                    paneID: paneID,
+                    source: "recent",
+                    lines: 1000,
+                    format: "ansi",
+                    stripANSI: true
+                )
+                let visible = try await self.client.readPane(
+                    paneID: paneID,
+                    format: "ansi",
+                    stripANSI: true
+                )
+                guard generation == self.copyModeGeneration else { return }
+
+                let totalRows = max(1, scroll.maxOffsetFromBottom + scroll.viewportRows)
+                let readRows = Self.textRowCount(read.text, limit: totalRows)
+                self.model.ingest(
+                    pageText: read.text,
+                    startingAt: max(0, totalRows - readRows),
+                    maximumRows: readRows
+                )
+                self.model.ingest(pageText: visible.text, scroll: scroll)
+                let dimensions = view.getTerminal().getDims()
+                let terminalCursor = view.getTerminal().getCursorLocation()
+                let cursor = ScrollbackSelectionModel.Point(
+                    row: ScrollbackSelectionModel.absoluteTop(of: scroll)
+                        + min(max(terminalCursor.y, 0), scroll.viewportRows - 1),
+                    col: min(max(terminalCursor.x, 0), max(0, dimensions.cols - 1))
+                )
+                self.copyModeEntryScroll = scroll
+                self.lastScroll = scroll
+                self.copyModeState = CopyModeState(
+                    cursor: cursor,
+                    rowBounds: 0...(totalRows - 1),
+                    columns: dimensions.cols,
+                    viewportRows: scroll.viewportRows
+                )
+                self.copyModeStarting = false
+                self.copyModeTask = nil
+                self.updateCopyModePresentation()
+            } catch {
+                guard generation == self.copyModeGeneration else { return }
+                self.cancelCopyMode()
+                self.onNotice?("Copy mode could not read this pane")
+            }
+        }
+    }
+
+    /// Returns true whenever copy mode owns the key, including its loading phase.
+    func handleCopyModeKey(_ key: CopyModeKey) -> Bool {
+        guard isCopyModeActive else { return false }
+        if copyModeStarting {
+            if key == .escape { cancelCopyMode() }
+            return true
+        }
+        guard var state = copyModeState else { return true }
+        if key == .escape {
+            copyModeTask?.cancel()
+        }
+        let beforeCursor = state.cursor
+        let effect = state.reduce(key, lines: model.lines)
+        copyModeState = state
+        syncCopyModeSelection()
+        updateCopyModePresentation()
+
+        switch effect {
+        case .none:
+            if state.cursor != beforeCursor {
+                revealCopyModeCursor()
+            }
+        case .exit:
+            exitCopyMode()
+        case .yank:
+            yankCopyModeSelection()
+        case .search(let query, let direction, let repeatSearch):
+            runCopyModeSearch(
+                query: query,
+                direction: direction,
+                repeatSearch: repeatSearch
+            )
+        }
+        return true
+    }
+
+    func cancelCopyMode() {
+        copyModeGeneration = UUID()
+        copyModeTask?.cancel()
+        copyModeTask = nil
+        copyModeStarting = false
+        copyModeState = nil
+        copyModeEntryScroll = nil
+        onCopyModeStatusChanged?(nil)
+        if view?.selectionActive == true {
+            view?.selectNone()
+        }
+    }
+
+    private func exitCopyMode() {
+        let entryOffset = copyModeEntryScroll?.offsetFromBottom
+        let paneID = self.paneID
+        let pendingCopyTask = copyModeTask
+        cancelCopyMode()
+        model.reset()
+        guard let entryOffset, let paneID else { return }
+        viewportRestoreTask?.cancel()
+        viewportRestoreGeneration = UUID()
+        let generation = viewportRestoreGeneration
+        viewportRestoreTask = Task { [weak self] in
+            guard let self else { return }
+            await pendingCopyTask?.value
+            _ = await self.scrollPane(paneID, toOffset: entryOffset)
+            if generation == self.viewportRestoreGeneration {
+                self.viewportRestoreTask = nil
+            }
+        }
+    }
+
+    private func yankCopyModeSelection() {
+        guard let state = copyModeState, let anchor = state.anchor else {
+            exitCopyMode()
+            return
+        }
+        let rows = min(anchor.row, state.cursor.row)...max(anchor.row, state.cursor.row)
+        if model.containsAllRows(in: rows) {
+            finishCopyModeYank()
+            return
+        }
+        onCopyModeStatusChanged?("COPY MODE  Reading selection…  Esc exits")
+        let generation = copyModeGeneration
+        copyModeTask?.cancel()
+        copyModeTask = Task { [weak self] in
+            guard let self else { return }
+            let complete = await self.loadFullBuffer()
+            guard !Task.isCancelled, generation == self.copyModeGeneration else { return }
+            self.syncCopyModeSelection()
+            guard complete, self.model.containsAllRows(in: rows) else {
+                self.onNotice?("The full selection is not available through this pane")
+                self.updateCopyModePresentation()
+                return
+            }
+            self.finishCopyModeYank()
+        }
+    }
+
+    private func finishCopyModeYank() {
+        guard let text = model.assembledText(), !text.isEmpty else {
+            exitCopyMode()
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        onNotice?("Copied to clipboard")
+        exitCopyMode()
+    }
+
+    private func runCopyModeSearch(
+        query: String,
+        direction: CopyModeSearchDirection,
+        repeatSearch: Bool
+    ) {
+        let generation = copyModeGeneration
+        onCopyModeStatusChanged?("COPY MODE  Searching…  Esc exits")
+        copyModeTask?.cancel()
+        copyModeTask = Task { [weak self] in
+            guard let self else { return }
+            let complete = await self.loadFullBuffer()
+            guard !Task.isCancelled,
+                  generation == self.copyModeGeneration,
+                  var state = self.copyModeState else {
+                return
+            }
+            let matches = CopyModeState.matches(query: query, in: self.model.lines)
+            state.applySearch(
+                query: query,
+                direction: direction,
+                matches: matches,
+                isComplete: complete,
+                repeatSearch: repeatSearch
+            )
+            self.copyModeState = state
+            self.syncCopyModeSelection()
+            self.updateCopyModePresentation()
+            self.revealCopyModeCursor()
+        }
+    }
+
+    private func revealCopyModeCursor() {
+        copyModeTask?.cancel()
+        let generation = copyModeGeneration
+        copyModeTask = Task { [weak self] in
+            guard let self, let paneID = self.paneID else { return }
+            var stalls = 0
+            for _ in 0..<500 {
+                guard generation == self.copyModeGeneration,
+                      let state = self.copyModeState,
+                      let scroll = try? await self.paneScroll(paneID) else {
+                    return
+                }
+                let top = ScrollbackSelectionModel.absoluteTop(of: scroll)
+                let bottom = top + scroll.viewportRows - 1
+                if state.cursor.row >= top, state.cursor.row <= bottom {
+                    if let page = try? await self.client.readPane(
+                        paneID: paneID,
+                        format: "ansi",
+                        stripANSI: true
+                    ) {
+                        self.model.ingest(pageText: page.text, scroll: scroll)
+                    }
+                    self.lastScroll = scroll
+                    self.syncCopyModeSelection()
+                    self.updateCopyModePresentation()
+                    return
+                }
+
+                let direction: EdgeDirection = state.cursor.row < top ? .up : .down
+                let distance = direction == .up
+                    ? top - state.cursor.row
+                    : state.cursor.row - bottom
+                let maxBatch = state.anchor == nil
+                    ? 50
+                    : max(1, (scroll.viewportRows - 1) / 3)
+                let events = min(maxBatch, max(1, (distance + 2) / 3))
+                self.inject(String(
+                    repeating: direction == .up ? Self.wheelUp : Self.wheelDown,
+                    count: events
+                ))
+                try? await Task.sleep(nanoseconds: 65_000_000)
+                guard !Task.isCancelled, generation == self.copyModeGeneration else {
+                    return
+                }
+                guard let after = try? await self.paneScroll(paneID) else { return }
+                if after.offsetFromBottom == scroll.offsetFromBottom {
+                    stalls += 1
+                    if stalls >= 2 {
+                        self.onNotice?("This pane owns scrolling; older rows are unavailable")
+                        return
+                    }
+                } else {
+                    stalls = 0
+                    if let page = try? await self.client.readPane(
+                        paneID: paneID,
+                        format: "ansi",
+                        stripANSI: true
+                    ) {
+                        self.model.ingest(pageText: page.text, scroll: after)
+                    }
+                    self.lastScroll = after
+                    self.syncCopyModeSelection()
+                }
+            }
+        }
+    }
+
+    private func syncCopyModeSelection() {
+        guard let state = copyModeState else { return }
+        if let anchor = state.anchor {
+            model.begin(anchor: anchor)
+            model.extendHead(to: state.cursor)
+        } else {
+            model.resetSelection()
+        }
+        guard let view, let scroll = lastScroll else { return }
+        if let highlight = model.visibleHighlight(scroll: scroll) {
+            view.setSelectionRange(
+                start: Position(col: highlight.startCol, row: highlight.startRow),
+                end: Position(col: highlight.endCol, row: highlight.endRow)
+            )
+            return
+        }
+        let visibleRow = state.cursor.row - ScrollbackSelectionModel.absoluteTop(of: scroll)
+        if visibleRow >= 0, visibleRow < scroll.viewportRows {
+            view.setSelectionRange(
+                start: Position(col: state.cursor.col, row: visibleRow),
+                end: Position(col: state.cursor.col, row: visibleRow)
+            )
+        } else if view.selectionActive {
+            view.selectNone()
+        }
+    }
+
+    private func updateCopyModePresentation() {
+        guard let state = copyModeState else {
+            if !copyModeStarting { onCopyModeStatusChanged?(nil) }
+            return
+        }
+        let location = "\(state.cursor.row + 1):\(state.cursor.col + 1)"
+        let status: String
+        switch state.mode {
+        case .navigation:
+            if let result = state.searchResult {
+                let current = result.currentIndex.map { String($0 + 1) } ?? "0"
+                let suffix = result.isComplete ? "" : "+"
+                status = "COPY MODE  \(current)/\(result.matches.count)\(suffix) matches"
+                    + "  n/N next  v select  Esc clears"
+            } else {
+                status = "COPY MODE  \(location)  h/j/k/l move  v select"
+                    + "  / search  Esc exits"
+            }
+        case .visual:
+            status = "COPY MODE — VISUAL  \(location)  y/Enter copies"
+                + "  Esc cancels  Esc again exits"
+        case .search(let prompt):
+            let marker = prompt.direction == .forward ? "/" : "?"
+            status = "COPY MODE  \(marker)\(prompt.query)▏  Enter searches  Esc cancels"
+        }
+        onCopyModeStatusChanged?(status)
+    }
+
+    // MARK: scrollback editor
+
+    func openScrollbackInEditor() {
+        let copyModeRestoreOffset = isCopyModeActive
+            ? copyModeEntryScroll?.offsetFromBottom
+            : nil
+        let pendingCopyTask = copyModeTask
+        if isCopyModeActive {
+            cancelCopyMode()
+            model.reset()
+        }
+        guard editorTask == nil, let sourcePaneID = paneID else { return }
+        let pendingRestore = viewportRestoreTask
+        onNotice?("Reading scrollback…")
+        editorTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.editorTask = nil }
+            await pendingCopyTask?.value
+            await pendingRestore?.value
+            if let copyModeRestoreOffset {
+                guard await self.scrollPane(
+                    sourcePaneID,
+                    toOffset: copyModeRestoreOffset
+                ) else {
+                    self.onNotice?("The pane viewport could not be restored")
+                    return
+                }
+            }
+            let complete = await self.loadFullBuffer()
+            guard !Task.isCancelled,
+                  self.paneID == sourcePaneID,
+                  complete,
+                  let state = try? await self.paneScroll(sourcePaneID),
+                  let text = self.model.assembledBufferText(
+                      rowCount: state.maxOffsetFromBottom + state.viewportRows
+                  ) else {
+                if !Task.isCancelled, self.paneID == sourcePaneID {
+                    self.onNotice?("The full scrollback is not available through this pane")
+                }
+                return
+            }
+            do {
+                let file = try Self.writeScrollbackFile(text)
+                try Self.launchEditor(for: file)
+                self.onNotice?("Opened scrollback")
+            } catch {
+                self.onNotice?("Could not open scrollback: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Loads every retained row. The API caps recent reads at 1,000 rows, so
+    /// deeper buffers are paged through the same host-scroll path as selection.
+    private func loadFullBuffer() async -> Bool {
+        guard let paneID, let initial = try? await paneScroll(paneID) else { return false }
+        let totalRows = max(1, initial.maxOffsetFromBottom + initial.viewportRows)
+        guard let recent = try? await client.readPane(
+            paneID: paneID,
+            source: "recent",
+            lines: 1000,
+            format: "ansi",
+            stripANSI: true
+        ) else { return false }
+
+        model.reset()
+        let recentRows = Self.textRowCount(recent.text, limit: totalRows)
+        model.ingest(
+            pageText: recent.text,
+            startingAt: max(0, totalRows - recentRows),
+            maximumRows: recentRows
+        )
+        if !recent.truncated {
+            guard model.assembledBufferText(rowCount: totalRows) != nil else {
+                return false
+            }
+            return await bufferMatches(
+                paneID: paneID,
+                totalRows: totalRows,
+                recent: recent
+            )
+        }
+        guard !Task.isCancelled else { return false }
+
+        guard await scrollPane(paneID, toOffset: 0),
+              var scroll = try? await paneScroll(paneID) else {
+            return false
+        }
+        guard !Task.isCancelled else {
+            _ = await scrollPane(
+                paneID,
+                toOffset: initial.offsetFromBottom,
+                honorsCancellation: false
+            )
+            return false
+        }
+        if let page = try? await client.readPane(
+            paneID: paneID,
+            format: "ansi",
+            stripANSI: true
+        ) {
+            model.ingest(pageText: page.text, scroll: scroll)
+        }
+
+        // Probe once. Mouse-reporting applications consume the wheel without
+        // changing host scrollback, and no public API can address older rows.
+        inject(Self.wheelUp)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        guard !Task.isCancelled else {
+            _ = await scrollPane(
+                paneID,
+                toOffset: initial.offsetFromBottom,
+                honorsCancellation: false
+            )
+            return false
+        }
+        guard let probe = try? await paneScroll(paneID),
+              probe.offsetFromBottom > scroll.offsetFromBottom else {
+            _ = await scrollPane(
+                paneID,
+                toOffset: initial.offsetFromBottom,
+                honorsCancellation: false
+            )
+            return false
+        }
+        scroll = probe
+        if let page = try? await client.readPane(
+            paneID: paneID,
+            format: "ansi",
+            stripANSI: true
+        ) {
+            model.ingest(pageText: page.text, scroll: scroll)
+        }
+
+        var stalls = 0
+        for _ in 0..<2000 where scroll.offsetFromBottom < scroll.maxOffsetFromBottom {
+            if Task.isCancelled { break }
+            let events = max(1, (scroll.viewportRows - 1) / 3)
+            inject(String(repeating: Self.wheelUp, count: events))
+            try? await Task.sleep(nanoseconds: 65_000_000)
+            guard let next = try? await paneScroll(paneID) else { break }
+            if next.offsetFromBottom == scroll.offsetFromBottom {
+                stalls += 1
+                if stalls >= 2 { break }
+            } else {
+                stalls = 0
+                scroll = next
+                if let page = try? await client.readPane(
+                    paneID: paneID,
+                    format: "ansi",
+                    stripANSI: true
+                ) {
+                    model.ingest(pageText: page.text, scroll: scroll)
+                }
+            }
+        }
+        let finalRows = scroll.maxOffsetFromBottom + scroll.viewportRows
+        let complete = !Task.isCancelled
+            && scroll.offsetFromBottom == scroll.maxOffsetFromBottom
+            && model.assembledBufferText(rowCount: finalRows) != nil
+        _ = await scrollPane(
+            paneID,
+            toOffset: initial.offsetFromBottom,
+            honorsCancellation: false
+        )
+        lastScroll = try? await paneScroll(paneID)
+        guard complete else {
+            return false
+        }
+        return await bufferMatches(
+            paneID: paneID,
+            totalRows: totalRows,
+            recent: recent
+        )
+    }
+
+    /// A matching tail and geometry prove that paging did not cross an output update.
+    private func bufferMatches(
+        paneID: String,
+        totalRows: Int,
+        recent: PaneRead
+    ) async -> Bool {
+        guard !Task.isCancelled,
+              let scroll = try? await paneScroll(paneID),
+              scroll.maxOffsetFromBottom + scroll.viewportRows == totalRows,
+              let current = try? await client.readPane(
+                  paneID: paneID,
+                  source: "recent",
+                  lines: 1000,
+                  format: "ansi",
+                  stripANSI: true
+              ) else {
+            return false
+        }
+        return current.truncated == recent.truncated && current.text == recent.text
+    }
+
+    private func scrollPane(
+        _ paneID: String,
+        toOffset target: Int,
+        honorsCancellation: Bool = true
+    ) async -> Bool {
+        var bestDistance = Int.max
+        for _ in 0..<200 {
+            if honorsCancellation, Task.isCancelled { return false }
+            guard let scroll = try? await paneScroll(paneID) else { return false }
+            let distance = abs(scroll.offsetFromBottom - target)
+            if distance == 0 { return true }
+            if distance >= bestDistance, bestDistance <= 2 { return true }
+            bestDistance = min(bestDistance, distance)
+            let up = scroll.offsetFromBottom < target
+            let events = min(50, max(1, (distance + 2) / 3))
+            inject(String(
+                repeating: up ? Self.wheelUp : Self.wheelDown,
+                count: events
+            ))
+            try? await Task.sleep(nanoseconds: 65_000_000)
+        }
+        return false
+    }
+
+    private static func textRowCount(_ text: String, limit: Int) -> Int {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        var rows = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+        if normalized.hasSuffix("\n"), rows.last?.isEmpty == true {
+            rows.removeLast()
+        }
+        return min(limit, rows.count)
+    }
+
+    private static func writeScrollbackFile(_ text: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-scrollback-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let file = directory.appendingPathComponent("scrollback.txt")
+        try text.write(to: file, atomically: true, encoding: .utf8)
+        return file
+    }
+
+    private static func launchEditor(for file: URL) throws {
+        let environment = ProcessInfo.processInfo.environment
+        let editor = [environment["VISUAL"], environment["EDITOR"]]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let editor else {
+            guard NSWorkspace.shared.open(file) else {
+                throw CopyModeControllerError.couldNotOpenEditor
+            }
+            return
+        }
+
+        let commandFile = file.deletingLastPathComponent()
+            .appendingPathComponent("open-in-editor.command")
+        let command = "\(editor) \(shellQuote(file.path))"
+        let script = "#!/bin/zsh\nexec /bin/zsh -lc \(shellQuote(command))\n"
+        try script.write(to: commandFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: commandFile.path
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Terminal", commandFile.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private enum CopyModeControllerError: Error {
+        case missingScrollMetrics
+        case couldNotOpenEditor
     }
 
     // MARK: back to live

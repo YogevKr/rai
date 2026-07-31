@@ -695,46 +695,142 @@ private struct AppearanceSettingsView: View {
 private struct HerdrServerSettingsView: View {
     @ObservedObject var model: RaiModel
 
-    @State private var output = "Loading server status…"
+    @State private var serverOutput = "Loading server status…"
+    @State private var manifestOutput = "Loading agent detection manifests…"
+    @State private var channelSelection = "stable"
+    @State private var channelStatus = "Loading update channel…"
+    @State private var news: [HerdrNewsItem] = []
     @State private var isRunningAction = false
     @State private var isStopConfirmationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(title: "Current Server Status") {
-                ScrollView {
-                    Text(output)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(Theme.textSecondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Current Server Status") {
+                    ScrollView {
+                        Text(serverOutput)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(Theme.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 90)
                 }
-                .frame(maxWidth: .infinity, minHeight: 210)
-            }
 
-            HStack(spacing: 10) {
-                Button("Refresh") {
-                    Task { await refreshStatus() }
+                HStack(spacing: 10) {
+                    Button("Refresh") {
+                        Task { await refreshAll() }
+                    }
+                    Button("Reload Config") {
+                        Task { await reloadConfig() }
+                    }
+                    Button("Live Handoff") {
+                        Task { await liveHandoff() }
+                    }
+                    .disabled(model.remoteTarget != nil)
+                    Button("Update herdr") {
+                        Task { await updateHerdr() }
+                    }
+                    .disabled(model.remoteTarget != nil)
+                    Spacer()
+                    Button("Stop Server", role: .destructive) {
+                        isStopConfirmationPresented = true
+                    }
                 }
-                Button("Reload Config") {
-                    Task { await reloadConfig() }
+                .buttonStyle(.bordered)
+                .disabled(isRunningAction)
+
+                SettingsSection(title: "Update Channel") {
+                    HStack(spacing: 12) {
+                        Picker("Channel", selection: $channelSelection) {
+                            Text("Stable").tag("stable")
+                            Text("Preview").tag("preview")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 220)
+
+                        Button("Apply") {
+                            Task { await setChannel() }
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text(channelStatus)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(2)
+                    }
+                    .disabled(isRunningAction || model.remoteTarget != nil)
                 }
-                Button("Update herdr") {
-                    Task { await updateHerdr() }
+
+                SettingsSection(title: "Agent Detection Manifests") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ScrollView {
+                            Text(manifestOutput)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Theme.textSecondary)
+                                .textSelection(.enabled)
+                                .frame(
+                                    maxWidth: .infinity,
+                                    alignment: .topLeading
+                                )
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 110)
+
+                        HStack(spacing: 8) {
+                            Button("Refresh") {
+                                Task { await refreshManifests() }
+                            }
+                            Button("Check for Updates") {
+                                Task { await updateManifests() }
+                            }
+                            .disabled(model.remoteTarget != nil)
+                            Button("Reload Cached") {
+                                Task { await reloadManifests() }
+                            }
+                            Spacer()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isRunningAction)
+                    }
                 }
-                Spacer()
-                Button("Stop Server", role: .destructive) {
-                    isStopConfirmationPresented = true
+
+                SettingsSection(title: "Release Notes and Announcements") {
+                    if news.isEmpty {
+                        Text("Herdr has no stored release notes or announcements.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(news) { item in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.title)
+                                        .font(.system(size: 12.5, weight: .semibold))
+                                        .foregroundStyle(Theme.textPrimary)
+                                    Text(item.subtitle)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Theme.textTertiary)
+                                    Text(item.body)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textSecondary)
+                                        .textSelection(.enabled)
+                                        .fixedSize(
+                                            horizontal: false,
+                                            vertical: true
+                                        )
+                                }
+                                if item.id != news.last?.id {
+                                    Divider().overlay(Theme.hairlineStrong)
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            .buttonStyle(.bordered)
-            .disabled(isRunningAction)
-
-            Spacer()
         }
         .settingsTabBackground()
         .task {
-            await refreshStatus()
+            await refreshAll()
         }
         .alert("Stop Herdr Server?", isPresented: $isStopConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
@@ -746,34 +842,85 @@ private struct HerdrServerSettingsView: View {
         }
     }
 
-    private func refreshStatus() async {
+    private func refreshAll() async {
         isRunningAction = true
-        output = await model.serverStatus()
+        serverOutput = await model.serverStatus()
+        manifestOutput = await model.agentManifestStatus()
+        let channel = await model.herdrChannel()
+        if channel == "stable" || channel == "preview" {
+            channelSelection = channel
+            channelStatus = "Current channel: \(channel)."
+        } else {
+            channelStatus = channel
+        }
+        news = model.herdrNews()
         isRunningAction = false
     }
 
     private func reloadConfig() async {
         isRunningAction = true
         if await model.reloadConfig() {
-            output = await model.serverStatus()
+            serverOutput = await model.serverStatus()
         } else {
-            output = "Unable to reload the Herdr server configuration."
+            serverOutput = "Unable to reload the Herdr server configuration."
+        }
+        isRunningAction = false
+    }
+
+    private func liveHandoff() async {
+        isRunningAction = true
+        serverOutput = await model.liveHandoff()
+        if !serverOutput.localizedCaseInsensitiveContains("failed") {
+            serverOutput += "\n\n" + (await model.serverStatus())
         }
         isRunningAction = false
     }
 
     private func updateHerdr() async {
         isRunningAction = true
-        output = await model.updateHerdr()
+        serverOutput = await model.updateHerdr()
+        news = model.herdrNews()
+        isRunningAction = false
+    }
+
+    private func setChannel() async {
+        isRunningAction = true
+        let result = await model.setHerdrChannel(channelSelection)
+        channelStatus = result.output
+        if result.succeeded {
+            let channel = await model.herdrChannel()
+            if channel == "stable" || channel == "preview" {
+                channelSelection = channel
+                channelStatus = "Current channel: \(channel)."
+            }
+        }
+        isRunningAction = false
+    }
+
+    private func refreshManifests() async {
+        isRunningAction = true
+        manifestOutput = await model.agentManifestStatus()
+        isRunningAction = false
+    }
+
+    private func updateManifests() async {
+        isRunningAction = true
+        manifestOutput = await model.updateAgentManifests()
+        isRunningAction = false
+    }
+
+    private func reloadManifests() async {
+        isRunningAction = true
+        manifestOutput = await model.reloadAgentManifests()
         isRunningAction = false
     }
 
     private func stopServer() async {
         isRunningAction = true
         if await model.stopServer() {
-            output = "Herdr server stopped."
+            serverOutput = "Herdr server stopped."
         } else {
-            output = "Unable to stop the Herdr server."
+            serverOutput = "Unable to stop the Herdr server."
         }
         isRunningAction = false
     }
@@ -792,8 +939,61 @@ private struct PluginListResponse: Decodable {
         let description: String
         var enabled: Bool
         let events: [Event]
+        let build: [Command]
+        let startup: [Command]
+        let actions: [Action]
+        let panes: [Pane]
+        let linkHandlers: [LinkHandler]
+        let source: Source?
 
         var id: String { pluginID }
+        var isManagedInstall: Bool { source?.kind == "github" }
+
+        var boundCommands: [BoundCommand] {
+            var bindings = build.enumerated().map {
+                BoundCommand(
+                    id: "build-\($0.offset)",
+                    label: "Build",
+                    command: $0.element.command.joined(separator: " ")
+                )
+            }
+            bindings += startup.enumerated().map {
+                BoundCommand(
+                    id: "startup-\($0.offset)",
+                    label: "Startup",
+                    command: $0.element.command.joined(separator: " ")
+                )
+            }
+            bindings += actions.enumerated().map {
+                BoundCommand(
+                    id: "action-\($0.offset)-\($0.element.id)",
+                    label: "Action · \($0.element.title)",
+                    command: $0.element.command.joined(separator: " ")
+                )
+            }
+            bindings += events.enumerated().map {
+                BoundCommand(
+                    id: "event-\($0.offset)-\($0.element.on)",
+                    label: "Event · \($0.element.on)",
+                    command: $0.element.command.joined(separator: " ")
+                )
+            }
+            bindings += panes.enumerated().map {
+                BoundCommand(
+                    id: "pane-\($0.offset)-\($0.element.id)",
+                    label: "Pane · \($0.element.title) · \($0.element.placement)",
+                    command: $0.element.command.joined(separator: " ")
+                )
+            }
+            bindings += linkHandlers.enumerated().map {
+                BoundCommand(
+                    id: "link-\($0.offset)-\($0.element.id)",
+                    label: "Link · \($0.element.title)",
+                    command: "\($0.element.pattern) → \($0.element.action)"
+                )
+            }
+            return bindings
+        }
 
         private enum CodingKeys: String, CodingKey {
             case pluginID = "plugin_id"
@@ -801,11 +1001,88 @@ private struct PluginListResponse: Decodable {
             case description
             case enabled
             case events
+            case build
+            case startup
+            case actions
+            case panes
+            case linkHandlers = "link_handlers"
+            case source
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            pluginID = try container.decode(String.self, forKey: .pluginID)
+            name = try container.decode(String.self, forKey: .name)
+            description = try container.decodeIfPresent(
+                String.self,
+                forKey: .description
+            ) ?? "No description."
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            events = try container.decodeIfPresent(
+                [Event].self,
+                forKey: .events
+            ) ?? []
+            build = try container.decodeIfPresent(
+                [Command].self,
+                forKey: .build
+            ) ?? []
+            startup = try container.decodeIfPresent(
+                [Command].self,
+                forKey: .startup
+            ) ?? []
+            actions = try container.decodeIfPresent(
+                [Action].self,
+                forKey: .actions
+            ) ?? []
+            panes = try container.decodeIfPresent(
+                [Pane].self,
+                forKey: .panes
+            ) ?? []
+            linkHandlers = try container.decodeIfPresent(
+                [LinkHandler].self,
+                forKey: .linkHandlers
+            ) ?? []
+            source = try container.decodeIfPresent(Source.self, forKey: .source)
         }
     }
 
     struct Event: Decodable {
         let on: String
+        let command: [String]
+    }
+
+    struct Command: Decodable {
+        let command: [String]
+    }
+
+    struct Action: Decodable {
+        let id: String
+        let title: String
+        let command: [String]
+    }
+
+    struct Pane: Decodable {
+        let id: String
+        let title: String
+        let placement: String
+        let command: [String]
+    }
+
+    struct LinkHandler: Decodable {
+        let id: String
+        let title: String
+        let pattern: String
+        let action: String
+    }
+
+    struct Source: Decodable {
+        let kind: String
+    }
+
+    struct BoundCommand: Identifiable {
+        let id: String
+        let label: String
+        let command: String
     }
 }
 
@@ -814,15 +1091,64 @@ private struct PluginsSettingsView: View {
 
     @State private var plugins: [PluginListResponse.Plugin] = []
     @State private var isLoading = false
+    @State private var isRunningAction = false
     @State private var activePluginIDs: Set<String> = []
     @State private var status: String?
-    @State private var pluginPendingUnlink: PluginListResponse.Plugin?
+    @State private var installSource = ""
+    @State private var installReference = ""
+    @State private var installPreview: HerdrPluginInstallPreview?
+    @State private var pluginPendingRemoval: PluginListResponse.Plugin?
     @State private var pluginForLogs: PluginListResponse.Plugin?
+    @State private var pluginForCommands: PluginListResponse.Plugin?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            SettingsSection(title: "Add Plugin") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        TextField(
+                            "owner/repo[/subdir...]",
+                            text: $installSource
+                        )
+                        TextField("Git ref (optional)", text: $installReference)
+                            .frame(width: 150)
+                    }
+                    .textFieldStyle(.roundedBorder)
+
+                    HStack(spacing: 8) {
+                        Button("Install from GitHub") {
+                            Task { await installPlugin() }
+                        }
+                        .disabled(
+                            installSource.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                        )
+                        Button("Link Local Directory", action: choosePluginDirectory)
+                        Spacer()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isRunningAction)
+
+                    Text(
+                        "Install accepts Herdr’s owner/repository shorthand. "
+                            + "Link keeps the plugin in its local directory."
+                    )
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.textTertiary)
+
+                    if model.remoteTarget != nil {
+                        Text("Add and uninstall actions require a local Herdr server.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                .disabled(model.remoteTarget != nil)
+            }
+
             HStack {
-                Text("Manage plugins linked to this Herdr installation.")
+                Text("Manage plugins in this Herdr installation.")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textTertiary)
                 Spacer()
@@ -830,7 +1156,11 @@ private struct PluginsSettingsView: View {
                     Task { await refreshPlugins() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(isLoading || !activePluginIDs.isEmpty)
+                .disabled(
+                    isLoading
+                        || isRunningAction
+                        || !activePluginIDs.isEmpty
+                )
             }
 
             SettingsSection(title: "Installed Plugins") {
@@ -853,15 +1183,21 @@ private struct PluginsSettingsView: View {
                                 ForEach(plugins) { plugin in
                                     PluginSettingsRow(
                                         plugin: plugin,
-                                        isRunningAction: activePluginIDs.contains(plugin.id),
+                                        isRunningAction: isRunningAction
+                                            || activePluginIDs.contains(plugin.id),
+                                        canRemove: !plugin.isManagedInstall
+                                            || model.remoteTarget == nil,
                                         onEnabledChange: { enabled in
                                             setEnabled(enabled, for: plugin)
                                         },
                                         onLogs: {
                                             pluginForLogs = plugin
                                         },
-                                        onUnlink: {
-                                            pluginPendingUnlink = plugin
+                                        onCommands: {
+                                            pluginForCommands = plugin
+                                        },
+                                        onRemove: {
+                                            pluginPendingRemoval = plugin
                                         }
                                     )
 
@@ -889,23 +1225,45 @@ private struct PluginsSettingsView: View {
         .task {
             await refreshPlugins()
         }
+        .onDisappear {
+            guard isRunningAction else { return }
+            Task { await model.cancelPluginInstall() }
+        }
         .alert(
-            "Unlink \(pluginPendingUnlink?.name ?? "Plugin")?",
+            "\(pluginPendingRemoval?.isManagedInstall == true ? "Uninstall" : "Unlink") "
+                + "\(pluginPendingRemoval?.name ?? "Plugin")?",
             isPresented: Binding(
-                get: { pluginPendingUnlink != nil },
-                set: { if !$0 { pluginPendingUnlink = nil } }
+                get: { pluginPendingRemoval != nil },
+                set: { if !$0 { pluginPendingRemoval = nil } }
             ),
-            presenting: pluginPendingUnlink
+            presenting: pluginPendingRemoval
         ) { plugin in
             Button("Cancel", role: .cancel) {}
-            Button("Unlink", role: .destructive) {
-                Task { await unlink(plugin) }
+            Button(
+                plugin.isManagedInstall ? "Uninstall" : "Unlink",
+                role: .destructive
+            ) {
+                Task { await remove(plugin) }
             }
         } message: { plugin in
-            Text("This unlinks \(plugin.pluginID) from Herdr.")
+            Text(
+                plugin.isManagedInstall
+                    ? "This removes \(plugin.pluginID) and its managed checkout."
+                    : "This unlinks \(plugin.pluginID) from Herdr."
+            )
         }
         .sheet(item: $pluginForLogs) { plugin in
             PluginLogsSheet(model: model, plugin: plugin)
+        }
+        .sheet(item: $pluginForCommands) { plugin in
+            PluginCommandsSheet(plugin: plugin)
+        }
+        .sheet(item: $installPreview) { preview in
+            PluginInstallPreviewSheet(
+                preview: preview,
+                onCancel: cancelPluginInstall,
+                onInstall: confirmPluginInstall
+            )
         }
     }
 
@@ -955,10 +1313,77 @@ private struct PluginsSettingsView: View {
         }
     }
 
-    private func unlink(_ plugin: PluginListResponse.Plugin) async {
-        pluginPendingUnlink = nil
+    private func installPlugin() async {
+        let source = installSource.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let reference = installReference.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !source.isEmpty else { return }
+        isRunningAction = true
+        status = "Reading \(source)…"
+        let preview = await model.preparePluginInstall(
+            source: source,
+            reference: reference
+        )
+        if preview.canConfirm {
+            installPreview = preview
+        } else {
+            status = preview.output
+            isRunningAction = false
+        }
+    }
+
+    private func confirmPluginInstall() {
+        installPreview = nil
+        status = "Installing plugin…"
+        Task {
+            let output = await model.confirmPluginInstall()
+            await refreshPlugins()
+            status = output
+            isRunningAction = false
+        }
+    }
+
+    private func cancelPluginInstall() {
+        installPreview = nil
+        Task {
+            await model.cancelPluginInstall()
+            status = "Plugin install cancelled."
+            isRunningAction = false
+        }
+    }
+
+    private func choosePluginDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Link Herdr Plugin"
+        panel.message = "Choose a directory that contains herdr-plugin.toml."
+        panel.prompt = "Link"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await linkPlugin(at: url) }
+    }
+
+    private func linkPlugin(at url: URL) async {
+        isRunningAction = true
+        status = "Linking \(url.lastPathComponent)…"
+        let output = await model.pluginLink(path: url.path)
+        await refreshPlugins()
+        status = output
+        isRunningAction = false
+    }
+
+    private func remove(_ plugin: PluginListResponse.Plugin) async {
+        pluginPendingRemoval = nil
         activePluginIDs.insert(plugin.id)
-        if await model.pluginUnlink(plugin.pluginID) {
+        if plugin.isManagedInstall {
+            let output = await model.pluginUninstall(plugin.pluginID)
+            await refreshPlugins()
+            status = output
+        } else if await model.pluginUnlink(plugin.pluginID) {
             plugins.removeAll { $0.id == plugin.id }
             status = "\(plugin.name) unlinked."
         } else {
@@ -971,9 +1396,11 @@ private struct PluginsSettingsView: View {
 private struct PluginSettingsRow: View {
     let plugin: PluginListResponse.Plugin
     let isRunningAction: Bool
+    let canRemove: Bool
     let onEnabledChange: (Bool) -> Void
     let onLogs: () -> Void
-    let onUnlink: () -> Void
+    let onCommands: () -> Void
+    let onRemove: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1036,7 +1463,16 @@ private struct PluginSettingsRow: View {
 
             HStack(spacing: 8) {
                 Button("Logs", action: onLogs)
-                Button("Unlink", role: .destructive, action: onUnlink)
+                Button(
+                    "Commands (\(plugin.boundCommands.count))",
+                    action: onCommands
+                )
+                Button(
+                    plugin.isManagedInstall ? "Uninstall" : "Unlink",
+                    role: .destructive,
+                    action: onRemove
+                )
+                .disabled(!canRemove)
                 Spacer()
             }
             .buttonStyle(.bordered)
@@ -1091,6 +1527,105 @@ private struct PluginLogsSheet: View {
             output = await model.pluginLogs(plugin.pluginID)
                 ?? "No plugin log output."
         }
+    }
+}
+
+private struct PluginCommandsSheet: View {
+    let plugin: PluginListResponse.Plugin
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Plugin Commands")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(plugin.pluginID)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+
+            if plugin.boundCommands.isEmpty {
+                Text("This plugin does not bind commands.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(plugin.boundCommands) { binding in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(binding.label)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(Theme.textSecondary)
+                                Text(binding.command)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(Theme.textPrimary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(
+                                        horizontal: false,
+                                        vertical: true
+                                    )
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: 600, height: 420)
+        .background(Theme.raised)
+    }
+}
+
+private struct PluginInstallPreviewSheet: View {
+    let preview: HerdrPluginInstallPreview
+    let onCancel: () -> Void
+    let onInstall: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Review Plugin Install")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Herdr will run the listed build commands after confirmation.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            ScrollView {
+                Text(preview.output)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                Button("Install", action: onInstall)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(width: 600, height: 440)
+        .background(Theme.raised)
+        .interactiveDismissDisabled()
     }
 }
 

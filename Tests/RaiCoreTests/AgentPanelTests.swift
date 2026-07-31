@@ -57,6 +57,7 @@ final class AgentPanelTests: XCTestCase {
             cwd: "/repo",
             foregroundCWD: nil,
             agent: agent,
+            agentSession: nil,
             terminalTitle: title,
             terminalTitleStripped: title,
             agentStatus: status,
@@ -68,7 +69,8 @@ final class AgentPanelTests: XCTestCase {
     private func snapshot(
         workspaces: [Workspace],
         tabs: [HerdrTab],
-        panes: [Pane]
+        panes: [Pane],
+        agents: [HerdrAgent]? = nil
     ) -> SessionSnapshot {
         SessionSnapshot(
             version: "0.7.4",
@@ -79,7 +81,36 @@ final class AgentPanelTests: XCTestCase {
             workspaces: workspaces,
             tabs: tabs,
             panes: panes,
+            agents: agents,
             layouts: []
+        )
+    }
+
+    private func agent(
+        _ id: String,
+        tabID: String,
+        workspaceID: String,
+        label: String = "claude",
+        status: AgentStatus = .idle,
+        title: String? = nil
+    ) -> HerdrAgent {
+        HerdrAgent(
+            terminalID: "term-\(id)",
+            name: nil,
+            agent: label,
+            title: nil,
+            terminalTitle: title,
+            terminalTitleStripped: title,
+            displayAgent: nil,
+            agentStatus: status,
+            agentSession: nil,
+            workspaceID: workspaceID,
+            tabID: tabID,
+            paneID: id,
+            focused: false,
+            cwd: "/repo",
+            foregroundCWD: nil,
+            revision: 1
         )
     }
 
@@ -150,6 +181,53 @@ final class AgentPanelTests: XCTestCase {
         XCTAssertEqual(entries.map(\.workspaceLabel), ["rai", "needle"])
     }
 
+    /// The projection decides membership AND enriches the row it matches.
+    func testAgentProjectionDecidesMembershipAndEnrichesTheRow() {
+        let entries = AgentPanel.entries(
+            in: snapshot(
+                workspaces: [workspace("ws-1", label: "rai", paneCount: 2)],
+                tabs: [tab("tab-1", workspaceID: "ws-1", label: "1", paneCount: 2)],
+                panes: [
+                    pane(
+                        "pane-agent",
+                        tabID: "tab-1",
+                        workspaceID: "ws-1",
+                        agent: "codex",
+                        status: .idle
+                    ),
+                    pane("shell", tabID: "tab-1", workspaceID: "ws-1", agent: nil),
+                ],
+                agents: [
+                    agent(
+                        "pane-agent",
+                        tabID: "tab-1",
+                        workspaceID: "ws-1",
+                        status: .blocked
+                    ),
+                ]
+            ),
+            sort: .grouped
+        )
+        // The plain shell is not an agent and does not belong in this panel.
+        XCTAssertEqual(entries.map(\.paneID), ["pane-agent"])
+        // The projection's agent and status win over the pane's stale copy.
+        XCTAssertEqual(entries.first?.agentLabel, "claude")
+        XCTAssertEqual(entries.first?.status, .blocked)
+    }
+
+    func testShellOnlyHerdListsNoAgents() {
+        let entries = AgentPanel.entries(
+            in: snapshot(
+                workspaces: [workspace("ws-1", label: "rai")],
+                tabs: [tab("tab-1", workspaceID: "ws-1", label: "1")],
+                panes: [pane("pane-1", tabID: "tab-1", workspaceID: "ws-1", agent: nil)],
+                agents: []
+            ),
+            sort: .grouped
+        )
+        XCTAssertTrue(entries.isEmpty)
+    }
+
     /// A lone auto-named tab repeats nothing useful next to its space name.
     func testAutoNamedSoleTabContributesNoTabLabel() {
         let entries = AgentPanel.entries(
@@ -192,7 +270,9 @@ final class AgentPanelTests: XCTestCase {
         XCTAssertEqual(multi.map(\.tabLabel), ["build", "test"])
     }
 
-    func testPaneWithoutAnAgentCarriesNoAgentLabel() {
+    /// Without the server's agent projection, a pane's own detected agent is
+    /// the membership test — and a blank one is no agent at all.
+    func testPaneWithoutAnAgentIsNotListed() {
         let entries = AgentPanel.entries(
             in: snapshot(
                 workspaces: [workspace("ws-1", label: "rai", paneCount: 2)],
@@ -204,7 +284,8 @@ final class AgentPanelTests: XCTestCase {
             ),
             sort: .grouped
         )
-        XCTAssertEqual(entries.map(\.agentLabel), ["claude", nil])
+        XCTAssertEqual(entries.map(\.paneID), ["pane-1"])
+        XCTAssertEqual(entries.map(\.agentLabel), ["claude"])
     }
 
     func testUnlabelledSpaceFallsBackToItsNumber() {

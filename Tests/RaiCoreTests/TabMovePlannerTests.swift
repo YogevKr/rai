@@ -134,6 +134,7 @@ final class TabMovePlannerTests: XCTestCase {
             cwd: "/",
             foregroundCWD: nil,
             agent: nil,
+            agentSession: nil,
             terminalTitle: nil,
             terminalTitleStripped: nil,
             agentStatus: .idle,

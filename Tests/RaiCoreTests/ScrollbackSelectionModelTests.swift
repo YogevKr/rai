@@ -86,4 +86,34 @@ final class ScrollbackSelectionModelTests: XCTestCase {
         model.extendHead(visibleRow: 1, col: 9999, scroll: page)
         XCTAssertEqual(model.assembledText(), "hello\nworld")
     }
+
+    func testAbsolutePointsReuseSelectionAssembly() {
+        var model = ScrollbackSelectionModel()
+        model.ingest(pageText: "zero\none\ntwo", startingAt: 0)
+        model.begin(anchor: .init(row: 2, col: 2))
+        model.extendHead(to: .init(row: 0, col: 1))
+        XCTAssertEqual(model.assembledText(), "ero\none\ntwo")
+    }
+
+    func testWholeBufferRequiresEveryRow() {
+        var model = ScrollbackSelectionModel()
+        model.ingest(pageText: "zero\none", startingAt: 0)
+        XCTAssertEqual(model.assembledBufferText(rowCount: 2), "zero\none")
+        XCTAssertNil(model.assembledBufferText(rowCount: 3))
+    }
+
+    func testVisibleIngestCapsTrailingNewlineAtViewportRows() {
+        var model = ScrollbackSelectionModel()
+        let page = scroll(offset: 0, max: 10, rows: 2)
+        model.ingest(pageText: "ten\neleven\n", scroll: page)
+        XCTAssertEqual(model.lines, [10: "ten", 11: "eleven"])
+    }
+
+    func testAssemblySlicesTerminalCellsForWideCharacters() {
+        var model = ScrollbackSelectionModel()
+        model.ingest(pageText: "a界z", startingAt: 0)
+        model.begin(anchor: .init(row: 0, col: 2))
+        model.extendHead(to: .init(row: 0, col: 3))
+        XCTAssertEqual(model.assembledText(), "界z")
+    }
 }

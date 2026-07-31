@@ -79,6 +79,24 @@ struct RaiApp: App {
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             }
 
+            CommandMenu("Agent") {
+                ForEach(1...9, id: \.self) { n in
+                    Button("Focus Agent \(n)") {
+                        let entries = model.agentPanelEntries
+                        guard entries.indices.contains(n - 1) else { return }
+                        model.select(
+                            paneID: entries[n - 1].paneID,
+                            focusInHerdr: true
+                        )
+                    }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(n)")),
+                        modifiers: [.command, .option]
+                    )
+                    .disabled(model.agentPanelEntries.count < n)
+                }
+            }
+
             CommandMenu("Space") {
                 Button("New Space") { model.newWorkspace() }
                     .keyboardShortcut("n", modifiers: .command)

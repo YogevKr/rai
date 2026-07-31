@@ -20,6 +20,7 @@ struct ClosedTabRecord: Equatable {
     let workspaceID: String
     let cwd: String
     let agentKind: AgentLaunchKind?
+    let agentSession: AgentSession?
     let label: String
     /// The agent's full command line at close time (from pane process-info):
     /// reopen relaunches with the SAME flags — bypass permissions, model
@@ -50,6 +51,56 @@ struct PaneProcessInfo: Decodable, Equatable, Sendable {
         case tty
         case foregroundProcessGroupID = "foreground_process_group_id"
         case foregroundProcesses = "foreground_processes"
+    }
+}
+
+struct HerdrNewsItem: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let body: String
+}
+
+struct HerdrPluginInstallPreview: Identifiable {
+    let id = UUID()
+    let canConfirm: Bool
+    let output: String
+}
+
+private final class HerdrPipeCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func read(from handle: FileHandle) {
+        let captured = handle.readDataToEndOfFile()
+        lock.lock()
+        data = captured
+        lock.unlock()
+    }
+
+    func string() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+private final class PendingHerdrPluginInstall: @unchecked Sendable {
+    let source: String
+    let resolvedCommit: String
+    let socketPath: String
+    let temporaryDirectory: URL
+
+    init(
+        source: String,
+        resolvedCommit: String,
+        socketPath: String,
+        temporaryDirectory: URL
+    ) {
+        self.source = source
+        self.resolvedCommit = resolvedCommit
+        self.socketPath = socketPath
+        self.temporaryDirectory = temporaryDirectory
     }
 }
 
@@ -180,6 +231,15 @@ final class RaiModel: ObservableObject {
     // Spaces the user has collapsed in the sidebar. A collapsed space hides its
     // tabs except the ones that need attention (and the selected one).
     @Published var collapsedWorkspaceIDs: Set<String> = []
+    @Published var collapsedSpaceKeys: Set<String> {
+        didSet {
+            userDefaults.set(
+                collapsedSpaceKeys.sorted(),
+                forKey: Self.collapsedSpaceKeysDefaultsKey
+            )
+        }
+    }
+    @Published private(set) var workspaceGitStatuses: [String: WorkspaceGitStatus] = [:]
     @Published var notificationsMuted: Bool {
         didSet {
             userDefaults.set(
@@ -241,11 +301,14 @@ final class RaiModel: ObservableObject {
     private static let agentPanelSortKey = "agentPanelSort"
     private static let agentPanelCollapsedKey = "agentPanelCollapsed"
     private static let sidebarSplitKey = "sidebarSplit"
+    private static let collapsedSpaceKeysDefaultsKey = "collapsedSpaceKeys"
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
+    private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private var started = false
     private var eventTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
+    private var gitStatusTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
     private var trailingRefreshTask: Task<Void, Never>?
     /// Connection generation whose plugin actions were already fetched, so the
@@ -256,6 +319,7 @@ final class RaiModel: ObservableObject {
     private var connectionAttemptID = UUID()
     private var remoteConnection: RemoteConnection?
     private var launchedSessionServers: [String: Process] = [:]
+    private var pendingPluginInstall: PendingHerdrPluginInstall?
 
     init(
         client: HerdrClient = HerdrClient(),
@@ -266,6 +330,9 @@ final class RaiModel: ObservableObject {
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
         terminalPool = TerminalPool(socketPath: client.socketPath)
         self.userDefaults = userDefaults
+        collapsedSpaceKeys = Set(
+            userDefaults.stringArray(forKey: Self.collapsedSpaceKeysDefaultsKey) ?? []
+        )
         notificationsMuted = userDefaults.bool(
             forKey: Self.notificationsMutedDefaultsKey
         )
@@ -303,6 +370,7 @@ final class RaiModel: ObservableObject {
     deinit {
         eventTask?.cancel()
         flushTask?.cancel()
+        gitStatusTask?.cancel()
         client.disconnect()
     }
 
@@ -342,6 +410,33 @@ final class RaiModel: ObservableObject {
             collapsedWorkspaceIDs.remove(workspaceID)
         } else {
             collapsedWorkspaceIDs.insert(workspaceID)
+        }
+    }
+
+    var workspaceListEntries: [WorkspaceListEntry] {
+        guard let snapshot else { return [] }
+        return WorkspaceSidebar.entries(
+            in: snapshot,
+            gitStatuses: workspaceGitStatuses,
+            collapsedSpaceKeys: collapsedSpaceKeys,
+            visibleWorkspaceID: selectedWorkspace?.workspaceID
+        )
+    }
+
+    func gitStatus(for workspace: Workspace) -> WorkspaceGitStatus? {
+        guard let snapshot else { return nil }
+        return WorkspaceSidebar.gitStatus(
+            for: workspace,
+            in: snapshot,
+            gitStatuses: workspaceGitStatuses
+        )
+    }
+
+    func toggleSpaceGroupCollapsed(_ key: String) {
+        if collapsedSpaceKeys.contains(key) {
+            collapsedSpaceKeys.remove(key)
+        } else {
+            collapsedSpaceKeys.insert(key)
         }
     }
 
@@ -680,6 +775,8 @@ final class RaiModel: ObservableObject {
         flushTask = nil
         trailingRefreshTask?.cancel()
         trailingRefreshTask = nil
+        gitStatusTask?.cancel()
+        gitStatusTask = nil
         pendingEvents.removeAll(keepingCapacity: false)
         client.disconnect()
         terminalPool.removeAll()
@@ -692,6 +789,7 @@ final class RaiModel: ObservableObject {
         selectedPaneID = nil
         draggedPaneID = nil
         dragRatios.removeAll()
+        workspaceGitStatuses = [:]
         lastObservedPaneStatuses = nil
         isCommandPalettePresented = false
         renameRequest = nil
@@ -1189,10 +1287,10 @@ final class RaiModel: ObservableObject {
         if closedTabs.count > 10 {
             closedTabs.removeFirst(closedTabs.count - 10)
         }
-        let agentPaneID = snapshot?.panes.first {
-            $0.tabID == tab.tabID && $0.agent != nil
-        }?.paneID
-        guard let agentPaneID, let kind = record.agentKind else {
+        guard let kind = record.agentKind,
+              let agentPaneID = snapshot?.panes.first(where: {
+                  $0.tabID == tab.tabID && Self.agentLaunchKind(for: $0) == kind
+              })?.paneID else {
             runAction(arguments)
             return
         }
@@ -1226,7 +1324,19 @@ final class RaiModel: ObservableObject {
     /// The shell command that resumes a reopened tab's agent. With a captured
     /// argv, resume carries every original flag and falls back to the same
     /// flags without the resume switch; without one, the bare defaults.
-    static func resumeCommand(kind: AgentLaunchKind, argv: [String]?) -> String {
+    static func resumeCommand(
+        kind: AgentLaunchKind,
+        argv: [String]?,
+        agentSession: AgentSession? = nil
+    ) -> String {
+        if agentSession?.agent == kind.rawValue,
+           let plan = agentSession?.exactResumePlan(argv: argv) {
+            let resume = plan.resumeArgv.map(DroppedPathEscaper.escape)
+                .joined(separator: " ")
+            let fallback = plan.fallbackArgv.map(DroppedPathEscaper.escape)
+                .joined(separator: " ")
+            return "\(resume) || \(fallback)"
+        }
         guard let argv, !argv.isEmpty,
               (argv[0] as NSString).lastPathComponent == kind.rawValue
         else {
@@ -1276,18 +1386,22 @@ final class RaiModel: ObservableObject {
             ?? panes.first else {
             return nil
         }
-        let agentKind = panes.compactMap { pane -> AgentLaunchKind? in
-            guard let agent = pane.agent?.lowercased() else { return nil }
-            if agent.contains("claude") { return .claude }
-            if agent.contains("codex") { return .codex }
-            return nil
-        }.first
+        let agentPane = panes.first { Self.agentLaunchKind(for: $0) != nil }
+        let agentKind = agentPane.flatMap(Self.agentLaunchKind)
         return ClosedTabRecord(
             workspaceID: tab.workspaceID,
             cwd: activePane.foregroundCWD ?? activePane.cwd,
             agentKind: agentKind,
+            agentSession: agentPane?.agentSession,
             label: tab.label
         )
+    }
+
+    private static func agentLaunchKind(for pane: Pane) -> AgentLaunchKind? {
+        guard let agent = pane.agent?.lowercased() else { return nil }
+        if agent.contains("claude") { return .claude }
+        if agent.contains("codex") { return .codex }
+        return nil
     }
 
     func requestClose(workspace: Workspace) {
@@ -1958,6 +2072,7 @@ final class RaiModel: ObservableObject {
             lastObservedPaneStatuses = newStatuses
 
             snapshot = newSnapshot
+            restartGitStatusLoop(generation: generation)
             terminalPool.retain(
                 terminalIDs: Set(newSnapshot.panes.map(\.terminalID))
             )
@@ -1993,6 +2108,29 @@ final class RaiModel: ObservableObject {
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Snapshot changes restart the loop. The cache limits Git work to one
+    /// serial pass every 30 seconds and reads new checkout paths at once.
+    private func restartGitStatusLoop(generation: UUID) {
+        gitStatusTask?.cancel()
+        guard remoteTarget == nil else {
+            gitStatusTask = nil
+            workspaceGitStatuses = [:]
+            return
+        }
+
+        gitStatusTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, generation == connectionGeneration {
+                guard let snapshot else { return }
+                let paths = WorkspaceSidebar.checkoutPaths(in: snapshot)
+                let statuses = await workspaceGitStatusCache.statuses(for: paths)
+                guard !Task.isCancelled, generation == connectionGeneration else { return }
+                workspaceGitStatuses = statuses
+                try? await Task.sleep(for: .seconds(30))
             }
         }
     }
@@ -2103,6 +2241,82 @@ final class RaiModel: ObservableObject {
 
     func renamePane(paneID: String, to rawLabel: String) {
         let arguments = renamePaneArguments(paneID: paneID, label: rawLabel)
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            _ = await runHerdr(arguments)
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func setAgentOverride(
+        paneID: String,
+        agent: AgentAuthorityAgent,
+        state: AgentAuthorityState
+    ) {
+        let arguments = AgentAuthorityCLI.reportArguments(
+            paneID: paneID,
+            agent: agent,
+            state: state
+        )
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            guard let context = await agentAuthorityContext(for: paneID),
+                  context.paneID == paneID,
+                  context.reportAvailability == .available,
+                  generation == connectionGeneration else {
+                return
+            }
+            _ = await runHerdr(arguments)
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func agentAuthorityContext(for paneID: String) async -> AgentAuthorityContext? {
+        guard let output = await runHerdrCapture(["pane", "get", paneID]) else {
+            return nil
+        }
+        return AgentAuthorityContextParser.parse(output)
+    }
+
+    func clearAgentOverride(paneID: String) {
+        let socketPath = activeSocketPath
+        let client = client
+        let generation = connectionGeneration
+        Task {
+            // Herdr exposes clear-authority through its socket API, but not its CLI.
+            try? await AgentAuthorityRPC.clearOverride(
+                socketPath: socketPath,
+                paneID: paneID
+            )
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(
+                keepSelection: true,
+                client: client,
+                generation: generation
+            )
+        }
+    }
+
+    func releaseAgent(paneID: String, agent: String?) {
+        guard let agent,
+              let arguments = AgentAuthorityCLI.releaseArguments(
+                  paneID: paneID,
+                  agent: agent
+              ) else {
+            return
+        }
         let client = client
         let generation = connectionGeneration
         Task {
@@ -2831,11 +3045,13 @@ final class RaiModel: ObservableObject {
             _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
         }
         if let agentKind = record.agentKind {
-            // Best effort: both clients scope their "most recent" lookup by cwd.
-            // Their current CLIs support these flags, but Rai cannot verify that
-            // a resumable session still exists after herdr killed it. Fall back
-            // to a fresh client only when the resume command exits unsuccessfully.
-            let resumeCommand = Self.resumeCommand(kind: agentKind, argv: record.agentArgv)
+            // Prefer herdr's exact session id. Older servers fall back to each
+            // client's cwd-scoped recent session lookup.
+            let resumeCommand = Self.resumeCommand(
+                kind: agentKind,
+                argv: record.agentArgv,
+                agentSession: record.agentSession
+            )
             // `tab create` already gave the tab a default shell pane, and
             // `agent start` puts the agent in a SECOND pane beside it. Capture
             // that default pane up front and close it once the agent is running,
@@ -2937,6 +3153,233 @@ final class RaiModel: ObservableObject {
         await runHerdr(["plugin", "unlink", pluginID])
     }
 
+    func preparePluginInstall(
+        source: String,
+        reference: String
+    ) async -> HerdrPluginInstallPreview {
+        guard remoteTarget == nil else {
+            return HerdrPluginInstallPreview(
+                canConfirm: false,
+                output: "Plugin install is available only for a local Herdr server."
+            )
+        }
+        guard let sourceParts = Self.pluginSourceParts(source) else {
+            return HerdrPluginInstallPreview(
+                canConfirm: false,
+                output: "Use owner/repository[/subdirectory...] shorthand."
+            )
+        }
+
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-plugin-preview-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(
+                at: temporaryDirectory,
+                withIntermediateDirectories: false
+            )
+        } catch {
+            return HerdrPluginInstallPreview(
+                canConfirm: false,
+                output: error.localizedDescription
+            )
+        }
+        var keepsTemporaryDirectory = false
+        defer {
+            if !keepsTemporaryDirectory {
+                try? FileManager.default.removeItem(at: temporaryDirectory)
+            }
+        }
+
+        let initialized = await runExternalResult(
+            "/usr/bin/git",
+            ["init", "--quiet", temporaryDirectory.path]
+        )
+        guard initialized.succeeded else {
+            return pluginPreviewFailure(initialized)
+        }
+        let addedRemote = await runExternalResult(
+            "/usr/bin/git",
+            [
+                "-C", temporaryDirectory.path,
+                "remote", "add", "origin", sourceParts.remoteURL,
+            ]
+        )
+        guard addedRemote.succeeded else {
+            return pluginPreviewFailure(addedRemote)
+        }
+        let fetched = await runExternalResult(
+            "/usr/bin/git",
+            [
+                "-C", temporaryDirectory.path,
+                "fetch", "--quiet", "--depth", "1", "origin",
+                reference.isEmpty ? "HEAD" : reference,
+            ]
+        )
+        guard fetched.succeeded else {
+            return pluginPreviewFailure(fetched)
+        }
+        let resolved = await runExternalResult(
+            "/usr/bin/git",
+            [
+                "-C", temporaryDirectory.path,
+                "rev-parse", "FETCH_HEAD",
+            ]
+        )
+        let commit = resolved.standardOutput.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard resolved.succeeded, !commit.isEmpty else {
+            return pluginPreviewFailure(resolved)
+        }
+        let checkedOut = await runExternalResult(
+            "/usr/bin/git",
+            [
+                "-C", temporaryDirectory.path,
+                "checkout", "--quiet", "--detach", "FETCH_HEAD",
+            ]
+        )
+        guard checkedOut.succeeded else {
+            return pluginPreviewFailure(checkedOut)
+        }
+        let resolvedRoot = temporaryDirectory.resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        let manifestURL = temporaryDirectory
+            .appendingPathComponent(sourceParts.manifestPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard manifestURL.path.hasPrefix(resolvedRoot + "/"),
+              let manifest = try? String(
+                  contentsOf: manifestURL,
+                  encoding: .utf8
+              ) else {
+            return HerdrPluginInstallPreview(
+                canConfirm: false,
+                output: "The plugin manifest is missing or leaves its checkout."
+            )
+        }
+
+        pendingPluginInstall = PendingHerdrPluginInstall(
+            source: source,
+            resolvedCommit: commit,
+            socketPath: activeSocketPath,
+            temporaryDirectory: temporaryDirectory
+        )
+        keepsTemporaryDirectory = true
+        return HerdrPluginInstallPreview(
+            canConfirm: true,
+            output: """
+                Source: \(source)
+                Resolved commit: \(commit)
+
+                \(sourceParts.manifestPath):
+                \(manifest.trimmingCharacters(in: .whitespacesAndNewlines))
+                """
+        )
+    }
+
+    func confirmPluginInstall() async -> String {
+        guard let pending = pendingPluginInstall else {
+            return "No plugin install is waiting for confirmation."
+        }
+        guard Self.pathsMatch(pending.socketPath, activeSocketPath) else {
+            try? FileManager.default.removeItem(
+                at: pending.temporaryDirectory
+            )
+            pendingPluginInstall = nil
+            return "Plugin install cancelled because the active Herdr session changed."
+        }
+        let arguments = [
+            "plugin", "install", pending.source,
+            "--ref", pending.resolvedCommit,
+            "--yes",
+        ]
+        try? FileManager.default.removeItem(at: pending.temporaryDirectory)
+        pendingPluginInstall = nil
+        return await commandOutput(
+            arguments,
+            fallback: "Herdr installed the plugin."
+        )
+    }
+
+    func cancelPluginInstall() async {
+        guard let pending = pendingPluginInstall else { return }
+        try? FileManager.default.removeItem(at: pending.temporaryDirectory)
+        pendingPluginInstall = nil
+    }
+
+    private func pluginPreviewFailure(
+        _ result: HerdrCommandResult
+    ) -> HerdrPluginInstallPreview {
+        HerdrPluginInstallPreview(
+            canConfirm: false,
+            output: result.errorOutput.isEmpty
+                ? "Unable to read the plugin source."
+                : result.errorOutput
+        )
+    }
+
+    private static func pluginSourceParts(
+        _ source: String
+    ) -> (remoteURL: String, manifestPath: String)? {
+        let parts = source.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count >= 2,
+              !parts[0].isEmpty,
+              !parts[1].isEmpty,
+              parts[0] != ".",
+              parts[0] != "..",
+              parts[1] != ".",
+              parts[1] != "..",
+              parts[0].allSatisfy(Self.isGitHubSegmentCharacter),
+              parts[1].allSatisfy(Self.isGitHubSegmentCharacter) else {
+            return nil
+        }
+        let subdirectory = parts.dropFirst(2)
+        guard subdirectory.allSatisfy({
+            !$0.isEmpty && $0 != "." && $0 != ".."
+                && !$0.contains("\\") && !$0.contains("\0")
+        }) else {
+            return nil
+        }
+        let owner = String(parts[0])
+        let repository = String(parts[1])
+        let manifestPath = (
+            subdirectory.map(String.init) + ["herdr-plugin.toml"]
+        ).joined(separator: "/")
+        return (
+            "https://github.com/\(owner)/\(repository).git",
+            manifestPath
+        )
+    }
+
+    private static func isGitHubSegmentCharacter(_ character: Character) -> Bool {
+        character.isASCII
+            && (character.isLetter
+                || character.isNumber
+                || character == "-"
+                || character == "_"
+                || character == ".")
+    }
+
+    func pluginLink(path: String) async -> String {
+        guard remoteTarget == nil else {
+            return "Plugin link is available only for a local Herdr server."
+        }
+        return await commandOutput(
+            ["plugin", "link", path],
+            fallback: "Herdr linked the plugin."
+        )
+    }
+
+    func pluginUninstall(_ pluginID: String) async -> String {
+        guard remoteTarget == nil else {
+            return "Plugin uninstall is available only for a local Herdr server."
+        }
+        return await commandOutput(
+            ["plugin", "uninstall", pluginID],
+            fallback: "Herdr uninstalled the plugin."
+        )
+    }
+
     func pluginLogs(_ pluginID: String) async -> String? {
         await runHerdrCapture([
             "plugin", "log", "list",
@@ -2957,13 +3400,287 @@ final class RaiModel: ObservableObject {
         await runHerdrCapture(["config", "check"])
     }
 
+    func herdrChannel() async -> String {
+        guard remoteTarget == nil else {
+            return "Update channel control is available only for local Herdr."
+        }
+        return await commandOutput(
+            ["channel", "show"],
+            usesActiveSocket: false,
+            fallback: "Unable to read the Herdr update channel."
+        )
+    }
+
+    func setHerdrChannel(
+        _ channel: String
+    ) async -> (succeeded: Bool, output: String) {
+        guard remoteTarget == nil else {
+            return (
+                false,
+                "Update channel control is available only for local Herdr."
+            )
+        }
+        guard channel == "stable" || channel == "preview" else {
+            return (
+                false,
+                "Herdr supports only stable and preview channels."
+            )
+        }
+        let result = await runHerdrResult(
+            ["channel", "set", channel],
+            usesActiveSocket: false,
+        )
+        let fallback = result.succeeded
+            ? "Herdr now uses the \(channel) channel."
+            : "Unable to change the Herdr update channel."
+        return (
+            result.succeeded,
+            result.displayOutput.isEmpty ? fallback : result.displayOutput
+        )
+    }
+
+    func agentManifestStatus() async -> String {
+        return await commandOutput(
+            ["server", "agent-manifests"],
+            fallback: "Unable to read agent detection manifests."
+        )
+    }
+
+    func updateAgentManifests() async -> String {
+        guard remoteTarget == nil else {
+            return "Manifest downloads are available only for local Herdr."
+        }
+        return await commandOutput(
+            ["server", "update-agent-manifests"],
+            fallback: "Herdr updated and reloaded agent detection manifests."
+        )
+    }
+
+    func reloadAgentManifests() async -> String {
+        let result = await runHerdrResult(["server", "reload-agent-manifests"])
+        guard result.succeeded else {
+            return result.errorOutput.isEmpty
+                ? "Unable to reload agent detection manifests."
+                : result.errorOutput
+        }
+        return await agentManifestStatus()
+    }
+
+    func liveHandoff() async -> String {
+        guard remoteTarget == nil else {
+            return "Live handoff is available only for a local Herdr server."
+        }
+        let result = await runHerdrResult(["server", "live-handoff"])
+        guard result.succeeded else {
+            return result.errorOutput.isEmpty
+                ? "Herdr live handoff failed."
+                : result.errorOutput
+        }
+        await reconnectAfterServerReplacement()
+        return result.displayOutput.isEmpty
+            ? "Herdr handed live panes to a new server."
+            : result.displayOutput
+    }
+
     func updateHerdr() async -> String {
-        await runHerdrCapture(["update"])
-            ?? "Herdr update failed or returned no output."
+        guard remoteTarget == nil else {
+            return "Herdr update is available only for a local server."
+        }
+        let result = await runHerdrResult(
+            ["update", "--handoff"]
+        )
+        if result.succeeded,
+           result.displayOutput.localizedCaseInsensitiveContains(
+               "live handoff complete"
+           ) {
+            await reconnectAfterServerReplacement()
+        }
+        if result.displayOutput.isEmpty {
+            return result.succeeded
+                ? "Herdr is up to date."
+                : "Herdr update failed or returned no output."
+        }
+        return result.displayOutput
+    }
+
+    func herdrNews() -> [HerdrNewsItem] {
+        [
+            Self.loadReleaseNotes(),
+            Self.loadProductAnnouncement(),
+        ]
+        .compactMap { $0 }
     }
 
     func stopServer() async -> Bool {
         await runHerdr(["server", "stop"])
+    }
+
+    private func commandOutput(
+        _ arguments: [String],
+        usesActiveSocket: Bool = true,
+        fallback: String
+    ) async -> String {
+        let result = await runHerdrResult(
+            arguments,
+            usesActiveSocket: usesActiveSocket
+        )
+        if !result.displayOutput.isEmpty {
+            return result.displayOutput
+        }
+        return result.succeeded ? fallback : "Herdr command failed."
+    }
+
+    /// Handoff preserves pane runtimes, but it drops all client sockets.
+    /// Rebuild both client types so Rai does not rely on short retry windows.
+    private func reconnectAfterServerReplacement() async {
+        connectionGeneration = UUID()
+        eventTask?.cancel()
+        eventTask = nil
+        flushTask?.cancel()
+        flushTask = nil
+        trailingRefreshTask?.cancel()
+        trailingRefreshTask = nil
+        pendingEvents.removeAll(keepingCapacity: false)
+        client.disconnect()
+        terminalPool.removeAll()
+        lastObservedPaneStatuses = nil
+        pluginActionsGeneration = nil
+
+        let generation = UUID()
+        connectionGeneration = generation
+        client = HerdrClient(socketPath: activeSocketPath)
+        connectionState = .connecting
+        await refreshSnapshot(
+            keepSelection: true,
+            client: client,
+            generation: generation
+        )
+        guard generation == connectionGeneration else { return }
+        startEventLoop(client: client, generation: generation)
+    }
+
+    private static func loadReleaseNotes() -> HerdrNewsItem? {
+        let url = herdrConfigDirectory()
+            .appendingPathComponent("release-notes.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let object = jsonDictionary(at: url),
+              let version = nonemptyString(object["version"]),
+              let body = nonemptyString(object["body"]) else {
+            return unreadableNewsItem(
+                id: "release-notes",
+                title: "Release notes unavailable",
+                subtitle: url.path
+            )
+        }
+        return HerdrNewsItem(
+            id: "release-notes-\(version)",
+            title: "Herdr \(version)",
+            subtitle: "Release notes",
+            body: body
+        )
+    }
+
+    private static func loadProductAnnouncement() -> HerdrNewsItem? {
+        let stateDirectory = herdrStateDirectory()
+        let candidates = [
+            stateDirectory.appendingPathComponent("product-announcements.json"),
+            stateDirectory.appendingPathComponent("product_announcements.json"),
+            herdrConfigDirectory().appendingPathComponent(
+                "product_announcements.json"
+            ),
+        ]
+        guard let url = candidates.first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }) else {
+            return nil
+        }
+        guard let store = jsonDictionary(at: url) else {
+            return unreadableNewsItem(
+                id: "product-announcement",
+                title: "Product announcement unavailable",
+                subtitle: url.path
+            )
+        }
+        let announcement: [String: Any]
+        if let latest = store["latest"] {
+            if latest is NSNull {
+                return nil
+            }
+            guard let latest = latest as? [String: Any] else {
+                return unreadableNewsItem(
+                    id: "product-announcement",
+                    title: "Product announcement unavailable",
+                    subtitle: url.path
+                )
+            }
+            announcement = latest
+        } else {
+            announcement = store
+        }
+        guard let version = nonemptyString(announcement["version"]),
+              let identifier = nonemptyString(announcement["id"]),
+              let body = nonemptyString(announcement["body"]) else {
+            return unreadableNewsItem(
+                id: "product-announcement",
+                title: "Product announcement unavailable",
+                subtitle: url.path
+            )
+        }
+        let title = nonemptyString(announcement["title"]) ?? "Product announcement"
+        return HerdrNewsItem(
+            id: "product-announcement-\(version)-\(identifier)",
+            title: title,
+            subtitle: "Product announcement · Herdr \(version)",
+            body: body
+        )
+    }
+
+    private static func unreadableNewsItem(
+        id: String,
+        title: String,
+        subtitle: String
+    ) -> HerdrNewsItem {
+        HerdrNewsItem(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            body: "Herdr wrote a file that Rai could not parse."
+        )
+    }
+
+    private static func jsonDictionary(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        return object as? [String: Any]
+    }
+
+    private static func nonemptyString(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func herdrConfigDirectory() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let path = environment["HERDR_CONFIG_PATH"], !path.isEmpty {
+            return URL(fileURLWithPath: path).deletingLastPathComponent()
+        }
+        if let path = environment["XDG_CONFIG_HOME"], !path.isEmpty {
+            return URL(fileURLWithPath: path).appendingPathComponent("herdr")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/herdr")
+    }
+
+    private static func herdrStateDirectory() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let path = environment["XDG_STATE_HOME"], !path.isEmpty {
+            return URL(fileURLWithPath: path).appendingPathComponent("herdr")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/herdr")
     }
 
     private func runHerdr(_ args: [String]) async -> Bool {
@@ -3018,6 +3735,15 @@ final class RaiModel: ObservableObject {
         let standardOutput: String
         let standardError: String
 
+        var displayOutput: String {
+            [
+                standardError.trimmingCharacters(in: .whitespacesAndNewlines),
+                standardOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+            ]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        }
+
         var errorOutput: String {
             let error = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
             if !error.isEmpty {
@@ -3031,11 +3757,32 @@ final class RaiModel: ObservableObject {
         _ args: [String],
         usesActiveSocket: Bool = true
     ) async -> HerdrCommandResult {
-        await withCheckedContinuation { continuation in
-            let process = configuredHerdrProcess(
+        await runProcessResult(
+            configuredHerdrProcess(
                 args,
                 usesActiveSocket: usesActiveSocket
             )
+        )
+    }
+
+    private func runExternalResult(
+        _ executablePath: String,
+        _ arguments: [String]
+    ) async -> HerdrCommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        process.environment = environment
+        return await runProcessResult(process)
+    }
+
+    private func runProcessResult(
+        _ process: Process
+    ) async -> HerdrCommandResult {
+        await withCheckedContinuation { continuation in
             let standardOutput = Pipe()
             let standardError = Pipe()
             process.standardOutput = standardOutput
@@ -3052,15 +3799,27 @@ final class RaiModel: ObservableObject {
                 )
                 return
             }
+            let outputCapture = HerdrPipeCapture()
+            let errorCapture = HerdrPipeCapture()
+            let readers = DispatchGroup()
+            readers.enter()
             DispatchQueue.global(qos: .userInitiated).async {
-                let outputData = standardOutput.fileHandleForReading.readDataToEndOfFile()
-                let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
+                outputCapture.read(from: standardOutput.fileHandleForReading)
+                readers.leave()
+            }
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                errorCapture.read(from: standardError.fileHandleForReading)
+                readers.leave()
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
                 process.waitUntilExit()
+                readers.wait()
                 continuation.resume(
                     returning: HerdrCommandResult(
                         succeeded: process.terminationStatus == 0,
-                        standardOutput: String(data: outputData, encoding: .utf8) ?? "",
-                        standardError: String(data: errorData, encoding: .utf8) ?? ""
+                        standardOutput: outputCapture.string(),
+                        standardError: errorCapture.string()
                     )
                 )
             }
