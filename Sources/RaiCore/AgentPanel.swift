@@ -82,15 +82,19 @@ public enum AgentPanel {
     private static func herdOrderEntries(
         in snapshot: SessionSnapshot
     ) -> [AgentPanelEntry] {
-        // `snapshot.agents` carries only panes with a detected agent, and it
-        // enriches them (custom name, display label). It must not become the
-        // list itself: herdr's own agents panel walks every pane
-        // (`ws.pane_details`, src/ui/sidebar.rs), so filtering by it empties the
-        // panel for a herd of plain shells.
+        // The panel lists agents, not panes. herdr's own TUI walks every pane
+        // here, but a section labelled "agents" that lists plain shells is
+        // noise — a herd's shells belong to the spaces list above.
+        //
+        // `snapshot.agents` is the server's own answer to "what is an agent",
+        // so it decides membership when present and enriches the row it matches
+        // (a renamed or custom-labelled agent). Older servers omit the array;
+        // there, a pane's own detected agent is the test.
         let agentsByPane = Dictionary(
             (snapshot.agents ?? []).map { ($0.paneID, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        let hasAgentProjection = snapshot.agents != nil
         return snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
             let tabs = snapshot.tabs.filter {
                 $0.workspaceID == workspace.workspaceID
@@ -102,6 +106,11 @@ public enum AgentPanel {
                     : nil
                 return snapshot.panes
                     .filter { $0.tabID == tab.tabID }
+                    .filter { pane in
+                        hasAgentProjection
+                            ? agentsByPane[pane.paneID] != nil
+                            : trimmedAgent(pane.agent) != nil
+                    }
                     .map { pane in
                         let agent = agentsByPane[pane.paneID]
                         return AgentPanelEntry(
