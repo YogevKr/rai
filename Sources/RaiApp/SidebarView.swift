@@ -83,7 +83,28 @@ struct SidebarView: View {
         if let snapshot = model.snapshot {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                    ForEach(snapshot.workspaces) { workspace in
+                    let entries = model.workspaceListEntries
+                    let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
+                        AttentionFilter.includes(
+                            status: tab.agentStatus,
+                            id: tab.tabID,
+                            selectedID: model.selectedTabID,
+                            onlyNeedsYou: model.onlyNeedsYou
+                        ) ? tab.workspaceID : nil
+                    })
+                    let expandedEntries = WorkspaceSidebar.entries(
+                        in: snapshot,
+                        gitStatuses: model.workspaceGitStatuses,
+                        collapsedSpaceKeys: [],
+                        visibleWorkspaceID: nil
+                    )
+                    let visibleGroupKeys = Set(expandedEntries.compactMap {
+                        visibleWorkspaceIDs.contains($0.workspace.workspaceID)
+                            ? $0.groupKey
+                            : nil
+                    })
+                    ForEach(entries) { entry in
+                        let workspace = entry.workspace
                         let allTabs = tabs(in: snapshot, of: workspace)
                         // A collapsed space hides everything but its
                         // attention-needing tabs (and the selected one) —
@@ -100,7 +121,11 @@ struct SidebarView: View {
                         let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
                         // Every space renders the same way — header + tab
                         // rows — whether it holds one tab or many.
-                        if collapsed || !visibleTabs.isEmpty {
+                        let groupHasVisibleTabs = entry.groupKey.map {
+                            visibleGroupKeys.contains($0)
+                        } ?? false
+                        if collapsed || !visibleTabs.isEmpty
+                            || (entry.isGroupParent && groupHasVisibleTabs) {
                             Section {
                                 ForEach(visibleTabs) { tab in
                                     AgentRow(
@@ -112,18 +137,30 @@ struct SidebarView: View {
                                         onPaneDragHover: {
                                             model.previewTabDuringPaneDrag(tab)
                                         },
-                                        onBroadcast: { broadcastPresented = true }
+                                        onBroadcast: { broadcastPresented = true },
+                                        indent: entry.indented ? 32 : 14
                                     )
                                 }
                             } header: {
                                 WorkspaceHeader(
                                     model: model,
                                     workspace: workspace,
+                                    displayLabel: entry.displayLabel,
+                                    gitStatus: model.gitStatus(for: workspace),
+                                    displayStatus: entry.displayStatus,
                                     focusedInHerdr: focused,
+                                    indented: entry.indented,
                                     collapsed: collapsed,
                                     hiddenCount: allTabs.count - visibleTabs.count,
+                                    groupKey: entry.isGroupParent ? entry.groupKey : nil,
+                                    groupCollapsed: entry.groupCollapsed,
                                     onToggleCollapse: {
                                         model.toggleWorkspaceCollapsed(workspace.workspaceID)
+                                    },
+                                    onToggleGroup: {
+                                        if let key = entry.groupKey {
+                                            model.toggleSpaceGroupCollapsed(key)
+                                        }
                                     }
                                 )
                             }
@@ -652,22 +689,43 @@ private struct SidebarRowLabel<Trailing: View>: View {
 }
 
 private struct WorktreeTag: View {
-    let worktree: WorkspaceWorktree
+    let status: WorkspaceGitStatus?
+    let worktree: WorkspaceWorktree?
 
     var body: some View {
-        HStack(spacing: 3) {
-            if worktree.isLinkedWorktree {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 8))
+        HStack(spacing: 6) {
+            if let branch = status?.branch {
+                Text(branch)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else if status?.isDetached == true {
+                Text("detached HEAD")
+            } else if let worktree {
+                HStack(spacing: 3) {
+                    if worktree.isLinkedWorktree {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(.system(size: 8))
+                    }
+                    Text(worktreeIdentity(worktree)).lineLimit(1)
+                }
             }
-            Text(identity).lineLimit(1)
+            if let counts = status?.aheadBehind {
+                if counts.ahead > 0 {
+                    Text("↑\(counts.ahead)")
+                        .foregroundStyle(Theme.status(.done))
+                }
+                if counts.behind > 0 {
+                    Text("↓\(counts.behind)")
+                        .foregroundStyle(Theme.status(.blocked))
+                }
+            }
         }
-        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+        .font(.system(size: 10.5, weight: .medium, design: .rounded))
         .foregroundStyle(Theme.textTertiary)
-        .help(worktree.checkoutPath)
+        .help(status?.checkoutPath ?? worktree?.checkoutPath ?? "")
     }
 
-    private var identity: String {
+    private func worktreeIdentity(_ worktree: WorkspaceWorktree) -> String {
         guard worktree.isLinkedWorktree else { return worktree.repoName }
         let checkoutName = URL(fileURLWithPath: worktree.checkoutPath).lastPathComponent
         return checkoutName.isEmpty ? worktree.repoName : checkoutName
@@ -677,71 +735,112 @@ private struct WorktreeTag: View {
 private struct WorkspaceHeader: View {
     @ObservedObject var model: RaiModel
     let workspace: Workspace
+    let displayLabel: String
+    let gitStatus: WorkspaceGitStatus?
+    let displayStatus: AgentStatus
     let focusedInHerdr: Bool
+    var indented = false
     var collapsed: Bool = false
     var hiddenCount: Int = 0
+    var groupKey: String?
+    var groupCollapsed = false
     var onToggleCollapse: () -> Void = {}
+    var onToggleGroup: () -> Void = {}
 
     @State private var dropTargeted = false
 
-    private var showWorktreeTag: Bool {
+    private var showWorktreeFallback: Bool {
         guard let worktree = workspace.worktree else { return false }
         return worktree.isLinkedWorktree
-            || worktree.repoName.caseInsensitiveCompare(workspace.label) != .orderedSame
+            || worktree.repoName.caseInsensitiveCompare(displayLabel) != .orderedSame
+    }
+
+    private var showGitDetails: Bool {
+        guard let gitStatus else { return false }
+        return gitStatus.branch != nil || gitStatus.isDetached
+            || gitStatus.aheadBehind.map {
+                $0.ahead > 0 || $0.behind > 0
+            } == true
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            Button(action: onToggleCollapse) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Theme.textTertiary)
-                    .rotationEffect(.degrees(collapsed ? 0 : 90))
-                    .frame(width: 12, height: 12)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(collapsed ? "Expand space" : "Collapse space")
-            Image(systemName: "square.stack")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Theme.textTertiary)
-            if model.inlineRename == .workspace(workspace.workspaceID) {
-                InlineRenameField(
-                    initial: workspace.label,
-                    font: .system(size: 10, weight: .semibold),
-                    onCommit: { model.commitInlineRename(workspace: workspace, to: $0) },
-                    onCancel: { model.cancelInlineRename() }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Button(action: groupKey == nil ? onToggleCollapse : onToggleGroup) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .rotationEffect(
+                            .degrees((groupKey == nil ? collapsed : groupCollapsed) ? 0 : 90)
+                        )
+                        .frame(width: 12, height: 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(
+                    groupKey == nil
+                        ? (collapsed ? "Expand space" : "Collapse space")
+                        : (groupCollapsed ? "Expand worktrees" : "Collapse worktrees")
                 )
-            } else {
-                Text(workspace.label.uppercased())
-                    .font(.system(size: 10.5, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .simultaneousGesture(
-                        TapGesture(count: 2)
-                            .onEnded { model.beginInlineRename(workspace: workspace) }
+                if groupKey != nil {
+                    Button(action: onToggleCollapse) {
+                        Image(systemName: "square.stack")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(collapsed ? "Expand space tabs" : "Collapse space tabs")
+                } else {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                StatusDot(status: displayStatus, size: 6)
+                if model.inlineRename == .workspace(workspace.workspaceID) {
+                    InlineRenameField(
+                        initial: workspace.label,
+                        font: .system(size: 10, weight: .semibold),
+                        onCommit: { model.commitInlineRename(workspace: workspace, to: $0) },
+                        onCancel: { model.cancelInlineRename() }
                     )
-                if focusedInHerdr {
-                    Circle().fill(Theme.accent).frame(width: 4, height: 4)
-                        .help("Focused in Herdr")
+                } else {
+                    Text(indented ? displayLabel : displayLabel.uppercased())
+                        .font(.system(size: 10.5, weight: .bold))
+                        .tracking(indented ? 0 : 1.1)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                        .simultaneousGesture(
+                            TapGesture(count: 2)
+                                .onEnded { model.beginInlineRename(workspace: workspace) }
+                        )
+                    if focusedInHerdr {
+                        Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                            .help("Focused in Herdr")
+                    }
+                }
+                Spacer(minLength: 4)
+                if collapsed, hiddenCount > 0 {
+                    Text("\(hiddenCount) hidden")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                } else {
+                    Text("\(workspace.tabCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
-            Spacer(minLength: 4)
-            if collapsed, hiddenCount > 0 {
-                Text("\(hiddenCount) hidden")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(Theme.textTertiary)
-            } else if showWorktreeTag, let worktree = workspace.worktree {
-                WorktreeTag(worktree: worktree)
-            } else {
-                Text("\(workspace.tabCount)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textTertiary)
+            if !indented, showGitDetails || showWorktreeFallback {
+                // Herdr suppresses Git tokens on indented children. Their auto
+                // label is already the branch, while a custom name stays custom.
+                WorktreeTag(status: gitStatus, worktree: workspace.worktree)
+                    .padding(.leading, groupKey == nil ? 43 : 58)
+                    .padding(.trailing, 6)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 16)
+        .padding(.leading, indented ? 18 : 0)
+        .padding(.top, indented ? 6 : 16)
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         // A faint band + bottom hairline so a space header reads as a group
@@ -820,6 +919,7 @@ private struct AgentRow: View {
     let onSelect: () -> Void
     let onPaneDragHover: () -> Void
     let onBroadcast: () -> Void
+    var indent: CGFloat = 14
 
     @State private var hovering = false
     @State private var dropTargeted = false
@@ -869,7 +969,7 @@ private struct AgentRow: View {
         }
         // Indent tabs inside the chrome (not via outer padding) so the drag/drop
         // modifiers still wrap the full-width row and reordering keeps working.
-        .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: 14))
+        .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: indent))
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
