@@ -729,6 +729,11 @@ final class ScrollbackSelectionController {
         }
         guard let probe = try? await paneScroll(paneID),
               probe.offsetFromBottom > scroll.offsetFromBottom else {
+            // The probe moved nothing host-side, which means the pane's own
+            // application swallowed the wheel report — and scrolled ITS
+            // viewport up a step. Restoring herdr's offset cannot undo that;
+            // only the matching wheel-down can.
+            inject(Self.wheelDown)
             _ = await scrollPane(
                 paneID,
                 toOffset: initial.offsetFromBottom,

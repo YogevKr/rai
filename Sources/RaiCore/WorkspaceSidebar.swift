@@ -386,13 +386,19 @@ public enum WorkspaceSidebar {
         return gitStatuses[path]
     }
 
-    /// Change this accessor to `worktree.repoKey` when that wire field lands.
     private static func repositoryKey(
         for workspace: Workspace,
         in snapshot: SessionSnapshot,
         gitStatuses: [String: WorkspaceGitStatus]
     ) -> String? {
-        guard workspace.worktree != nil else { return nil }
+        guard let worktree = workspace.worktree else { return nil }
+        // The snapshot's own repo_key comes first: on a REMOTE herd rai cannot
+        // stat the checkout, so the local git poll never fills gitStatuses and
+        // grouping by it alone would silently never happen.
+        if let key = worktree.repoKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !key.isEmpty {
+            return key
+        }
         return gitStatus(for: workspace, in: snapshot, gitStatuses: gitStatuses)?.repoKey
     }
 
