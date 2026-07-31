@@ -57,6 +57,7 @@ final class AgentPanelTests: XCTestCase {
             cwd: "/repo",
             foregroundCWD: nil,
             agent: agent,
+            agentSession: nil,
             terminalTitle: title,
             terminalTitleStripped: title,
             agentStatus: status,
@@ -68,7 +69,8 @@ final class AgentPanelTests: XCTestCase {
     private func snapshot(
         workspaces: [Workspace],
         tabs: [HerdrTab],
-        panes: [Pane]
+        panes: [Pane],
+        agents: [HerdrAgent]? = nil
     ) -> SessionSnapshot {
         SessionSnapshot(
             version: "0.7.4",
@@ -79,7 +81,36 @@ final class AgentPanelTests: XCTestCase {
             workspaces: workspaces,
             tabs: tabs,
             panes: panes,
+            agents: agents,
             layouts: []
+        )
+    }
+
+    private func agent(
+        _ id: String,
+        tabID: String,
+        workspaceID: String,
+        label: String = "claude",
+        status: AgentStatus = .idle,
+        title: String? = nil
+    ) -> HerdrAgent {
+        HerdrAgent(
+            terminalID: "term-\(id)",
+            name: nil,
+            agent: label,
+            title: nil,
+            terminalTitle: title,
+            terminalTitleStripped: title,
+            displayAgent: nil,
+            agentStatus: status,
+            agentSession: nil,
+            workspaceID: workspaceID,
+            tabID: tabID,
+            paneID: id,
+            focused: false,
+            cwd: "/repo",
+            foregroundCWD: nil,
+            revision: 1
         )
     }
 
@@ -148,6 +179,55 @@ final class AgentPanelTests: XCTestCase {
         )
         XCTAssertEqual(entries.map(\.paneID), ["pane-1", "pane-2"])
         XCTAssertEqual(entries.map(\.workspaceLabel), ["rai", "needle"])
+    }
+
+    func testAgentProjectionWinsOverPaneProjection() {
+        let entries = AgentPanel.entries(
+            in: snapshot(
+                workspaces: [workspace("ws-1", label: "rai", paneCount: 2)],
+                tabs: [tab("tab-1", workspaceID: "ws-1", label: "1", paneCount: 2)],
+                panes: [
+                    pane(
+                        "stale-agent",
+                        tabID: "tab-1",
+                        workspaceID: "ws-1",
+                        agent: "codex",
+                        status: .idle
+                    ),
+                    pane(
+                        "shell",
+                        tabID: "tab-1",
+                        workspaceID: "ws-1",
+                        agent: nil
+                    ),
+                ],
+                agents: [
+                    agent(
+                        "live-agent",
+                        tabID: "tab-1",
+                        workspaceID: "ws-1",
+                        status: .blocked
+                    ),
+                ]
+            ),
+            sort: .grouped
+        )
+        XCTAssertEqual(entries.map(\.paneID), ["live-agent"])
+        XCTAssertEqual(entries.first?.agentLabel, "claude")
+        XCTAssertEqual(entries.first?.status, .blocked)
+    }
+
+    func testEmptyAgentProjectionIsAuthoritative() {
+        let entries = AgentPanel.entries(
+            in: snapshot(
+                workspaces: [workspace("ws-1", label: "rai")],
+                tabs: [tab("tab-1", workspaceID: "ws-1", label: "1")],
+                panes: [pane("pane-1", tabID: "tab-1", workspaceID: "ws-1")],
+                agents: []
+            ),
+            sort: .grouped
+        )
+        XCTAssertTrue(entries.isEmpty)
     }
 
     /// A lone auto-named tab repeats nothing useful next to its space name.

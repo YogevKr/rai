@@ -20,6 +20,7 @@ struct ClosedTabRecord: Equatable {
     let workspaceID: String
     let cwd: String
     let agentKind: AgentLaunchKind?
+    let agentSession: AgentSession?
     let label: String
     /// The agent's full command line at close time (from pane process-info):
     /// reopen relaunches with the SAME flags — bypass permissions, model
@@ -1189,10 +1190,10 @@ final class RaiModel: ObservableObject {
         if closedTabs.count > 10 {
             closedTabs.removeFirst(closedTabs.count - 10)
         }
-        let agentPaneID = snapshot?.panes.first {
-            $0.tabID == tab.tabID && $0.agent != nil
-        }?.paneID
-        guard let agentPaneID, let kind = record.agentKind else {
+        guard let kind = record.agentKind,
+              let agentPaneID = snapshot?.panes.first(where: {
+                  $0.tabID == tab.tabID && Self.agentLaunchKind(for: $0) == kind
+              })?.paneID else {
             runAction(arguments)
             return
         }
@@ -1226,7 +1227,19 @@ final class RaiModel: ObservableObject {
     /// The shell command that resumes a reopened tab's agent. With a captured
     /// argv, resume carries every original flag and falls back to the same
     /// flags without the resume switch; without one, the bare defaults.
-    static func resumeCommand(kind: AgentLaunchKind, argv: [String]?) -> String {
+    static func resumeCommand(
+        kind: AgentLaunchKind,
+        argv: [String]?,
+        agentSession: AgentSession? = nil
+    ) -> String {
+        if agentSession?.agent == kind.rawValue,
+           let plan = agentSession?.exactResumePlan(argv: argv) {
+            let resume = plan.resumeArgv.map(DroppedPathEscaper.escape)
+                .joined(separator: " ")
+            let fallback = plan.fallbackArgv.map(DroppedPathEscaper.escape)
+                .joined(separator: " ")
+            return "\(resume) || \(fallback)"
+        }
         guard let argv, !argv.isEmpty,
               (argv[0] as NSString).lastPathComponent == kind.rawValue
         else {
@@ -1276,18 +1289,22 @@ final class RaiModel: ObservableObject {
             ?? panes.first else {
             return nil
         }
-        let agentKind = panes.compactMap { pane -> AgentLaunchKind? in
-            guard let agent = pane.agent?.lowercased() else { return nil }
-            if agent.contains("claude") { return .claude }
-            if agent.contains("codex") { return .codex }
-            return nil
-        }.first
+        let agentPane = panes.first { Self.agentLaunchKind(for: $0) != nil }
+        let agentKind = agentPane.flatMap(Self.agentLaunchKind)
         return ClosedTabRecord(
             workspaceID: tab.workspaceID,
             cwd: activePane.foregroundCWD ?? activePane.cwd,
             agentKind: agentKind,
+            agentSession: agentPane?.agentSession,
             label: tab.label
         )
+    }
+
+    private static func agentLaunchKind(for pane: Pane) -> AgentLaunchKind? {
+        guard let agent = pane.agent?.lowercased() else { return nil }
+        if agent.contains("claude") { return .claude }
+        if agent.contains("codex") { return .codex }
+        return nil
     }
 
     func requestClose(workspace: Workspace) {
@@ -2831,11 +2848,13 @@ final class RaiModel: ObservableObject {
             _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
         }
         if let agentKind = record.agentKind {
-            // Best effort: both clients scope their "most recent" lookup by cwd.
-            // Their current CLIs support these flags, but Rai cannot verify that
-            // a resumable session still exists after herdr killed it. Fall back
-            // to a fresh client only when the resume command exits unsuccessfully.
-            let resumeCommand = Self.resumeCommand(kind: agentKind, argv: record.agentArgv)
+            // Prefer herdr's exact session id. Older servers fall back to each
+            // client's cwd-scoped recent session lookup.
+            let resumeCommand = Self.resumeCommand(
+                kind: agentKind,
+                argv: record.agentArgv,
+                agentSession: record.agentSession
+            )
             // `tab create` already gave the tab a default shell pane, and
             // `agent start` puts the agent in a SECOND pane beside it. Capture
             // that default pane up front and close it once the agent is running,
