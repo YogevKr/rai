@@ -82,7 +82,35 @@ public enum AgentPanel {
     private static func herdOrderEntries(
         in snapshot: SessionSnapshot
     ) -> [AgentPanelEntry] {
-        snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
+        if let agents = snapshot.agents {
+            return agents.map { agent in
+                let workspace = snapshot.workspaces.first {
+                    $0.workspaceID == agent.workspaceID
+                }
+                let tab = snapshot.tabs.first { $0.tabID == agent.tabID }
+                let tabCount = snapshot.tabs.lazy.filter {
+                    $0.workspaceID == agent.workspaceID
+                }.count
+                let tabLabel = tab.flatMap {
+                    tabCount > 1 || isNamed($0)
+                        ? displayLabel(for: $0, agent: agent)
+                        : nil
+                }
+                return AgentPanelEntry(
+                    paneID: agent.paneID,
+                    tabID: agent.tabID,
+                    workspaceID: agent.workspaceID,
+                    workspaceLabel: workspaceLabel(
+                        workspace,
+                        fallback: agent.workspaceID
+                    ),
+                    tabLabel: tabLabel,
+                    agentLabel: trimmedAgent(agent.agent),
+                    status: agent.agentStatus
+                )
+            }
+        }
+        return snapshot.workspaces.flatMap { workspace -> [AgentPanelEntry] in
             let tabs = snapshot.tabs.filter {
                 $0.workspaceID == workspace.workspaceID
             }
@@ -100,7 +128,7 @@ public enum AgentPanel {
                             workspaceID: workspace.workspaceID,
                             workspaceLabel: snapshot.workspaceLabel(for: pane),
                             tabLabel: label,
-                            agentLabel: trimmedAgent(of: pane),
+                            agentLabel: trimmedAgent(pane.agent),
                             status: pane.agentStatus
                         )
                     }
@@ -115,8 +143,31 @@ public enum AgentPanel {
         return !label.isEmpty && Int(label) == nil
     }
 
-    private static func trimmedAgent(of pane: Pane) -> String? {
-        guard let agent = pane.agent?
+    private static func displayLabel(
+        for tab: HerdrTab,
+        agent: HerdrAgent
+    ) -> String {
+        let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty, Int(label) == nil { return label }
+        if let title = agent.terminalTitleStripped?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !title.isEmpty {
+            return title
+        }
+        return trimmedAgent(agent.agent) ?? (label.isEmpty ? "shell" : label)
+    }
+
+    private static func workspaceLabel(
+        _ workspace: Workspace?,
+        fallback: String
+    ) -> String {
+        guard let workspace else { return fallback }
+        let label = workspace.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? "Space \(workspace.number)" : label
+    }
+
+    private static func trimmedAgent(_ value: String?) -> String? {
+        guard let agent = value?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !agent.isEmpty else {
             return nil
