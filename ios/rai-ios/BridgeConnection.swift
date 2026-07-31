@@ -462,7 +462,16 @@ final class BridgeConnection: ObservableObject {
             }
         case let .scrollback(paneID, bytesBase64):
             seededPanes.insert(paneID)
-            guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else { return }
+            // An EMPTY seed is the NORMAL reply for an agent on the alt screen:
+            // `pane read --source recent` returns just the current screen, and
+            // the Mac drops a screenful from the tail so the seam can't show it
+            // twice — for Claude that trims the payload to nothing.
+            //
+            // It still has to reach the handler. The handler's full reset is
+            // the only thing that clears the previous visit's rows, so dropping
+            // an empty seed here left stale history sitting above the live
+            // screen every time the user came back to an agent.
+            let data = Data(base64Encoded: bytesBase64) ?? Data()
             guard let handlers = paneScrollbackHandlers[paneID]?.values,
                   !handlers.isEmpty else {
                 pendingScrollback[paneID] = data
