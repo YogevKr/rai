@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "RaiCore", targets: ["RaiCore"]),
         .executable(name: "rai", targets: ["RaiApp"]),
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
+        .executable(name: "rai-bench", targets: ["RaiBench"]),
     ],
     dependencies: [
         // Fork of SwiftTerm 1.15.0 (branch rai-selection-autoscroll) adding
@@ -37,6 +38,13 @@ let package = Package(
         .executableTarget(
             name: "RaiProbe",
             dependencies: ["RaiCore"]
+        ),
+        // Renderer A/B harness. Not shipped in the app bundle.
+        .executableTarget(
+            name: "RaiBench",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
         ),
         .testTarget(
             name: "RaiCoreTests",
