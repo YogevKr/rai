@@ -103,6 +103,29 @@ struct PaneTerminalView: View {
                     )
                 }
 
+                // Held lines are stated, not just kept. A queue the user cannot
+                // see is only marginally better than the silent drop it
+                // replaced — they still cannot tell whether the Mac got it.
+                if !connection.outbox.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath")
+                        Text(
+                            connection.outbox.count == 1
+                                ? "1 line waiting for a connection"
+                                : "\(connection.outbox.count) lines waiting for a connection"
+                        )
+                        .font(.footnote)
+                        Spacer()
+                        Button("Discard", role: .destructive) {
+                            connection.discardOutbox()
+                        }
+                        .font(.footnote)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 6)
+                    .background(.bar)
+                }
+
                 HStack(spacing: 8) {
                     PhotosPicker(selection: $selectedPhoto, matching: .images) {
                         if isSendingImage {
@@ -251,8 +274,16 @@ struct PaneTerminalView: View {
             return
         }
         destructiveArmed = false
-        sendLine(text)
-        composedLine = ""
+        // Clear only once the line is actually on the wire. It used to clear
+        // unconditionally, so typing with no signal wiped the text and dropped
+        // it — the send failure was swallowed into handleSocketFailure and the
+        // user was never told. A queued line keeps the field's contents until
+        // it lands.
+        Task {
+            let delivered = await connection.sendComposedLine(
+                Array(text.utf8) + [0x0D], to: pane.paneID)
+            if delivered { composedLine = "" }
+        }
     }
 
     private func sendLine(_ text: String) {
