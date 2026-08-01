@@ -29,10 +29,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same pin as the Mac release: Xcode 16.x bundles the Metal toolchain that
-      # SwiftTerm's .metal shader needs.
-      - name: Select Xcode 16
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+      # Xcode 26+, NOT the Mac release's Xcode 16 pin. App Store Connect rejects
+      # any iOS build made with an SDK older than iOS 26:
+      #   "This app was built with the iOS 18.5 SDK. All iOS and iPadOS apps must
+      #    be built with the iOS 26 SDK or later, included in Xcode 26 or later."
+      # That rejection happens at validation, AFTER signing and upload, so it
+      # costs a full run to discover. The Mac release keeps 16 for its Metal
+      # toolchain; SwiftTerm ships Shaders.metal as a copied resource compiled at
+      # runtime, so the iOS build does not need that toolchain.
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner image."; exit 1; }
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       # project.yml is the source of truth — xcodegen REGENERATES Info.plist from
       # it, so patching the plist alone is silently reverted. Set both, then let
