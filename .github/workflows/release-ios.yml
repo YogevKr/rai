@@ -1,0 +1,155 @@
+name: Release iOS
+
+# TestFlight uploads used to be a local ritual: archive in Xcode, export with a
+# signed-in Apple ID. That broke the moment the Mac lost its Xcode account and
+# its Apple Distribution certificate — both were gone by 2026-08-01, with no way
+# to notice until a release was attempted. CI has neither problem: it holds the
+# App Store Connect key as a secret and builds its signing assets fresh each run.
+#
+# Deliberately NOT tag-triggered. `v*` tags belong to the Mac release, and the
+# two ship on different cadences; a shared tag would force them to move together.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: 'CFBundleVersion, e.g. 28. Must exceed the last uploaded build.'
+        required: true
+      skip_upload:
+        description: 'Archive and export only — verify signing without spending an upload.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same pin as the Mac release: Xcode 16.x bundles the Metal toolchain that
+      # SwiftTerm's .metal shader needs.
+      - name: Select Xcode 16
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+
+      # project.yml is the source of truth — xcodegen REGENERATES Info.plist from
+      # it, so patching the plist alone is silently reverted. Set both, then let
+      # xcodegen reconcile the project.
+      - name: Set build number
+        env:
+          BUILD_NUMBER: ${{ github.event.inputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || {
+            echo "::error::build_number must be an integer, got '$BUILD_NUMBER'"; exit 1; }
+          /usr/bin/sed -i '' -E "s/CFBundleVersion: \"[0-9]+\"/CFBundleVersion: \"$BUILD_NUMBER\"/" ios/project.yml
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ios/rai-ios/Info.plist
+          grep CFBundleVersion ios/project.yml
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Regenerate the project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Gate the upload on the iOS suite, mirroring how the Mac release gates on
+      # `swift test`. A build that cannot pass its own tests should not reach a
+      # tester's phone.
+      - name: Test
+        run: |
+          set -euo pipefail
+          SIM_ID="$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for v in d.values() for x in v if "iPhone" in x["name"]))')"
+          xcodebuild -project ios/rai-ios.xcodeproj -scheme rai-ios \
+            -destination "platform=iOS Simulator,id=$SIM_ID" test
+
+      # The key never touches the working tree. xcodebuild reads it by path, and
+      # the file dies with the runner.
+      - name: Stage the App Store Connect key
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_KEY_P8}" ] || [ -z "${API_KEY_ID}" ] || [ -z "${API_ISSUER_ID}" ]; then
+            echo "::error::App Store Connect secrets missing (APPLE_API_KEY_P8/_ID, APPLE_API_ISSUER_ID)."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          # Base64, same encoding the Mac release's notarization step expects.
+          printf '%s' "${API_KEY_P8}" | base64 --decode \
+            > "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
+
+      # No Apple Distribution cert is stored anywhere. `-allowProvisioningUpdates`
+      # plus the API key lets Xcode create and download the signing assets on the
+      # runner, which is also why this survives a local keychain being wiped.
+      - name: Archive
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/rai-ios.xcodeproj -scheme rai-ios \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/rai-ios.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8" \
+            -authenticationKeyID "$API_KEY_ID" \
+            -authenticationKeyIssuerID "$API_ISSUER_ID" \
+            archive
+
+      - name: Export options
+        run: |
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>T2XB37WVYD</string>
+            <!-- false: the build number set above is authoritative. Letting Xcode
+                 manage it silently renumbers the build and breaks the mapping
+                 between a TestFlight build and the commit that produced it. -->
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$RUNNER_TEMP/exportOptions.plist"
+
+      - name: Export and upload to TestFlight
+        if: ${{ github.event.inputs.skip_upload != 'true' }}
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/rai-ios.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8" \
+            -authenticationKeyID "$API_KEY_ID" \
+            -authenticationKeyIssuerID "$API_ISSUER_ID"
+
+      # A failed upload leaves the archive reusable, so keep it: the same
+      # .xcarchive can be re-exported later instead of rebuilding, which matters
+      # when App Store Connect rate-limits uploads (~4/app/day).
+      - name: Upload the archive as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rai-ios-build-${{ github.event.inputs.build_number }}-xcarchive
+          path: ${{ runner.temp }}/rai-ios.xcarchive
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Shred the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"
