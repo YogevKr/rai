@@ -142,6 +142,8 @@ private final class TerminalProcessCoordinator:
     private let terminalID: String
     private let socketPath: String
     private var started = false
+    private var launched = false
+    private var pendingLaunch: DispatchWorkItem?
     private var intentionalStop = false
     private var retries = 0
     private let maxRetries = 5
@@ -155,11 +157,34 @@ private final class TerminalProcessCoordinator:
         guard !started else { return }
         started = true
         self.view = view
+        // Do NOT spawn yet. The pool hands over a view at frame .zero, so the
+        // attach would inherit SwiftTerm's default 80x25 pty: herdr renders the
+        // pane at 80 columns, the real size lands ~100ms later, and every TUI
+        // that reprints on resize leaves an 80-column copy of its output in the
+        // scrollback above the reflowed one. Wait for the first real layout.
+        //
+        // The timer is the floor, not the plan: a pooled view that is never
+        // laid out (no window, zero-sized host) must still attach, or its pane
+        // would never stream at all.
+        let fallback = DispatchWorkItem { [weak self] in
+            self?.launchIfNeeded()
+        }
+        pendingLaunch = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: fallback)
+    }
+
+    private func launchIfNeeded() {
+        guard !launched, view != nil, !intentionalStop else { return }
+        launched = true
+        pendingLaunch?.cancel()
+        pendingLaunch = nil
         launch()
     }
 
     func stop(_ view: LocalProcessTerminalView) {
         intentionalStop = true
+        pendingLaunch?.cancel()
+        pendingLaunch = nil
         view.terminate()
     }
 
@@ -195,7 +220,11 @@ private final class TerminalProcessCoordinator:
         }
     }
 
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    /// The first real layout is the cue to spawn: the pty then starts at the
+    /// pane's true size, so herdr renders it once instead of once per width.
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        launchIfNeeded()
+    }
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 }
