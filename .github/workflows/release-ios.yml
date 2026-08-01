@@ -138,6 +138,33 @@ jobs:
             -authenticationKeyID "$API_KEY_ID" \
             -authenticationKeyIssuerID "$API_ISSUER_ID"
 
+      # `exportArchive` prints a one-line summary ("Cloud signing permission
+      # error") and writes the actual reason — which entitlement, which profile,
+      # which agreement — into a log bundle in TMPDIR that dies with the runner.
+      # Surface it inline, or the next failure is another guessing round.
+      - name: Distribution logs (on failure)
+        if: failure()
+        run: |
+          set +e
+          FOUND=$(find "${TMPDIR:-/tmp}" -maxdepth 3 -name "*.xcdistributionlogs" -print 2>/dev/null | head -1)
+          if [ -z "$FOUND" ]; then echo "no xcdistributionlogs found"; exit 0; fi
+          echo "=== $FOUND ==="
+          for f in "$FOUND"/*.log; do
+            echo "----- $(basename "$f") -----"
+            # verbose log carries the API responses; standard carries the steps
+            tail -c 40000 "$f"
+          done
+          mkdir -p "$RUNNER_TEMP/distlogs" && cp -R "$FOUND" "$RUNNER_TEMP/distlogs/"
+
+      - name: Upload distribution logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcdistributionlogs
+          path: ${{ runner.temp }}/distlogs
+          retention-days: 7
+          if-no-files-found: ignore
+
       # A failed upload leaves the archive reusable, so keep it: the same
       # .xcarchive can be re-exported later instead of rebuilding, which matters
       # when App Store Connect rate-limits uploads (~4/app/day).
