@@ -25,6 +25,7 @@ struct Options {
     var warmup = 3.0
     var bytesPerSecond = 200_000
     var corpusPath: String?
+    var aggregated = false
     var cols = 100
     var rows = 32
 
@@ -44,6 +45,7 @@ struct Options {
             case "--warmup": o.warmup = Double(value() ?? "") ?? o.warmup
             case "--rate": o.bytesPerSecond = Int(value() ?? "") ?? o.bytesPerSecond
             case "--corpus": o.corpusPath = value()
+            case "--buffering": o.aggregated = (value() ?? "per-row") == "aggregated"
             case "--cols": o.cols = Int(value() ?? "") ?? o.cols
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
             case "--help", "-h":
@@ -56,6 +58,7 @@ struct Options {
                   --warmup S       excluded warmup before measuring (default 3)
                   --rate B         bytes/second fed across all panes (default 200000)
                   --corpus PATH    replay these bytes (default: synthetic TUI-like output)
+                  --buffering B    per-row | aggregated (default per-row)
                   --cols / --rows  per-pane grid size (default 100x32)
                 """)
                 exit(0)
@@ -190,6 +193,9 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         guard options.useMetal else { return }
         for view in views {
             do {
+                // SwiftTerm suggests aggregated for TUIs that repaint most of
+                // the screen each frame — which a scrolling agent pane is.
+                if options.aggregated { view.metalBufferingMode = .perFrameAggregated }
                 try view.setUseMetal(true)
                 metalActive = true
             } catch {
@@ -239,7 +245,9 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         let wall = Date().timeIntervalSince(measureStartWall)
         feedTimer?.invalidate()
 
-        let renderer = metalActive ? "metal" : "coregraphics"
+        let renderer = metalActive
+            ? (options.aggregated ? "metal-aggregated" : "metal-perrow")
+            : "coregraphics"
         let mb = Double(bytesFed) / 1_048_576
         print(String(
             format: "renderer=%@ panes=%d rate=%dB/s wall=%.2fs cpu=%.2fs cpu%%=%.1f fed=%.1fMB",

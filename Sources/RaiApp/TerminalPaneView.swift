@@ -669,15 +669,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// Two defaults drive the A/B, both read live at pane creation:
     ///   `defaults write gr.krig.rai terminalMetalRenderer -bool YES`
     ///     — GPU rendering.
-    ///   `defaults write gr.krig.rai terminalMetalBuffering -string aggregated`
-    ///     — rebuild every visible row each frame instead of caching per row.
-    ///     SwiftTerm suggests this for full-screen TUIs, which agent panes are.
+    ///   `defaults write gr.krig.rai terminalMetalBuffering -string per-row`
+    ///     — cache vertex data per row instead of rebuilding every frame.
+    ///     Measurably slower here; the knob exists to re-check that.
     private func enableMetalRendererIfNeeded() {
         guard !metalEnableAttempted, window != nil else { return }
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? false else { return }
         metalEnableAttempted = true
-        if defaults.string(forKey: Self.metalBufferingKey) == "aggregated" {
+        // Aggregated by default: rai-bench measures it cheaper than per-row
+        // caching at every pane count (13% at 1 pane, 21% at 9). Agent panes
+        // scroll constantly, so most rows are dirty every frame and the
+        // per-row vertex cache mostly pays bookkeeping for nothing.
+        if defaults.string(forKey: Self.metalBufferingKey) != "per-row" {
             metalBufferingMode = .perFrameAggregated
         }
         do {
