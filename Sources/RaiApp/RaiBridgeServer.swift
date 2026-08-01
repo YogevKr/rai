@@ -271,6 +271,28 @@ final class RaiBridgeServer: ObservableObject {
 
     func relay(snapshot: SessionSnapshot) {
         broadcast(.snapshot(snapshot), onlyToSubscribers: true)
+        restartStreamsWhosePaneResized(snapshot)
+    }
+
+    /// A full-grid stream renders at a fixed row count, so a pane resized on
+    /// the Mac leaves the phone mirroring the OLD geometry — the same class of
+    /// bug as streaming 40 rows of a 45-row pane. resizePane cannot catch this:
+    /// it carries the CLIENT's viewport, which does not shape these streams.
+    /// A fresh snapshot is the only signal that the pane itself changed.
+    private func restartStreamsWhosePaneResized(_ snapshot: SessionSnapshot) {
+        for (clientID, streams) in observeStreams {
+            guard let client = clients[clientID] else { continue }
+            for (paneID, stream) in streams where stream.fullGrid && stream.isRunning {
+                guard let pane = snapshot.panes.first(where: { $0.paneID == paneID }),
+                      let current = pane.scroll?.viewportRows,
+                      current != stream.paneRows
+                else { continue }
+                startObserveStream(
+                    paneID: paneID, cols: stream.cols, rows: stream.rows,
+                    fullGrid: true, for: client
+                )
+            }
+        }
     }
 
     /// Pushes the panes' pending background work (⏳) to subscribed phones —
@@ -717,17 +739,30 @@ final class RaiBridgeServer: ObservableObject {
         // grid, so a stream smaller than the pane silently drops the BOTTOM
         // rows (prompt, cursor) and the RIGHT columns (panning on the phone
         // rubber-bands off a wall where the pane continues). For clients that
-        // opted in (fullGrid), omit the size flags entirely: observe then
-        // mirrors the pane at its NATIVE size, frames carry their dimensions,
-        // and the client scrolls a viewport over the full grid. Legacy
-        // clients size their emulator to the view and would garble a stream
-        // bigger than it, so they keep view-sized frames.
+        // opted in (fullGrid), frames carry their dimensions and the client
+        // scrolls a viewport over the full grid. Legacy clients size their
+        // emulator to the view and would garble a stream bigger than it, so
+        // they keep view-sized frames.
+        //
+        // --rows must be PASSED, not omitted. Omitting the size flags does not
+        // mirror the pane's native height: observe falls back to a 40-row
+        // default, so a 45-row pane lost its bottom 5 rows on every frame —
+        // the prompt among them. Measured against a live pane:
+        //     no flags            -> height=40, no ❯ row
+        //     --rows 45           -> height=45, ❯ row present
+        // --cols is still omitted: its default already tracks the pane's width
+        // (120 for a 120-column pane), and passing the client's viewport width
+        // is what used to clip the right-hand columns.
+        let paneRows = model.snapshot?
+            .panes.first { $0.paneID == paneID }?
+            .scroll?.viewportRows
 
         let process = Process()
         let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
         process.arguments = fullGrid
             ? ["terminal", "session", "observe", paneID]
+                + (paneRows.map { ["--rows", String($0)] } ?? [])
             : [
                 "terminal", "session", "observe", paneID,
                 "--cols", String(cols), "--rows", String(rows),
@@ -735,7 +770,8 @@ final class RaiBridgeServer: ObservableObject {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdout
         let stream = ObserveStream(
-            process: process, stdout: stdout, fullGrid: fullGrid, cols: cols, rows: rows)
+            process: process, stdout: stdout, fullGrid: fullGrid, cols: cols, rows: rows,
+            paneRows: paneRows)
         let clientID = ObjectIdentifier(client.connection)
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self, weak client, weak stream] handle in
@@ -961,17 +997,26 @@ private final class ObserveStream: @unchecked Sendable {
     let fullGrid: Bool
     let cols: Int
     let rows: Int
+    /// The pane height this stream was started against. A full-grid stream is
+    /// rendered at a FIXED row count, so when the pane itself is resized the
+    /// stream keeps emitting the old geometry and the client silently loses
+    /// (or gains blank) rows. Kept so a snapshot can spot the drift.
+    let paneRows: Int?
     private var buffer = Data()
     private(set) var isStopping = false
 
     var isRunning: Bool { process.isRunning }
 
-    init(process: Process, stdout: Pipe, fullGrid: Bool, cols: Int, rows: Int) {
+    init(
+        process: Process, stdout: Pipe, fullGrid: Bool, cols: Int, rows: Int,
+        paneRows: Int?
+    ) {
         self.process = process
         self.stdout = stdout
         self.fullGrid = fullGrid
         self.cols = cols
         self.rows = rows
+        self.paneRows = paneRows
     }
 
     func consume(_ data: Data) -> [ObserveFrame] {
