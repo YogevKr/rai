@@ -2,12 +2,12 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### Fixed in this release
 
-- **Opening a pane no longer renders its output twice.** The terminal attached
-  at SwiftTerm's default 80×25 before the pane had been laid out, so herdr drew
-  the pane at 80 columns and the real width landed about 100ms later — and every
-  agent TUI that reprints on resize left an 80-column copy of its output in the
-  scrollback above the reflowed one. The attach now waits for the pane's real
-  size, so herdr renders it once.
+- **No keychain prompt when rai starts.** rai read its push auth key from the
+  keychain at launch, on the main thread, before it had drawn a window — so a
+  freshly installed build could put a password box in front of an app that
+  showed nothing, and hold there until you answered. The key is only needed to
+  send a push or to edit it in Settings, so it is read there instead. Checking
+  whether push is set up no longer opens the keychain at all.
 
 ### Install
 
