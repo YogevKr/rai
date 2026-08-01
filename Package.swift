@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "RaiCore", targets: ["RaiCore"]),
         .executable(name: "rai", targets: ["RaiApp"]),
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
+        .executable(name: "rai-bench", targets: ["RaiBench"]),
     ],
     dependencies: [
         // Fork of SwiftTerm 1.15.0 (branch rai-selection-autoscroll) adding
@@ -19,10 +20,13 @@ let package = Package(
         // auto-scroll fix (remote-scrollback selection engine), pinGridSize
         // (iOS) so the phone mirrors a pane's full grid and scrolls a
         // viewport over it instead of clipping, and caret visibility toggles
-        // (no per-repaint view-hierarchy churn from DECTCEM).
+        // (no per-repaint view-hierarchy churn from DECTCEM), plus a Metal
+        // glyph-cache fix: a no-ink glyph (space) was re-rasterized through
+        // CoreText every frame, forever, because only successful lookups were
+        // memoized.
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "ddaa3a290bafea0eb7716e7dbefdcefbe8c5d8f1"
+            revision: "bf5121a"
         ),
     ],
     targets: [
@@ -37,6 +41,13 @@ let package = Package(
         .executableTarget(
             name: "RaiProbe",
             dependencies: ["RaiCore"]
+        ),
+        // Renderer A/B harness. Not shipped in the app bundle.
+        .executableTarget(
+            name: "RaiBench",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
         ),
         .testTarget(
             name: "RaiCoreTests",

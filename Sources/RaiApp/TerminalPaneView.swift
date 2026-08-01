@@ -207,6 +207,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var mouseIsDown = false
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
+    /// Bounded retry rather than a one-shot latch. SwiftTerm turns Metal OFF
+    /// without throwing when a cross-window CAMetalLayer rebind fails
+    /// (disableMetalRendererAfterRebindFailure), so a latch would strand a
+    /// pooled view on CoreGraphics for the rest of its life even after it
+    /// lands in a window whose device works. Counting only real throws keeps a
+    /// genuinely Metal-less machine from retrying on every window move.
+    private var metalEnableFailures = 0
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -626,7 +633,11 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // MARK: "back to live" pill
 
     override func viewDidMoveToWindow() {
+        // super rebinds an already-enabled Metal renderer to the new window
+        // (CAMetalLayer does not survive reparenting), so it must run before
+        // the first-time enable below.
         super.viewDidMoveToWindow()
+        enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true
             registerForDraggedTypes([.fileURL])
@@ -638,6 +649,61 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             showCopyModeStatus(copyModeStatus)
         }
     }
+
+    /// Switches the pane to SwiftTerm's GPU renderer the first time it lands in
+    /// a window.
+    ///
+    /// The CoreGraphics path re-shapes every dirty row through
+    /// `CTLineCreateWithAttributedString` and re-rasterizes its glyphs on the
+    /// main thread, every frame. The Metal path rasterizes each glyph once into
+    /// a texture atlas and redraws cells as GPU quads, rebuilding vertex data
+    /// only for dirty rows.
+    ///
+    /// **Off by default, deliberately.** `rai-bench` measures the win as ~11%
+    /// of process CPU at 9 rendered panes but nothing distinguishable from
+    /// noise at one — and rai renders one tab at a time, so a herd of
+    /// single-pane tabs never reaches the pane count where this pays. Turning
+    /// it on also lights up interaction paths that are not verified against
+    /// this renderer: the selection repaint `ScrollbackSelectionController`
+    /// drives, the ⌘F find bar's z-order against the inserted MTKView, caret
+    /// ownership (`hostOwnsCaret`), and image paste. Enable it when you work in
+    /// splits, or once those paths are covered.
+    ///
+    /// SwiftTerm requires a window first: the renderer binds a CAMetalLayer to
+    /// the window's CAContext.
+    ///
+    /// Two defaults drive the A/B, both read live at pane creation:
+    ///   `defaults write gr.krig.rai terminalMetalRenderer -bool YES`
+    ///     — GPU rendering.
+    ///   `defaults write gr.krig.rai terminalMetalBuffering -string per-row`
+    ///     — cache vertex data per row instead of rebuilding every frame.
+    ///     Measurably slower here; the knob exists to re-check that.
+    private func enableMetalRendererIfNeeded() {
+        guard window != nil, !isUsingMetalRenderer, metalEnableFailures < 2 else { return }
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? false else { return }
+        // Aggregated by default: rai-bench measures it cheaper than per-row
+        // caching at every pane count (13% at 1 pane, 21% at 9). Agent panes
+        // scroll constantly, so most rows are dirty every frame and the
+        // per-row vertex cache mostly pays bookkeeping for nothing.
+        if defaults.string(forKey: Self.metalBufferingKey) != "per-row" {
+            metalBufferingMode = .perFrameAggregated
+        }
+        do {
+            try setUseMetal(true)
+            NSLog("rai: pane renderer = Metal, buffering = %@",
+                  String(describing: metalBufferingMode))
+        } catch {
+            // A degraded-but-drawing terminal beats a dead one; SwiftTerm leaves
+            // the view on CoreGraphics when the renderer init throws.
+            metalEnableFailures += 1
+            NSLog("rai: Metal renderer unavailable, staying on CoreGraphics: %@",
+                  String(describing: error))
+        }
+    }
+
+    private static let metalRendererKey = "terminalMetalRenderer"
+    private static let metalBufferingKey = "terminalMetalBuffering"
 
     private func updateScrolledPill() {
         if ScrolledPillDecision.shouldShow(
