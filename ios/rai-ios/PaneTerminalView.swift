@@ -227,6 +227,16 @@ struct PaneTerminalView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     composeFocused = true
                 }
+            // Sibling affordance for the OTHER responder: the keyboard goes to
+            // the pty, as it does for an agent-less pane. An agent pane cannot
+            // reach that state without a tap on the toolbar keyboard button,
+            // which left direct-mode behavior untestable end to end — and
+            // direct mode on an IDLE agent pane is exactly where the pane's
+            // bottom rows going missing was reproducible.
+            } else if ProcessInfo.processInfo.environment["RAI_FOCUS_TERMINAL"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    terminalSearch.focusKeyboard()
+                }
             // A plain terminal pane (no detected agent) is for typing: put the
             // keyboard straight into the pty. Agent panes keep the calmer
             // compose-bar default — the toolbar keyboard button opts in.
