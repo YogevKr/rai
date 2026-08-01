@@ -207,6 +207,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var mouseIsDown = false
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
+    private var metalEnableAttempted = false
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -626,7 +627,11 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // MARK: "back to live" pill
 
     override func viewDidMoveToWindow() {
+        // super rebinds an already-enabled Metal renderer to the new window
+        // (CAMetalLayer does not survive reparenting), so it must run before
+        // the first-time enable below.
         super.viewDidMoveToWindow()
+        enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true
             registerForDraggedTypes([.fileURL])
@@ -638,6 +643,48 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             showCopyModeStatus(copyModeStatus)
         }
     }
+
+    /// Switches the pane to SwiftTerm's GPU renderer the first time it lands in
+    /// a window.
+    ///
+    /// The CoreGraphics path re-shapes every dirty row through
+    /// `CTLineCreateWithAttributedString` and re-rasterizes its glyphs on the
+    /// main thread, every frame. rai shows several panes at once and agents
+    /// stream output continuously, so that cost lands on one thread N times
+    /// over. The Metal path rasterizes each glyph once into a texture atlas and
+    /// redraws cells as GPU quads, rebuilding vertex data only for dirty rows.
+    ///
+    /// SwiftTerm requires a window first: the renderer binds a CAMetalLayer to
+    /// the window's CAContext.
+    ///
+    /// Two defaults drive the A/B, both read live at pane creation:
+    ///   `defaults write gr.krig.rai terminalMetalRenderer -bool NO`
+    ///     — back to CoreGraphics.
+    ///   `defaults write gr.krig.rai terminalMetalBuffering -string aggregated`
+    ///     — rebuild every visible row each frame instead of caching per row.
+    ///     SwiftTerm suggests this for full-screen TUIs, which agent panes are.
+    private func enableMetalRendererIfNeeded() {
+        guard !metalEnableAttempted, window != nil else { return }
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? true else { return }
+        metalEnableAttempted = true
+        if defaults.string(forKey: Self.metalBufferingKey) == "aggregated" {
+            metalBufferingMode = .perFrameAggregated
+        }
+        do {
+            try setUseMetal(true)
+            NSLog("rai: pane renderer = Metal, buffering = %@",
+                  String(describing: metalBufferingMode))
+        } catch {
+            // A degraded-but-drawing terminal beats a dead one; SwiftTerm leaves
+            // the view on CoreGraphics when the renderer init throws.
+            NSLog("rai: Metal renderer unavailable, staying on CoreGraphics: %@",
+                  String(describing: error))
+        }
+    }
+
+    private static let metalRendererKey = "terminalMetalRenderer"
+    private static let metalBufferingKey = "terminalMetalBuffering"
 
     private func updateScrolledPill() {
         if ScrolledPillDecision.shouldShow(

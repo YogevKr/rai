@@ -30,6 +30,15 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
 [ -f Resources/Rai.icns ] && cp Resources/Rai.icns "$STAGE/Contents/Resources/Rai.icns"
 
+# SwiftPM resource bundles (e.g. SwiftTerm_SwiftTerm.bundle, which carries
+# Shaders.metal). Without these in Contents/Resources, SwiftTerm's Metal
+# renderer cannot find its shader source and falls back to CoreGraphics at
+# runtime — a silent, GPU-less terminal.
+for res_bundle in "$BIN_DIR"/*.bundle; do
+  [ -e "$res_bundle" ] || continue
+  cp -R "$res_bundle" "$STAGE/Contents/Resources/"
+done
+
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
