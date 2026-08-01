@@ -47,7 +47,10 @@ targets:
       properties:
         CFBundleDisplayName: Rai Remote
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "25"
+        # Source of truth for the build number: xcodegen REGENERATES
+        # Info.plist from this file, so bumping the plist alone is
+        # silently reverted on the next `xcodegen generate`.
+        CFBundleVersion: "27"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
