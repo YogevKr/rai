@@ -11,6 +11,7 @@
 		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
 		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
 		196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */; };
+		1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A18C263735F80641EEDBADC /* OutboxTests.swift */; };
 		34B948A1A6F5F394B4D3A72C /* PaneTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */; };
 		364263F635053B13874BD7DE /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */; };
 		420DC582A71B10CCB2BC28A6 /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E9B4094B34953B946FDDDD /* Composer.swift */; };
@@ -39,6 +40,7 @@
 		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
 		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
+		3A18C263735F80641EEDBADC /* OutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxTests.swift; sourceTree = "<group>"; };
 		3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
 		3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaiIOSApp.swift; sourceTree = "<group>"; };
@@ -81,6 +83,7 @@
 		6B6A202ACF1B463B34798192 /* rai-iosTests */ = {
 			isa = PBXGroup;
 			children = (
+				3A18C263735F80641EEDBADC /* OutboxTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
 			);
@@ -223,6 +226,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
 			);

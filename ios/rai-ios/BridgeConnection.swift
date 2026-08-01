@@ -38,6 +38,9 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
+    /// Composed lines waiting for a connection, oldest first. Surfaced so the
+    /// compose bar can say a line is held rather than silently swallowing it.
+    @Published private(set) var outbox: [QueuedLine] = []
     var didConnect: (() -> Void)?
     var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
 
@@ -265,6 +268,89 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    /// A whole composed line, held until it can actually be delivered.
+    ///
+    /// Deliberately NOT the path raw keystrokes take. A composed line is
+    /// self-contained and carries its own carriage return, so replaying it
+    /// late still means what the user meant. A lone `y` does not — replayed
+    /// against whatever prompt exists minutes later it answers a question
+    /// nobody asked. Direct-mode keys keep the old fire-and-forget behavior.
+    ///
+    /// Returns true when the line went out on a live socket; false when it was
+    /// queued instead, so the compose field can hold on to its text.
+    @discardableResult
+    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> Bool {
+        if status.isConnected {
+            do {
+                try await send(
+                    .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
+                )
+                return true
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+        enqueue(bytes, to: paneID)
+        return false
+    }
+
+    private func enqueue(_ bytes: [UInt8], to paneID: String) {
+        // A bounded queue: a phone left offline should not accumulate an
+        // unbounded replay that lands all at once hours later.
+        if outbox.count >= Self.outboxLimit {
+            outbox.removeFirst(outbox.count - Self.outboxLimit + 1)
+        }
+        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: Date()))
+        if !status.isConnected { retryNow() }
+    }
+
+    func discardOutbox() {
+        outbox.removeAll()
+    }
+
+    /// Delivered oldest-first on the next authenticated welcome. Lines older
+    /// than the staleness window are dropped rather than replayed: the pane
+    /// they were typed for has moved on, and a late line is worse than none.
+    private func flushOutbox() {
+        guard status.isConnected, !outbox.isEmpty else { return }
+        let now = Date()
+        let due = outbox.filter { now.timeIntervalSince($0.queuedAt) <= Self.outboxStaleness }
+        let dropped = outbox.count - due.count
+        outbox.removeAll()
+        if dropped > 0 {
+            actionError = "\(dropped) queued line\(dropped == 1 ? "" : "s") expired unsent"
+        }
+        Task {
+            for line in due {
+                do {
+                    try await send(
+                        .input(
+                            paneID: line.paneID,
+                            bytesBase64: Data(line.bytes).base64EncodedString()
+                        )
+                    )
+                } catch {
+                    // Put the rest back, in order, and let the next welcome try.
+                    let index = due.firstIndex { $0.id == line.id } ?? 0
+                    outbox.insert(contentsOf: due[index...], at: 0)
+                    handleSocketFailure(error)
+                    return
+                }
+            }
+        }
+    }
+
+    struct QueuedLine: Identifiable, Equatable {
+        let id = UUID()
+        let paneID: String
+        let bytes: [UInt8]
+        let queuedAt: Date
+        var text: String { String(decoding: bytes, as: UTF8.self) }
+    }
+
+    private static let outboxLimit = 20
+    private static let outboxStaleness: TimeInterval = 15 * 60
+
     func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
         try await send(
             .sendImage(
@@ -408,6 +494,11 @@ final class BridgeConnection: ObservableObject {
             self.sessionName = sessionName
             didConnect?()
             requestSessions()
+            // Same reasoning as the scrollback seed below: work lost to a
+            // dropped connection is retried on the next welcome rather than
+            // dropped forever. Composed lines are the user's own words, so
+            // they deserve at least that.
+            flushOutbox()
             for (paneID, size) in desiredStreams {
                 let needsSeed = !seededPanes.contains(paneID)
                 Task {
