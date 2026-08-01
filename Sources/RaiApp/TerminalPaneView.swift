@@ -649,24 +649,33 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     ///
     /// The CoreGraphics path re-shapes every dirty row through
     /// `CTLineCreateWithAttributedString` and re-rasterizes its glyphs on the
-    /// main thread, every frame. rai shows several panes at once and agents
-    /// stream output continuously, so that cost lands on one thread N times
-    /// over. The Metal path rasterizes each glyph once into a texture atlas and
-    /// redraws cells as GPU quads, rebuilding vertex data only for dirty rows.
+    /// main thread, every frame. The Metal path rasterizes each glyph once into
+    /// a texture atlas and redraws cells as GPU quads, rebuilding vertex data
+    /// only for dirty rows.
+    ///
+    /// **Off by default, deliberately.** `rai-bench` measures the win as ~11%
+    /// of process CPU at 9 rendered panes but nothing distinguishable from
+    /// noise at one — and rai renders one tab at a time, so a herd of
+    /// single-pane tabs never reaches the pane count where this pays. Turning
+    /// it on also lights up interaction paths that are not verified against
+    /// this renderer: the selection repaint `ScrollbackSelectionController`
+    /// drives, the ⌘F find bar's z-order against the inserted MTKView, caret
+    /// ownership (`hostOwnsCaret`), and image paste. Enable it when you work in
+    /// splits, or once those paths are covered.
     ///
     /// SwiftTerm requires a window first: the renderer binds a CAMetalLayer to
     /// the window's CAContext.
     ///
     /// Two defaults drive the A/B, both read live at pane creation:
-    ///   `defaults write gr.krig.rai terminalMetalRenderer -bool NO`
-    ///     — back to CoreGraphics.
+    ///   `defaults write gr.krig.rai terminalMetalRenderer -bool YES`
+    ///     — GPU rendering.
     ///   `defaults write gr.krig.rai terminalMetalBuffering -string aggregated`
     ///     — rebuild every visible row each frame instead of caching per row.
     ///     SwiftTerm suggests this for full-screen TUIs, which agent panes are.
     private func enableMetalRendererIfNeeded() {
         guard !metalEnableAttempted, window != nil else { return }
         let defaults = UserDefaults.standard
-        guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? true else { return }
+        guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? false else { return }
         metalEnableAttempted = true
         if defaults.string(forKey: Self.metalBufferingKey) == "aggregated" {
             metalBufferingMode = .perFrameAggregated
