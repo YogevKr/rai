@@ -207,7 +207,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var mouseIsDown = false
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
-    private var metalEnableAttempted = false
+    /// Bounded retry rather than a one-shot latch. SwiftTerm turns Metal OFF
+    /// without throwing when a cross-window CAMetalLayer rebind fails
+    /// (disableMetalRendererAfterRebindFailure), so a latch would strand a
+    /// pooled view on CoreGraphics for the rest of its life even after it
+    /// lands in a window whose device works. Counting only real throws keeps a
+    /// genuinely Metal-less machine from retrying on every window move.
+    private var metalEnableFailures = 0
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -673,10 +679,9 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     ///     — cache vertex data per row instead of rebuilding every frame.
     ///     Measurably slower here; the knob exists to re-check that.
     private func enableMetalRendererIfNeeded() {
-        guard !metalEnableAttempted, window != nil else { return }
+        guard window != nil, !isUsingMetalRenderer, metalEnableFailures < 2 else { return }
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? false else { return }
-        metalEnableAttempted = true
         // Aggregated by default: rai-bench measures it cheaper than per-row
         // caching at every pane count (13% at 1 pane, 21% at 9). Agent panes
         // scroll constantly, so most rows are dirty every frame and the
@@ -691,6 +696,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         } catch {
             // A degraded-but-drawing terminal beats a dead one; SwiftTerm leaves
             // the view on CoreGraphics when the renderer init throws.
+            metalEnableFailures += 1
             NSLog("rai: Metal renderer unavailable, staying on CoreGraphics: %@",
                   String(describing: error))
         }

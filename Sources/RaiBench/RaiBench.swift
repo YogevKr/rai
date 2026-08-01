@@ -13,6 +13,12 @@ import SwiftTerm
 ///     swift run rai-bench --panes 4 --renderer cg
 ///
 /// Reports CPU seconds consumed over the measurement window. Lower is better.
+///
+/// Known limitation: the feed timer runs on the main thread, the same thread
+/// the renderer draws on, so a slow enough renderer could in principle starve
+/// its own input and under-report its cost. Check `fed=` across the runs you
+/// are comparing — if it differs, the comparison is void. It has held equal
+/// (2.9MB at 1 and 9 panes, all three renderers) in every run so far.
 /// A warmup window is excluded so glyph-atlas population and the first window
 /// display do not land in the number.
 
@@ -25,7 +31,7 @@ struct Options {
     var warmup = 3.0
     var bytesPerSecond = 200_000
     var corpusPath: String?
-    var aggregated = false
+    var aggregated = true
     var cols = 100
     var rows = 32
 
@@ -45,7 +51,7 @@ struct Options {
             case "--warmup": o.warmup = Double(value() ?? "") ?? o.warmup
             case "--rate": o.bytesPerSecond = Int(value() ?? "") ?? o.bytesPerSecond
             case "--corpus": o.corpusPath = value()
-            case "--buffering": o.aggregated = (value() ?? "per-row") == "aggregated"
+            case "--buffering": o.aggregated = (value() ?? "aggregated") != "per-row"
             case "--cols": o.cols = Int(value() ?? "") ?? o.cols
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
             case "--help", "-h":
@@ -58,7 +64,8 @@ struct Options {
                   --warmup S       excluded warmup before measuring (default 3)
                   --rate B         bytes/second fed across all panes (default 200000)
                   --corpus PATH    replay these bytes (default: synthetic TUI-like output)
-                  --buffering B    per-row | aggregated (default per-row)
+                  --buffering B    aggregated | per-row (default aggregated,
+                                   matching what the app enables)
                   --cols / --rows  per-pane grid size (default 100x32)
                 """)
                 exit(0)
@@ -152,7 +159,14 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
     private func buildWindow() {
         let cols = max(2, Int(ceil(sqrt(Double(options.panes)))))
         let rows = Int(ceil(Double(options.panes) / Double(cols)))
-        let cell = NSSize(width: 720, height: 420)
+        // Sized from the requested grid, so --cols/--rows actually change what
+        // is rendered. A fixed 720x420 made those flags silently inert and any
+        // size-based conclusion invalid.
+        let probe = TerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 420))
+        let cellSize = probe.getOptimalFrameSize()
+        let cell = NSSize(
+            width: ceil(cellSize.width / 80 * CGFloat(options.cols)) + 4,
+            height: ceil(cellSize.height / 25 * CGFloat(options.rows)) + 4)
         let size = NSSize(width: cell.width * CGFloat(cols),
                           height: cell.height * CGFloat(rows))
 
@@ -215,6 +229,9 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func feedTick(_ perPane: Int) {
+        // Without this an empty corpus makes `chunk` 0, `remaining` never
+        // decreases, and the harness hangs before it ever reports.
+        guard !corpus.isEmpty else { return }
         for (index, view) in views.enumerated() {
             var start = offsets[index]
             var remaining = perPane
