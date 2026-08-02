@@ -1,5 +1,22 @@
 import Foundation
 
+/// One searchable field of a row, and how much a hit there is worth.
+///
+/// A palette row is more than its title: an agent also carries its space and
+/// its checkout path. Matching only the title makes "the codex in curator"
+/// unfindable. Weights keep the title ahead of the supporting fields, so a
+/// title hit still outranks a path hit of the same shape.
+public struct FuzzyField: Equatable, Sendable {
+    public let text: String
+    /// Percent of the raw score kept for a hit here. 100 keeps all of it.
+    public let weight: Int
+
+    public init(_ text: String, weight: Int = 100) {
+        self.text = text
+        self.weight = weight
+    }
+}
+
 public enum FuzzyMatcher {
     /// Scores a case-insensitive subsequence match. Prefixes, word boundaries,
     /// and consecutive characters rank ahead of scattered matches.
@@ -43,6 +60,18 @@ public enum FuzzyMatcher {
         result -= matchedOffsets[0]
         result -= max(0, haystack.count - needle.count) / 4
         return result
+    }
+
+    /// Best weighted score across several fields, or nil when none match.
+    public static func score(query: String, fields: [FuzzyField]) -> Int? {
+        var best: Int?
+        for field in fields {
+            guard !field.text.isEmpty,
+                  let raw = score(query: query, candidate: field.text) else { continue }
+            let weighted = raw * field.weight / 100
+            if best == nil || weighted > best! { best = weighted }
+        }
+        return best
     }
 
     public static func ranked<Value>(

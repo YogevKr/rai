@@ -312,6 +312,9 @@ final class RaiModel: ObservableObject {
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private var started = false
     private var eventTask: Task<Void, Never>?
+    /// Where the user has been, for palette ordering. Deep enough to cover a
+    /// long session, small enough that stale rows fall off on their own.
+    private var navigationRecency = LRUTracker<String>(capacity: 60)
     private var repoScanTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
@@ -502,6 +505,9 @@ final class RaiModel: ObservableObject {
             let displayWorkspaceLabel = workspaceLabel.isEmpty
                 ? "Space \(workspace.number)"
                 : workspaceLabel
+            // The space's checkout, so a query can name the directory the work
+            // lives in rather than whatever the space was labelled.
+            let checkout = WorkspaceSidebar.checkoutPath(for: workspace, in: snapshot)
             items.append(
                 CommandPaletteItem(
                     id: "workspace:\(workspace.workspaceID)",
@@ -509,7 +515,8 @@ final class RaiModel: ObservableObject {
                     workspaceLabel: displayWorkspaceLabel,
                     status: workspace.agentStatus,
                     destination: .workspace(workspace.workspaceID),
-                    kind: .workspace
+                    kind: .workspace,
+                    matchPath: checkout
                 )
             )
 
@@ -523,7 +530,8 @@ final class RaiModel: ObservableObject {
                         workspaceLabel: displayWorkspaceLabel,
                         status: tab.agentStatus,
                         destination: .tab(tab.tabID),
-                        kind: .agent
+                        kind: .agent,
+                        matchPath: checkout
                     )
                 }
             )
@@ -535,6 +543,23 @@ final class RaiModel: ObservableObject {
             repos: discoveredRepos,
             openPaths: openWorkspacePaths
         )
+        // Commands stay out of the empty-query list. With no query the palette
+        // is a navigator, and a wall of verbs would bury the spaces the user
+        // came for. Typing anything brings them back in, ranked by score.
+        if !paletteQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let commands = PaletteCommand.builtIns() + pluginActions.map(PaletteCommand.from)
+            items += commands.map { command in
+                CommandPaletteItem(
+                    id: command.id,
+                    label: command.title,
+                    workspaceLabel: command.subtitle,
+                    status: .unknown,
+                    destination: .command(command.effect),
+                    kind: .command
+                )
+            }
+        }
+
         items += unopened.map { repo in
             CommandPaletteItem(
                 id: "repo:\(repo.path)",
@@ -542,7 +567,8 @@ final class RaiModel: ObservableObject {
                 workspaceLabel: RepoDiscoveryPlanner.displayPath(repo.path),
                 status: .unknown,
                 destination: .newSpace(path: repo.path, label: repo.name),
-                kind: .repo
+                kind: .repo,
+                matchPath: repo.path
             )
         }
         return items
@@ -1057,6 +1083,11 @@ final class RaiModel: ObservableObject {
 
     func select(paneID: String, focusInHerdr: Bool) {
         selectedPaneID = paneID
+        // Every selection funnels through here — palette, sidebar, keyboard —
+        // so this is the one place recency has to be recorded.
+        if let pane = snapshot?.panes.first(where: { $0.paneID == paneID }) {
+            recordVisit(tabID: pane.tabID, workspaceID: pane.workspaceID)
+        }
         guard focusInHerdr else { return }
         let client = client
         let generation = connectionGeneration
@@ -1219,7 +1250,30 @@ final class RaiModel: ObservableObject {
     }
 
     var paletteResults: [CommandPaletteItem] {
-        FuzzyMatcher.ranked(commandPaletteItems, query: paletteQuery, text: \.label)
+        PaletteRanking.ranked(
+            commandPaletteItems,
+            query: paletteQuery,
+            recentIDs: paletteRecentIDs
+        )
+    }
+
+    /// Visited rows, most recent first, minus the row the palette would land
+    /// on anyway. Dropping the current selection is what makes ⌘K then Return
+    /// behave like alt-tab instead of a no-op.
+    private var paletteRecentIDs: [String] {
+        var current = Set<String>()
+        if let tabID = selectedTabID { current.insert("tab:\(tabID)") }
+        if let workspaceID = selectedWorkspace?.workspaceID {
+            current.insert("workspace:\(workspaceID)")
+        }
+        return navigationRecency.mostToLeastRecent.filter { !current.contains($0) }
+    }
+
+    /// Records a visit so the palette can offer it back. Called on every
+    /// selection, whatever made it — palette, sidebar, or keyboard.
+    private func recordVisit(tabID: String?, workspaceID: String?) {
+        if let workspaceID { navigationRecency.touch("workspace:\(workspaceID)") }
+        if let tabID { navigationRecency.touch("tab:\(tabID)") }
     }
 
     func paletteMove(_ delta: Int) {
@@ -1231,17 +1285,63 @@ final class RaiModel: ObservableObject {
         paletteSelectedID = results[min(max(current + delta, 0), results.count - 1)].id
     }
 
-    func paletteActivate() {
+    func paletteActivate(modifiers: PaletteModifiers = .none) {
         let results = paletteResults
-        if let item = results.first(where: { $0.id == paletteSelectedID }) ?? results.first {
+        guard let item = results.first(where: { $0.id == paletteSelectedID })
+            ?? results.first else { return }
+        perform(
+            PaletteActionDecision.resolved(
+                modifiers: modifiers,
+                item: item,
+                isRemote: remoteTarget != nil
+            ),
+            on: item
+        )
+    }
+
+    func perform(_ action: CommandPaletteItem.Action, on item: CommandPaletteItem) {
+        switch action {
+        case .open:
             jump(to: item)
+        case .newTab:
+            closeCommandPalette()
+            jumpWithoutClosing(to: item)
+            newTab()
+        case .newWorktree:
+            closeCommandPalette()
+            beginCreateWorktree(from: item)
+        case .revealInFinder:
+            closeCommandPalette()
+            guard let path = item.matchPath, !path.isEmpty else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
+    }
+
+    /// Starts the worktree sheet straight from a palette row. A repo row has no
+    /// space yet, but `worktree create` works from a checkout path alone, so no
+    /// workspace has to exist first.
+    private func beginCreateWorktree(from item: CommandPaletteItem) {
+        guard let path = item.matchPath, !path.isEmpty else { return }
+        worktreeCreateRequest = WorktreeCreateRequest(
+            context: WorktreeRepositoryContext(
+                repoName: RepoDiscoveryPlanner.name(for: path),
+                checkoutPath: path
+            )
+        )
     }
 
     func jump(to item: CommandPaletteItem) {
         closeCommandPalette()
+        jumpWithoutClosing(to: item)
+    }
+
+    private func jumpWithoutClosing(to item: CommandPaletteItem) {
         if case .newSpace(let path, let label) = item.destination {
             openSpace(atPath: path, label: label)
+            return
+        }
+        if case .command(let effect) = item.destination {
+            run(effect)
             return
         }
         guard let snapshot else { return }
@@ -1256,8 +1356,31 @@ final class RaiModel: ObservableObject {
             }) {
                 select(workspace: workspace)
             }
-        case .newSpace:
+        case .newSpace, .command:
             break
+        }
+    }
+
+    private func run(_ effect: PaletteCommand.Effect) {
+        switch effect {
+        case .newTab: newTab()
+        case .newSpace: newWorkspace()
+        case .splitRight: splitRight()
+        case .splitDown: splitDown()
+        case .zoomPane: zoomPane()
+        case .closePane: closePane()
+        case .broadcast: isBroadcastPresented = true
+        case .reopenClosedTab: reopenClosedTab()
+        case .rescanRepos: refreshRepoIndex()
+        case .refresh: refreshNow()
+        case .plugin(let actionID, let pluginID):
+            // The focused pane is the context a plugin action gets from the
+            // palette: it satisfies pane, tab, and workspace scopes at once.
+            guard let paneID = selectedPaneID,
+                  let action = pluginActions.first(where: {
+                      $0.id == actionID && $0.pluginId == pluginID
+                  }) else { return }
+            invokePluginAction(action, forPane: paneID)
         }
     }
 

@@ -10,6 +10,20 @@ struct CommandPaletteView: View {
 
     private var results: [CommandPaletteItem] { model.paletteResults }
 
+    private var highlighted: CommandPaletteItem? {
+        results.first { $0.id == model.paletteSelectedID } ?? results.first
+    }
+
+    private func supports(_ action: CommandPaletteItem.Action) -> Bool {
+        guard let item = highlighted else { return false }
+        return PaletteActionDecision.supports(
+            action,
+            kind: item.kind,
+            hasPath: !(item.matchPath ?? "").isEmpty,
+            isRemote: model.remoteTarget != nil
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 11) {
@@ -62,6 +76,11 @@ struct CommandPaletteView: View {
             HStack(spacing: 12) {
                 keyHint("↑↓", label: "navigate")
                 keyHint("↩", label: "open")
+                // Only advertise a modifier the highlighted row can honour, so
+                // the footer never promises an action that degrades to open.
+                if supports(.newWorktree) { keyHint("⌥↩", label: "worktree") }
+                if supports(.newTab) { keyHint("⇧↩", label: "new tab") }
+                if supports(.revealInFinder) { keyHint("⌘↩", label: "finder") }
                 keyHint("esc", label: "close")
                 Spacer()
                 Text("\(results.count) result\(results.count == 1 ? "" : "s")")
@@ -102,7 +121,9 @@ struct CommandPaletteView: View {
                 switch event.keyCode {
                 case 126: model.paletteMove(-1); return nil          // ↑
                 case 125: model.paletteMove(1); return nil           // ↓
-                case 36, 76: model.paletteActivate(); return nil     // return / enter
+                case 36, 76:                                         // return / enter
+                    model.paletteActivate(modifiers: PaletteModifiers(event.modifierFlags))
+                    return nil
                 case 53: model.closeCommandPalette(); return nil     // esc
                 case 51:                                             // delete / backspace
                     if !model.paletteQuery.isEmpty { model.paletteQuery.removeLast() }
