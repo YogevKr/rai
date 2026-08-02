@@ -99,6 +99,18 @@ public enum RepoDiscoveryPlanner {
         return sorted(repos.filter { !open.contains(normalized($0.path)) })
     }
 
+    /// A query that names a directory outright — absolute or ~-rooted — as the
+    /// expanded path. Anything else is a fuzzy search, not a path.
+    public static func explicitPathQuery(_ query: String) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("/") || trimmed == "~" || trimmed.hasPrefix("~/") else {
+            return nil
+        }
+        let expanded = normalized(trimmed)
+        guard expanded.hasPrefix("/") else { return nil }
+        return expanded
+    }
+
     // MARK: - Helpers
 
     /// Trailing slashes and `.`/`..` segments would defeat set-based dedupe, so

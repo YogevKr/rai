@@ -120,6 +120,22 @@ final class RepoDiscoveryTests: XCTestCase {
         )
     }
 
+    // MARK: - Explicit path queries
+
+    func testExplicitPathQueryExpandsTildeForms() {
+        let home = NSHomeDirectory()
+        XCTAssertEqual(RepoDiscoveryPlanner.explicitPathQuery("~"), home)
+        XCTAssertEqual(RepoDiscoveryPlanner.explicitPathQuery("~/repos"), "\(home)/repos")
+        XCTAssertEqual(RepoDiscoveryPlanner.explicitPathQuery(" /tmp/a/ "), "/tmp/a")
+    }
+
+    func testExplicitPathQueryRejectsNonPaths() {
+        XCTAssertNil(RepoDiscoveryPlanner.explicitPathQuery("curator"))
+        XCTAssertNil(RepoDiscoveryPlanner.explicitPathQuery("~user/repos"))
+        XCTAssertNil(RepoDiscoveryPlanner.explicitPathQuery(""))
+        XCTAssertNil(RepoDiscoveryPlanner.explicitPathQuery("   "))
+    }
+
     // MARK: - Paths
 
     func testNormalizedCollapsesTrailingSlashAndDotSegments() {

@@ -576,6 +576,32 @@ final class RaiModel: ObservableObject {
                 matchPath: repo.path
             )
         }
+
+        // A typed path opens as a space even outside the project roots. Local
+        // herds only: rai cannot stat a path on the remote host, and offering
+        // an unverifiable row invites a create that lands in the wrong place.
+        if remoteTarget == nil,
+           let path = RepoDiscoveryPlanner.explicitPathQuery(paletteQuery) {
+            let offered = (openWorkspacePaths + unopened.map(\.path))
+                .map(RepoDiscoveryPlanner.normalized)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+               isDirectory.boolValue,
+               !offered.contains(RepoDiscoveryPlanner.normalized(path)) {
+                let name = RepoDiscoveryPlanner.name(for: path)
+                items.append(
+                    CommandPaletteItem(
+                        id: "path:\(path)",
+                        label: name,
+                        workspaceLabel: RepoDiscoveryPlanner.displayPath(path),
+                        status: .unknown,
+                        destination: .newSpace(path: path, label: name),
+                        kind: .repo,
+                        matchPath: path
+                    )
+                )
+            }
+        }
         return items
     }
 

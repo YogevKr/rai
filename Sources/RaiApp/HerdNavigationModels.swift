@@ -70,7 +70,15 @@ extension CommandPaletteItem: PaletteRankable {
             fields.append(FuzzyField(workspaceLabel, weight: 65))
         }
         if let matchPath, !matchPath.isEmpty {
-            fields.append(FuzzyField(matchPath, weight: kind == .repo ? 65 : 45))
+            let weight = kind == .repo ? 65 : 45
+            fields.append(FuzzyField(matchPath, weight: weight))
+            // The subtitle shows paths in ~ form, so queries arrive in ~ form
+            // too. The absolute haystack contains no "~", so without this
+            // field a "~/pro…" query can never match.
+            let abbreviated = RepoDiscoveryPlanner.displayPath(matchPath)
+            if abbreviated != matchPath {
+                fields.append(FuzzyField(abbreviated, weight: weight))
+            }
         }
         return fields
     }
