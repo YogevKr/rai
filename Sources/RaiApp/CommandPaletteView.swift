@@ -64,7 +64,10 @@ struct CommandPaletteView: View {
                     }
                 }
                 .frame(maxHeight: 390)
-                .onChange(of: model.paletteSelectedID) { _, id in
+                // Follows the keyboard only. Scrolling on every selection
+                // change would chase hover too, and centering a hovered row
+                // moves the list under the cursor — see paletteScrollTarget.
+                .onChange(of: model.paletteScrollTarget) { _, id in
                     guard let id else { return }
                     withAnimation(.easeOut(duration: 0.1)) {
                         proxy.scrollTo(id, anchor: .center)

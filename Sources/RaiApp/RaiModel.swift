@@ -270,6 +270,11 @@ final class RaiModel: ObservableObject {
     @Published var isBroadcastPresented = false
     @Published var paletteQuery = ""
     @Published var paletteSelectedID: String?
+    /// Row the palette list should scroll to. Only keyboard navigation sets
+    /// it: hover also moves the selection, and scrolling to a hover target
+    /// moves the list under a resting cursor, which hovers a new row and
+    /// scrolls again — a loop that crawls the list by itself.
+    @Published var paletteScrollTarget: String?
     @Published var renameRequest: RenameRequest?
     // In-place sidebar rename: which tab/space is currently editing its name.
     @Published var inlineRename: InlineRenameTarget?
@@ -1239,6 +1244,7 @@ final class RaiModel: ObservableObject {
         if isCommandPalettePresented {
             paletteQuery = ""
             paletteSelectedID = paletteResults.first?.id
+            paletteScrollTarget = nil
             // Repos land as soon as the scan returns; the palette is usable
             // against open spaces in the meantime.
             refreshRepoIndex()
@@ -1283,6 +1289,7 @@ final class RaiModel: ObservableObject {
             results.firstIndex { $0.id == id }
         } ?? 0
         paletteSelectedID = results[min(max(current + delta, 0), results.count - 1)].id
+        paletteScrollTarget = paletteSelectedID
     }
 
     func paletteActivate(modifiers: PaletteModifiers = .none) {
