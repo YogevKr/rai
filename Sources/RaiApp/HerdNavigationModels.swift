@@ -5,14 +5,40 @@ struct CommandPaletteItem: Identifiable, Equatable {
     enum Destination: Equatable {
         case workspace(String)
         case tab(String)
+        /// A repo with no space yet. Activating it creates one in that checkout.
+        case newSpace(path: String, label: String)
+    }
+
+    enum Kind: Equatable {
+        case workspace
+        case agent
+        case repo
     }
 
     let id: String
     let label: String
+    /// Second line: the owning space for an agent, the path for a repo.
     let workspaceLabel: String
     let status: AgentStatus
     let destination: Destination
-    let isWorkspace: Bool
+    let kind: Kind
+
+    var isWorkspace: Bool { kind == .workspace }
+
+    var badge: String {
+        switch kind {
+        case .workspace: "SPACE"
+        case .agent: "AGENT"
+        case .repo: "OPEN"
+        }
+    }
+
+    var subtitle: String {
+        switch kind {
+        case .workspace: "Space · \(workspaceLabel)"
+        case .agent, .repo: workspaceLabel
+        }
+    }
 }
 
 struct RenameRequest: Identifiable, Equatable {

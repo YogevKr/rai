@@ -276,6 +276,9 @@ final class RaiModel: ObservableObject {
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
     @Published var pluginActions: [PluginAction] = []
+    /// Git checkouts under `repoRoots` that no space has opened yet. Scanned on
+    /// the herd's host, so they stay correct when attached to a remote herd.
+    @Published private(set) var discoveredRepos: [DiscoveredRepo] = []
     @Published var worktreeCreateRequest: WorktreeCreateRequest?
     @Published var worktreeOpenRequest: WorktreeOpenRequest?
     @Published var worktreeAlert: WorktreeAlert?
@@ -302,11 +305,14 @@ final class RaiModel: ObservableObject {
     private static let agentPanelCollapsedKey = "agentPanelCollapsed"
     private static let sidebarSplitKey = "sidebarSplit"
     private static let collapsedSpaceKeysDefaultsKey = "collapsedSpaceKeys"
+    private static let repoRootsKey = "repoRoots"
+    private static let repoDepthKey = "repoDepth"
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private var started = false
     private var eventTask: Task<Void, Never>?
+    private var repoScanTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
@@ -503,7 +509,7 @@ final class RaiModel: ObservableObject {
                     workspaceLabel: displayWorkspaceLabel,
                     status: workspace.agentStatus,
                     destination: .workspace(workspace.workspaceID),
-                    isWorkspace: true
+                    kind: .workspace
                 )
             )
 
@@ -517,9 +523,26 @@ final class RaiModel: ObservableObject {
                         workspaceLabel: displayWorkspaceLabel,
                         status: tab.agentStatus,
                         destination: .tab(tab.tabID),
-                        isWorkspace: false
+                        kind: .agent
                     )
                 }
+            )
+        }
+
+        // Repos with no space yet come last, so typing a name always surfaces
+        // the running space before the offer to open a second one.
+        let unopened = RepoDiscoveryPlanner.candidates(
+            repos: discoveredRepos,
+            openPaths: openWorkspacePaths
+        )
+        items += unopened.map { repo in
+            CommandPaletteItem(
+                id: "repo:\(repo.path)",
+                label: repo.name,
+                workspaceLabel: RepoDiscoveryPlanner.displayPath(repo.path),
+                status: .unknown,
+                destination: .newSpace(path: repo.path, label: repo.name),
+                kind: .repo
             )
         }
         return items
@@ -755,6 +778,7 @@ final class RaiModel: ObservableObject {
         )
         guard generation == connectionGeneration else { return }
         startEventLoop(client: client, generation: generation)
+        refreshRepoIndex()
     }
 
     private func disconnectCurrentHerd(message: String) {
@@ -777,6 +801,11 @@ final class RaiModel: ObservableObject {
         trailingRefreshTask = nil
         gitStatusTask?.cancel()
         gitStatusTask = nil
+        // Repos belong to the herd's host, so they do not survive a switch to
+        // another herd — a remote's paths mean nothing on the local one.
+        repoScanTask?.cancel()
+        repoScanTask = nil
+        discoveredRepos = []
         pendingEvents.removeAll(keepingCapacity: false)
         client.disconnect()
         terminalPool.removeAll()
@@ -1179,6 +1208,9 @@ final class RaiModel: ObservableObject {
         if isCommandPalettePresented {
             paletteQuery = ""
             paletteSelectedID = paletteResults.first?.id
+            // Repos land as soon as the scan returns; the palette is usable
+            // against open spaces in the meantime.
+            refreshRepoIndex()
         }
     }
 
@@ -1207,8 +1239,12 @@ final class RaiModel: ObservableObject {
     }
 
     func jump(to item: CommandPaletteItem) {
-        guard let snapshot else { return }
         closeCommandPalette()
+        if case .newSpace(let path, let label) = item.destination {
+            openSpace(atPath: path, label: label)
+            return
+        }
+        guard let snapshot else { return }
         switch item.destination {
         case .tab(let tabID):
             if let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) {
@@ -1220,7 +1256,80 @@ final class RaiModel: ObservableObject {
             }) {
                 select(workspace: workspace)
             }
+        case .newSpace:
+            break
         }
+    }
+
+    // MARK: - Repos
+
+    /// Project roots scanned for checkouts, newest edit wins over the default.
+    var repoRoots: [String] {
+        get {
+            let stored = userDefaults.stringArray(forKey: Self.repoRootsKey)
+            guard let stored else { return RepoDiscoveryPlanner.defaultRoots }
+            return stored
+        }
+        set {
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            objectWillChange.send()
+            userDefaults.set(cleaned, forKey: Self.repoRootsKey)
+            refreshRepoIndex()
+        }
+    }
+
+    /// How many levels below each root a checkout may sit.
+    var repoDepth: Int {
+        get {
+            let stored = userDefaults.integer(forKey: Self.repoDepthKey)
+            guard stored > 0 else { return RepoDiscoveryPlanner.defaultDepth }
+            return min(stored, RepoDiscoveryPlanner.maxDepth)
+        }
+        set {
+            objectWillChange.send()
+            userDefaults.set(
+                min(max(newValue, 1), RepoDiscoveryPlanner.maxDepth),
+                forKey: Self.repoDepthKey
+            )
+            refreshRepoIndex()
+        }
+    }
+
+    /// Directories the open spaces already sit in. A repo matching one of these
+    /// is not offered again — its space is already a palette row.
+    var openWorkspacePaths: [String] {
+        guard let snapshot else { return [] }
+        var paths = snapshot.panes.map(\.cwd)
+        paths += snapshot.workspaces.compactMap { $0.worktree?.checkoutPath }
+        return paths
+    }
+
+    /// Rescans the herd's host for checkouts. Cheap enough to run whenever the
+    /// palette opens, so a repo cloned a minute ago is already offered.
+    func refreshRepoIndex() {
+        let roots = repoRoots
+        let depth = repoDepth
+        let target = remoteTarget
+        let generation = connectionGeneration
+        repoScanTask?.cancel()
+        repoScanTask = Task { [weak self] in
+            let repos = await RepoScanner.scan(
+                roots: roots,
+                depth: depth,
+                remoteTarget: target
+            )
+            guard !Task.isCancelled else { return }
+            guard let self, generation == self.connectionGeneration else { return }
+            self.discoveredRepos = repos
+        }
+    }
+
+    /// Turns a checkout into a space. herdr creates the workspace, its first
+    /// tab, and a root pane already inside the repo.
+    func openSpace(atPath path: String, label: String) {
+        runAction(RepoDiscoveryPlanner.workspaceCreateArguments(path: path, label: label))
     }
 
     func beginRename(tab: HerdrTab) {
@@ -1571,11 +1680,28 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    private func worktreeContext(for workspace: Workspace) -> WorktreeRepositoryContext? {
-        guard let worktree = workspace.worktree else { return nil }
+    /// The repo a workspace's worktree commands should act on.
+    ///
+    /// herdr records `worktree` provenance only for workspaces it created
+    /// through `worktree create`/`worktree open`. A space opened straight from a
+    /// repo path — the palette's repo rows, or any `workspace create --cwd` —
+    /// has none, even though it sits in a perfectly good checkout. Its git
+    /// status resolves that checkout, which is all the worktree commands need.
+    ///
+    /// The fallback is local-only: on a remote herd rai cannot stat the
+    /// checkout, so no git status arrives. Provenance-carrying workspaces still
+    /// work there, because that field comes from the snapshot.
+    func worktreeContext(for workspace: Workspace) -> WorktreeRepositoryContext? {
+        if let worktree = workspace.worktree {
+            return WorktreeRepositoryContext(
+                repoName: worktree.repoName,
+                checkoutPath: worktree.checkoutPath
+            )
+        }
+        guard let status = gitStatus(for: workspace) else { return nil }
         return WorktreeRepositoryContext(
-            repoName: worktree.repoName,
-            checkoutPath: worktree.checkoutPath
+            repoName: RepoDiscoveryPlanner.name(for: status.checkoutPath),
+            checkoutPath: status.checkoutPath
         )
     }
 

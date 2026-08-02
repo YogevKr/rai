@@ -16,7 +16,7 @@ struct CommandPaletteView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.textTertiary)
-                TextField("Find any agent or space…", text: $model.paletteQuery)
+                TextField("Find any agent, space, or repo…", text: $model.paletteQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.textPrimary)
@@ -34,7 +34,7 @@ struct CommandPaletteView: View {
                         VStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 20, weight: .light))
-                            Text("No matching agents or spaces")
+                            Text("No matching agents, spaces, or repos")
                                 .font(.system(size: 12.5, weight: .medium))
                         }
                         .foregroundStyle(Theme.textTertiary)
@@ -134,19 +134,29 @@ struct CommandPaletteView: View {
             model.jump(to: item)
         } label: {
             HStack(spacing: 11) {
-                StatusDot(status: item.status)
+                if item.kind == .repo {
+                    // A repo has no agent state to report — it is not running
+                    // yet — so the dot's slot carries the "not open" mark.
+                    Image(systemName: "folder")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 8)
+                } else {
+                    StatusDot(status: item.status)
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.label)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
-                    Text(item.isWorkspace ? "Space · \(item.workspaceLabel)" : item.workspaceLabel)
+                    Text(item.subtitle)
                         .font(.system(size: 10.5))
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
+                        .truncationMode(.head)
                 }
                 Spacer()
-                Text(item.isWorkspace ? "SPACE" : "AGENT")
+                Text(item.badge)
                     .font(.system(size: 8.5, weight: .bold, design: .rounded))
                     .tracking(0.5)
                     .foregroundStyle(Theme.textTertiary)
