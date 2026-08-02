@@ -7,6 +7,11 @@ struct CommandPaletteView: View {
 
     @FocusState private var searchFocused: Bool
     @State private var keyMonitor: Any?
+    // Visual hover only. Hover must never become the Return target: typing
+    // reorders rows under a resting cursor, and a hover that steals the
+    // selection makes Return activate whatever drifted under the mouse
+    // instead of the top match. Click activates a row directly.
+    @State private var hoveredID: String?
 
     private var results: [CommandPaletteItem] { model.paletteResults }
 
@@ -192,14 +197,20 @@ struct CommandPaletteView: View {
                     .fill(
                         model.paletteSelectedID == item.id
                             ? Theme.accent.opacity(0.17)
-                            : Color.clear
+                            : hoveredID == item.id
+                                ? Theme.interactionWash(opacity: 0.05)
+                                : Color.clear
                     )
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            if hovering { model.paletteSelectedID = item.id }
+            if hovering {
+                hoveredID = item.id
+            } else if hoveredID == item.id {
+                hoveredID = nil
+            }
         }
     }
 

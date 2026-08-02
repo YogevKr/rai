@@ -14,6 +14,7 @@ struct PaletteCommand: Identifiable, Equatable {
         case splitDown
         case zoomPane
         case closePane
+        case closeTab
         case broadcast
         case reopenClosedTab
         case rescanRepos
@@ -63,6 +64,12 @@ struct PaletteCommand: Identifiable, Equatable {
                 title: "Close Pane",
                 subtitle: "Command · pane",
                 effect: .closePane
+            ),
+            PaletteCommand(
+                id: "command:close-tab",
+                title: "Close Tab",
+                subtitle: "Command · reopen with ⌘⇧T",
+                effect: .closeTab
             ),
             PaletteCommand(
                 id: "command:broadcast",

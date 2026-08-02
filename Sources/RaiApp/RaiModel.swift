@@ -268,7 +268,12 @@ final class RaiModel: ObservableObject {
     }
     @Published var isCommandPalettePresented = false
     @Published var isBroadcastPresented = false
-    @Published var paletteQuery = ""
+    @Published var paletteQuery = "" {
+        // Every keystroke re-ranks the list, so the old selection now points
+        // at an arbitrary row. Return must mean "the top match for what I
+        // typed" until the user explicitly arrows away from it.
+        didSet { paletteSelectedID = paletteResults.first?.id }
+    }
     @Published var paletteSelectedID: String?
     /// Row the palette list should scroll to. Only keyboard navigation sets
     /// it: hover also moves the selection, and scrolling to a hover target
@@ -1402,6 +1407,7 @@ final class RaiModel: ObservableObject {
         case .splitDown: splitDown()
         case .zoomPane: zoomPane()
         case .closePane: closePane()
+        case .closeTab: closeTab()
         case .broadcast: isBroadcastPresented = true
         case .reopenClosedTab: reopenClosedTab()
         case .rescanRepos: refreshRepoIndex()
@@ -2518,6 +2524,17 @@ final class RaiModel: ObservableObject {
     }
     func closePane(_ paneID: String? = nil) {
         guard let pane = paneID ?? selectedPaneID else { return }
+        // Closing a tab's only pane kills the tab either way; the direct pane
+        // path just loses the ⌘⇧T record. Route it through close(tab:) so the
+        // tab is recorded for reopen, whichever surface asked — the pane ✕,
+        // the palette, or the keyboard.
+        if let snapshot,
+           let closing = snapshot.panes.first(where: { $0.paneID == pane }),
+           snapshot.panes.filter({ $0.tabID == closing.tabID }).count == 1,
+           let tab = snapshot.tabs.first(where: { $0.tabID == closing.tabID }) {
+            close(tab: tab)
+            return
+        }
         runAction(["pane", "close", pane])
     }
 
