@@ -26,6 +26,10 @@ public struct LRUTracker<Key: Hashable> {
         keys.removeAll { $0 == key }
     }
 
+    public var mostToLeastRecent: [Key] {
+        keys.reversed()
+    }
+
     public var leastToMostRecent: [Key] {
         keys
     }

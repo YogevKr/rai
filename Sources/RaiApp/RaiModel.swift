@@ -16,7 +16,29 @@ enum AgentLaunchKind: String {
     case codex
 }
 
+/// One pane of a closed tab, in tree leaf order: what reopen needs to put a
+/// terminal back where it was and resume whatever ran inside it.
+struct ClosedPaneSeed: Equatable {
+    let cwd: String
+    let agentKind: AgentLaunchKind?
+    let agentSession: AgentSession?
+    /// Filled asynchronously at close time, best effort — see close(tab:).
+    var agentArgv: [String]? = nil
+}
+
+/// The full shape of a closed tab: every pane, the split tree that arranged
+/// them, and which one the user was looking at.
+struct ClosedTabShape: Equatable {
+    var seeds: [ClosedPaneSeed]
+    let steps: [TabRebuildStep]
+    let focusedLeaf: Int?
+    let zoomed: Bool
+}
+
 struct ClosedTabRecord: Equatable {
+    /// Identity for async enrichment: argv capture mutates the record after it
+    /// is already in `closedTabs`, so equality lookups would miss.
+    let id = UUID()
     let workspaceID: String
     let cwd: String
     let agentKind: AgentLaunchKind?
@@ -26,6 +48,9 @@ struct ClosedTabRecord: Equatable {
     /// reopen relaunches with the SAME flags — bypass permissions, model
     /// picks — not a bare default invocation.
     var agentArgv: [String]?
+    /// Present when the tab had more than one pane. Reopen then rebuilds the
+    /// splits, per-pane cwds, and per-pane agents instead of a single pane.
+    var shape: ClosedTabShape?
 }
 
 struct PaneProcessInfo: Decodable, Equatable, Sendable {
@@ -268,14 +293,27 @@ final class RaiModel: ObservableObject {
     }
     @Published var isCommandPalettePresented = false
     @Published var isBroadcastPresented = false
-    @Published var paletteQuery = ""
+    @Published var paletteQuery = "" {
+        // Every keystroke re-ranks the list, so the old selection now points
+        // at an arbitrary row. Return must mean "the top match for what I
+        // typed" until the user explicitly arrows away from it.
+        didSet { paletteSelectedID = paletteResults.first?.id }
+    }
     @Published var paletteSelectedID: String?
+    /// Row the palette list should scroll to. Only keyboard navigation sets
+    /// it: hover also moves the selection, and scrolling to a hover target
+    /// moves the list under a resting cursor, which hovers a new row and
+    /// scrolls again — a loop that crawls the list by itself.
+    @Published var paletteScrollTarget: String?
     @Published var renameRequest: RenameRequest?
     // In-place sidebar rename: which tab/space is currently editing its name.
     @Published var inlineRename: InlineRenameTarget?
     @Published var workspacePendingClose: Workspace?
     @Published var statusExplanation: StatusExplanation?
     @Published var pluginActions: [PluginAction] = []
+    /// Git checkouts under `repoRoots` that no space has opened yet. Scanned on
+    /// the herd's host, so they stay correct when attached to a remote herd.
+    @Published private(set) var discoveredRepos: [DiscoveredRepo] = []
     @Published var worktreeCreateRequest: WorktreeCreateRequest?
     @Published var worktreeOpenRequest: WorktreeOpenRequest?
     @Published var worktreeAlert: WorktreeAlert?
@@ -302,11 +340,17 @@ final class RaiModel: ObservableObject {
     private static let agentPanelCollapsedKey = "agentPanelCollapsed"
     private static let sidebarSplitKey = "sidebarSplit"
     private static let collapsedSpaceKeysDefaultsKey = "collapsedSpaceKeys"
+    private static let repoRootsKey = "repoRoots"
+    private static let repoDepthKey = "repoDepth"
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private var started = false
     private var eventTask: Task<Void, Never>?
+    /// Where the user has been, for palette ordering. Deep enough to cover a
+    /// long session, small enough that stale rows fall off on their own.
+    private var navigationRecency = LRUTracker<String>(capacity: 60)
+    private var repoScanTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
     private var pendingEvents: [HerdrEvent] = []
@@ -496,6 +540,9 @@ final class RaiModel: ObservableObject {
             let displayWorkspaceLabel = workspaceLabel.isEmpty
                 ? "Space \(workspace.number)"
                 : workspaceLabel
+            // The space's checkout, so a query can name the directory the work
+            // lives in rather than whatever the space was labelled.
+            let checkout = WorkspaceSidebar.checkoutPath(for: workspace, in: snapshot)
             items.append(
                 CommandPaletteItem(
                     id: "workspace:\(workspace.workspaceID)",
@@ -503,7 +550,8 @@ final class RaiModel: ObservableObject {
                     workspaceLabel: displayWorkspaceLabel,
                     status: workspace.agentStatus,
                     destination: .workspace(workspace.workspaceID),
-                    isWorkspace: true
+                    kind: .workspace,
+                    matchPath: checkout
                 )
             )
 
@@ -517,10 +565,72 @@ final class RaiModel: ObservableObject {
                         workspaceLabel: displayWorkspaceLabel,
                         status: tab.agentStatus,
                         destination: .tab(tab.tabID),
-                        isWorkspace: false
+                        kind: .agent,
+                        matchPath: checkout
                     )
                 }
             )
+        }
+
+        // Repos with no space yet come last, so typing a name always surfaces
+        // the running space before the offer to open a second one.
+        let unopened = RepoDiscoveryPlanner.candidates(
+            repos: discoveredRepos,
+            openPaths: openWorkspacePaths
+        )
+        // Commands stay out of the empty-query list. With no query the palette
+        // is a navigator, and a wall of verbs would bury the spaces the user
+        // came for. Typing anything brings them back in, ranked by score.
+        if !paletteQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let commands = PaletteCommand.builtIns() + pluginActions.map(PaletteCommand.from)
+            items += commands.map { command in
+                CommandPaletteItem(
+                    id: command.id,
+                    label: command.title,
+                    workspaceLabel: command.subtitle,
+                    status: .unknown,
+                    destination: .command(command.effect),
+                    kind: .command
+                )
+            }
+        }
+
+        items += unopened.map { repo in
+            CommandPaletteItem(
+                id: "repo:\(repo.path)",
+                label: repo.name,
+                workspaceLabel: RepoDiscoveryPlanner.displayPath(repo.path),
+                status: .unknown,
+                destination: .newSpace(path: repo.path, label: repo.name),
+                kind: .repo,
+                matchPath: repo.path
+            )
+        }
+
+        // A typed path opens as a space even outside the project roots. Local
+        // herds only: rai cannot stat a path on the remote host, and offering
+        // an unverifiable row invites a create that lands in the wrong place.
+        if remoteTarget == nil,
+           let path = RepoDiscoveryPlanner.explicitPathQuery(paletteQuery) {
+            let offered = (openWorkspacePaths + unopened.map(\.path))
+                .map(RepoDiscoveryPlanner.normalized)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+               isDirectory.boolValue,
+               !offered.contains(RepoDiscoveryPlanner.normalized(path)) {
+                let name = RepoDiscoveryPlanner.name(for: path)
+                items.append(
+                    CommandPaletteItem(
+                        id: "path:\(path)",
+                        label: name,
+                        workspaceLabel: RepoDiscoveryPlanner.displayPath(path),
+                        status: .unknown,
+                        destination: .newSpace(path: path, label: name),
+                        kind: .repo,
+                        matchPath: path
+                    )
+                )
+            }
         }
         return items
     }
@@ -755,6 +865,7 @@ final class RaiModel: ObservableObject {
         )
         guard generation == connectionGeneration else { return }
         startEventLoop(client: client, generation: generation)
+        refreshRepoIndex()
     }
 
     private func disconnectCurrentHerd(message: String) {
@@ -777,6 +888,11 @@ final class RaiModel: ObservableObject {
         trailingRefreshTask = nil
         gitStatusTask?.cancel()
         gitStatusTask = nil
+        // Repos belong to the herd's host, so they do not survive a switch to
+        // another herd — a remote's paths mean nothing on the local one.
+        repoScanTask?.cancel()
+        repoScanTask = nil
+        discoveredRepos = []
         pendingEvents.removeAll(keepingCapacity: false)
         client.disconnect()
         terminalPool.removeAll()
@@ -1028,6 +1144,11 @@ final class RaiModel: ObservableObject {
 
     func select(paneID: String, focusInHerdr: Bool) {
         selectedPaneID = paneID
+        // Every selection funnels through here — palette, sidebar, keyboard —
+        // so this is the one place recency has to be recorded.
+        if let pane = snapshot?.panes.first(where: { $0.paneID == paneID }) {
+            recordVisit(tabID: pane.tabID, workspaceID: pane.workspaceID)
+        }
         guard focusInHerdr else { return }
         let client = client
         let generation = connectionGeneration
@@ -1179,6 +1300,10 @@ final class RaiModel: ObservableObject {
         if isCommandPalettePresented {
             paletteQuery = ""
             paletteSelectedID = paletteResults.first?.id
+            paletteScrollTarget = nil
+            // Repos land as soon as the scan returns; the palette is usable
+            // against open spaces in the meantime.
+            refreshRepoIndex()
         }
     }
 
@@ -1187,7 +1312,30 @@ final class RaiModel: ObservableObject {
     }
 
     var paletteResults: [CommandPaletteItem] {
-        FuzzyMatcher.ranked(commandPaletteItems, query: paletteQuery, text: \.label)
+        PaletteRanking.ranked(
+            commandPaletteItems,
+            query: paletteQuery,
+            recentIDs: paletteRecentIDs
+        )
+    }
+
+    /// Visited rows, most recent first, minus the row the palette would land
+    /// on anyway. Dropping the current selection is what makes ⌘K then Return
+    /// behave like alt-tab instead of a no-op.
+    private var paletteRecentIDs: [String] {
+        var current = Set<String>()
+        if let tabID = selectedTabID { current.insert("tab:\(tabID)") }
+        if let workspaceID = selectedWorkspace?.workspaceID {
+            current.insert("workspace:\(workspaceID)")
+        }
+        return navigationRecency.mostToLeastRecent.filter { !current.contains($0) }
+    }
+
+    /// Records a visit so the palette can offer it back. Called on every
+    /// selection, whatever made it — palette, sidebar, or keyboard.
+    private func recordVisit(tabID: String?, workspaceID: String?) {
+        if let workspaceID { navigationRecency.touch("workspace:\(workspaceID)") }
+        if let tabID { navigationRecency.touch("tab:\(tabID)") }
     }
 
     func paletteMove(_ delta: Int) {
@@ -1197,18 +1345,69 @@ final class RaiModel: ObservableObject {
             results.firstIndex { $0.id == id }
         } ?? 0
         paletteSelectedID = results[min(max(current + delta, 0), results.count - 1)].id
+        paletteScrollTarget = paletteSelectedID
     }
 
-    func paletteActivate() {
+    func paletteActivate(modifiers: PaletteModifiers = .none) {
         let results = paletteResults
-        if let item = results.first(where: { $0.id == paletteSelectedID }) ?? results.first {
+        guard let item = results.first(where: { $0.id == paletteSelectedID })
+            ?? results.first else { return }
+        perform(
+            PaletteActionDecision.resolved(
+                modifiers: modifiers,
+                item: item,
+                isRemote: remoteTarget != nil
+            ),
+            on: item
+        )
+    }
+
+    func perform(_ action: CommandPaletteItem.Action, on item: CommandPaletteItem) {
+        switch action {
+        case .open:
             jump(to: item)
+        case .newTab:
+            closeCommandPalette()
+            jumpWithoutClosing(to: item)
+            newTab()
+        case .newWorktree:
+            closeCommandPalette()
+            beginCreateWorktree(from: item)
+        case .revealInFinder:
+            closeCommandPalette()
+            guard let path = item.matchPath, !path.isEmpty else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
     }
 
+    /// Starts the worktree sheet straight from a palette row. A repo row has no
+    /// space yet, but `worktree create` works from a checkout path alone, so no
+    /// workspace has to exist first.
+    private func beginCreateWorktree(from item: CommandPaletteItem) {
+        guard let path = item.matchPath, !path.isEmpty else { return }
+        worktreeCreateRequest = WorktreeCreateRequest(
+            context: WorktreeRepositoryContext(
+                repoName: RepoDiscoveryPlanner.name(for: path),
+                checkoutPath: path
+            )
+        )
+    }
+
     func jump(to item: CommandPaletteItem) {
-        guard let snapshot else { return }
         closeCommandPalette()
+        jumpWithoutClosing(to: item)
+    }
+
+    private func jumpWithoutClosing(to item: CommandPaletteItem) {
+        if case .newSpace(let path, let label) = item.destination {
+            openSpace(atPath: path, label: label)
+            return
+        }
+        if case .command(let effect) = item.destination {
+            run(effect)
+            return
+        }
+        guard let snapshot else { return }
         switch item.destination {
         case .tab(let tabID):
             if let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) {
@@ -1220,7 +1419,104 @@ final class RaiModel: ObservableObject {
             }) {
                 select(workspace: workspace)
             }
+        case .newSpace, .command:
+            break
         }
+    }
+
+    private func run(_ effect: PaletteCommand.Effect) {
+        switch effect {
+        case .newTab: newTab()
+        case .newSpace: newWorkspace()
+        case .splitRight: splitRight()
+        case .splitDown: splitDown()
+        case .zoomPane: zoomPane()
+        case .closePane: closePane()
+        case .closeTab: closeTab()
+        case .broadcast: isBroadcastPresented = true
+        case .reopenClosedTab: reopenClosedTab()
+        case .rescanRepos: refreshRepoIndex()
+        case .refresh: refreshNow()
+        case .plugin(let actionID, let pluginID):
+            // The focused pane is the context a plugin action gets from the
+            // palette: it satisfies pane, tab, and workspace scopes at once.
+            guard let paneID = selectedPaneID,
+                  let action = pluginActions.first(where: {
+                      $0.id == actionID && $0.pluginId == pluginID
+                  }) else { return }
+            invokePluginAction(action, forPane: paneID)
+        }
+    }
+
+    // MARK: - Repos
+
+    /// Project roots scanned for checkouts, newest edit wins over the default.
+    var repoRoots: [String] {
+        get {
+            let stored = userDefaults.stringArray(forKey: Self.repoRootsKey)
+            guard let stored else { return RepoDiscoveryPlanner.defaultRoots }
+            return stored
+        }
+        set {
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            objectWillChange.send()
+            userDefaults.set(cleaned, forKey: Self.repoRootsKey)
+            refreshRepoIndex()
+        }
+    }
+
+    /// How many levels below each root a checkout may sit.
+    var repoDepth: Int {
+        get {
+            let stored = userDefaults.integer(forKey: Self.repoDepthKey)
+            guard stored > 0 else { return RepoDiscoveryPlanner.defaultDepth }
+            return min(stored, RepoDiscoveryPlanner.maxDepth)
+        }
+        set {
+            objectWillChange.send()
+            userDefaults.set(
+                min(max(newValue, 1), RepoDiscoveryPlanner.maxDepth),
+                forKey: Self.repoDepthKey
+            )
+            refreshRepoIndex()
+        }
+    }
+
+    /// Directories the open spaces already sit in. A repo matching one of these
+    /// is not offered again — its space is already a palette row.
+    var openWorkspacePaths: [String] {
+        guard let snapshot else { return [] }
+        var paths = snapshot.panes.map(\.cwd)
+        paths += snapshot.workspaces.compactMap { $0.worktree?.checkoutPath }
+        return paths
+    }
+
+    /// Rescans the herd's host for checkouts. Cheap enough to run whenever the
+    /// palette opens, so a repo cloned a minute ago is already offered.
+    func refreshRepoIndex() {
+        let roots = repoRoots
+        let depth = repoDepth
+        let target = remoteTarget
+        let generation = connectionGeneration
+        repoScanTask?.cancel()
+        repoScanTask = Task { [weak self] in
+            let repos = await RepoScanner.scan(
+                roots: roots,
+                depth: depth,
+                remoteTarget: target
+            )
+            guard !Task.isCancelled else { return }
+            guard let self, generation == self.connectionGeneration else { return }
+            self.discoveredRepos = repos
+        }
+    }
+
+    /// Turns a checkout into a space. herdr creates the workspace, its first
+    /// tab, and a root pane already inside the repo.
+    func openSpace(atPath path: String, label: String) {
+        runAction(RepoDiscoveryPlanner.workspaceCreateArguments(path: path, label: label))
     }
 
     func beginRename(tab: HerdrTab) {
@@ -1287,22 +1583,63 @@ final class RaiModel: ObservableObject {
         if closedTabs.count > 10 {
             closedTabs.removeFirst(closedTabs.count - 10)
         }
-        guard let kind = record.agentKind,
-              let agentPaneID = snapshot?.panes.first(where: {
-                  $0.tabID == tab.tabID && Self.agentLaunchKind(for: $0) == kind
-              })?.paneID else {
+        // Every agent pane in the tab, by shape leaf when there is one, so a
+        // two-agent split reopens both with their original flags.
+        let tabPanes = snapshot?.panes.filter { $0.tabID == tab.tabID } ?? []
+        let leafOrder: [String] = record.shape == nil
+            ? []
+            : snapshot?.layouts.first { $0.tabID == tab.tabID }
+                .flatMap(PaneLayoutTreeBuilder.build)?.paneIDs ?? []
+        let captures: [(paneID: String, kind: AgentLaunchKind, leaf: Int?)] = tabPanes
+            .compactMap { pane in
+                guard let kind = Self.agentLaunchKind(for: pane) else { return nil }
+                return (pane.paneID, kind, leafOrder.firstIndex(of: pane.paneID))
+            }
+        guard !captures.isEmpty else {
             runAction(arguments)
             return
         }
+        let recordID = record.id
+        let primaryPaneID = captures.first { $0.kind == record.agentKind }?.paneID
         Task {
-            // Capture the agent's command line BEFORE the close kills it, so
+            // Capture each agent's command line BEFORE the close kills it, so
             // reopen can bring the session back with all its original flags —
             // but bounded: a slow herd must not wedge the close, and a missed
             // capture only costs the flags, not the reopen.
-            if let info = await processInfo(for: agentPaneID, timeout: .seconds(2)),
-               let argv = Self.agentArgv(from: info, kind: kind),
-               let index = closedTabs.lastIndex(of: record) {
-                closedTabs[index].agentArgv = argv
+            let infos = await withTaskGroup(
+                of: (String, PaneProcessInfo?).self,
+                returning: [String: PaneProcessInfo].self
+            ) { group in
+                for capture in captures {
+                    group.addTask { [weak self] in
+                        (capture.paneID, await self?.processInfo(
+                            for: capture.paneID,
+                            timeout: .seconds(2)
+                        ))
+                    }
+                }
+                var results: [String: PaneProcessInfo] = [:]
+                for await (paneID, info) in group {
+                    if let info { results[paneID] = info }
+                }
+                return results
+            }
+            var argvs: [String: [String]] = [:]
+            for capture in captures {
+                guard let info = infos[capture.paneID],
+                      let argv = Self.agentArgv(from: info, kind: capture.kind) else { continue }
+                argvs[capture.paneID] = argv
+            }
+            if let index = closedTabs.lastIndex(where: { $0.id == recordID }) {
+                for capture in captures {
+                    guard let argv = argvs[capture.paneID] else { continue }
+                    if let leaf = capture.leaf {
+                        closedTabs[index].shape?.seeds[leaf].agentArgv = argv
+                    }
+                    if capture.paneID == primaryPaneID {
+                        closedTabs[index].agentArgv = argv
+                    }
+                }
             }
             runAction(arguments)
         }
@@ -1393,7 +1730,36 @@ final class RaiModel: ObservableObject {
             cwd: activePane.foregroundCWD ?? activePane.cwd,
             agentKind: agentKind,
             agentSession: agentPane?.agentSession,
-            label: tab.label
+            label: tab.label,
+            shape: closedTabShape(for: tab, panes: panes)
+        )
+    }
+
+    /// The tab's full pane arrangement, when it has one worth recording. A
+    /// single-pane tab returns nil and reopens through the simpler path.
+    private func closedTabShape(for tab: HerdrTab, panes: [Pane]) -> ClosedTabShape? {
+        guard panes.count > 1,
+              let layout = snapshot?.layouts.first(where: { $0.tabID == tab.tabID }),
+              let tree = PaneLayoutTreeBuilder.build(from: layout) else {
+            return nil
+        }
+        let order = tree.paneIDs
+        let paneByID = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneID, $0) })
+        let seeds = order.compactMap { paneByID[$0] }.map { pane in
+            ClosedPaneSeed(
+                cwd: pane.foregroundCWD ?? pane.cwd,
+                agentKind: Self.agentLaunchKind(for: pane),
+                agentSession: pane.agentSession
+            )
+        }
+        // A leaf without a matching pane means the layout and the pane list
+        // disagree; rebuilding from that would misplace panes.
+        guard seeds.count == order.count else { return nil }
+        return ClosedTabShape(
+            seeds: seeds,
+            steps: TabShapePlanner.steps(for: tree),
+            focusedLeaf: order.firstIndex(of: layout.focusedPaneID),
+            zoomed: layout.zoomed && order.count > 1
         )
     }
 
@@ -1571,11 +1937,28 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    private func worktreeContext(for workspace: Workspace) -> WorktreeRepositoryContext? {
-        guard let worktree = workspace.worktree else { return nil }
+    /// The repo a workspace's worktree commands should act on.
+    ///
+    /// herdr records `worktree` provenance only for workspaces it created
+    /// through `worktree create`/`worktree open`. A space opened straight from a
+    /// repo path — the palette's repo rows, or any `workspace create --cwd` —
+    /// has none, even though it sits in a perfectly good checkout. Its git
+    /// status resolves that checkout, which is all the worktree commands need.
+    ///
+    /// The fallback is local-only: on a remote herd rai cannot stat the
+    /// checkout, so no git status arrives. Provenance-carrying workspaces still
+    /// work there, because that field comes from the snapshot.
+    func worktreeContext(for workspace: Workspace) -> WorktreeRepositoryContext? {
+        if let worktree = workspace.worktree {
+            return WorktreeRepositoryContext(
+                repoName: worktree.repoName,
+                checkoutPath: worktree.checkoutPath
+            )
+        }
+        guard let status = gitStatus(for: workspace) else { return nil }
         return WorktreeRepositoryContext(
-            repoName: worktree.repoName,
-            checkoutPath: worktree.checkoutPath
+            repoName: RepoDiscoveryPlanner.name(for: status.checkoutPath),
+            checkoutPath: status.checkoutPath
         )
     }
 
@@ -2236,6 +2619,17 @@ final class RaiModel: ObservableObject {
     }
     func closePane(_ paneID: String? = nil) {
         guard let pane = paneID ?? selectedPaneID else { return }
+        // Closing a tab's only pane kills the tab either way; the direct pane
+        // path just loses the ⌘⇧T record. Route it through close(tab:) so the
+        // tab is recorded for reopen, whichever surface asked — the pane ✕,
+        // the palette, or the keyboard.
+        if let snapshot,
+           let closing = snapshot.panes.first(where: { $0.paneID == pane }),
+           snapshot.panes.filter({ $0.tabID == closing.tabID }).count == 1,
+           let tab = snapshot.tabs.first(where: { $0.tabID == closing.tabID }) {
+            close(tab: tab)
+            return
+        }
         runAction(["pane", "close", pane])
     }
 
@@ -2983,6 +3377,10 @@ final class RaiModel: ObservableObject {
     ) async {
         guard generation == connectionGeneration else { return }
         let oldTabIDs = Set(snapshot?.tabs.map(\.tabID) ?? [])
+        // With a recorded shape, the tab's first pane is the layout tree's
+        // first leaf — its cwd seeds the created tab; the active pane's cwd
+        // only drives the single-pane path.
+        let rootCwd = record.shape?.seeds.first?.cwd ?? record.cwd
         var workspaceID = snapshot?.workspaces.contains {
             $0.workspaceID == record.workspaceID
         } == true
@@ -2994,7 +3392,7 @@ final class RaiModel: ObservableObject {
         if workspaceID == nil {
             guard await runHerdr([
                 "workspace", "create",
-                "--cwd", record.cwd,
+                "--cwd", rootCwd,
                 "--focus",
             ]) else {
                 return
@@ -3005,7 +3403,7 @@ final class RaiModel: ObservableObject {
             var created = await runHerdr([
                 "tab", "create",
                 "--workspace", targetWorkspaceID,
-                "--cwd", record.cwd,
+                "--cwd", rootCwd,
                 "--label", record.label,
                 "--focus",
             ])
@@ -3022,7 +3420,7 @@ final class RaiModel: ObservableObject {
                 created = await runHerdr([
                     "tab", "create",
                     "--workspace", fallbackWorkspaceID,
-                    "--cwd", record.cwd,
+                    "--cwd", rootCwd,
                     "--label", record.label,
                     "--focus",
                 ])
@@ -3044,7 +3442,12 @@ final class RaiModel: ObservableObject {
         if snapshot?.displayLabel(for: reopenedTab) != record.label {
             _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
         }
-        if let agentKind = record.agentKind {
+        if let shape = record.shape, shape.seeds.count > 1,
+           let rootPaneID = snapshot?.panes.first(where: {
+               $0.tabID == reopenedTab.tabID
+           })?.paneID {
+            await rebuild(shape, rootPaneID: rootPaneID)
+        } else if let agentKind = record.agentKind {
             // Prefer herdr's exact session id. Older servers fall back to each
             // client's cwd-scoped recent session lookup.
             let resumeCommand = Self.resumeCommand(
@@ -3074,6 +3477,67 @@ final class RaiModel: ObservableObject {
             _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
         }
         await refreshSnapshot(keepSelection: false)
+    }
+
+    private struct PaneSplitResponse: Decodable {
+        struct Result: Decodable {
+            let pane: PaneRef
+        }
+        struct PaneRef: Decodable {
+            let paneID: String
+            enum CodingKeys: String, CodingKey {
+                case paneID = "pane_id"
+            }
+        }
+        let result: Result
+    }
+
+    /// Recreates a closed tab's splits, per-pane cwds, and per-pane agents on
+    /// top of the fresh tab's root pane. Best effort throughout: a failed
+    /// split skips its subtree's panes rather than aborting the reopen.
+    private func rebuild(_ shape: ClosedTabShape, rootPaneID: String) async {
+        var paneIDs: [Int: String] = [0: rootPaneID]
+        for step in shape.steps {
+            guard let anchor = paneIDs[step.anchorLeaf],
+                  let output = await runHerdrCapture([
+                      "pane", "split", anchor,
+                      "--direction", step.direction.rawValue,
+                      "--ratio", String(format: "%.4f", step.ratio),
+                      "--cwd", shape.seeds[step.newLeaf].cwd,
+                      "--no-focus",
+                  ]),
+                  let data = output.data(using: .utf8),
+                  let response = try? JSONDecoder().decode(
+                      PaneSplitResponse.self,
+                      from: data
+                  ) else {
+                continue
+            }
+            paneIDs[step.newLeaf] = response.result.pane.paneID
+        }
+
+        let agentLeaves = shape.seeds.enumerated().filter { $0.element.agentKind != nil }
+        if !agentLeaves.isEmpty {
+            // The split panes' shells need a beat to reach a prompt before a
+            // typed resume command lands in the pty.
+            try? await Task.sleep(for: .milliseconds(400))
+            for (leaf, seed) in agentLeaves {
+                guard let kind = seed.agentKind, let paneID = paneIDs[leaf] else { continue }
+                let resume = Self.resumeCommand(
+                    kind: kind,
+                    argv: seed.agentArgv,
+                    agentSession: seed.agentSession
+                )
+                _ = await runHerdr(["pane", "run", paneID, resume])
+            }
+        }
+
+        if let focusedLeaf = shape.focusedLeaf, let paneID = paneIDs[focusedLeaf] {
+            if shape.zoomed {
+                _ = await runHerdr(["pane", "zoom", paneID, "--on"])
+            }
+            try? await client.focusPane(paneID)
+        }
     }
 
     // Commit a divider drag. herdr's `pane resize --amount` is a positive delta on

@@ -11,6 +11,13 @@ struct SidebarView: View {
     @ObservedObject var model: RaiModel
     @State private var broadcastPresented = false
 
+    /// Whether the selected space sits in a git checkout. Gates the worktree
+    /// actions, which need a repo but not herdr worktree provenance.
+    private var hasRepo: Bool {
+        guard let workspace = model.selectedWorkspace else { return false }
+        return model.worktreeContext(for: workspace) != nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -251,7 +258,7 @@ struct SidebarView: View {
                 } label: {
                     Label("New Worktree…", systemImage: "arrow.triangle.branch")
                 }
-                .disabled(model.selectedWorkspace?.worktree == nil)
+                .disabled(!hasRepo)
                 Button {
                     if let workspace = model.selectedWorkspace {
                         model.beginOpenWorktree(from: workspace)
@@ -259,7 +266,7 @@ struct SidebarView: View {
                 } label: {
                     Label("Open Worktree…", systemImage: "folder.badge.plus")
                 }
-                .disabled(model.selectedWorkspace?.worktree == nil)
+                .disabled(!hasRepo)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))

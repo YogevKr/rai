@@ -762,6 +762,8 @@ private struct HerdrServerSettingsView: View {
                     .disabled(isRunningAction || model.remoteTarget != nil)
                 }
 
+                ProjectRootsSection(model: model)
+
                 SettingsSection(title: "Agent Detection Manifests") {
                     VStack(alignment: .leading, spacing: 12) {
                         ScrollView {
@@ -1829,6 +1831,117 @@ private struct ConfigSettingsView: View {
             ? "Herdr server configuration reloaded."
             : "Unable to reload the Herdr server configuration."
         isRunningAction = false
+    }
+}
+
+/// Where the command palette looks for repos to open as spaces.
+///
+/// The scan runs on the herd's own host, so these paths are read on the remote
+/// machine while rai is attached to a remote herd. That is why the folder
+/// picker disappears there: it would browse this Mac, not the herd's host.
+private struct ProjectRootsSection: View {
+    @ObservedObject var model: RaiModel
+
+    @State private var draft = ""
+
+    private var isRemote: Bool { model.remoteTarget != nil }
+
+    var body: some View {
+        SettingsSection(title: "Project Roots") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(
+                    isRemote
+                        ? "Scanned on \(model.remoteTarget ?? "the remote host") "
+                            + "for git checkouts. Found \(model.discoveredRepos.count)."
+                        : "Scanned for git checkouts offered in the command palette. "
+                            + "Found \(model.discoveredRepos.count)."
+                )
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.textTertiary)
+
+                if model.repoRoots.isEmpty {
+                    Text("No roots. The palette lists open spaces only.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textTertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(model.repoRoots, id: \.self) { root in
+                            HStack(spacing: 8) {
+                                Text(root)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
+                                Spacer()
+                                Button {
+                                    remove(root)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remove this root")
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    TextField("~/projects", text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .onSubmit(addDraft)
+                    Button("Add", action: addDraft)
+                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if !isRemote {
+                        Button("Choose…", action: chooseFolder)
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                HStack(spacing: 10) {
+                    Stepper(
+                        "Depth: \(model.repoDepth)",
+                        value: Binding(
+                            get: { model.repoDepth },
+                            set: { model.repoDepth = $0 }
+                        ),
+                        in: 1...RepoDiscoveryPlanner.maxDepth
+                    )
+                    .font(.system(size: 11.5))
+                    Text("levels below each root")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    Button("Rescan") { model.refreshRepoIndex() }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private func addDraft() {
+        let value = draft.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, !model.repoRoots.contains(value) else {
+            draft = ""
+            return
+        }
+        model.repoRoots = model.repoRoots + [value]
+        draft = ""
+    }
+
+    private func remove(_ root: String) {
+        model.repoRoots = model.repoRoots.filter { $0 != root }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Root"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        draft = NSString(string: url.path).abbreviatingWithTildeInPath
+        addDraft()
     }
 }
 
