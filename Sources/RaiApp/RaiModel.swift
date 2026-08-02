@@ -16,7 +16,29 @@ enum AgentLaunchKind: String {
     case codex
 }
 
+/// One pane of a closed tab, in tree leaf order: what reopen needs to put a
+/// terminal back where it was and resume whatever ran inside it.
+struct ClosedPaneSeed: Equatable {
+    let cwd: String
+    let agentKind: AgentLaunchKind?
+    let agentSession: AgentSession?
+    /// Filled asynchronously at close time, best effort — see close(tab:).
+    var agentArgv: [String]? = nil
+}
+
+/// The full shape of a closed tab: every pane, the split tree that arranged
+/// them, and which one the user was looking at.
+struct ClosedTabShape: Equatable {
+    var seeds: [ClosedPaneSeed]
+    let steps: [TabRebuildStep]
+    let focusedLeaf: Int?
+    let zoomed: Bool
+}
+
 struct ClosedTabRecord: Equatable {
+    /// Identity for async enrichment: argv capture mutates the record after it
+    /// is already in `closedTabs`, so equality lookups would miss.
+    let id = UUID()
     let workspaceID: String
     let cwd: String
     let agentKind: AgentLaunchKind?
@@ -26,6 +48,9 @@ struct ClosedTabRecord: Equatable {
     /// reopen relaunches with the SAME flags — bypass permissions, model
     /// picks — not a bare default invocation.
     var agentArgv: [String]?
+    /// Present when the tab had more than one pane. Reopen then rebuilds the
+    /// splits, per-pane cwds, and per-pane agents instead of a single pane.
+    var shape: ClosedTabShape?
 }
 
 struct PaneProcessInfo: Decodable, Equatable, Sendable {
@@ -1558,22 +1583,63 @@ final class RaiModel: ObservableObject {
         if closedTabs.count > 10 {
             closedTabs.removeFirst(closedTabs.count - 10)
         }
-        guard let kind = record.agentKind,
-              let agentPaneID = snapshot?.panes.first(where: {
-                  $0.tabID == tab.tabID && Self.agentLaunchKind(for: $0) == kind
-              })?.paneID else {
+        // Every agent pane in the tab, by shape leaf when there is one, so a
+        // two-agent split reopens both with their original flags.
+        let tabPanes = snapshot?.panes.filter { $0.tabID == tab.tabID } ?? []
+        let leafOrder: [String] = record.shape == nil
+            ? []
+            : snapshot?.layouts.first { $0.tabID == tab.tabID }
+                .flatMap(PaneLayoutTreeBuilder.build)?.paneIDs ?? []
+        let captures: [(paneID: String, kind: AgentLaunchKind, leaf: Int?)] = tabPanes
+            .compactMap { pane in
+                guard let kind = Self.agentLaunchKind(for: pane) else { return nil }
+                return (pane.paneID, kind, leafOrder.firstIndex(of: pane.paneID))
+            }
+        guard !captures.isEmpty else {
             runAction(arguments)
             return
         }
+        let recordID = record.id
+        let primaryPaneID = captures.first { $0.kind == record.agentKind }?.paneID
         Task {
-            // Capture the agent's command line BEFORE the close kills it, so
+            // Capture each agent's command line BEFORE the close kills it, so
             // reopen can bring the session back with all its original flags —
             // but bounded: a slow herd must not wedge the close, and a missed
             // capture only costs the flags, not the reopen.
-            if let info = await processInfo(for: agentPaneID, timeout: .seconds(2)),
-               let argv = Self.agentArgv(from: info, kind: kind),
-               let index = closedTabs.lastIndex(of: record) {
-                closedTabs[index].agentArgv = argv
+            let infos = await withTaskGroup(
+                of: (String, PaneProcessInfo?).self,
+                returning: [String: PaneProcessInfo].self
+            ) { group in
+                for capture in captures {
+                    group.addTask { [weak self] in
+                        (capture.paneID, await self?.processInfo(
+                            for: capture.paneID,
+                            timeout: .seconds(2)
+                        ))
+                    }
+                }
+                var results: [String: PaneProcessInfo] = [:]
+                for await (paneID, info) in group {
+                    if let info { results[paneID] = info }
+                }
+                return results
+            }
+            var argvs: [String: [String]] = [:]
+            for capture in captures {
+                guard let info = infos[capture.paneID],
+                      let argv = Self.agentArgv(from: info, kind: capture.kind) else { continue }
+                argvs[capture.paneID] = argv
+            }
+            if let index = closedTabs.lastIndex(where: { $0.id == recordID }) {
+                for capture in captures {
+                    guard let argv = argvs[capture.paneID] else { continue }
+                    if let leaf = capture.leaf {
+                        closedTabs[index].shape?.seeds[leaf].agentArgv = argv
+                    }
+                    if capture.paneID == primaryPaneID {
+                        closedTabs[index].agentArgv = argv
+                    }
+                }
             }
             runAction(arguments)
         }
@@ -1664,7 +1730,36 @@ final class RaiModel: ObservableObject {
             cwd: activePane.foregroundCWD ?? activePane.cwd,
             agentKind: agentKind,
             agentSession: agentPane?.agentSession,
-            label: tab.label
+            label: tab.label,
+            shape: closedTabShape(for: tab, panes: panes)
+        )
+    }
+
+    /// The tab's full pane arrangement, when it has one worth recording. A
+    /// single-pane tab returns nil and reopens through the simpler path.
+    private func closedTabShape(for tab: HerdrTab, panes: [Pane]) -> ClosedTabShape? {
+        guard panes.count > 1,
+              let layout = snapshot?.layouts.first(where: { $0.tabID == tab.tabID }),
+              let tree = PaneLayoutTreeBuilder.build(from: layout) else {
+            return nil
+        }
+        let order = tree.paneIDs
+        let paneByID = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneID, $0) })
+        let seeds = order.compactMap { paneByID[$0] }.map { pane in
+            ClosedPaneSeed(
+                cwd: pane.foregroundCWD ?? pane.cwd,
+                agentKind: Self.agentLaunchKind(for: pane),
+                agentSession: pane.agentSession
+            )
+        }
+        // A leaf without a matching pane means the layout and the pane list
+        // disagree; rebuilding from that would misplace panes.
+        guard seeds.count == order.count else { return nil }
+        return ClosedTabShape(
+            seeds: seeds,
+            steps: TabShapePlanner.steps(for: tree),
+            focusedLeaf: order.firstIndex(of: layout.focusedPaneID),
+            zoomed: layout.zoomed && order.count > 1
         )
     }
 
@@ -3282,6 +3377,10 @@ final class RaiModel: ObservableObject {
     ) async {
         guard generation == connectionGeneration else { return }
         let oldTabIDs = Set(snapshot?.tabs.map(\.tabID) ?? [])
+        // With a recorded shape, the tab's first pane is the layout tree's
+        // first leaf — its cwd seeds the created tab; the active pane's cwd
+        // only drives the single-pane path.
+        let rootCwd = record.shape?.seeds.first?.cwd ?? record.cwd
         var workspaceID = snapshot?.workspaces.contains {
             $0.workspaceID == record.workspaceID
         } == true
@@ -3293,7 +3392,7 @@ final class RaiModel: ObservableObject {
         if workspaceID == nil {
             guard await runHerdr([
                 "workspace", "create",
-                "--cwd", record.cwd,
+                "--cwd", rootCwd,
                 "--focus",
             ]) else {
                 return
@@ -3304,7 +3403,7 @@ final class RaiModel: ObservableObject {
             var created = await runHerdr([
                 "tab", "create",
                 "--workspace", targetWorkspaceID,
-                "--cwd", record.cwd,
+                "--cwd", rootCwd,
                 "--label", record.label,
                 "--focus",
             ])
@@ -3321,7 +3420,7 @@ final class RaiModel: ObservableObject {
                 created = await runHerdr([
                     "tab", "create",
                     "--workspace", fallbackWorkspaceID,
-                    "--cwd", record.cwd,
+                    "--cwd", rootCwd,
                     "--label", record.label,
                     "--focus",
                 ])
@@ -3343,7 +3442,12 @@ final class RaiModel: ObservableObject {
         if snapshot?.displayLabel(for: reopenedTab) != record.label {
             _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
         }
-        if let agentKind = record.agentKind {
+        if let shape = record.shape, shape.seeds.count > 1,
+           let rootPaneID = snapshot?.panes.first(where: {
+               $0.tabID == reopenedTab.tabID
+           })?.paneID {
+            await rebuild(shape, rootPaneID: rootPaneID)
+        } else if let agentKind = record.agentKind {
             // Prefer herdr's exact session id. Older servers fall back to each
             // client's cwd-scoped recent session lookup.
             let resumeCommand = Self.resumeCommand(
@@ -3373,6 +3477,67 @@ final class RaiModel: ObservableObject {
             _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
         }
         await refreshSnapshot(keepSelection: false)
+    }
+
+    private struct PaneSplitResponse: Decodable {
+        struct Result: Decodable {
+            let pane: PaneRef
+        }
+        struct PaneRef: Decodable {
+            let paneID: String
+            enum CodingKeys: String, CodingKey {
+                case paneID = "pane_id"
+            }
+        }
+        let result: Result
+    }
+
+    /// Recreates a closed tab's splits, per-pane cwds, and per-pane agents on
+    /// top of the fresh tab's root pane. Best effort throughout: a failed
+    /// split skips its subtree's panes rather than aborting the reopen.
+    private func rebuild(_ shape: ClosedTabShape, rootPaneID: String) async {
+        var paneIDs: [Int: String] = [0: rootPaneID]
+        for step in shape.steps {
+            guard let anchor = paneIDs[step.anchorLeaf],
+                  let output = await runHerdrCapture([
+                      "pane", "split", anchor,
+                      "--direction", step.direction.rawValue,
+                      "--ratio", String(format: "%.4f", step.ratio),
+                      "--cwd", shape.seeds[step.newLeaf].cwd,
+                      "--no-focus",
+                  ]),
+                  let data = output.data(using: .utf8),
+                  let response = try? JSONDecoder().decode(
+                      PaneSplitResponse.self,
+                      from: data
+                  ) else {
+                continue
+            }
+            paneIDs[step.newLeaf] = response.result.pane.paneID
+        }
+
+        let agentLeaves = shape.seeds.enumerated().filter { $0.element.agentKind != nil }
+        if !agentLeaves.isEmpty {
+            // The split panes' shells need a beat to reach a prompt before a
+            // typed resume command lands in the pty.
+            try? await Task.sleep(for: .milliseconds(400))
+            for (leaf, seed) in agentLeaves {
+                guard let kind = seed.agentKind, let paneID = paneIDs[leaf] else { continue }
+                let resume = Self.resumeCommand(
+                    kind: kind,
+                    argv: seed.agentArgv,
+                    agentSession: seed.agentSession
+                )
+                _ = await runHerdr(["pane", "run", paneID, resume])
+            }
+        }
+
+        if let focusedLeaf = shape.focusedLeaf, let paneID = paneIDs[focusedLeaf] {
+            if shape.zoomed {
+                _ = await runHerdr(["pane", "zoom", paneID, "--on"])
+            }
+            try? await client.focusPane(paneID)
+        }
     }
 
     // Commit a divider drag. herdr's `pane resize --amount` is a positive delta on
