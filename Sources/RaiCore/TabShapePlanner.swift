@@ -1,7 +1,7 @@
 /// One `pane split` needed to rebuild a closed tab's layout. Leaves are
 /// numbered by the tree's left-to-right pane order; the tab's first pane is
 /// leaf 0, and each step's new pane becomes `newLeaf`.
-public struct TabRebuildStep: Equatable, Sendable {
+public struct TabRebuildStep: Equatable, Sendable, Codable {
     /// Leaf whose live pane gets split — the first leaf of the subtree that
     /// occupies the region being divided.
     public let anchorLeaf: Int
