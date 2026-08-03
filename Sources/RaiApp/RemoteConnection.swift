@@ -184,6 +184,18 @@ final class RemoteConnection {
         throw RemoteConnectionError.discoveryFailed(detail)
     }
 
+    /// Lists the herdr sessions on a remote target, for the session menu.
+    static func listSessions(target: String) async throws -> [HerdrSession] {
+        let result = await runSSH(
+            target: target,
+            remoteArguments: ["herdr", "session", "list", "--json"]
+        )
+        guard result.succeeded else {
+            throw RemoteConnectionError.discoveryFailed(result.errorOutput)
+        }
+        return try SessionListParser.parse(result.standardOutput)
+    }
+
     private static func defaultSocket(
         target: String,
         discoveryError: String = ""

@@ -314,6 +314,28 @@ struct SidebarView: View {
 
     private var sessionMenu: some View {
         Menu {
+            if let target = model.remoteTarget {
+                Section("Remote Sessions — \(target)") {
+                    ForEach(model.remoteSessions) { session in
+                        Button {
+                            model.switchRemoteSession(session)
+                        } label: {
+                            Label(
+                                session.name,
+                                systemImage: model.isCurrentRemoteSession(session)
+                                    ? "checkmark.circle.fill"
+                                    : (session.isRunning ? "circle.fill" : "circle")
+                            )
+                        }
+                        // Attaching needs a running server on the remote end;
+                        // rai has no way to start one over there yet.
+                        .disabled(
+                            !session.isRunning || model.isCurrentRemoteSession(session)
+                        )
+                    }
+                }
+            }
+
             Section("Local Sessions") {
                 ForEach(model.sessions) { session in
                     Button {

@@ -341,6 +341,9 @@ final class RaiModel: ObservableObject {
     @Published var worktreeOpenRequest: WorktreeOpenRequest?
     @Published var worktreeAlert: WorktreeAlert?
     @Published private(set) var sessions: [HerdrSession] = []
+    /// Sessions on the connected remote target, refreshed with `sessions`.
+    /// Empty whenever no remote herd is connected.
+    @Published private(set) var remoteSessions: [HerdrSession] = []
     @Published private(set) var activeSocketPath: String
     @Published private(set) var currentSessionName: String
     @Published private(set) var remoteTarget: String?
@@ -794,6 +797,17 @@ final class RaiModel: ObservableObject {
         isViewing(session)
     }
 
+    func isCurrentRemoteSession(_ session: HerdrSession) -> Bool {
+        remoteTarget != nil && session.name == currentSessionName
+    }
+
+    /// Switches to another session on the already-connected remote target,
+    /// through the same discovery-and-tunnel path as the connect sheet.
+    func switchRemoteSession(_ session: HerdrSession) {
+        guard let target = remoteTarget else { return }
+        connectRemote(target: target, sessionName: session.name)
+    }
+
     func confirmStopSession(_ session: HerdrSession) {
         sessionAlert = nil
         Task {
@@ -907,6 +921,7 @@ final class RaiModel: ObservableObject {
         guard generation == connectionGeneration else { return }
         startEventLoop(client: client, generation: generation)
         refreshRepoIndex()
+        await reloadSessions()
     }
 
     private func disconnectCurrentHerd(message: String) {
@@ -985,6 +1000,21 @@ final class RaiModel: ObservableObject {
                     message: "Herdr returned an unreadable session list."
                 )
             )
+        }
+        await reloadRemoteSessions()
+    }
+
+    /// The remote list rides along with every session reload. A transient ssh
+    /// failure keeps the previous list rather than blanking the menu; only
+    /// disconnecting clears it.
+    private func reloadRemoteSessions() async {
+        guard let target = remoteTarget else {
+            remoteSessions = []
+            return
+        }
+        if let fetched = try? await RemoteConnection.listSessions(target: target) {
+            guard target == remoteTarget else { return }
+            remoteSessions = fetched
         }
     }
 
