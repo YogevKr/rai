@@ -291,6 +291,117 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// Extends drag-selections into herdr-side scrollback (see the controller).
     let scrollbackSelection = ScrollbackSelectionController()
 
+    // MARK: predictive echo (remote herds)
+
+    /// Non-nil only when this pane belongs to a remote herd. The engine's own
+    /// latency gate keeps the overlay invisible on fast links, so enabling it
+    /// for every remote pane is safe.
+    private var predictiveEcho: PredictiveEchoEngine?
+    private var predictionOverlay: PredictionOverlayView?
+    private var predictionReconcileTimer: Timer?
+
+    func enablePredictiveEcho() {
+        guard predictiveEcho == nil else { return }
+        predictiveEcho = PredictiveEchoEngine()
+    }
+
+    /// Classifies a keystroke that is on its way to the pty and records it.
+    /// Copy-mode keys never reach the pty, so callers skip those.
+    private func notePredictionKey(_ event: NSEvent) {
+        guard let engine = predictiveEcho else { return }
+        let terminal = getTerminal()
+        let mods = event.modifierFlags.intersection(
+            [.command, .control, .option, .function])
+        let key: PredictiveEchoEngine.KeyClass
+        if !mods.isEmpty {
+            key = .other
+        } else if event.keyCode == 51 {
+            key = .backspace
+        } else if let characters = event.characters,
+                  characters.count == 1,
+                  let scalar = characters.unicodeScalars.first,
+                  scalar.value >= 0x20, scalar.value < 0x7f {
+            key = .printable(Character(scalar))
+        } else {
+            key = .other
+        }
+        engine.noteKey(
+            key,
+            cursor: terminal.getCursorLocation(),
+            columns: terminal.cols,
+            alternateBufferActive: terminal.isCurrentBufferAlternate
+        )
+        updatePredictionOverlay()
+        ensurePredictionTimer()
+    }
+
+    private func ensurePredictionTimer() {
+        guard predictionReconcileTimer == nil,
+              predictiveEcho?.pending.isEmpty == false else { return }
+        predictionReconcileTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.04, repeats: true
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reconcilePredictions() }
+        }
+    }
+
+    private func reconcilePredictions() {
+        guard let engine = predictiveEcho else { return }
+        let terminal = getTerminal()
+        engine.reconcile(
+            cursor: terminal.getCursorLocation(),
+            alternateBufferActive: terminal.isCurrentBufferAlternate
+        ) { column, row in
+            guard let cell = terminal.getCharData(col: column, row: row) else {
+                return nil
+            }
+            let character = cell.getCharacter()
+            return character == "\u{0}" ? nil : character
+        }
+        updatePredictionOverlay()
+        if engine.pending.isEmpty {
+            predictionReconcileTimer?.invalidate()
+            predictionReconcileTimer = nil
+        }
+    }
+
+    private func updatePredictionOverlay() {
+        let glyphs = predictiveEcho?.displayGlyphs() ?? []
+        guard !glyphs.isEmpty else {
+            predictionOverlay?.isHidden = true
+            return
+        }
+        let overlay: PredictionOverlayView
+        if let existing = predictionOverlay {
+            overlay = existing
+        } else {
+            overlay = PredictionOverlayView(frame: .zero)
+            addSubview(overlay)
+            predictionOverlay = overlay
+        }
+        let caret = caretFrame
+        overlay.glyphs = glyphs
+        overlay.cellWidth = caret.width
+        overlay.glyphFont = font
+        overlay.textColor = nativeForegroundColor
+        overlay.cellBackground = nativeBackgroundColor
+        overlay.frame = NSRect(
+            x: caret.minX,
+            y: caret.minY,
+            width: caret.width * CGFloat(glyphs.count),
+            height: caret.height
+        )
+        overlay.isHidden = false
+        overlay.needsDisplay = true
+    }
+
+    private func resetPredictions() {
+        predictiveEcho?.clear()
+        predictionOverlay?.isHidden = true
+        predictionReconcileTimer?.invalidate()
+        predictionReconcileTimer = nil
+    }
+
     /// The herdr pane this terminal is attached to, for pane.read/snapshot.
     var paneID: String? {
         get { scrollbackSelection.paneID }
@@ -298,6 +409,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             if scrollbackSelection.paneID != newValue {
                 scrolledOffset = 0
                 updateScrolledPill()
+                resetPredictions()
             }
             scrollbackSelection.paneID = newValue
             scrollbackSelection.view = self
@@ -344,6 +456,11 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             // Command chords stay available to AppKit. Other keys cannot reach the PTY.
             return !flags.contains(.command)
         }
+
+        // Every branch below ends with bytes in the pty (directly or via
+        // SwiftTerm's own keyDown), so record the keystroke for predictive
+        // echo before it is dispatched.
+        notePredictionKey(event)
 
         // Ghostty line-editing parity — the same ⌘/⌥ combos Ghostty sends,
         // so muscle memory works in Claude/shell.

@@ -896,6 +896,7 @@ final class RaiModel: ObservableObject {
         closedTabs = closedTabStore.load(herdKey: currentHerdKey)
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
+        terminalPool.predictiveEchoEnabled = remote != nil
         connectionState = .connecting
 
         await refreshSnapshot(

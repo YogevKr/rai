@@ -18,6 +18,9 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
+    /// Set alongside `switchSocket` when the herd is remote. New views enable
+    /// predictive echo; existing views were already reaped by the switch.
+    var predictiveEchoEnabled = false
     private var themeObserver: AnyCancellable?
     /// Terminals herdr reported in the last snapshot, once one has been seen.
     /// Closing a pane evicts its terminal, but SwiftUI still updates the
@@ -85,6 +88,9 @@ final class TerminalPool {
         // client points at the default socket, which is wrong the moment the
         // app is attached to another session (remote herd, herd switch).
         view.scrollbackSelection.client = HerdrClient(socketPath: socketPath)
+        if predictiveEchoEnabled {
+            view.enablePredictiveEcho()
+        }
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
