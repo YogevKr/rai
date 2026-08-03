@@ -11,33 +11,46 @@ protocol RaiSnapshotObserver: AnyObject {
     )
 }
 
-enum AgentLaunchKind: String {
+enum AgentLaunchKind: String, Codable {
     case claude
     case codex
 }
 
 /// One pane of a closed tab, in tree leaf order: what reopen needs to put a
 /// terminal back where it was and resume whatever ran inside it.
-struct ClosedPaneSeed: Equatable {
+struct ClosedPaneSeed: Equatable, Codable {
     let cwd: String
     let agentKind: AgentLaunchKind?
     let agentSession: AgentSession?
     /// Filled asynchronously at close time, best effort — see close(tab:).
     var agentArgv: [String]? = nil
+
+    /// Whether reopen may resume this pane's agent. The snapshot's `agent`
+    /// field alone is not enough: it names the last agent SEEN in the pane,
+    /// which lingers after the agent exits. Resuming on that evidence runs
+    /// `--last`-style fallbacks that attach whatever session in that cwd is
+    /// newest — someone else's conversation. An exact session id or argv
+    /// captured from the live process is proof; anything less reopens as a
+    /// plain shell.
+    var canResumeAgent: Bool {
+        agentKind != nil && (agentSession != nil || agentArgv != nil)
+    }
 }
 
 /// The full shape of a closed tab: every pane, the split tree that arranged
 /// them, and which one the user was looking at.
-struct ClosedTabShape: Equatable {
+struct ClosedTabShape: Equatable, Codable {
     var seeds: [ClosedPaneSeed]
     let steps: [TabRebuildStep]
     let focusedLeaf: Int?
     let zoomed: Bool
 }
 
-struct ClosedTabRecord: Equatable {
+struct ClosedTabRecord: Equatable, Codable {
     /// Identity for async enrichment: argv capture mutates the record after it
-    /// is already in `closedTabs`, so equality lookups would miss.
+    /// is already in `closedTabs`, so equality lookups would miss. Runtime
+    /// only — a decoded record gets a fresh identity, which is fine because
+    /// enrichment never outlives the app run that captured it.
     let id = UUID()
     let workspaceID: String
     let cwd: String
@@ -51,6 +64,16 @@ struct ClosedTabRecord: Equatable {
     /// Present when the tab had more than one pane. Reopen then rebuilds the
     /// splits, per-pane cwds, and per-pane agents instead of a single pane.
     var shape: ClosedTabShape?
+
+    /// Same evidence rule as ClosedPaneSeed.canResumeAgent, for the
+    /// single-pane path.
+    var canResumeAgent: Bool {
+        agentKind != nil && (agentSession != nil || agentArgv != nil)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workspaceID, cwd, agentKind, agentSession, label, agentArgv, shape
+    }
 }
 
 struct PaneProcessInfo: Decodable, Equatable, Sendable {
@@ -321,7 +344,11 @@ final class RaiModel: ObservableObject {
     @Published private(set) var activeSocketPath: String
     @Published private(set) var currentSessionName: String
     @Published private(set) var remoteTarget: String?
-    @Published private(set) var closedTabs: [ClosedTabRecord] = []
+    @Published private(set) var closedTabs: [ClosedTabRecord] = [] {
+        // Every mutation persists — append, pop, and async argv enrichment —
+        // so a relaunch keeps whatever ⌘⇧T could reach when the app quit.
+        didSet { closedTabStore.save(closedTabs, herdKey: currentHerdKey) }
+    }
     @Published var newSessionRequest: NewSessionRequest?
     @Published var remoteHerdRequest: RemoteHerdRequest?
     @Published var sessionAlert: SessionAlert?
@@ -345,6 +372,14 @@ final class RaiModel: ObservableObject {
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
+    private lazy var closedTabStore = ClosedTabStore(userDefaults: userDefaults)
+
+    private var currentHerdKey: String {
+        ClosedTabStore.herdKey(
+            sessionName: currentSessionName,
+            remoteTarget: remoteTarget
+        )
+    }
     private var started = false
     private var eventTask: Task<Void, Never>?
     /// Where the user has been, for palette ordering. Deep enough to cover a
@@ -854,6 +889,11 @@ final class RaiModel: ObservableObject {
         currentSessionName = sessionName
         remoteTarget = remote?.target
         remoteConnection = remote
+        // Swap in this herd's own reopen stack. Records name workspaces and
+        // cwds on one herd's host, so the previous herd's records must not
+        // stay reachable here — and this is also what restores them across
+        // app launches.
+        closedTabs = closedTabStore.load(herdKey: currentHerdKey)
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
         connectionState = .connecting
@@ -3447,7 +3487,7 @@ final class RaiModel: ObservableObject {
                $0.tabID == reopenedTab.tabID
            })?.paneID {
             await rebuild(shape, rootPaneID: rootPaneID)
-        } else if let agentKind = record.agentKind {
+        } else if let agentKind = record.agentKind, record.canResumeAgent {
             // Prefer herdr's exact session id. Older servers fall back to each
             // client's cwd-scoped recent session lookup.
             let resumeCommand = Self.resumeCommand(
@@ -3516,7 +3556,7 @@ final class RaiModel: ObservableObject {
             paneIDs[step.newLeaf] = response.result.pane.paneID
         }
 
-        let agentLeaves = shape.seeds.enumerated().filter { $0.element.agentKind != nil }
+        let agentLeaves = shape.seeds.enumerated().filter { $0.element.canResumeAgent }
         if !agentLeaves.isEmpty {
             // The split panes' shells need a beat to reach a prompt before a
             // typed resume command lands in the pty.
