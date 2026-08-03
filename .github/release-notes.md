@@ -2,22 +2,15 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Open repos as spaces from the command palette.** The palette now scans
-  your repo folders and opens any repo as a new space. Results rank by
-  recency, match across name and path — including paths typed in `~` form —
-  and modifier keys pick how the match opens. Return always takes the top
-  match, and the list no longer scrolls under a resting cursor.
-- **Closed tabs come back whole.** Reopen a closed tab and it returns with
-  its full split shape, not a single pane. The reopen stack survives app
-  restarts, is kept per herd, and a reopened agent only resumes when its
-  session or command line proves it is the same agent.
-
-### Fixed in this release
-
-- **Remote herds render again on herdr 0.7.5.** herdr 0.7.5 moved terminal
-  attach onto a second socket next to the RPC one. rai's SSH tunnel only
-  forwarded the first, so a remote connection looked healthy but every pane
-  failed to attach. The tunnel now forwards both sockets.
+- **Typing to a remote herd no longer waits for the network.** rai now
+  predicts your keystrokes mosh-style: printable characters appear instantly,
+  underlined until the server confirms them, then blend in. Prediction only
+  engages once the link has proven slow, never inside full-screen TUIs, and
+  never at hidden-input prompts — a password can't be painted on screen,
+  because rai only predicts while the prompt is demonstrably echoing.
+- **Remote sessions in the session menu.** While connected to a remote
+  target, the menu lists that machine's sessions next to your local ones;
+  pick one to switch without retyping the SSH target.
 
 ### Install
 
