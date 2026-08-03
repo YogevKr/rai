@@ -24,6 +24,17 @@ struct ClosedPaneSeed: Equatable, Codable {
     let agentSession: AgentSession?
     /// Filled asynchronously at close time, best effort — see close(tab:).
     var agentArgv: [String]? = nil
+
+    /// Whether reopen may resume this pane's agent. The snapshot's `agent`
+    /// field alone is not enough: it names the last agent SEEN in the pane,
+    /// which lingers after the agent exits. Resuming on that evidence runs
+    /// `--last`-style fallbacks that attach whatever session in that cwd is
+    /// newest — someone else's conversation. An exact session id or argv
+    /// captured from the live process is proof; anything less reopens as a
+    /// plain shell.
+    var canResumeAgent: Bool {
+        agentKind != nil && (agentSession != nil || agentArgv != nil)
+    }
 }
 
 /// The full shape of a closed tab: every pane, the split tree that arranged
@@ -53,6 +64,12 @@ struct ClosedTabRecord: Equatable, Codable {
     /// Present when the tab had more than one pane. Reopen then rebuilds the
     /// splits, per-pane cwds, and per-pane agents instead of a single pane.
     var shape: ClosedTabShape?
+
+    /// Same evidence rule as ClosedPaneSeed.canResumeAgent, for the
+    /// single-pane path.
+    var canResumeAgent: Bool {
+        agentKind != nil && (agentSession != nil || agentArgv != nil)
+    }
 
     enum CodingKeys: String, CodingKey {
         case workspaceID, cwd, agentKind, agentSession, label, agentArgv, shape
@@ -3470,7 +3487,7 @@ final class RaiModel: ObservableObject {
                $0.tabID == reopenedTab.tabID
            })?.paneID {
             await rebuild(shape, rootPaneID: rootPaneID)
-        } else if let agentKind = record.agentKind {
+        } else if let agentKind = record.agentKind, record.canResumeAgent {
             // Prefer herdr's exact session id. Older servers fall back to each
             // client's cwd-scoped recent session lookup.
             let resumeCommand = Self.resumeCommand(
@@ -3539,7 +3556,7 @@ final class RaiModel: ObservableObject {
             paneIDs[step.newLeaf] = response.result.pane.paneID
         }
 
-        let agentLeaves = shape.seeds.enumerated().filter { $0.element.agentKind != nil }
+        let agentLeaves = shape.seeds.enumerated().filter { $0.element.canResumeAgent }
         if !agentLeaves.isEmpty {
             // The split panes' shells need a beat to reach a prompt before a
             // typed resume command lands in the pty.
