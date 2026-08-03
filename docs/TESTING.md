@@ -89,11 +89,14 @@ Rules that keep tests non-disruptive and correct:
 
 - Pass `--no-focus` on every `create` / `agent start` so the user's view never
   jumps.
-- For structure tests, use a dummy "agent" instead of a real model:
-  `herdr agent start test --tab <id> --no-focus -- /bin/sh -lc "exec sh"`.
-- A freshly created tab already has a **default shell pane**; `agent start`
-  adds the agent in a **second** pane. Account for that (rai closes the leftover
-  default pane on tab reopen for exactly this reason).
+- Since herdr 0.7.5, `agent start` only wraps a **recognized** agent kind
+  (`--kind claude|codex|…`) inside an **existing** pane sitting at a shell
+  prompt — the old dummy-agent mode (`agent start test --tab … -- /bin/sh`)
+  is gone. For structure tests, drive the pane's shell directly with
+  `pane send-text` / `pane send-keys` instead; a plain shell never counts as
+  a tracked agent anyway, so it proved nothing about agent status.
+- A freshly created tab (and a new workspace's root) already has a
+  **default shell pane** — that pane is your test surface.
 - herdr refuses to close the **last** tab in a workspace
   (`{"code":"tab_close_failed"}`).
 - Close every throwaway workspace when finished.
@@ -105,7 +108,7 @@ Rules that keep tests non-disruptive and correct:
 | `herdr api snapshot` | full runtime state (workspaces/tabs/panes/agents), canonical order |
 | `herdr workspace create [--cwd P] [--focus\|--no-focus]` | new workspace (response includes the `root_pane`) |
 | `herdr tab create --workspace <id> [--cwd P] [--label L] [--no-focus]` | new tab (seeds one default pane) |
-| `herdr agent start <name> --tab <id> [--split right\|down] [--no-focus] -- <argv…>` | run a process as a tracked agent (adds a pane) |
+| `herdr agent start <name> --kind <kind> --pane <id> [-- <agent args…>]` | start a recognized agent in an existing shell pane |
 | `herdr pane send-text <paneID> <text>` | type text into a pane |
 | `herdr pane send-keys <paneID> <key>` | send a key (`Enter`, `Escape`, `C-c`, …) |
 | `herdr pane split <paneID> --direction <right\|down>` / `pane close <paneID>` | split / close a pane |
