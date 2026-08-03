@@ -1,13 +1,23 @@
 Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Silicon + Intel), macOS 14+.
 
+### New in this release
+
+- **Open repos as spaces from the command palette.** The palette now scans
+  your repo folders and opens any repo as a new space. Results rank by
+  recency, match across name and path — including paths typed in `~` form —
+  and modifier keys pick how the match opens. Return always takes the top
+  match, and the list no longer scrolls under a resting cursor.
+- **Closed tabs come back whole.** Reopen a closed tab and it returns with
+  its full split shape, not a single pane. The reopen stack survives app
+  restarts, is kept per herd, and a reopened agent only resumes when its
+  session or command line proves it is the same agent.
+
 ### Fixed in this release
 
-- **No keychain prompt when rai starts.** rai read its push auth key from the
-  keychain at launch, on the main thread, before it had drawn a window — so a
-  freshly installed build could put a password box in front of an app that
-  showed nothing, and hold there until you answered. The key is only needed to
-  send a push or to edit it in Settings, so it is read there instead. Checking
-  whether push is set up no longer opens the keychain at all.
+- **Remote herds render again on herdr 0.7.5.** herdr 0.7.5 moved terminal
+  attach onto a second socket next to the RPC one. rai's SSH tunnel only
+  forwarded the first, so a remote connection looked healthy but every pane
+  failed to attach. The tunnel now forwards both sockets.
 
 ### Install
 
