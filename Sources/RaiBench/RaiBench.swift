@@ -274,22 +274,3 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - Entry
-
-let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
-let corpus: [UInt8]
-if let path = options.corpusPath {
-    guard let data = FileManager.default.contents(atPath: path) else {
-        FileHandle.standardError.write(Data("rai-bench: cannot read \(path)\n".utf8))
-        exit(1)
-    }
-    corpus = [UInt8](data)
-} else {
-    corpus = syntheticCorpus()
-}
-
-let app = NSApplication.shared
-let delegate = BenchDelegate(options: options, corpus: corpus)
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
