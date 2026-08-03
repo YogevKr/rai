@@ -35,6 +35,8 @@ final class RemoteConnection {
     let sessionName: String
     let remoteSocketPath: String
     let localSocketPath: String
+    let remoteClientSocketPath: String
+    let localClientSocketPath: String
 
     var onUnexpectedExit: ((UUID, String) -> Void)?
 
@@ -50,11 +52,24 @@ final class RemoteConnection {
         self.sessionName = sessionName
         self.remoteSocketPath = remoteSocketPath
         localSocketPath = "/tmp/rai-\(UUID().uuidString.prefix(12)).sock"
+        remoteClientSocketPath = Self.clientSocketPath(for: remoteSocketPath)
+        localClientSocketPath = Self.clientSocketPath(for: localSocketPath)
     }
 
-    func start() async throws {
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
+    /// herdr serves RPC on `herdr.sock` and the terminal-attach data plane on a
+    /// sibling `herdr-client.sock`; its CLI derives that sibling name from
+    /// `HERDR_SOCKET_PATH`. Both sockets must be forwarded, and the local pair
+    /// must use the same derivation so spawned `herdr terminal attach`
+    /// processes find the client socket without any extra environment.
+    static func clientSocketPath(for socketPath: String) -> String {
+        guard socketPath.hasSuffix(".sock") else {
+            return socketPath + "-client"
+        }
+        return String(socketPath.dropLast(".sock".count)) + "-client.sock"
+    }
+
+    var tunnelArguments: [String] {
+        [
             "-N",
             "-o", "StreamLocalBindUnlink=yes",
             "-o", "ExitOnForwardFailure=yes",
@@ -62,8 +77,14 @@ final class RemoteConnection {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-L", "\(localSocketPath):\(remoteSocketPath)",
+            "-L", "\(localClientSocketPath):\(remoteClientSocketPath)",
             target,
         ]
+    }
+
+    func start() async throws {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = tunnelArguments
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
@@ -86,7 +107,8 @@ final class RemoteConnection {
         }
 
         for _ in 0..<100 {
-            if FileManager.default.fileExists(atPath: localSocketPath) {
+            if FileManager.default.fileExists(atPath: localSocketPath),
+               FileManager.default.fileExists(atPath: localClientSocketPath) {
                 ready = true
                 return
             }
@@ -118,6 +140,7 @@ final class RemoteConnection {
             }
         }
         try? FileManager.default.removeItem(atPath: localSocketPath)
+        try? FileManager.default.removeItem(atPath: localClientSocketPath)
     }
 
     static func discoverSocket(
@@ -191,6 +214,7 @@ final class RemoteConnection {
         exitStatus = status
         exitDetail = detail
         try? FileManager.default.removeItem(atPath: localSocketPath)
+        try? FileManager.default.removeItem(atPath: localClientSocketPath)
         guard ready, !intentionalStop else { return }
         let message = detail?.isEmpty == false
             ? detail!
