@@ -134,8 +134,10 @@ scripts/herdr-lab.sh stop
 `poc/closed_tab_e2e.py` replays the exact CLI sequences RaiModel issues for
 closing and reopening tabs — structural contract (labels, rename, splits,
 zoom, dead-workspace errors), the shell-readiness race, the single-pane agent
-reopen (the herdr ≥0.7.5 `agent start --tab` regression), and the multi-pane
-shape rebuild. Exit code 0 means all checks passed.
+reopen (the herdr ≥0.7.5 `agent start --tab` regression), the multi-pane
+shape rebuild, and the last-tab-of-space reopen (closing a workspace's only
+tab closes the space; reopen recreates it under its label and adopts its
+default tab). Exit code 0 means all checks passed.
 
 rai launches an agent one of two ways, and the lab exercises both:
 - **Fresh launch, no resume** (`launchAgent`, `launchAgentFromBridge`): herdr's

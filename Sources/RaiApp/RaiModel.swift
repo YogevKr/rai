@@ -52,11 +52,19 @@ struct ClosedTabRecord: Equatable, Codable {
     /// only — a decoded record gets a fresh identity, which is fine because
     /// enrichment never outlives the app run that captured it.
     let id = UUID()
-    let workspaceID: String
+    /// Mutable: when reopen recreates a deleted space, the remaining records
+    /// that named the old space are repointed at the replacement, so
+    /// reopening sibling tabs rejoins them in one space.
+    var workspaceID: String
     let cwd: String
     let agentKind: AgentLaunchKind?
     let agentSession: AgentSession?
     let label: String
+    /// The workspace's label at close time. Closing a workspace's last tab
+    /// closes the workspace itself, so reopen recreates the space — under its
+    /// original name — rather than dropping the tab into another space.
+    /// Optional: records persisted before this field decode without it.
+    var workspaceLabel: String?
     /// The agent's full command line at close time (from pane process-info):
     /// reopen relaunches with the SAME flags — bypass permissions, model
     /// picks — not a bare default invocation.
@@ -72,7 +80,8 @@ struct ClosedTabRecord: Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case workspaceID, cwd, agentKind, agentSession, label, agentArgv, shape
+        case workspaceID, cwd, agentKind, agentSession, label, workspaceLabel,
+            agentArgv, shape
     }
 }
 
@@ -352,6 +361,15 @@ final class RaiModel: ObservableObject {
         // so a relaunch keeps whatever ⌘⇧T could reach when the app quit.
         didSet { closedTabStore.save(closedTabs, herdKey: currentHerdKey) }
     }
+    /// Serializes ⌘⇧T: each reopen awaits the previous one, so an earlier
+    /// reopen's space recreation is visible (via `recreatedWorkspaceIDs`)
+    /// before the next record is reconstructed. Concurrent reconstructs of
+    /// siblings from one closed space would recreate a space apiece.
+    private var reopenTask: Task<Void, Never>?
+    /// Dead workspace ID → the space reopen recreated for it, for records
+    /// already popped when the recreation happened (their stack entries can
+    /// no longer be remapped). Reset with the per-herd stack swap.
+    private var recreatedWorkspaceIDs: [String: String] = [:]
     @Published var newSessionRequest: NewSessionRequest?
     @Published var remoteHerdRequest: RemoteHerdRequest?
     @Published var sessionAlert: SessionAlert?
@@ -906,8 +924,10 @@ final class RaiModel: ObservableObject {
         // Swap in this herd's own reopen stack. Records name workspaces and
         // cwds on one herd's host, so the previous herd's records must not
         // stay reachable here — and this is also what restores them across
-        // app launches.
+        // app launches. The replacement map names the previous herd's
+        // workspaces, so it goes with the stack.
         closedTabs = closedTabStore.load(herdKey: currentHerdKey)
+        recreatedWorkspaceIDs = [:]
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
         terminalPool.predictiveEchoEnabled = remote != nil
@@ -1802,6 +1822,9 @@ final class RaiModel: ObservableObject {
             agentKind: agentKind,
             agentSession: agentPane?.agentSession,
             label: tab.label,
+            workspaceLabel: snapshot.workspaces.first {
+                $0.workspaceID == tab.workspaceID
+            }?.label,
             shape: closedTabShape(for: tab, panes: panes)
         )
     }
@@ -2675,9 +2698,14 @@ final class RaiModel: ObservableObject {
         }
     }
     func reopenClosedTab() {
+        // Pop at press time: each press binds to the stack's top record NOW.
+        // A deferred pop would accept more presses than the stack holds, and
+        // a queued one could then consume a tab closed later.
         guard let record = closedTabs.popLast() else { return }
         let generation = connectionGeneration
-        Task {
+        let previous = reopenTask
+        reopenTask = Task {
+            await previous?.value
             await reconstructClosedTab(record, generation: generation)
         }
     }
@@ -3449,6 +3477,11 @@ final class RaiModel: ObservableObject {
         rootPaneField(fromCreateOutput: output, key: "pane_id")
     }
 
+    /// The new workspace of a `workspace create` JSON response.
+    static func workspaceID(fromCreateOutput output: String) -> String? {
+        rootPaneField(fromCreateOutput: output, key: "workspace_id")
+    }
+
     /// The new pane of a `pane split` JSON response.
     static func paneID(fromSplitOutput output: String) -> String? {
         guard let data = output.data(using: .utf8),
@@ -3570,56 +3603,47 @@ final class RaiModel: ObservableObject {
         // first leaf — its cwd seeds the created tab; the active pane's cwd
         // only drives the single-pane path.
         let rootCwd = record.shape?.seeds.first?.cwd ?? record.cwd
-        var workspaceID = snapshot?.workspaces.contains {
-            $0.workspaceID == record.workspaceID
-        } == true
-            ? record.workspaceID
-            : selectedWorkspace?.workspaceID
-                ?? snapshot?.focusedWorkspaceID
-                ?? snapshot?.workspaces.first?.workspaceID
-
-        if workspaceID == nil {
-            guard await runHerdr([
-                "workspace", "create",
-                "--cwd", rootCwd,
-                "--focus",
-            ]) else {
-                return
-            }
-            await refreshSnapshot(keepSelection: false)
-            workspaceID = snapshot?.focusedWorkspaceID
-        } else if let targetWorkspaceID = workspaceID {
-            var created = await runHerdr([
+        // A record popped before an earlier reopen recreated its space still
+        // names the dead ID; the map points it at the replacement.
+        let recordedWorkspaceID = recreatedWorkspaceIDs[record.workspaceID]
+            ?? record.workspaceID
+        var workspaceID: String?
+        if snapshot?.workspaces.contains(where: {
+            $0.workspaceID == recordedWorkspaceID
+        }) == true {
+            workspaceID = recordedWorkspaceID
+            let created = await runHerdr([
                 "tab", "create",
-                "--workspace", targetWorkspaceID,
+                "--workspace", recordedWorkspaceID,
                 "--cwd", rootCwd,
                 "--label", record.label,
                 "--focus",
             ])
-            if !created {
-                // The recorded workspace may have disappeared after the close
-                // but before its structural event reached Rai.
+            if created {
                 await refreshSnapshot(keepSelection: false)
-                guard let fallbackWorkspaceID = selectedWorkspace?.workspaceID
-                    ?? snapshot?.focusedWorkspaceID
-                    ?? snapshot?.workspaces.first?.workspaceID else {
-                    return
-                }
-                workspaceID = fallbackWorkspaceID
-                created = await runHerdr([
-                    "tab", "create",
-                    "--workspace", fallbackWorkspaceID,
-                    "--cwd", rootCwd,
-                    "--label", record.label,
-                    "--focus",
-                ])
+            } else {
+                // The recorded workspace may have disappeared after the close
+                // but before its structural event reached Rai — same recovery
+                // as when the snapshot already knew it was gone.
+                workspaceID = await recreateWorkspace(for: record, rootCwd: rootCwd)
             }
-            guard created else { return }
-            await refreshSnapshot(keepSelection: false)
+        } else {
+            // Closing a workspace's last tab closes the space itself, so the
+            // record's workspace is gone. Bring the space back — under its
+            // original name — instead of dropping the tab into whichever
+            // space happens to be focused. The new space's default tab
+            // becomes the reopened tab below.
+            workspaceID = await recreateWorkspace(for: record, rootCwd: rootCwd)
+        }
+        // Generation first: a herd switch mid-recreate swaps closedTabs (and
+        // the replacement map) for the NEW herd's, and mutating those would
+        // corrupt them.
+        guard generation == connectionGeneration else { return }
+        if let workspaceID {
+            adoptRecreatedWorkspace(workspaceID, replacing: recordedWorkspaceID)
         }
 
-        guard generation == connectionGeneration,
-              let workspaceID,
+        guard let workspaceID,
               let reopenedTab = snapshot?.tabs.first(where: {
                   $0.workspaceID == workspaceID && !oldTabIDs.contains($0.tabID)
               }) ?? snapshot?.tabs.first(where: {
@@ -3662,6 +3686,55 @@ final class RaiModel: ObservableObject {
             _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
         }
         await refreshSnapshot(keepSelection: false)
+    }
+
+    /// `workspace create` for a reopen whose recorded space no longer exists.
+    /// herdr creates the workspace with its first tab and root pane, so the
+    /// caller adopts that default tab as the reopened tab.
+    private func recreateWorkspace(
+        for record: ClosedTabRecord,
+        rootCwd: String
+    ) async -> String? {
+        guard let output = await runHerdrCapture(
+            RepoDiscoveryPlanner.workspaceCreateArguments(
+                path: rootCwd,
+                label: record.workspaceLabel ?? ""
+            )
+        ) else {
+            return nil
+        }
+        await refreshSnapshot(keepSelection: false)
+        // Only the create response may name the space. Guessing from focus
+        // instead could pick an unrelated workspace whenever the refresh
+        // failed or the user moved focus mid-flight — and reopen would then
+        // rename (or resume an agent into) that workspace's tab. An
+        // unparsable response aborts the adoption; the created space and its
+        // default tab remain usable.
+        return Self.workspaceID(fromCreateOutput: output)
+    }
+
+    /// A recreated space gets a fresh ID; repoint everything that named the
+    /// old space at it. Closing every tab of one space leaves several records
+    /// on the same dead ID — without this, each reopen would spawn its own
+    /// new space instead of rejoining the first one. Stack records are
+    /// rewritten in place (they persist); records already popped into the
+    /// serialized reopen chain resolve through `recreatedWorkspaceIDs`.
+    func adoptRecreatedWorkspace(
+        _ newWorkspaceID: String,
+        replacing oldWorkspaceID: String
+    ) {
+        guard newWorkspaceID != oldWorkspaceID else { return }
+        for index in closedTabs.indices
+        where closedTabs[index].workspaceID == oldWorkspaceID {
+            closedTabs[index].workspaceID = newWorkspaceID
+        }
+        // Collapse chains: if the space being replaced was itself a
+        // replacement, records naming the ORIGINAL dead ID must now resolve
+        // straight to the newest space.
+        for (key, value) in recreatedWorkspaceIDs where value == oldWorkspaceID {
+            recreatedWorkspaceIDs[key] = newWorkspaceID
+        }
+        recreatedWorkspaceIDs[oldWorkspaceID] = newWorkspaceID
     }
 
     /// Types a launch command into a pane and verifies it landed by polling

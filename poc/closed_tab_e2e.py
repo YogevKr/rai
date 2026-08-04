@@ -23,6 +23,9 @@ Covers:
      sequence — tab create, beat, pane run resume into the tab's own pane
   4. multi-pane shape rebuild: splits with ratios, per-pane cwds, agent
      leaves, zoom + focused leaf
+  5. last-tab-of-space reopen: closing a workspace's only tab closes the
+     space; reopen recreates the space under its label and adopts its
+     default tab as the reopened tab
 """
 import hashlib
 import json
@@ -276,6 +279,38 @@ check("shape: both agent leaves live",
 check("shape: zoom + focused leaf",
       lay["zoomed"] and lay["focused_pane_id"] == p2)
 close_ws(ws)
+
+# ---- 5. last-tab close closes the space; reopen recreates it ---------------
+# rai's ⌘W on a workspace's only tab runs `workspace close` (closeTabArguments),
+# so the record's workspace is gone at reopen. reconstructClosedTab must then
+# recreate the space (workspace create --cwd --label --focus), adopt its
+# default tab, and rename that tab to the record's label — not drop the tab
+# into whichever space happens to be focused.
+out_ws = herdr("workspace", "create", "--cwd", WORK, "--label", "spacey",
+               "--no-focus")[1]
+ws5 = json.loads(out_ws)["result"]["root_pane"]["workspace_id"]
+herdr("workspace", "close", ws5)
+s = snap()
+check("last-tab close removes the space",
+      ws5 not in [w["workspace_id"] for w in s["workspaces"]])
+ok, out = herdr("workspace", "create", "--cwd", WORK, "--label", "spacey",
+                "--focus")
+root = json.loads(out)["result"]["root_pane"]
+ws5b, default_tab = root["workspace_id"], root["tab_id"]
+herdr("tab", "rename", default_tab, "revived tab")
+s = snap()
+ws_labels = {w["workspace_id"]: w["label"] for w in s["workspaces"]}
+check("reopen recreates the space under its label",
+      ws_labels.get(ws5b) == "spacey", str(ws_labels))
+check("reopen adopts the space's default tab as the reopened tab",
+      [t["label"] for t in tabs_of(s, ws5b)] == ["revived tab"],
+      str(tabs_of(s, ws5b)))
+# herdr reports the resolved path (/tmp is /private/tmp on macOS).
+check("reopened space has the record's cwd",
+      os.path.realpath(panes_of(s, default_tab)[0]["cwd"])
+      == os.path.realpath(WORK),
+      str(panes_of(s, default_tab)))
+close_ws(ws5b)
 
 print()
 failed = [n for n, ok in results if not ok]
