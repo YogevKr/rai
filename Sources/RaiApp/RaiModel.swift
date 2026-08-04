@@ -2417,7 +2417,13 @@ final class RaiModel: ObservableObject {
             while !Task.isCancelled, generation == connectionGeneration {
                 do {
                     let paneIDs = snapshot?.panes.map(\.paneID) ?? []
-                    for try await event in client.events(paneIDs: paneIDs) {
+                    let subscriptions = HerdrClient.subscriptions(
+                        forProtocol: snapshot?.protocol
+                    )
+                    for try await event in client.events(
+                        subscriptions: subscriptions,
+                        paneIDs: paneIDs
+                    ) {
                         guard generation == connectionGeneration else { break }
                         queue(event, generation: generation)
                     }
@@ -3279,13 +3285,10 @@ final class RaiModel: ObservableObject {
             return
         }
         selectedPaneID = paneID
-        let name = Self.defaultAgentName(kind)
         let client = client
         let generation = connectionGeneration
 
         Task {
-            // agent start --split uses herdr's focused pane as the split source.
-            // Await focus so a pane-bar action cannot race and split the wrong pane.
             do {
                 try await client.focusPane(paneID)
             } catch {
@@ -3295,17 +3298,76 @@ final class RaiModel: ObservableObject {
                 return
             }
             guard generation == connectionGeneration else { return }
-            _ = await runHerdr(
-                PaneActionPlanner.agentStartArguments(
-                    name: name,
-                    executable: kind.rawValue,
+            guard let output = await runHerdrCapture(
+                PaneActionPlanner.agentSplitArguments(
+                    paneID: paneID,
                     direction: direction,
                     cwd: pane.cwd
                 )
+            ), let agentPaneID = Self.paneID(fromSplitOutput: output) else {
+                return
+            }
+            guard generation == connectionGeneration else { return }
+            // agent start (herdr ≥0.7.5) waits for the pane's shell prompt
+            // and the agent's own readiness internally — no guessed delay
+            // needed. Any failure that leaves the pane's own foreground
+            // process untouched — a rejected --kind/--pane on older herdr,
+            // or a transient agent_pane_busy on a still-initializing fresh
+            // pane — falls back to typing the bare launch command directly
+            // (see startAgent/AgentStartOutcome).
+            let outcome = await startAgent(
+                name: Self.defaultAgentName(kind),
+                kind: kind,
+                paneID: agentPaneID
             )
+            guard generation == connectionGeneration else { return }
+            if outcome == .safeToRetype {
+                await typeResumeCommand(
+                    kind.rawValue,
+                    into: agentPaneID,
+                    expecting: kind,
+                    generation: generation
+                )
+            }
             guard generation == connectionGeneration else { return }
             await refreshSnapshot(keepSelection: true)
         }
+    }
+
+    private enum AgentStartOutcome: Equatable {
+        case started
+        /// The pane is confirmed untouched — either herdr's CLI rejected
+        /// `--kind`/`--pane` outright (pre-0.7.5), or some other rejection
+        /// (e.g. `agent_pane_busy` on a still-initializing fresh pane) left
+        /// the pane's foreground process as its own bare shell. Safe to type
+        /// the launch command into it directly.
+        case safeToRetype
+        /// Any other failure. `agent_pane_busy` in particular covers BOTH "not
+        /// ready yet" and "an agent is already running here" — the two look
+        /// identical from the error alone, and only checking live process
+        /// state (above) tells them apart. When that check itself says the
+        /// pane is busy, retyping would feed keystrokes into a live process.
+        case otherFailure
+    }
+
+    private func startAgent(
+        name: String,
+        kind: AgentLaunchKind,
+        paneID: String
+    ) async -> AgentStartOutcome {
+        let result = await runHerdrResult(PaneActionPlanner.agentStartArguments(
+            name: name,
+            kind: kind.rawValue,
+            paneID: paneID
+        ))
+        if result.succeeded { return .started }
+        // This exact wording is herdr's clap-level "no such flag" rejection,
+        // issued before the pane is touched — no need to check process state
+        // for this one, it's unambiguous.
+        if result.standardError.contains("unknown option") {
+            return .safeToRetype
+        }
+        return await isPaneAtShellPrompt(paneID) ? .safeToRetype : .otherFailure
     }
 
     private static func defaultAgentName(_ kind: AgentLaunchKind) -> String {
@@ -3318,40 +3380,96 @@ final class RaiModel: ObservableObject {
         workspaceID: String?,
         cwd: String?
     ) async -> Bool {
-        // The companion's "New workspace" choice must actually create one:
-        // `agent start` without --workspace lands in the *currently focused*
-        // workspace, dropping surprise agents into whatever the user is
-        // looking at.
-        var targetWorkspace = workspaceID
-        if targetWorkspace == nil {
+        // Guarded like the UI's launchAgent: a herd switch between creating
+        // the host pane below and the agent start after it would otherwise
+        // carry a pane ID from the OLD herd's socket into a request against
+        // the NEW one — and pane IDs are short, reused strings, so it could
+        // land on an unrelated real pane instead of just failing to find one.
+        let generation = connectionGeneration
+
+        let agentPaneID: String
+        if let workspaceID {
+            // Targeting an existing workspace: `agent start` without
+            // --workspace lands in the *currently focused* workspace,
+            // dropping surprise agents into whatever the user is looking at
+            // — so the agent gets its own new tab in the workspace asked for.
+            guard let output = await runHerdrCapture(
+                PaneActionPlanner.agentTabCreateArguments(
+                    workspaceID: workspaceID,
+                    cwd: cwd
+                )
+            ), let paneID = Self.paneID(fromCreateOutput: output) else {
+                return false
+            }
+            agentPaneID = paneID
+        } else {
+            // "New workspace": workspace create already seeds one pane and
+            // tab — that's the agent's host. A follow-up tab create would
+            // just add an unused second tab beside it.
             var createArgs = ["workspace", "create", "--no-focus"]
             if let cwd {
                 createArgs += ["--cwd", cwd]
             }
             guard let output = await runHerdrCapture(createArgs),
-                  let created = Self.workspaceID(fromCreateOutput: output) else {
+                  let paneID = Self.paneID(fromCreateOutput: output) else {
                 return false
             }
-            targetWorkspace = created
+            agentPaneID = paneID
         }
-        return await runHerdr(
-            PaneActionPlanner.agentStartArguments(
-                name: Self.defaultAgentName(kind),
-                executable: kind.rawValue,
-                workspaceID: targetWorkspace,
-                cwd: cwd
-            )
+        guard generation == connectionGeneration else { return false }
+        // agent start (herdr ≥0.7.5) waits for the pane's shell prompt and
+        // the agent's own readiness internally — no guessed delay needed.
+        // rai declares no minimum herdr version, so a rejected --kind/--pane
+        // (older herdr; the pane is left at a clean shell prompt either way)
+        // falls back to typing the bare launch command directly.
+        let outcome = await startAgent(
+            name: Self.defaultAgentName(kind),
+            kind: kind,
+            paneID: agentPaneID
         )
+        guard generation == connectionGeneration else { return false }
+        switch outcome {
+        case .started:
+            return true
+        case .safeToRetype:
+            return await typeResumeCommand(
+                kind.rawValue,
+                into: agentPaneID,
+                expecting: kind,
+                generation: generation
+            )
+        case .otherFailure:
+            return false
+        }
     }
 
-    static func workspaceID(fromCreateOutput output: String) -> String? {
+    /// The root pane of a `workspace create` / `tab create` JSON response —
+    /// the shell pane a launched agent is typed into.
+    static func paneID(fromCreateOutput output: String) -> String? {
+        rootPaneField(fromCreateOutput: output, key: "pane_id")
+    }
+
+    /// The new pane of a `pane split` JSON response.
+    static func paneID(fromSplitOutput output: String) -> String? {
+        guard let data = output.data(using: .utf8),
+              let response = try? JSONDecoder().decode(
+                  PaneSplitResponse.self,
+                  from: data
+              ) else { return nil }
+        return response.result.pane.paneID
+    }
+
+    private static func rootPaneField(
+        fromCreateOutput output: String,
+        key: String
+    ) -> String? {
         guard let data = output.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = root["result"] as? [String: Any],
               let rootPane = result["root_pane"] as? [String: Any],
-              let workspaceID = rootPane["workspace_id"] as? String
+              let value = rootPane[key] as? String
         else { return nil }
-        return workspaceID
+        return value
     }
 
     /// Companion "open a Terminal": a plain shell pane, no agent. herdr seeds
@@ -3517,8 +3635,11 @@ final class RaiModel: ObservableObject {
            let rootPaneID = snapshot?.panes.first(where: {
                $0.tabID == reopenedTab.tabID
            })?.paneID {
-            await rebuild(shape, rootPaneID: rootPaneID)
-        } else if let agentKind = record.agentKind, record.canResumeAgent {
+            await rebuild(shape, rootPaneID: rootPaneID, generation: generation)
+        } else if let agentKind = record.agentKind, record.canResumeAgent,
+                  let rootPaneID = snapshot?.panes.first(where: {
+                      $0.tabID == reopenedTab.tabID
+                  })?.paneID {
             // Prefer herdr's exact session id. Older servers fall back to each
             // client's cwd-scoped recent session lookup.
             let resumeCommand = Self.resumeCommand(
@@ -3526,28 +3647,86 @@ final class RaiModel: ObservableObject {
                 argv: record.agentArgv,
                 agentSession: record.agentSession
             )
-            // `tab create` already gave the tab a default shell pane, and
-            // `agent start` puts the agent in a SECOND pane beside it. Capture
-            // that default pane up front and close it once the agent is running,
-            // so the reopened tab holds just the resumed agent — not a stray
-            // extra terminal.
-            let defaultPaneID = snapshot?.panes.first {
-                $0.tabID == reopenedTab.tabID
-            }?.paneID
-            _ = await runHerdr([
-                "agent", "start", Self.defaultAgentName(agentKind),
-                "--tab", reopenedTab.tabID,
-                "--cwd", record.cwd,
-                "--focus",
-                "--",
-            ] + PaneActionPlanner.shellFallbackArgv(resumeCommand))
-            if let defaultPaneID {
-                _ = await runHerdr(["pane", "close", defaultPaneID])
-            }
+            // The agent resumes inside the tab's own shell pane, same as the
+            // shape rebuild's leaves. (herdr ≥0.7.5 dropped `agent start
+            // --tab`; the call failed silently and the follow-up close of the
+            // "extra" default pane — the tab's ONLY pane — killed the whole
+            // reopened tab.)
+            await typeResumeCommand(
+                resumeCommand,
+                into: rootPaneID,
+                expecting: agentKind,
+                generation: generation
+            )
         } else {
             _ = await runHerdr(["tab", "focus", reopenedTab.tabID])
         }
         await refreshSnapshot(keepSelection: false)
+    }
+
+    /// Types a launch command into a pane and verifies it landed by polling
+    /// for the expected agent to appear, retyping once if it didn't. Used
+    /// two ways: a resume that embeds a `first || fallback` shell
+    /// chain herdr's own readiness-aware `agent start` can't carry, and the
+    /// version-agnostic fallback when `agent start --kind/--pane` itself is
+    /// rejected (older herdr). A fixed delay before a single blind attempt
+    /// can guess wrong on a slow shell startup and silently drop the whole
+    /// typed line.
+    @discardableResult
+    private func typeResumeCommand(
+        _ command: String,
+        into paneID: String,
+        expecting kind: AgentLaunchKind,
+        generation: UUID
+    ) async -> Bool {
+        for attempt in 0..<2 {
+            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 400 : 250))
+            guard generation == connectionGeneration else { return false }
+            if attempt > 0 {
+                // The first attempt may have landed and just be slow to show
+                // up as the detected agent — herdr can also retain a prior
+                // agent's `pane.agent` briefly after it exits, so a cold
+                // start isn't the only way detection lags real state. Only
+                // retype if the pane is STILL a bare, idle shell; otherwise
+                // something is already running there, and typing again would
+                // feed it raw keystrokes instead of a shell command.
+                guard await isPaneAtShellPrompt(paneID) else { return false }
+            }
+            _ = await runHerdr(["pane", "run", paneID, command])
+            if await pollForAgent(paneID: paneID, kind: kind, generation: generation) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Whether `paneID`'s foreground process is the pane's own login shell —
+    /// i.e. nothing else is currently running in it.
+    private func isPaneAtShellPrompt(_ paneID: String) async -> Bool {
+        guard let info = await processInfo(for: paneID, timeout: .seconds(2)) else {
+            return false
+        }
+        return info.foregroundProcesses.first?.pid == info.shellPID
+    }
+
+    /// Best-effort poll for `paneID`'s detected agent to match `kind` —
+    /// evidence a typed launch command landed after the shell reached its
+    /// prompt, not just that `pane run` returned.
+    private func pollForAgent(
+        paneID: String,
+        kind: AgentLaunchKind,
+        generation: UUID,
+        attempts: Int = 8,
+        interval: Duration = .milliseconds(350)
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            guard generation == connectionGeneration else { return false }
+            if await agentAuthorityContext(for: paneID)?.agent == kind.rawValue {
+                return true
+            }
+            try? await Task.sleep(for: interval)
+        }
+        return false
     }
 
     private struct PaneSplitResponse: Decodable {
@@ -3566,7 +3745,11 @@ final class RaiModel: ObservableObject {
     /// Recreates a closed tab's splits, per-pane cwds, and per-pane agents on
     /// top of the fresh tab's root pane. Best effort throughout: a failed
     /// split skips its subtree's panes rather than aborting the reopen.
-    private func rebuild(_ shape: ClosedTabShape, rootPaneID: String) async {
+    private func rebuild(
+        _ shape: ClosedTabShape,
+        rootPaneID: String,
+        generation: UUID
+    ) async {
         var paneIDs: [Int: String] = [0: rootPaneID]
         for step in shape.steps {
             guard let anchor = paneIDs[step.anchorLeaf],
@@ -3577,30 +3760,25 @@ final class RaiModel: ObservableObject {
                       "--cwd", shape.seeds[step.newLeaf].cwd,
                       "--no-focus",
                   ]),
-                  let data = output.data(using: .utf8),
-                  let response = try? JSONDecoder().decode(
-                      PaneSplitResponse.self,
-                      from: data
-                  ) else {
+                  let paneID = Self.paneID(fromSplitOutput: output) else {
                 continue
             }
-            paneIDs[step.newLeaf] = response.result.pane.paneID
+            paneIDs[step.newLeaf] = paneID
         }
 
-        let agentLeaves = shape.seeds.enumerated().filter { $0.element.canResumeAgent }
-        if !agentLeaves.isEmpty {
-            // The split panes' shells need a beat to reach a prompt before a
-            // typed resume command lands in the pty.
-            try? await Task.sleep(for: .milliseconds(400))
-            for (leaf, seed) in agentLeaves {
-                guard let kind = seed.agentKind, let paneID = paneIDs[leaf] else { continue }
-                let resume = Self.resumeCommand(
-                    kind: kind,
-                    argv: seed.agentArgv,
-                    agentSession: seed.agentSession
-                )
-                _ = await runHerdr(["pane", "run", paneID, resume])
-            }
+        for (leaf, seed) in shape.seeds.enumerated() where seed.canResumeAgent {
+            guard let kind = seed.agentKind, let paneID = paneIDs[leaf] else { continue }
+            let resume = Self.resumeCommand(
+                kind: kind,
+                argv: seed.agentArgv,
+                agentSession: seed.agentSession
+            )
+            await typeResumeCommand(
+                resume,
+                into: paneID,
+                expecting: kind,
+                generation: generation
+            )
         }
 
         if let focusedLeaf = shape.focusedLeaf, let paneID = paneIDs[focusedLeaf] {

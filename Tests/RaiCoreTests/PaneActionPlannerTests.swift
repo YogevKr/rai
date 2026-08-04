@@ -50,64 +50,73 @@ final class PaneActionPlannerTests: XCTestCase {
         )
     }
 
-    func testAgentStartSplitsWithoutChangingFocus() {
+    /// herdr ≥0.7.5 removed `agent start --split/--workspace/--tab`; an
+    /// agent's host pane is built explicitly, then the launch is started
+    /// against it (`agentStartArguments` for a fresh launch, `pane run` for a
+    /// resume that needs shell `||` fallback logic). (Regression: the old
+    /// argv failed with "unknown option" on 0.7.5+ and agent launches
+    /// silently did nothing.)
+    func testAgentSplitBuildsHostPaneWithoutChangingFocus() {
         XCTAssertEqual(
-            PaneActionPlanner.agentStartArguments(
-                name: "claude-a1b2c3",
-                executable: "claude",
+            PaneActionPlanner.agentSplitArguments(
+                paneID: "w1:p1",
                 direction: .down,
                 cwd: "/tmp/project with spaces"
             ),
             [
-                "agent", "start", "claude-a1b2c3",
-                "--split", "down",
+                "pane", "split", "w1:p1",
+                "--direction", "down",
                 "--cwd", "/tmp/project with spaces",
                 "--no-focus",
-                "--", "/bin/sh", "-lc", "claude; exec \"${SHELL:-/bin/sh}\" -l",
             ]
         )
     }
 
-    func testShellFallbackKeepsPaneAliveAfterAgentExit() {
+    func testRemoteAgentTabTargetsWorkspaceWithoutChangingFocus() {
         XCTAssertEqual(
-            PaneActionPlanner.shellFallbackArgv("claude --continue || claude"),
-            [
-                "/bin/sh", "-lc",
-                "claude --continue || claude; exec \"${SHELL:-/bin/sh}\" -l",
-            ]
-        )
-    }
-
-    func testRemoteAgentStartTargetsWorkspaceWithoutChangingFocus() {
-        XCTAssertEqual(
-            PaneActionPlanner.agentStartArguments(
-                name: "codex-a1b2c3",
-                executable: "codex",
+            PaneActionPlanner.agentTabCreateArguments(
                 workspaceID: "workspace-1",
                 cwd: "/tmp/project with spaces"
             ),
             [
-                "agent", "start", "codex-a1b2c3",
+                "tab", "create",
                 "--workspace", "workspace-1",
                 "--cwd", "/tmp/project with spaces",
                 "--no-focus",
-                "--", "/bin/sh", "-lc", "codex; exec \"${SHELL:-/bin/sh}\" -l",
             ]
         )
     }
 
-    func testRemoteAgentStartCreatesWorkspaceWhenTargetIsNil() {
+    func testRemoteAgentTabOmitsMissingCwd() {
         XCTAssertEqual(
-            PaneActionPlanner.agentStartArguments(
-                name: "claude-a1b2c3",
-                executable: "claude",
-                workspaceID: nil,
+            PaneActionPlanner.agentTabCreateArguments(
+                workspaceID: "workspace-1",
                 cwd: nil
             ),
             [
-                "agent", "start", "claude-a1b2c3",
+                "tab", "create",
+                "--workspace", "workspace-1",
                 "--no-focus",
-                "--", "/bin/sh", "-lc", "claude; exec \"${SHELL:-/bin/sh}\" -l",
+            ]
+        )
+    }
+
+    /// A fresh, no-resume launch waits on herdr's own readiness check
+    /// instead of a guessed delay (verified in the isolated herdr lab: 5/5
+    /// at 0ms). Only valid without a resume fallback — herdr execs the
+    /// kind's canonical binary with these trailing args directly, so it
+    /// can't carry a `first || fallback` shell chain.
+    func testAgentStartTargetsAnExistingPane() {
+        XCTAssertEqual(
+            PaneActionPlanner.agentStartArguments(
+                name: "claude-a1b2c3",
+                kind: "claude",
+                paneID: "w1:p2"
+            ),
+            [
+                "agent", "start", "claude-a1b2c3",
+                "--kind", "claude",
+                "--pane", "w1:p2",
             ]
         )
     }

@@ -116,3 +116,38 @@ Rules that keep tests non-disruptive and correct:
 
 The `poc/herdr_client.py` client (see the README) exercises the same socket in
 Python if you'd rather not shell out.
+
+### Isolated herdr lab (closed-tab e2e)
+
+`scripts/herdr-lab.sh` runs a **named herdr session** (`railab`) with its own
+state and sockets — the default herd and its persisted `session.json` are
+never touched — plus a fake `claude` on the server's PATH that records its
+argv and keeps a claude-named process alive, so agent detection works without
+burning real agent sessions:
+
+```sh
+scripts/herdr-lab.sh start
+HERDR_SOCKET_PATH=$(scripts/herdr-lab.sh socket) poc/closed_tab_e2e.py
+scripts/herdr-lab.sh stop
+```
+
+`poc/closed_tab_e2e.py` replays the exact CLI sequences RaiModel issues for
+closing and reopening tabs — structural contract (labels, rename, splits,
+zoom, dead-workspace errors), the shell-readiness race, the single-pane agent
+reopen (the herdr ≥0.7.5 `agent start --tab` regression), and the multi-pane
+shape rebuild. Exit code 0 means all checks passed.
+
+rai launches an agent one of two ways, and the lab exercises both:
+- **Fresh launch, no resume** (`launchAgent`, `launchAgentFromBridge`): herdr's
+  own `agent start <name> --kind <kind> --pane <id>` — it waits for the pane's
+  shell prompt and the agent's own readiness internally, so no delay is
+  guessed and there's no window to lose text in (verified 5/5 at 0ms). rai
+  declares no minimum herdr version, so a rejected `--kind`/`--pane` (pre-0.7.5
+  herdr; the pane is left at a clean shell prompt either way) falls back to
+  typing the bare launch command directly, same as the resume path below.
+- **Resume, with a `first || fallback` shell chain** (reopen, shape rebuild):
+  `agent start`'s trailing args exec straight into the agent binary, so they
+  can't carry `||`. These type the resume command with `pane run`, then poll
+  for the agent to appear and retype once if it didn't land — a fixed delay
+  before a single blind attempt can guess wrong on a slow shell startup and
+  silently drop the whole line.

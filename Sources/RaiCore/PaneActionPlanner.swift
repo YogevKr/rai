@@ -27,48 +27,48 @@ public enum PaneActionPlanner {
         ]
     }
 
-    public static func agentStartArguments(
-        name: String,
-        executable: String,
+    /// herdr ≥0.7.5 removed `agent start --split/--workspace/--tab`: an agent
+    /// now starts by typing its command into an existing pane at a shell
+    /// prompt. These planners build the hosting pane; the caller waits for
+    /// the shell, then types the launch command with `pane run`. The shell
+    /// stays underneath the agent, so the pane survives the agent exiting.
+    public static func agentSplitArguments(
+        paneID: String,
         direction: SplitDirection,
         cwd: String
     ) -> [String] {
         [
-            "agent", "start", name,
-            "--split", direction.rawValue,
+            "pane", "split", paneID,
+            "--direction", direction.rawValue,
             "--cwd", cwd,
             "--no-focus",
-            "--",
-        ] + shellFallbackArgv(executable)
+        ]
     }
 
-    /// Wraps an agent command line so the pane outlives the agent. herdr execs
-    /// this argv as the pane's root process, so a bare agent binary would take
-    /// the pane — and a single-pane tab — down with it when the user exits the
-    /// agent. Falling back to the user's interactive shell keeps the pane open
-    /// at a prompt instead, matching what exiting an agent started by hand in
-    /// a terminal does.
-    public static func shellFallbackArgv(_ command: String) -> [String] {
-        ["/bin/sh", "-lc", "\(command); exec \"${SHELL:-/bin/sh}\" -l"]
-    }
-
-    /// Builds the non-splitting agent launch used by remote companions.
-    public static func agentStartArguments(
-        name: String,
-        executable: String,
-        workspaceID: String?,
+    /// Builds the non-splitting agent host tab used by remote companions.
+    public static func agentTabCreateArguments(
+        workspaceID: String,
         cwd: String?
     ) -> [String] {
-        var arguments = ["agent", "start", name]
-        if let workspaceID {
-            arguments += ["--workspace", workspaceID]
-        }
+        var arguments = ["tab", "create", "--workspace", workspaceID]
         if let cwd {
             arguments += ["--cwd", cwd]
         }
-        // Same shell fallback as the split launch: keep the companion-launched
-        // pane alive at a prompt when the agent exits, instead of closing it.
-        arguments += ["--no-focus", "--"] + shellFallbackArgv(executable)
+        arguments.append("--no-focus")
         return arguments
+    }
+
+    /// A fresh, no-resume agent launch: herdr waits for the pane's shell
+    /// prompt and the agent's own readiness internally, so this needs no
+    /// guessed delay and no `pane run` typing race. Only good for a bare
+    /// launch — herdr execs the kind's canonical binary directly with these
+    /// trailing args, so it cannot carry a `first || fallback` shell
+    /// invocation (see `resumeCommand` for why reopen can't use this).
+    public static func agentStartArguments(
+        name: String,
+        kind: String,
+        paneID: String
+    ) -> [String] {
+        ["agent", "start", name, "--kind", kind, "--pane", paneID]
     }
 }
