@@ -2,15 +2,19 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Typing to a remote herd no longer waits for the network.** rai now
-  predicts your keystrokes mosh-style: printable characters appear instantly,
-  underlined until the server confirms them, then blend in. Prediction only
-  engages once the link has proven slow, never inside full-screen TUIs, and
-  never at hidden-input prompts — a password can't be painted on screen,
-  because rai only predicts while the prompt is demonstrably echoing.
-- **Remote sessions in the session menu.** While connected to a remote
-  target, the menu lists that machine's sessions next to your local ones;
-  pick one to switch without retyping the SSH target.
+- **Reopen Closed Tab works again on herdr 0.7.5+.** herdr dropped `agent
+  start --tab`; ⌘⇧T briefly showed the reopened tab and then closed it.
+  Launching an agent from the UI or the phone companion silently did
+  nothing. Both paths now use herdr's current commands, verify the agent
+  actually started, and retry once if it did not.
+- **Reopening a closed tab brings its space back.** Closing a space's last
+  tab closes the space itself. ⌘⇧T now recreates that space — same name,
+  same directory — instead of dropping the tab into whichever space was
+  focused. Reopening several tabs from one closed space rejoins them in a
+  single recreated space.
+- **Space order stays in sync on herdr 0.8.0.** Reordering spaces
+  (protocol 19's focus-neutral `workspace.move_block`) updates the sidebar
+  immediately; older servers keep the baseline subscription set.
 
 ### Install
 
