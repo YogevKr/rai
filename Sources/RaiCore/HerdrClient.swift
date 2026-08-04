@@ -127,6 +127,18 @@ public actor HerdrClient {
         "workspace.moved",
     ]
 
+    /// Protocol 19 (herdr 0.8.0) reorders workspaces via workspace.move_block,
+    /// which emits only workspace.reordered — a focus-neutral reorder is
+    /// invisible on the base subscriptions. Older servers reject unknown
+    /// subscription types with invalid_request, killing the whole event
+    /// stream, so the type is added only when the server's protocol has it.
+    public static func subscriptions(forProtocol protocolVersion: Int?) -> [String] {
+        guard let protocolVersion, protocolVersion >= 19 else {
+            return defaultSubscriptions
+        }
+        return defaultSubscriptions + ["workspace.reordered"]
+    }
+
     public nonisolated let socketPath: String
 
     private let encoder = JSONEncoder()

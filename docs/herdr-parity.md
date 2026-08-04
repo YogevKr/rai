@@ -22,6 +22,17 @@ by socket for the hot path (`session.snapshot`, `events.subscribe`, `pane.read`,
 Companion audits: [collie-gap.md](collie-gap.md) (phone), [ROADMAP.md](ROADMAP.md)
 (build order).
 
+> **herdr 0.8.0 (protocol 19, checked 2026-08-03).** The diff from 0.7.5 is
+> additive: one new method (`workspace.move_block` — reorders a block of
+> workspaces, returns the full workspace list), one new event
+> (`workspace.reordered`), and two new `IntegrationTarget` values
+> (`antigravity_cli`, `grok`). A focus-neutral block reorder emits *only*
+> `workspace.reordered`, so rai now subscribes to it when the protocol is ≥ 19
+> (`HerdrClient.subscriptions(forProtocol:)`). Older servers reject unknown
+> subscription types with `invalid_request`, which kills the event stream —
+> that is why the subscription is protocol-gated. `pane.report_agent` still
+> takes `agent` as a free string; the method count is now 90.
+
 ---
 
 ## Tier 1 — plugins are half-blind in rai

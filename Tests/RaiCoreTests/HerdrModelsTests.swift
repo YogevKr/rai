@@ -252,6 +252,30 @@ final class HerdrModelsTests: XCTestCase {
         XCTAssertNil(session.exactResumePlan(argv: nil))
     }
 
+    func testSubscriptionsAddWorkspaceReorderedOnProtocol19() {
+        XCTAssertEqual(
+            HerdrClient.subscriptions(forProtocol: 19),
+            HerdrClient.defaultSubscriptions + ["workspace.reordered"]
+        )
+        XCTAssertEqual(
+            HerdrClient.subscriptions(forProtocol: 20),
+            HerdrClient.defaultSubscriptions + ["workspace.reordered"]
+        )
+    }
+
+    func testSubscriptionsStayBaselineForOldOrUnknownProtocol() {
+        // Pre-19 servers reject unknown subscription types with
+        // invalid_request, which would kill the whole event stream.
+        XCTAssertEqual(
+            HerdrClient.subscriptions(forProtocol: 17),
+            HerdrClient.defaultSubscriptions
+        )
+        XCTAssertEqual(
+            HerdrClient.subscriptions(forProtocol: nil),
+            HerdrClient.defaultSubscriptions
+        )
+    }
+
     private func decode(_ json: String) throws -> SessionSnapshot {
         try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
     }
