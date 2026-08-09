@@ -2,19 +2,12 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Reopen Closed Tab works again on herdr 0.7.5+.** herdr dropped `agent
-  start --tab`; ⌘⇧T briefly showed the reopened tab and then closed it.
-  Launching an agent from the UI or the phone companion silently did
-  nothing. Both paths now use herdr's current commands, verify the agent
-  actually started, and retry once if it did not.
-- **Reopening a closed tab brings its space back.** Closing a space's last
-  tab closes the space itself. ⌘⇧T now recreates that space — same name,
-  same directory — instead of dropping the tab into whichever space was
-  focused. Reopening several tabs from one closed space rejoins them in a
-  single recreated space.
-- **Space order stays in sync on herdr 0.8.0.** Reordering spaces
-  (protocol 19's focus-neutral `workspace.move_block`) updates the sidebar
-  immediately; older servers keep the baseline subscription set.
+- **Rai no longer freezes during sidebar updates.** Rai now avoids a SwiftUI
+  lazy-layout loop. It also combines focus refreshes and skips equal snapshots.
+- **Large herds no longer churn terminal clients.** The terminal pool now
+  follows the live herd size. It also removes stale clients before resize.
+- **Repeated close actions are safe.** Rai ignores held ⌘W shortcuts and
+  duplicate close clicks. A close also stays bound to its source herd.
 
 ### Install
 
