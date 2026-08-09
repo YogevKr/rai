@@ -254,21 +254,12 @@ struct StatusDot: View {
     let status: AgentStatus
     var size: CGFloat = 8
 
-    @State private var pulse = false
-
     private var color: Color { Theme.status(status) }
     private var isHollow: Bool { status == .idle || status == .unknown }
     private var box: CGFloat { size + 8 }
 
     var body: some View {
         ZStack {
-            if status == .working {
-                Circle()
-                    .stroke(color.opacity(0.6), lineWidth: 1.5)
-                    .frame(width: size, height: size)
-                    .scaleEffect(pulse ? 2.1 : 0.9)
-                    .opacity(pulse ? 0 : 0.7)
-            }
             if isHollow {
                 Circle()
                     .strokeBorder(color, lineWidth: 1.4)
@@ -281,12 +272,6 @@ struct StatusDot: View {
             }
         }
         .frame(width: box, height: box)
-        .onAppear {
-            guard status == .working else { return }
-            withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                pulse = true
-            }
-        }
         .accessibilityLabel(Theme.statusLabel(status))
     }
 }
