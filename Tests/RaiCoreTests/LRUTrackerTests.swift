@@ -31,4 +31,29 @@ final class LRUTrackerTests: XCTestCase {
         XCTAssertNil(tracker.touch("third"))
         XCTAssertEqual(tracker.leastToMostRecent, ["second", "third"])
     }
+
+    /// The terminal pool re-bounds itself to the herd's pane count, so growing
+    /// must keep every resident key and shrinking must surrender the oldest.
+    func testGrowingCapacityEvictsNothing() {
+        var tracker = LRUTracker<String>(capacity: 2)
+        tracker.touch("first")
+        tracker.touch("second")
+
+        XCTAssertEqual(tracker.setCapacity(4), [])
+        XCTAssertNil(tracker.touch("third"))
+        XCTAssertNil(tracker.touch("fourth"))
+        XCTAssertEqual(
+            tracker.leastToMostRecent,
+            ["first", "second", "third", "fourth"]
+        )
+    }
+
+    func testShrinkingCapacityEvictsLeastRecentFirst() {
+        var tracker = LRUTracker<String>(capacity: 4)
+        for key in ["first", "second", "third", "fourth"] { tracker.touch(key) }
+
+        XCTAssertEqual(tracker.setCapacity(2), ["first", "second"])
+        XCTAssertEqual(tracker.leastToMostRecent, ["third", "fourth"])
+        XCTAssertEqual(tracker.capacity, 2)
+    }
 }

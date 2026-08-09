@@ -2,11 +2,9 @@ import XCTest
 
 @testable import RaiApp
 
-/// Output events must NOT trigger a full snapshot refresh. They arrive as
-/// `pane.updated` on the wire (protocol 16 cannot subscribe to
-/// `pane.output_changed`; the client substitutes it), and treating them as
-/// structural refreshed the snapshot — a herdr CLI spawn, a full decode, and
-/// a whole-UI re-render — on every output burst while the user typed.
+/// High-rate events must NOT trigger an immediate snapshot refresh. Output
+/// arrives as `pane.updated` on protocol 16. A new event subscription can also
+/// replay a long focus history. Both streams use one trailing refresh instead.
 @MainActor
 final class StructuralEventTests: XCTestCase {
     func testOutputEventsAreNotStructural() {
@@ -14,11 +12,16 @@ final class StructuralEventTests: XCTestCase {
         XCTAssertFalse(RaiModel.isStructuralEvent("pane.updated"))
     }
 
+    func testReplayedFocusEventsAreNotStructural() {
+        XCTAssertFalse(RaiModel.isStructuralEvent("pane.focused"))
+        XCTAssertFalse(RaiModel.isStructuralEvent("workspace.focused"))
+    }
+
     func testStructuralEventsStillRefresh() {
         for name in [
             "layout.updated", "pane.created", "pane.closed", "pane.moved",
-            "pane.focused", "pane.agent_status_changed", "tab.closed",
-            "tab.moved", "workspace.focused", "workspace.moved",
+            "pane.agent_status_changed", "tab.closed", "tab.moved",
+            "workspace.moved",
         ] {
             XCTAssertTrue(RaiModel.isStructuralEvent(name), name)
         }

@@ -89,7 +89,13 @@ struct SidebarView: View {
     private var spacesList: some View {
         if let snapshot = model.snapshot {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                // This list is small enough for eager layout. On macOS 26,
+                // LazyVStack can enter a permanent placement loop when these
+                // conditional sections change during the first snapshot.
+                // The loop keeps the main thread at 100% CPU and blocks input.
+                // This intentionally removes pinned headers. Do not restore
+                // lazy pinning without a macOS 26 CPU regression test.
+                VStack(alignment: .leading, spacing: 2) {
                     let entries = model.workspaceListEntries
                     let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
                         AttentionFilter.includes(
@@ -113,6 +119,7 @@ struct SidebarView: View {
                     ForEach(entries) { entry in
                         let workspace = entry.workspace
                         let allTabs = tabs(in: snapshot, of: workspace)
+                            .filter { !model.closingTabIDs.contains($0.tabID) }
                         // A collapsed space hides everything but its
                         // attention-needing tabs (and the selected one) —
                         // same predicate as the global "only needs you".
@@ -1805,7 +1812,9 @@ private struct AgentPanelSection: View {
                 .padding(.horizontal, 12)
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                // Keep this eager for the same reason as the space list above.
+                // Both lists share the sidebar's changing split geometry.
+                VStack(alignment: .leading, spacing: 2) {
                     ForEach(entries) { entry in
                         AgentPanelRow(
                             model: model,

@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: RaiApp.sharedModel)
+        installCloseRepeatGuard()
         installTerminalKeyMonitor()
         installTerminalScrollMonitor()
         disableWindowSnapshots()
@@ -127,6 +128,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // first responder, and no transient surface (command palette, rename sheet)
     // is open — a local monitor sees every window's events (Settings included),
     // and anything looser leaks typed text into the session behind the scenes.
+    /// Drops auto-repeats of ⌘W / ⌘⇧W before AppKit can fire their menu items.
+    /// Installed ahead of the terminal monitor so a held ⌘W dies here rather
+    /// than racing the routing rules below.
+    private func installCloseRepeatGuard() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event -> NSEvent? in
+            KeyRoutingDecision.isRepeatedCloseShortcut(
+                isARepeat: event.isARepeat,
+                command: event.modifierFlags.contains(.command),
+                option: event.modifierFlags.contains(.option),
+                control: event.modifierFlags.contains(.control),
+                shift: event.modifierFlags.contains(.shift),
+                charactersIgnoringModifiers: event.charactersIgnoringModifiers
+            ) ? nil : event
+        }
+    }
+
     private func installTerminalKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event -> NSEvent? in
             MainActor.assumeIsolated {

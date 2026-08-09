@@ -23,6 +23,28 @@ enum KeyRoutingDecision {
             && !renamePresented
     }
 
+    /// Whether a key event is an auto-repeat of a destructive close shortcut
+    /// (⌘W closes the tab, ⌘⇧W the pane) and must be dropped.
+    ///
+    /// macOS delivers held key equivalents as repeated keyDowns, and AppKit
+    /// fires the matching menu item for every one — holding ⌘W walks the herd
+    /// closing tab after tab, exactly as holding ⌘W walks Safari's. A tab close
+    /// is not recoverable in one keystroke, and for a one-tab space it takes the
+    /// whole space, so no held-key behaviour is worth keeping here: one press,
+    /// one close.
+    static func isRepeatedCloseShortcut(
+        isARepeat: Bool,
+        command: Bool,
+        option: Bool,
+        control: Bool,
+        shift _: Bool,
+        charactersIgnoringModifiers: String?
+    ) -> Bool {
+        guard isARepeat, command, !option, !control else { return false }
+        // ⇧ is folded in by lowercasing: ⌘⇧W arrives as "W".
+        return charactersIgnoringModifiers?.lowercased() == "w"
+    }
+
     /// Converts an AppKit key event into a pane-local command.
     static func terminalCommand(
         keyCode: UInt16,

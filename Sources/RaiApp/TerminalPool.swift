@@ -29,8 +29,15 @@ final class TerminalPool {
     /// longer exists (which then retries its way to nothing).
     private var knownTerminalIDs: Set<String>?
 
+    /// Floor for the attach pool: a small herd still keeps a few panes warm.
+    nonisolated static let minimumCapacity = 8
+    /// Ceiling, so a very large herd cannot spawn an attach process per pane
+    /// without bound. Above this the pool churns again — by then that is the
+    /// cheaper failure.
+    nonisolated static let maximumCapacity = 32
+
     init(
-        capacity: Int = 8,
+        capacity: Int = TerminalPool.minimumCapacity,
         socketPath: String = HerdrClient.defaultSocketPath()
     ) {
         recency = LRUTracker(capacity: capacity)
@@ -42,6 +49,13 @@ final class TerminalPool {
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.reapplyTheme() }
             }
+    }
+
+    /// Test seam: `entries` and the LRU tracker must never drift apart. An entry
+    /// the tracker has forgotten can never be evicted, so it holds its attach
+    /// process for the app's life and lets the pool exceed its own ceiling.
+    var poolStateForTesting: (pooled: Set<String>, tracked: Set<String>, capacity: Int) {
+        (Set(entries.keys), Set(recency.leastToMostRecent), recency.capacity)
     }
 
     /// Re-applies the active palette to every pooled terminal and forces a redraw
@@ -108,11 +122,30 @@ final class TerminalPool {
 
     func retain(terminalIDs liveTerminalIDs: Set<String>) {
         knownTerminalIDs = liveTerminalIDs
+        // Reap the dead BEFORE re-bounding. A shrinking herd would otherwise
+        // spend the smaller capacity on terminals that no longer exist and
+        // surrender live keys instead — whose entries stay in `entries` with no
+        // LRU tracking, so a later herd above the ceiling grows the pool past
+        // its own bound with nothing left to evict.
         let staleTerminalIDs = entries.keys.filter {
             !liveTerminalIDs.contains($0)
         }
         for terminalID in staleTerminalIDs {
             evict(terminalID)
+        }
+        // Size the pool to the herd. A fixed bound smaller than the pane count
+        // makes every visit to a non-resident pane evict an attach and spawn a
+        // replacement with `--takeover`, which the displaced herdr client
+        // answers by panicking — a herd of 15 panes against the old bound of 8
+        // churned attach processes continuously and left a trail of client
+        // aborts in DiagnosticReports. The ceiling still caps a runaway herd.
+        //
+        // Anything the new bound surrenders is evicted for real, so `entries`
+        // and the tracker cannot drift apart.
+        for evicted in recency.setCapacity(
+            min(max(Self.minimumCapacity, liveTerminalIDs.count), Self.maximumCapacity)
+        ) {
+            evict(evicted)
         }
     }
 

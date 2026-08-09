@@ -270,6 +270,17 @@ private struct PluginLogListResponse: Decodable {
 
 @MainActor
 final class RaiModel: ObservableObject {
+    typealias CloseCommandRunner = (_ arguments: [String], _ socketPath: String) async -> Bool
+
+    struct CloseConnectionContext {
+        let generation: UUID
+        let socketPath: String
+
+        func matches(_ currentGeneration: UUID) -> Bool {
+            generation == currentGeneration
+        }
+    }
+
     enum ConnectionState: Equatable {
         case connecting
         case connected(version: String, protocolVersion: Int)
@@ -361,6 +372,13 @@ final class RaiModel: ObservableObject {
         // so a relaunch keeps whatever ⌘⇧T could reach when the app quit.
         didSet { closedTabStore.save(closedTabs, herdKey: currentHerdKey) }
     }
+    /// Tabs whose close has been decided but whose herd refresh has not landed.
+    /// A close is not instant — capturing each agent pane's argv can take up to
+    /// two seconds — and until this existed nothing on screen changed meanwhile,
+    /// so an impatient second click queued a second close against the stale
+    /// snapshot. The sidebar hides these rows immediately, so a repeat click has
+    /// no target, and `close(tab:)` drops a repeat close of the same tab.
+    @Published private(set) var closingTabIDs: Set<String> = []
     /// Serializes ⌘⇧T: each reopen awaits the previous one, so an earlier
     /// reopen's space recreation is visible (via `recreatedWorkspaceIDs`)
     /// before the next record is reconstructed. Concurrent reconstructs of
@@ -420,12 +438,15 @@ final class RaiModel: ObservableObject {
     private var remoteConnection: RemoteConnection?
     private var launchedSessionServers: [String: Process] = [:]
     private var pendingPluginInstall: PendingHerdrPluginInstall?
+    private let closeCommandRunner: CloseCommandRunner?
 
     init(
         client: HerdrClient = HerdrClient(),
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        closeCommandRunner: CloseCommandRunner? = nil
     ) {
         self.client = client
+        self.closeCommandRunner = closeCommandRunner
         activeSocketPath = client.socketPath
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
         terminalPool = TerminalPool(socketPath: client.socketPath)
@@ -956,6 +977,9 @@ final class RaiModel: ObservableObject {
 
     private func tearDownCurrentConnection(stopRemote: Bool) {
         connectionGeneration = UUID()
+        // Their closes can never land now, and a stale ID would hide a row of
+        // the same name in the next herd.
+        closingTabIDs.removeAll()
         eventTask?.cancel()
         eventTask = nil
         flushTask?.cancel()
@@ -1664,9 +1688,24 @@ final class RaiModel: ObservableObject {
         snapshot = newSnapshot
     }
 
+    /// Test seam: simulates a herd replacement before an async close starts.
+    func replaceConnectionGenerationForTesting() {
+        connectionGeneration = UUID()
+    }
+
     func close(tab: HerdrTab) {
+        // A close already in flight owns this tab. Without this a second click
+        // during the argv capture below queued a second close computed against
+        // the pre-close snapshot — and for a one-tab space that close is a
+        // `workspace close`, so the repeat took a whole space with it.
+        guard !closingTabIDs.contains(tab.tabID) else { return }
         guard let record = closedTabRecord(for: tab) else { return }
         guard let arguments = closeTabArguments(tabID: tab.tabID) else { return }
+        let context = CloseConnectionContext(
+            generation: connectionGeneration,
+            socketPath: activeSocketPath
+        )
+        closingTabIDs.insert(tab.tabID)
         // The record lands BEFORE any async hop: reopen (⌘⇧T) must always
         // find it, even when the argv capture below is slow, fails, or the
         // connection drops mid-close.
@@ -1687,9 +1726,10 @@ final class RaiModel: ObservableObject {
                 return (pane.paneID, kind, leafOrder.firstIndex(of: pane.paneID))
             }
         guard !captures.isEmpty else {
-            runAction(arguments)
+            runClose(arguments, tabID: tab.tabID, context: context)
             return
         }
+        let tabID = tab.tabID
         let recordID = record.id
         let primaryPaneID = captures.first { $0.kind == record.agentKind }?.paneID
         Task {
@@ -1732,7 +1772,41 @@ final class RaiModel: ObservableObject {
                     }
                 }
             }
-            runAction(arguments)
+            runClose(arguments, tabID: tabID, context: context)
+        }
+    }
+
+    /// `runAction` for a tab close: identical, but holds the tab's row hidden
+    /// until the post-close snapshot lands. Clearing on the action's return
+    /// instead would flash the row back for the gap between herdr acking the
+    /// close and the tab leaving the snapshot.
+    private func runClose(
+        _ arguments: [String],
+        tabID: String,
+        context: CloseConnectionContext
+    ) {
+        Task {
+            // The argv lookup can outlive its herd. Never send its close to a
+            // later herd that reused the same short tab or workspace ID.
+            guard context.matches(connectionGeneration) else { return }
+            if let closeCommandRunner {
+                _ = await closeCommandRunner(arguments, context.socketPath)
+            } else {
+                _ = await runHerdr(arguments, socketPath: context.socketPath)
+            }
+            // Never reach across a herd switch. `tearDownCurrentConnection`
+            // already cleared the whole set, and herds reuse tab IDs — `w1:t1`
+            // is the first tab of every one — so a stale task removing its ID
+            // here would clear the NEW herd's marker, un-hide that row, and
+            // re-arm the double close this guard exists to stop.
+            guard context.matches(connectionGeneration) else { return }
+            await refreshSnapshot(keepSelection: false)
+            // Re-checked: the refresh above is a suspension point, and the herd
+            // can switch across it.
+            guard context.matches(connectionGeneration) else { return }
+            // A failed close leaves the tab in the snapshot; clearing here (not
+            // conditionally) lets the row come back rather than stranding it.
+            closingTabIDs.remove(tabID)
         }
     }
 
@@ -2476,14 +2550,19 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    /// Whether a herdr event implies the session's structure changed and the
-    /// snapshot must be re-fetched. Output rides on `pane.updated`: protocol 16
-    /// cannot subscribe to `pane.output_changed`, so `events()` substitutes it —
-    /// treating `pane.updated` as structural made every output burst refresh
-    /// the full snapshot, spawn a herdr CLI, and re-render the whole UI while
-    /// the user typed.
+    /// Whether a herdr event needs an immediate snapshot refresh. Output rides
+    /// on `pane.updated`: protocol 16 cannot subscribe to
+    /// `pane.output_changed`, so `events()` substitutes it. Focus events also
+    /// use the trailing refresh because a new subscription can replay a long
+    /// focus history. Treating either stream as immediate can keep SwiftUI in
+    /// continuous graph updates while Rai consumes the backlog.
     static func isStructuralEvent(_ name: String) -> Bool {
-        name != "pane.output_changed" && name != "pane.updated"
+        ![
+            "pane.output_changed",
+            "pane.updated",
+            "pane.focused",
+            "workspace.focused",
+        ].contains(name)
     }
 
     private func flushEvents(generation: UUID) async {
@@ -2544,6 +2623,12 @@ final class RaiModel: ObservableObject {
         do {
             let newSnapshot = try await client.snapshot()
             guard generation == connectionGeneration else { return }
+            let connectedState = ConnectionState.connected(
+                version: newSnapshot.version,
+                protocolVersion: newSnapshot.protocol
+            )
+            let snapshotChanged = snapshot != newSnapshot
+            let firstSnapshotForGeneration = pluginActionsGeneration != generation
             let newStatuses = Dictionary(
                 uniqueKeysWithValues: newSnapshot.panes.map {
                     ($0.paneID, $0.agentStatus)
@@ -2554,15 +2639,25 @@ final class RaiModel: ObservableObject {
             } ?? []
             lastObservedPaneStatuses = newStatuses
 
-            snapshot = newSnapshot
-            restartGitStatusLoop(generation: generation)
-            terminalPool.retain(
-                terminalIDs: Set(newSnapshot.panes.map(\.terminalID))
-            )
-            connectionState = .connected(
-                version: newSnapshot.version,
-                protocolVersion: newSnapshot.protocol
-            )
+            // Herdr can replay old focus events to a new subscription. Each
+            // event fetches the current snapshot, so most responses are equal.
+            // @Published emits even when the assigned value is equal; skip the
+            // assignment to prevent a full SwiftUI graph update per replayed
+            // event.
+            if snapshotChanged {
+                snapshot = newSnapshot
+            }
+            // A live server handoff can return an equal first snapshot. It
+            // still needs new generation-bound workers and terminal setup.
+            if snapshotChanged || firstSnapshotForGeneration {
+                restartGitStatusLoop(generation: generation)
+                terminalPool.retain(
+                    terminalIDs: Set(newSnapshot.panes.map(\.terminalID))
+                )
+            }
+            if connectionState != connectedState {
+                connectionState = connectedState
+            }
             // Once per connection, not once per snapshot: this spawns a herdr
             // CLI process, and snapshot refreshes ride the event stream.
             if pluginActionsGeneration != generation {
@@ -2570,6 +2665,10 @@ final class RaiModel: ObservableObject {
                 await refreshPluginActions(generation: generation)
             }
             guard generation == connectionGeneration else { return }
+            // Background processes can change without changing any snapshot
+            // field. Keep this throttled refresh before the equality return.
+            refreshBackgroundWork()
+            guard snapshotChanged else { return }
 
             let selectionStillValid = selectedPaneID.map { id in
                 newSnapshot.panes.contains { $0.paneID == id }
@@ -2587,7 +2686,6 @@ final class RaiModel: ObservableObject {
                 transitions: transitions
             )
             bridgeServer.relay(snapshot: newSnapshot)
-            refreshBackgroundWork()
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)
@@ -4320,6 +4418,9 @@ final class RaiModel: ObservableObject {
     /// Rebuild both client types so Rai does not rely on short retry windows.
     private func reconnectAfterServerReplacement() async {
         connectionGeneration = UUID()
+        // A close from the old client can no longer finish its refresh.
+        // Show its row again and permit a later close attempt.
+        closingTabIDs.removeAll()
         eventTask?.cancel()
         eventTask = nil
         flushTask?.cancel()
@@ -4469,9 +4570,12 @@ final class RaiModel: ObservableObject {
             .appendingPathComponent(".local/state/herdr")
     }
 
-    private func runHerdr(_ args: [String]) async -> Bool {
+    private func runHerdr(
+        _ args: [String],
+        socketPath: String? = nil
+    ) async -> Bool {
         await withCheckedContinuation { continuation in
-            let process = configuredHerdrProcess(args)
+            let process = configuredHerdrProcess(args, socketPath: socketPath)
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             process.terminationHandler = { proc in
@@ -4614,7 +4718,8 @@ final class RaiModel: ObservableObject {
 
     private func configuredHerdrProcess(
         _ args: [String],
-        usesActiveSocket: Bool = true
+        usesActiveSocket: Bool = true,
+        socketPath: String? = nil
     ) -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
@@ -4626,7 +4731,7 @@ final class RaiModel: ObservableObject {
                 + (path.isEmpty ? "/usr/bin:/bin" : path)
         }
         if usesActiveSocket {
-            environment["HERDR_SOCKET_PATH"] = activeSocketPath
+            environment["HERDR_SOCKET_PATH"] = socketPath ?? activeSocketPath
         } else {
             environment.removeValue(forKey: "HERDR_SOCKET_PATH")
         }
