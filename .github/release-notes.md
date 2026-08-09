@@ -2,12 +2,9 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Rai no longer freezes during sidebar updates.** Rai now avoids a SwiftUI
-  lazy-layout loop. It also combines focus refreshes and skips equal snapshots.
-- **Large herds no longer churn terminal clients.** The terminal pool now
-  follows the live herd size. It also removes stale clients before resize.
-- **Repeated close actions are safe.** Rai ignores held ⌘W shortcuts and
-  duplicate close clicks. A close also stays bound to its source herd.
+- **Typing stays responsive in large herds.** Working status dots no longer
+  run continuous animations. This change stops constant UI redraws and reduces
+  idle CPU use.
 
 ### Install
 
