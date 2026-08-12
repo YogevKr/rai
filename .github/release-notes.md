@@ -2,11 +2,10 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Pane titles no longer show spinner circles.** Claude Code 2.1.228 changed
-  its terminal-title busy spinner to half-circle glyphs (◐ ◓ ◑ ◒) that herdr
-  does not strip yet. rai now strips agent status glyphs itself when it
-  decodes titles. This also stops sidebar rows from redrawing on every
-  spinner frame.
+- **Tab labels no longer show spinner circles either.** v0.1.38 stripped
+  Claude Code's half-circle spinner glyphs (◐ ◓ ◑ ◒) from pane titles, but
+  herdr also freezes the glyph into auto-generated tab labels. Those labels
+  now get the same treatment.
 
 ### Install
 
