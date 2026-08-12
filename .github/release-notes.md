@@ -2,9 +2,11 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Typing stays responsive in large herds.** Working status dots no longer
-  run continuous animations. This change stops constant UI redraws and reduces
-  idle CPU use.
+- **Pane titles no longer show spinner circles.** Claude Code 2.1.228 changed
+  its terminal-title busy spinner to half-circle glyphs (◐ ◓ ◑ ◒) that herdr
+  does not strip yet. rai now strips agent status glyphs itself when it
+  decodes titles. This also stops sidebar rows from redrawing on every
+  spinner frame.
 
 ### Install
 
