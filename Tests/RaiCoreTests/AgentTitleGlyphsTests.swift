@@ -80,6 +80,43 @@ final class AgentTitleGlyphsTests: XCTestCase {
         XCTAssertEqual(pane.terminalTitle, "◑ Get started with new KVM")
     }
 
+    // Herdr freezes the glyph into auto-generated tab labels as well.
+    func testTabDecodeStripsLeakedSpinnerGlyph() throws {
+        let json = """
+        {
+            "tab_id": "w27:t7",
+            "workspace_id": "w27",
+            "number": 7,
+            "label": "◑ Get started with new KVM",
+            "focused": false,
+            "pane_count": 1,
+            "agent_status": "working"
+        }
+        """
+        let tab = try JSONDecoder().decode(
+            HerdrTab.self, from: Data(json.utf8)
+        )
+        XCTAssertEqual(tab.label, "Get started with new KVM")
+    }
+
+    func testTabDecodeTurnsGlyphOnlyLabelEmpty() throws {
+        let json = """
+        {
+            "tab_id": "w27:t7",
+            "workspace_id": "w27",
+            "number": 7,
+            "label": "◐",
+            "focused": false,
+            "pane_count": 1,
+            "agent_status": "idle"
+        }
+        """
+        let tab = try JSONDecoder().decode(
+            HerdrTab.self, from: Data(json.utf8)
+        )
+        XCTAssertEqual(tab.label, "")
+    }
+
     func testAgentDecodeStripsLeakedSpinnerGlyph() throws {
         let json = """
         {

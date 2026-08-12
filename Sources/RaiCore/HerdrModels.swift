@@ -68,6 +68,25 @@ public struct HerdrTab: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+// Herdr auto-names tabs from the terminal title, so an agent's status glyph
+// gets frozen into the label too ("◑ Get started with…"). Strip it the same
+// way pane titles are stripped; a glyph-only label decays to the empty label,
+// which display code already renders as the tab number.
+extension HerdrTab {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tabID = try container.decode(String.self, forKey: .tabID)
+        workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        number = try container.decode(Int.self, forKey: .number)
+        label = AgentTitleGlyphs.strip(
+            try container.decode(String.self, forKey: .label)
+        ) ?? ""
+        focused = try container.decode(Bool.self, forKey: .focused)
+        paneCount = try container.decode(Int.self, forKey: .paneCount)
+        agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+    }
+}
+
 /// Scrollback position of a pane, straight from herdr's snapshot: how far the
 /// viewport sits above the live bottom, and how far it can go.
 public struct PaneScroll: Codable, Sendable, Equatable {
