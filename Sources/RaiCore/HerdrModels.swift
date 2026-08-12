@@ -328,6 +328,38 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+// Decoding lives in an extension so tests keep the memberwise init. Herdr's
+// stripping lags upstream glyph changes; see AgentTitleGlyphs.
+extension Pane {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        paneID = try container.decode(String.self, forKey: .paneID)
+        terminalID = try container.decode(String.self, forKey: .terminalID)
+        workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        tabID = try container.decode(String.self, forKey: .tabID)
+        focused = try container.decode(Bool.self, forKey: .focused)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        foregroundCWD = try container.decodeIfPresent(
+            String.self, forKey: .foregroundCWD
+        )
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        agentSession = try container.decodeIfPresent(
+            AgentSession.self, forKey: .agentSession
+        )
+        terminalTitle = try container.decodeIfPresent(
+            String.self, forKey: .terminalTitle
+        )
+        terminalTitleStripped = AgentTitleGlyphs.strip(
+            try container.decodeIfPresent(
+                String.self, forKey: .terminalTitleStripped
+            )
+        )
+        agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+        revision = try container.decode(UInt64.self, forKey: .revision)
+        scroll = try container.decodeIfPresent(PaneScroll.self, forKey: .scroll)
+    }
+}
+
 public struct HerdrAgent: Codable, Identifiable, Sendable, Equatable {
     public let terminalID: String
     public let name: String?
@@ -361,6 +393,40 @@ public struct HerdrAgent: Codable, Identifiable, Sendable, Equatable {
         case paneID = "pane_id"
         case focused, cwd, revision
         case foregroundCWD = "foreground_cwd"
+    }
+}
+
+extension HerdrAgent {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        terminalID = try container.decode(String.self, forKey: .terminalID)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        terminalTitle = try container.decodeIfPresent(
+            String.self, forKey: .terminalTitle
+        )
+        terminalTitleStripped = AgentTitleGlyphs.strip(
+            try container.decodeIfPresent(
+                String.self, forKey: .terminalTitleStripped
+            )
+        )
+        displayAgent = try container.decodeIfPresent(
+            String.self, forKey: .displayAgent
+        )
+        agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+        agentSession = try container.decodeIfPresent(
+            AgentSession.self, forKey: .agentSession
+        )
+        workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        tabID = try container.decode(String.self, forKey: .tabID)
+        paneID = try container.decode(String.self, forKey: .paneID)
+        focused = try container.decode(Bool.self, forKey: .focused)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        foregroundCWD = try container.decodeIfPresent(
+            String.self, forKey: .foregroundCWD
+        )
+        revision = try container.decode(UInt64.self, forKey: .revision)
     }
 }
 
