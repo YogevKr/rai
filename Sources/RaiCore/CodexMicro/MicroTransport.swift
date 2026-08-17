@@ -126,6 +126,15 @@ public enum MicroTransportError: Error, LocalizedError {
             Devices. Work Louder Input can hold it too. Work Louder document this \
             conflict on their setup page.
             """
+        case .ioReturn(let code) where code == kIOReturnNotPermitted:
+            """
+            macOS blocks direct pad access for non-root apps \
+            (kIOReturnNotPermitted; enforced since macOS 26.6): input reports \
+            are withheld and lighting writes are refused even with Input \
+            Monitoring granted. Install the privileged helper — \
+            \(MicroHelperWire.installCommandHint) — then toggle this \
+            integration off and on.
+            """
         case .ioReturn(let code): "IOKit HID operation failed (\(code))"
         }
     }
@@ -134,6 +143,15 @@ public enum MicroTransportError: Error, LocalizedError {
     /// configuration problem the user can fix — not a bug and not transient.
     public var isSeized: Bool {
         if case .ioReturn(let code) = self, code == kIOReturnExclusiveAccess { return true }
+        return false
+    }
+
+    /// True for the macOS 26.6+ non-root HID lockdown. `errorDescription`'s
+    /// wording for this case ("install the privileged helper") assumes a
+    /// NON-root caller — rai-microd itself runs as root and must never
+    /// surface that text about itself if it ever somehow hits this code.
+    public var isNotPermitted: Bool {
+        if case .ioReturn(let code) = self, code == kIOReturnNotPermitted { return true }
         return false
     }
 }
@@ -163,11 +181,22 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
     private var monitoring = false
     private var monitoringRunLoop: CFRunLoop?
     private var selectedIdentity: MicroDeviceIdentity?
+    /// Dedup latch for onLinkError, cleared on a successful attach. Without
+    /// it, a seized pad re-enumerating (documented elsewhere as happening
+    /// every few hundred ms on BLE) would fire a fresh Settings error on
+    /// every single retry — the exact spam every OTHER error path in this
+    /// pad integration was deliberately built to avoid.
+    private var lastReportedLinkError: String?
 
     /// Optional trace of why an attach did or did not happen. Attach failures in
     /// the monitoring path are otherwise invisible, which makes "nothing
     /// happened" indistinguishable from "the callback never fired".
     public var onDiagnostic: (@Sendable (String) -> Void)?
+
+    /// Fired when a pad that arrived while monitoring cannot be opened (the
+    /// hot-plug analog of `openMonitoring` throwing). Open-time and send-time
+    /// failures throw instead.
+    public var onLinkError: (@Sendable (String) -> Void)?
 
     /// Called with `true` on attach and `false` on drop while monitoring.
     /// Invoked outside the internal lock, on the monitoring run loop.
@@ -302,6 +331,12 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
 
     private func handleMatched(_: IOHIDDevice) {
         var diagnostics: [String] = []
+        // Set when the pad arrived and every open attempt failed — the
+        // hot-plug analog of openMonitoring throwing. Without surfacing it,
+        // a pad plugged in after launch fails silently: diagnostics go to the
+        // log, onConnectionChange never fires, and the Settings guidance for
+        // errors like kIOReturnNotPermitted is unreachable.
+        var attachFailure: IOReturn?
         let attached: Bool = lock.withLock {
             guard monitoring else {
                 diagnostics.append("matched callback ignored: not monitoring")
@@ -325,6 +360,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
             } else {
                 candidatesToTry = candidates[...]
             }
+            var lastOpenFailure: IOReturn?
             for candidate in candidatesToTry {
                 // BLE nodes may arrive in separate callbacks. Open the newly
                 // top-ranked node before dropping the current fallback node.
@@ -332,6 +368,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
                     candidate.device, IOOptionBits(kIOHIDOptionsTypeNone)
                 )
                 guard result == kIOReturnSuccess else {
+                    lastOpenFailure = result
                     diagnostics.append(
                         String(
                             format: "open of node 0x%llX failed: 0x%08X",
@@ -347,9 +384,23 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
                 if replacingExisting { return false }
                 return true
             }
+            // Failing to UPGRADE while a node is already attached is routine;
+            // failing while nothing is attached leaves the pad dead.
+            if device == nil, let failure = lastOpenFailure {
+                attachFailure = failure
+            }
             return false
         }
         for line in diagnostics { onDiagnostic?(line) }
+        if let attachFailure {
+            let message = MicroTransportError.ioReturn(attachFailure).localizedDescription
+            let alreadyReported: Bool = lock.withLock {
+                let already = lastReportedLinkError == message
+                lastReportedLinkError = message
+                return already
+            }
+            if !alreadyReported { onLinkError?(message) }
+        }
         if attached { onConnectionChange?(true) }
     }
 
@@ -385,6 +436,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
         inputBuffer = buffer
         device = selected
         selectedIdentity = identity
+        lastReportedLinkError = nil
         scheduledRunLoop = CFRunLoopGetCurrent()
         IOHIDDeviceRegisterInputReportCallback(
             selected,
