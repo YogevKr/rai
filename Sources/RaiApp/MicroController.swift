@@ -335,27 +335,8 @@ private final class Worker: @unchecked Sendable {
     private var pendingBlocks: [@Sendable () -> Void] = []
     private var stopped = false
 
-    /// `stop()` sets this SYNCHRONOUSLY, unlike deallocation: `run()`'s own
-    /// call frame keeps `self` alive on the monitoring thread until the
-    /// scheduled teardown block actually executes there, so a `[weak self]`
-    /// liveness check cannot detect "stop() was called" — only this can.
-    var isStopped: Bool { lock.withLock { stopped } }
-
-    /// Wraps a transport-callback body with the isStopped gate above — the
-    /// single choke point for it, instead of `guard let self, !self.isStopped
-    /// else { return }` copy-pasted at every callback assignment, where a
-    /// future callback (added to `MicroLink`, or a rewiring here) could
-    /// easily omit it and silently reintroduce the stray-event-after-stop
-    /// race the comments at each call site describe.
-    private func guarded<T>(_ body: @escaping (Worker, T) -> Void) -> (T) -> Void {
-        { [weak self] value in
-            guard let self, !self.isStopped else { return }
-            body(self, value)
-        }
-    }
-
     // Accessed only on the monitoring thread.
-    private var transport: (any MicroLink)?
+    private var transport: IOHIDMicroTransport?
     private var frameDecoder = MicroFrameDecoder()
     private var joystickTracker = MicroKeyMap.MicroJoystickTracker()
     private var slotAssigner = MicroSlotAssigner()
@@ -432,68 +413,11 @@ private final class Worker: @unchecked Sendable {
             }
             guard !lock.withLock({ stopped }) else { return }
 
-            // Prefer the rai-microd helper when it answers a probe connect:
-            // macOS 26.6 blocks raw HID on keyboard-class devices for
-            // non-root processes (input withheld, writes refused with
-            // kIOReturnNotPermitted), and only the root helper restores the
-            // link there. A socket file whose daemon does not answer (stale
-            // file, another user's install) must NOT capture the link — fall
-            // back to direct HID, which still works on older macOS, and say
-            // why. Selection reruns on every integration toggle.
-            // Policy (and its rationale) lives in RaiCore next to the probe;
-            // this site only builds the chosen transport.
-            let transport: any MicroLink
-            switch MicroHelperTransport.chooseLink(
-                probe: MicroHelperTransport.probeHelper(),
-                directHIDRestricted: MicroHelperTransport.directHIDRestricted
-            ) {
-            case .helper:
-                transport = MicroHelperTransport()
-                NSLog("rai: Codex Micro link via rai-microd helper")
-            case .direct:
-                transport = IOHIDMicroTransport()
-                NSLog("rai: Codex Micro link direct")
-            case .directWithError(let reason):
-                transport = IOHIDMicroTransport()
-                let message = "rai-microd's socket exists but is not usable "
-                    + "(\(reason)); using the direct HID link. "
-                    + MicroHelperWire.reinstallOrRemoveHint
-                NSLog("rai: Codex Micro: %@", message)
-                // probeHelper() above can block up to 1 second (its
-                // handshake timeout) — the SAME "user disabled the
-                // integration while this Worker was mid-setup" race the
-                // onLinkError/onReport/onConnectionChange callbacks below
-                // are guarded against, just on the synchronous setup path
-                // instead of a callback.
-                if !lock.withLock({ stopped }) {
-                    Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
-                }
-            }
+            let transport = IOHIDMicroTransport()
             self.transport = transport
-            transport.onDiagnostic = { message in
-                NSLog("rai: Codex Micro: %@", message)
-            }
-            // The helper link retries instead of throwing, so its failures
-            // must reach Settings through this callback; the direct link
-            // throws from openMonitoring and never fires it.
-            //
-            // All three callbacks below go through `guarded`: `self` alone
-            // can be non-nil for a Worker that has already had stop()
-            // called, since run()'s own call frame keeps it alive until the
-            // scheduled teardown block actually executes on the monitoring
-            // thread. onReport in particular can otherwise still drive a
-            // real pane select/keystroke from a stray HID report after the
-            // user disabled the integration; onConnectionChange can still
-            // issue a real hardware write via connectionChanged() (which
-            // resets lighting state and repaints it).
-            transport.onLinkError = guarded { _, message in
-                Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
-            }
-            transport.onReport = guarded { worker, report in
-                worker.consume(report)
-            }
-            transport.onConnectionChange = guarded { [weak transport] worker, connected in
-                worker.connectionChanged(connected)
+            transport.onReport = { [weak self] report in self?.consume(report) }
+            transport.onConnectionChange = { [weak self, weak transport] connected in
+                self?.connectionChanged(connected)
                 let identity = transport?.currentDeviceIdentity
                 Task { @MainActor in
                     if connected {
@@ -508,11 +432,7 @@ private final class Worker: @unchecked Sendable {
             } catch {
                 let message = error.localizedDescription
                 NSLog("rai: Codex Micro monitoring failed: \(message)")
-                // Same race as above: stop() could have landed while this
-                // call was in flight.
-                if !lock.withLock({ stopped }) {
-                    Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
-                }
+                Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
                 return
             }
             queued.forEach { $0() }
@@ -556,11 +476,6 @@ private final class Worker: @unchecked Sendable {
             for report in try MicroFraming.encode(request.payload) {
                 try transport.send(report: report)
             }
-        } catch MicroTransportError.notOpen {
-            // The link went down between our `connected` check and the send —
-            // a routine unplug/helper-restart race, not an error. The detach
-            // callback is already in flight, and lighting repaints from a
-            // fresh baseline on the next attach.
         } catch {
             let message = error.localizedDescription
             NSLog("rai: Codex Micro lighting update failed: \(message)")

@@ -30,14 +30,6 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
 [ -f Resources/Rai.icns ] && cp Resources/Rai.icns "$STAGE/Contents/Resources/Rai.icns"
 
-# Ship the Codex Micro privileged helper and its installer with the app, so a
-# cask install (no source checkout) can still run
-# `sudo /Applications/Rai.app/Contents/Resources/microd-install.sh` on
-# macOS 26.6+, where the pad needs the root helper.
-[ -x "${BIN_DIR}/rai-microd" ] || { echo "error: ${BIN_DIR}/rai-microd not built"; exit 1; }
-cp "${BIN_DIR}/rai-microd" "$STAGE/Contents/MacOS/rai-microd"
-cp scripts/microd-install.sh "$STAGE/Contents/Resources/microd-install.sh"
-
 # SwiftPM resource bundles (e.g. SwiftTerm_SwiftTerm.bundle, which carries
 # Shaders.metal). Without these in Contents/Resources, SwiftTerm's Metal
 # renderer cannot find its shader source and falls back to CoreGraphics at
@@ -89,48 +81,28 @@ PLIST
 # Monitoring for the Codex Micro pad) persist across rebuilds. Falls back to
 # ad-hoc where the identity isn't present (CI, other machines).
 SIGN_ID="${RAI_SIGN_IDENTITY:-rai-dev-signing}"
-security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID" \
-  || SIGN_ID="-"
-
-# The ONLY place that pattern-matches $SIGN_ID into a signing tier — both
-# sign_path() and the build-log line below switch on this plain string
-# instead of each re-matching the glob, so the two can no longer drift out
-# of sync with each other (they did, briefly: a prior version of this script
-# printed the tier via its own separate case statement).
-case "$SIGN_ID" in
-  "-") SIGN_KIND="adhoc" ;;
-  "Developer ID Application"*) SIGN_KIND="developer-id" ;;
-  *) SIGN_KIND="local" ;;
-esac
-
-sign_path() {
-  if [ "$SIGN_KIND" = "developer-id" ]; then
-    # Notarization rejects anything without a hardened runtime and a secure
-    # timestamp, so a Developer ID build must have both — no silent fallback
-    # to an unstamped signature, or the release ships unnotarizable.
-    codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$1"
-  else
-    # Local/ad-hoc identity: skip both. The timestamp server needs network,
-    # and the hardened runtime only matters for distribution.
-    codesign --force --sign "$SIGN_ID" --timestamp=none "$1" >/dev/null 2>&1 || \
-      codesign --force --sign "$SIGN_ID" "$1"
-  fi
-}
-
-# Nested standalone binaries are not covered by the bundle signature — sign
-# inside-out (every Contents/MacOS binary, then the bundle). Only covers
-# Contents/MacOS: a future Frameworks/XPCServices/embedded .app needs its own
-# codesign call added here too — this loop does not walk those locations.
-case "$SIGN_KIND" in
-  adhoc) echo "==> ad-hoc sign" ;;
-  developer-id) echo "==> sign ($SIGN_ID) + hardened runtime" ;;
-  local) echo "==> sign ($SIGN_ID)" ;;
-esac
-for nested in "$STAGE"/Contents/MacOS/*; do
-  [ "$(basename "$nested")" = "$BIN_NAME" ] && continue
-  sign_path "$nested"
-done
-sign_path "$STAGE"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  case "$SIGN_ID" in
+    "Developer ID Application"*)
+      # Notarization rejects anything without a hardened runtime and a secure
+      # timestamp, so a Developer ID build must have both — no silent fallback
+      # to an unstamped signature, or the release ships unnotarizable.
+      echo "==> sign ($SIGN_ID) + hardened runtime"
+      codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$STAGE"
+      ;;
+    *)
+      # Local dev identity: skip both. The timestamp server needs network, and
+      # the hardened runtime only matters for distribution.
+      echo "==> sign ($SIGN_ID)"
+      codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE" >/dev/null 2>&1 || \
+        codesign --force --sign "$SIGN_ID" "$STAGE"
+      ;;
+  esac
+else
+  echo "==> ad-hoc sign"
+  codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \
+    codesign --force --sign - "$STAGE"
+fi
 
 if [ -n "${RAI_APP_DEST:-}" ]; then
   DEST="$RAI_APP_DEST"; mkdir -p "$DEST"

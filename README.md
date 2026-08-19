@@ -58,13 +58,6 @@ terminal widget**.
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
   that hands screenshots straight to Claude Code.
 - **Settings** for the herdr server, appearance, plugins, and integrations.
-- **Codex Micro macropad** (opt-in, Settings → Codex Micro) — the six keys
-  hold your agents with status-colored LEDs, the dial scrolls through every
-  agent, the joystick moves pane focus. macOS 26.6 blocks raw HID access to
-  the pad for non-root apps, so on 26.6+ install the bundled privileged
-  helper: `sudo /Applications/Rai.app/Contents/Resources/microd-install.sh`
-  (from a checkout: `swift build -c release --product rai-microd`, then
-  `sudo scripts/microd-install.sh`; remove with `--uninstall`).
 - **Rai Remote, an iPhone companion** — the whole herd in your pocket. See
   below.
 
@@ -214,10 +207,8 @@ poc/herdr_client.py send <pane_id> "echo hi\n"
 Sources/RaiApp     SwiftUI/AppKit app — views, terminal panes, settings, commands
 Sources/RaiCore    HerdrClient (socket RPC + event stream), model types, fuzzy match
 Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
-Sources/RaiMicroD  rai-microd — root helper serving the Codex Micro on macOS 26.6+
 Tests/RaiCoreTests unit tests
 scripts/bundle.sh  builds and installs Rai.app
-scripts/microd-install.sh  installs rai-microd as a launchd daemon (sudo)
 poc/               reference Python herdr socket client
 ios/               Rai Remote — the iPhone companion (xcodegen project)
 docs/ios.md        iOS companion app — build, run on device, pairing

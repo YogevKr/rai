@@ -12,7 +12,6 @@ let package = Package(
         .library(name: "RaiCore", targets: ["RaiCore"]),
         .executable(name: "rai", targets: ["RaiApp"]),
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
-        .executable(name: "rai-microd", targets: ["RaiMicroD"]),
         .executable(name: "rai-bench", targets: ["RaiBench"]),
     ],
     dependencies: [
@@ -41,14 +40,6 @@ let package = Package(
         ),
         .executableTarget(
             name: "RaiProbe",
-            dependencies: ["RaiCore"]
-        ),
-        // Privileged Codex Micro helper (root launchd daemon). macOS 26.6
-        // blocks raw HID on keyboard-class devices for non-root processes;
-        // this daemon owns the pad link and serves it to rai over a
-        // uid-restricted unix socket. Installed by scripts/microd-install.sh.
-        .executableTarget(
-            name: "RaiMicroD",
             dependencies: ["RaiCore"]
         ),
         // Renderer A/B harness. Not shipped in the app bundle.
