@@ -109,12 +109,13 @@ final class MicroController {
     // not the wispr-flow:// URL (which foregrounds Wispr's window and drops the
     // transcript into Wispr's scratchpad instead of rai's focused pane). rai
     // holds this chord while the mic key is held; it must match exactly what
-    // Wispr's push-to-talk is bound to (read from Wispr's config). Currently
-    // Control+Option — a modifier-only chord, so there is no trigger key.
+    // Wispr's push-to-talk is bound to (its Settings say "Hold ⌃ Ctrl and
+    // speak"). Wispr matches the chord exactly: any extra modifier held with
+    // it is a different chord and is silently ignored. Currently Control — a
+    // modifier-only chord, so there is no trigger key.
     static let wisprShortcutKey: CGKeyCode? = nil
     static let wisprShortcutModifiers: [(key: CGKeyCode, flag: CGEventFlags)] = [
-        (0x3B, .maskControl),   // Control
-        (0x3A, .maskAlternate), // Option
+        (0x3B, .maskControl)  // Control
     ]
 
     private weak var model: RaiModel?
@@ -259,8 +260,8 @@ final class MicroController {
     /// Holds (or releases) Wispr Flow's push-to-talk chord so its dictation is
     /// captured into rai's focused pane. rai is already frontmost (pulled up on
     /// the key press), and posting a global chord — rather than opening the
-    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus. Bind
-    /// Wispr's push-to-talk to the same chord (Control-Option-Semicolon).
+    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus. Keep
+    /// `wisprShortcutModifiers` in sync with Wispr's push-to-talk setting.
     private func setWisprShortcut(down: Bool) {
         guard ensureAccessibilityTrusted() else { return }
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
