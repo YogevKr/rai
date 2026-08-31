@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Combine
 import Foundation
 import RaiCore
@@ -93,8 +92,8 @@ enum MicroControllerDecisions {
         guard let (control, state) = controlAndState(for: event) else { return nil }
         let action = bindings[control]
         // Most bindings fire on their press edge only. Wispr Flow is push-to-
-        // talk: it holds its shortcut down for as long as the mic key is held,
-        // so let the release edge through too.
+        // talk: dictation runs for as long as the mic key is held, so let the
+        // release edge through too.
         guard state == .press || action == .wisprFlow else { return nil }
         return .action(action, state: state)
     }
@@ -105,22 +104,18 @@ enum MicroControllerDecisions {
 @MainActor
 final class MicroController {
     static let enabledDefaultsKey = "codexMicroEnabled"
-    // Wispr Flow dictation is triggered by SIMULATING its push-to-talk chord,
-    // not the wispr-flow:// URL (which foregrounds Wispr's window and drops the
-    // transcript into Wispr's scratchpad instead of rai's focused pane). rai
-    // holds this chord while the mic key is held; it must match exactly what
-    // Wispr's push-to-talk is bound to (its Settings say "Hold ⌃ Ctrl and
-    // speak"). Wispr matches the chord exactly: any extra modifier held with
-    // it is a different chord and is silently ignored. Currently Control — a
-    // modifier-only chord, so there is no trigger key.
-    static let wisprShortcutKey: CGKeyCode? = nil
-    static let wisprShortcutModifiers: [(key: CGKeyCode, flag: CGEventFlags)] = [
-        (0x3B, .maskControl)  // Control
-    ]
+    // Wispr Flow dictation is triggered by its hands-free deep links, NOT by
+    // synthesizing its push-to-talk chord: Wispr's event tap ignores synthetic
+    // keyboard events (verified 2026-08-31 — posted chords traverse the tap
+    // chain and never trigger), so CGEvent posting cannot start dictation.
+    // These two links are handled by Wispr before its show-the-Hub-window
+    // branch, so they steal no focus; the transcript lands in the frontmost
+    // app's focused field, which is why perform() activates rai on the press.
+    static let wisprStartURL = URL(string: "wispr-flow://start-hands-free")!
+    static let wisprStopURL = URL(string: "wispr-flow://stop-hands-free")!
 
     private weak var model: RaiModel?
     private var worker: Worker?
-    private var wisprAccessibilityLogged = false
     private var bindingsObserver: AnyCancellable?
 
     init(model: RaiModel) {
@@ -257,68 +252,24 @@ final class MicroController {
         }
     }
 
-    /// Holds (or releases) Wispr Flow's push-to-talk chord so its dictation is
-    /// captured into rai's focused pane. rai is already frontmost (pulled up on
-    /// the key press), and posting a global chord — rather than opening the
-    /// wispr-flow:// URL — keeps Wispr's own window from stealing focus. Keep
-    /// `wisprShortcutModifiers` in sync with Wispr's push-to-talk setting.
+    /// Starts (or stops) Wispr Flow dictation via its hands-free deep links so
+    /// the transcript is captured into rai's focused pane. rai is already
+    /// frontmost (pulled up on the key press). Held mic key = one hands-free
+    /// session: start on press, stop on release.
     private func setWisprShortcut(down: Bool) {
-        guard ensureAccessibilityTrusted() else { return }
-        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
-
-        func post(_ key: CGKeyCode, keyDown: Bool, flags: CGEventFlags) {
-            guard let event = CGEvent(
-                keyboardEventSource: source, virtualKey: key, keyDown: keyDown
-            ) else { return }
-            event.flags = flags
-            event.post(tap: .cghidEventTap)
-        }
-
-        let modifiers = Self.wisprShortcutModifiers
-        if down {
-            // Press the modifiers (accumulating flags), then the trigger key (if
-            // any) — and hold.
-            var flags: CGEventFlags = []
-            for modifier in modifiers {
-                flags.insert(modifier.flag)
-                post(modifier.key, keyDown: true, flags: flags)
-            }
-            if let key = Self.wisprShortcutKey {
-                post(key, keyDown: true, flags: flags)
-            }
-        } else {
-            // Release the trigger key (if any), then the modifiers in reverse.
-            var flags: CGEventFlags = modifiers.reduce(into: []) { $0.insert($1.flag) }
-            if let key = Self.wisprShortcutKey {
-                post(key, keyDown: false, flags: flags)
-            }
-            for modifier in modifiers.reversed() {
-                flags.remove(modifier.flag)
-                post(modifier.key, keyDown: false, flags: flags)
+        let url = down ? Self.wisprStartURL : Self.wisprStopURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.open(url, configuration: configuration) { _, error in
+            guard let error else { return }
+            NSLog("rai: Wispr Flow deep link failed: \(error.localizedDescription)")
+            Task { @MainActor in
+                MicroStatusCenter.shared.recordError(
+                    "Wispr Flow deep link failed — is Wispr Flow installed? "
+                        + "(\(error.localizedDescription))"
+                )
             }
         }
-    }
-
-    /// True when rai may post keyboard events other apps receive. When false it
-    /// shows the Accessibility prompt once and surfaces guidance in Settings —
-    /// posting to `.cghidEventTap` is silently dropped without the grant.
-    private func ensureAccessibilityTrusted() -> Bool {
-        if AXIsProcessTrusted() { return true }
-        // `kAXTrustedCheckOptionPrompt` imports inconsistently (Unmanaged vs
-        // CFString) across SDKs; its value is the literal below.
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        if !wisprAccessibilityLogged {
-            NSLog("rai: Wispr Flow needs Accessibility permission to send its shortcut")
-            wisprAccessibilityLogged = true
-        }
-        Task { @MainActor in
-            MicroStatusCenter.shared.recordError(
-                "Grant rai Accessibility (System Settings → Privacy & Security) "
-                    + "to send the Wispr Flow shortcut"
-            )
-        }
-        return false
     }
 }
 
