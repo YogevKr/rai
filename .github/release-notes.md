@@ -2,10 +2,13 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Tab labels no longer show spinner circles either.** v0.1.38 stripped
-  Claude Code's half-circle spinner glyphs (◐ ◓ ◑ ◒) from pane titles, but
-  herdr also freezes the glyph into auto-generated tab labels. Those labels
-  now get the same treatment.
+- **The Codex Micro mic key dictates again.** Wispr Flow's event tap ignores
+  synthetic keyboard events, so the old approach — synthesizing Wispr's
+  push-to-talk chord while the mic key is held — silently stopped working.
+  The mic key now drives Wispr through its own deep links instead:
+  `start-hands-free` on press, `stop-hands-free` on release. Hold the key,
+  speak, release; the transcript lands in the focused pane. No Accessibility
+  permission needed for this anymore.
 
 ### Install
 
