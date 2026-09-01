@@ -4,8 +4,9 @@ public extension SessionSnapshot {
     /// A blank or numeric tab label carries no useful title. Prefer the same
     /// terminal/agent fallbacks used by the sidebar and command palette.
     func displayLabel(for tab: HerdrTab) -> String {
-        let trimmed = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, Int(trimmed) == nil { return trimmed }
+        if tab.hasUsefulLabel {
+            return tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         let tabPanes = panes.filter { $0.tabID == tab.tabID }
         if let title = tabPanes.compactMap(\.terminalTitleStripped)
@@ -16,7 +17,7 @@ public extension SessionSnapshot {
             .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
             return agent
         }
-        return trimmed.isEmpty ? "shell" : trimmed
+        return "shell"
     }
 
     /// Pane-first naming for notifications and pane chrome.

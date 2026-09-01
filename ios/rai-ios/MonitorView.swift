@@ -836,7 +836,7 @@ private struct NightAgentRow: View {
     /// The task name: the tab's label (herdr names tabs after the task),
     /// falling back to the terminal title, only then the agent binary.
     private var title: String {
-        if !item.tab.label.isEmpty { return item.tab.label }
+        if item.tab.hasUsefulLabel { return item.tab.label }
         return item.pane.terminalTitleStripped ?? item.pane.agent ?? "Pane"
     }
 
@@ -905,7 +905,7 @@ private struct TabGroup: View {
     let showBackgroundWork: (BackgroundWorkTarget) -> Void
 
     private var label: String {
-        tab.label.isEmpty ? "Tab \(tab.number)" : tab.label
+        tab.hasUsefulLabel ? tab.label : "Tab \(tab.number)"
     }
 
     var body: some View {
@@ -917,9 +917,9 @@ private struct TabGroup: View {
                 HStack(spacing: 10) {
                     StatusGlowDot(status: pane.agentStatus)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(tab.label.isEmpty
-                            ? (pane.terminalTitleStripped ?? pane.agent ?? "Tab \(tab.number)")
-                            : tab.label
+                        Text(tab.hasUsefulLabel
+                            ? tab.label
+                            : (pane.terminalTitleStripped ?? pane.agent ?? "Tab \(tab.number)")
                         )
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Night.text)

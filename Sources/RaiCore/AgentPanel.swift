@@ -135,8 +135,7 @@ public enum AgentPanel {
     /// herdr auto-names a tab with its number; such a label is noise next to the
     /// space it already sits in.
     private static func isNamed(_ tab: HerdrTab) -> Bool {
-        let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !label.isEmpty && Int(label) == nil
+        tab.hasUsefulLabel
     }
 
     private static func displayLabel(
@@ -144,7 +143,7 @@ public enum AgentPanel {
         agent: HerdrAgent
     ) -> String {
         let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !label.isEmpty, Int(label) == nil { return label }
+        if tab.hasUsefulLabel { return label }
         if let title = agent.terminalTitleStripped?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !title.isEmpty {

@@ -85,6 +85,14 @@ extension HerdrTab {
         paneCount = try container.decode(Int.self, forKey: .paneCount)
         agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
     }
+
+    /// A blank label, or one that's just herdr's own auto-assigned tab
+    /// number (e.g. "3"), carries no real title — display code on every
+    /// platform must fall back past it instead of showing the digits.
+    public var hasUsefulLabel: Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && Int(trimmed) == nil
+    }
 }
 
 /// Scrollback position of a pane, straight from herdr's snapshot: how far the
