@@ -779,7 +779,7 @@ private struct NightAgentRow: View {
                         .foregroundStyle(Night.text)
                         .lineLimit(1)
                     HStack(spacing: 5) {
-                        if let repo = Night.repoName(item.pane.foregroundCWD ?? item.pane.cwd) {
+                        if let repo = Night.repoName(item.pane.cwd) {
                             Text(repo)
                                 .foregroundStyle(Night.repoBlue)
                         }
@@ -924,7 +924,7 @@ private struct TabGroup: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Night.text)
                         .lineLimit(1)
-                        Text(Night.repoName(pane.foregroundCWD ?? pane.cwd) ?? "")
+                        Text(Night.repoName(pane.cwd) ?? "")
                             .font(.caption.monospaced())
                             .foregroundStyle(Night.repoBlue)
                             .lineLimit(1)
@@ -1014,7 +1014,7 @@ private struct PaneRow: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Night.text)
                     .lineLimit(1)
-                Text(Night.repoName(pane.foregroundCWD ?? pane.cwd) ?? "")
+                Text(Night.repoName(pane.cwd) ?? "")
                     .font(.caption.monospaced())
                     .foregroundStyle(Night.repoBlue)
                     .lineLimit(1)
