@@ -51,7 +51,8 @@ let package = Package(
         ),
         .testTarget(
             name: "RaiCoreTests",
-            dependencies: ["RaiCore"]
+            dependencies: ["RaiCore"],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "RaiAppTests",

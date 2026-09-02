@@ -3,6 +3,23 @@ import Network
 import RaiCore
 import SystemConfiguration
 
+struct PushBadgeCounter {
+    private(set) var count = 0
+    private var collapseKeys: Set<String> = []
+
+    mutating func badge(for collapseKey: String) -> Int {
+        if collapseKeys.insert(collapseKey).inserted {
+            count += 1
+        }
+        return count
+    }
+
+    mutating func reset() {
+        count = 0
+        collapseKeys.removeAll()
+    }
+}
+
 /// Token-authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
@@ -110,8 +127,14 @@ final class RaiBridgeServer: ObservableObject {
     /// so the app icon shows how many notifications await. Reset when a
     /// client authenticates — opening the app reconnects the bridge, which
     /// is the closest signal we have for "the user looked".
-    private var outstandingPushCount = 0
+    private var pushBadgeCounter = PushBadgeCounter()
     private let apnsPusher = APNsPusher()
+    private struct PendingPushDelivery {
+        let revision: UInt64
+        let task: Task<[String], Never>
+    }
+    private var nextPushDeliveryRevision: UInt64 = 0
+    private var pendingPushDeliveries: [String: PendingPushDelivery] = [:]
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
 
@@ -325,11 +348,15 @@ final class RaiBridgeServer: ObservableObject {
             return
         }
         let pusher = apnsPusher
-        outstandingPushCount += 1
-        let badge = outstandingPushCount
+        let collapseKey = "\(model.connectionIDForObservers.uuidString):\(paneID)"
+        let badge = pushBadgeCounter.badge(for: collapseKey)
+        nextPushDeliveryRevision &+= 1
+        let deliveryRevision = nextPushDeliveryRevision
+        let previousDelivery = pendingPushDeliveries[collapseKey]?.task
 
         let delivery = Task.detached {
-            await withTaskGroup(of: String?.self, returning: [String].self) { group in
+            if let previousDelivery { _ = await previousDelivery.value }
+            return await withTaskGroup(of: String?.self, returning: [String].self) { group in
                 for registration in registrations {
                     group.addTask {
                         let result = await pusher.send(
@@ -340,6 +367,7 @@ final class RaiBridgeServer: ObservableObject {
                             subtitle: subtitle,
                             body: body,
                             paneID: paneID,
+                            collapseKey: collapseKey,
                             workspaceID: workspaceID,
                             workspace: workspace,
                             category: requiresAttention ? "agent-attention" : nil,
@@ -355,9 +383,16 @@ final class RaiBridgeServer: ObservableObject {
                 return deadTokens
             }
         }
+        pendingPushDeliveries[collapseKey] = PendingPushDelivery(
+            revision: deliveryRevision,
+            task: delivery
+        )
         Task { [weak self] in
             for deadToken in await delivery.value {
                 self?.removePushRegistration(deviceToken: deadToken)
+            }
+            if self?.pendingPushDeliveries[collapseKey]?.revision == deliveryRevision {
+                self?.pendingPushDeliveries[collapseKey] = nil
             }
         }
     }
@@ -439,7 +474,7 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             client.isAuthenticated = true
-            outstandingPushCount = 0
+            pushBadgeCounter.reset()
             client.info = info
             updateConnectedDeviceCount()
             send(
@@ -456,7 +491,10 @@ final class RaiBridgeServer: ObservableObject {
         case .subscribe:
             client.isSubscribed = true
             if let snapshot = model.snapshot {
-                send(.snapshot(snapshot), to: client)
+                send(
+                    .snapshot(snapshot.addingBeacons(model.beaconsForBridge)),
+                    to: client
+                )
             } else {
                 send(.error(message: "Herdr is not connected."), to: client)
             }

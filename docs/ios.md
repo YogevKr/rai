@@ -70,6 +70,12 @@ The same `.p8` authentication key serves both APNs sandbox and production. The
 environment attached to each device token determines which APNs host the Mac
 uses. The private key is stored in the Mac's Keychain, not in preferences.
 
+Rai can use Claude Code hooks for accurate push text. Install them from
+**Settings → Integrations → Install Claude Code hooks** on the Mac.
+
+The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
+model decodes it. A later iOS task will add structured prompt controls.
+
 ## 4. Pair
 
 Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:

@@ -2,12 +2,48 @@ import RaiCore
 import Foundation
 import SwiftUI
 
+enum AgentBeaconLifecycle {
+    static func keepsActiveBeacon(
+        _ beacon: AgentBeacon,
+        previousStatus: AgentStatus?,
+        newStatus: AgentStatus?
+    ) -> Bool {
+        guard let newStatus else { return false }
+        if newStatus == .done, previousStatus != .done {
+            return false
+        }
+        if previousStatus == .blocked,
+           newStatus != .blocked,
+           beacon.pendingSummary != nil {
+            return false
+        }
+        return true
+    }
+
+    static func keepsCompletion(
+        completionTimestamp: TimeInterval,
+        presentedTimestamp: TimeInterval?,
+        latestWorkTimestamp: TimeInterval?
+    ) -> Bool {
+        guard let presentedTimestamp else { return true }
+        guard let latestWorkTimestamp,
+              latestWorkTimestamp > presentedTimestamp else { return false }
+        return completionTimestamp > latestWorkTimestamp
+    }
+}
+
 @MainActor
 protocol RaiSnapshotObserver: AnyObject {
     func raiModel(
         _ model: RaiModel,
         didRefresh snapshot: SessionSnapshot,
         transitions: [PaneStatusTransition]
+    )
+
+    func raiModel(
+        _ model: RaiModel,
+        didReceive beacon: AgentBeacon,
+        forPane paneID: String
     )
 }
 
@@ -288,6 +324,10 @@ final class RaiModel: ObservableObject {
     }
 
     @Published private(set) var snapshot: SessionSnapshot?
+    @Published private(set) var agentBeacons: [String: AgentBeacon] = [:]
+    private var completionBeacons: [String: AgentBeacon] = [:]
+    private var completionPresentationTimestamps: [String: TimeInterval] = [:]
+    private var latestBeaconWorkTimestamps: [String: TimeInterval] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published var selectedPaneID: String?
     @Published var draggedPaneID: String?
@@ -508,6 +548,150 @@ final class RaiModel: ObservableObject {
 
     var blockedAgentCount: Int {
         snapshot?.panes.lazy.filter { $0.agentStatus == .blocked }.count ?? 0
+    }
+
+    var connectionIDForObservers: UUID { connectionGeneration }
+
+    var beaconsForBridge: [String: AgentBeacon] {
+        guard let snapshot else { return agentBeacons }
+        var result = agentBeacons
+        for pane in snapshot.panes where pane.agentStatus == .done {
+            if let completion = completionBeacons[pane.paneID] {
+                result[pane.paneID] = completion
+            }
+        }
+        return result
+    }
+
+    func beacon(forPane paneID: String) -> AgentBeacon? {
+        if snapshot?.panes.first(where: { $0.paneID == paneID })?.agentStatus == .done,
+           let completion = completionBeacons[paneID] {
+            return completion
+        }
+        return agentBeacons[paneID]
+    }
+
+    func pendingBeaconSummary(forTab tabID: String) -> String? {
+        snapshot?.panes.lazy
+            .filter { $0.tabID == tabID && $0.agentStatus == .blocked }
+            .compactMap { self.agentBeacons[$0.paneID]?.pendingSummary }
+            .first
+    }
+
+    func receiveAgentBeacon(_ incoming: AgentBeacon) async {
+        let generation = connectionGeneration
+        guard let paneID = await correlatedPaneID(for: incoming) else { return }
+        guard generation == connectionGeneration else { return }
+        let status = snapshot?.panes.first(where: { $0.paneID == paneID })?.agentStatus
+        let previous = agentBeacons[paneID]
+        if let completion = completionBeacons[paneID],
+           incoming.timestamp < completion.timestamp {
+            return
+        }
+        var beacon = incoming.inheritingTool(from: previous)
+        if let previous, previous.timestamp > beacon.timestamp {
+            let merged = previous.inheritingTool(from: incoming)
+            guard merged != previous else { return }
+            beacon = merged
+        }
+        if status == .blocked,
+           beacon.pendingSummary == nil,
+           previous?.pendingSummary != nil,
+           beacon.event != "PreToolUse",
+           beacon.event != "UserPromptSubmit",
+           beacon.event != "SessionStart" {
+            if beacon.event == "Stop",
+               (completionBeacons[paneID]?.timestamp ?? -.infinity) < beacon.timestamp {
+                completionBeacons[paneID] = beacon
+            }
+            return
+        }
+        if beacon.event != "Stop",
+           (completionBeacons[paneID]?.timestamp ?? -.infinity) <= beacon.timestamp {
+            completionBeacons.removeValue(forKey: paneID)
+        }
+        if beacon.event == "SessionStart"
+            || beacon.event == "UserPromptSubmit"
+            || beacon.event == "PreToolUse"
+            || beacon.event == "PermissionRequest" {
+            latestBeaconWorkTimestamps[paneID] = max(
+                latestBeaconWorkTimestamps[paneID] ?? -.infinity,
+                beacon.timestamp
+            )
+        }
+        agentBeacons[paneID] = beacon
+        snapshotObserver?.raiModel(self, didReceive: beacon, forPane: paneID)
+        if beacon.event == "Stop" {
+            if beacon.completionSummary != nil {
+                completionBeacons[paneID] = beacon
+            }
+            agentBeacons.removeValue(forKey: paneID)
+        }
+        if let snapshot {
+            bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+        }
+    }
+
+    private func correlatedPaneID(for beacon: AgentBeacon) async -> String? {
+        guard let snapshot else { return nil }
+        if let socketPath = beacon.herdrSocketPath,
+           !Self.pathsMatch(socketPath, activeSocketPath) {
+            return nil
+        }
+        let baseCandidates = snapshot.panes.map {
+            BeaconPaneCandidate(
+                paneID: $0.paneID,
+                cwd: $0.foregroundCWD ?? $0.cwd
+            )
+        }
+        if let paneID = beacon.paneID,
+           baseCandidates.contains(where: { $0.paneID == paneID }) {
+            return paneID
+        }
+        guard let parentPID = beacon.parentPID else {
+            return AgentBeaconCorrelator.paneID(
+                for: beacon,
+                candidates: baseCandidates
+            )
+        }
+
+        let matchingCWD = baseCandidates.filter {
+            AgentBeaconCorrelator.paneID(
+                for: beacon,
+                candidates: [$0]
+            ) != nil
+        }
+        let candidates = matchingCWD.isEmpty ? baseCandidates : matchingCWD
+        let processCandidates = await withTaskGroup(
+            of: BeaconPaneCandidate.self,
+            returning: [BeaconPaneCandidate].self
+        ) { group in
+            for candidate in candidates {
+                group.addTask { [weak self] in
+                    guard let info = await self?.processInfo(
+                        for: candidate.paneID,
+                        timeout: .seconds(1)
+                    ) else { return candidate }
+                    return BeaconPaneCandidate(
+                        paneID: candidate.paneID,
+                        cwd: candidate.cwd,
+                        shellPID: info.shellPID,
+                        processIDs: Set(info.foregroundProcesses.map(\.pid))
+                    )
+                }
+            }
+            var result: [BeaconPaneCandidate] = []
+            for await candidate in group { result.append(candidate) }
+            return result
+        }
+        let parentChain = await Task.detached {
+            ProcessAncestry.chain(startingAt: parentPID)
+        }.value
+        return AgentBeaconCorrelator.paneID(
+            for: beacon,
+            candidates: processCandidates,
+            parentChain: parentChain
+        )
     }
 
     var selectedTabID: String? {
@@ -1002,6 +1186,10 @@ final class RaiModel: ObservableObject {
             remoteTarget = nil
         }
         snapshot = nil
+        agentBeacons = [:]
+        completionBeacons = [:]
+        completionPresentationTimestamps = [:]
+        latestBeaconWorkTimestamps = [:]
         selectedPaneID = nil
         draggedPaneID = nil
         dragRatios.removeAll()
@@ -2634,7 +2822,8 @@ final class RaiModel: ObservableObject {
                     ($0.paneID, $0.agentStatus)
                 }
             )
-            let transitions = lastObservedPaneStatuses.map {
+            let previousStatuses = lastObservedPaneStatuses
+            let transitions = previousStatuses.map {
                 StatusTransitions.detect(from: $0, to: newStatuses)
             } ?? []
             lastObservedPaneStatuses = newStatuses
@@ -2685,7 +2874,62 @@ final class RaiModel: ObservableObject {
                 didRefresh: newSnapshot,
                 transitions: transitions
             )
-            bridgeServer.relay(snapshot: newSnapshot)
+            var doneCompletions: [String: AgentBeacon] = [:]
+            for transition in transitions where transition.newStatus == .done {
+                if let completion = completionBeacons[transition.paneID]
+                    ?? agentBeacons[transition.paneID],
+                   completion.completionSummary != nil {
+                    doneCompletions[transition.paneID] = completion
+                }
+            }
+            let livePaneIDs = Set(newSnapshot.panes.map(\.paneID))
+            agentBeacons = agentBeacons.filter { livePaneIDs.contains($0.key) }
+            completionBeacons = completionBeacons.filter { livePaneIDs.contains($0.key) }
+            completionPresentationTimestamps = completionPresentationTimestamps.filter {
+                livePaneIDs.contains($0.key)
+            }
+            latestBeaconWorkTimestamps = latestBeaconWorkTimestamps.filter {
+                livePaneIDs.contains($0.key)
+            }
+            if let previousStatuses {
+                agentBeacons = agentBeacons.filter { paneID, beacon in
+                    AgentBeaconLifecycle.keepsActiveBeacon(
+                        beacon,
+                        previousStatus: previousStatuses[paneID],
+                        newStatus: newStatuses[paneID]
+                    )
+                }
+            }
+            for transition in transitions where transition.newStatus == .done {
+                if let completion = doneCompletions[transition.paneID] {
+                    completionBeacons[transition.paneID] = completion
+                    completionPresentationTimestamps[transition.paneID] = completion.timestamp
+                } else {
+                    completionPresentationTimestamps.removeValue(forKey: transition.paneID)
+                }
+                agentBeacons.removeValue(forKey: transition.paneID)
+            }
+            if let previousStatuses {
+                for (paneID, oldStatus) in previousStatuses
+                    where oldStatus == .done && newStatuses[paneID] != .done {
+                    if let completion = completionBeacons[paneID],
+                       !AgentBeaconLifecycle.keepsCompletion(
+                           completionTimestamp: completion.timestamp,
+                           presentedTimestamp: completionPresentationTimestamps[paneID],
+                           latestWorkTimestamp: latestBeaconWorkTimestamps[paneID]
+                       ) {
+                        completionBeacons.removeValue(forKey: paneID)
+                    }
+                    completionPresentationTimestamps.removeValue(forKey: paneID)
+                }
+            }
+            var bridgeBeacons = agentBeacons
+            for pane in newSnapshot.panes where pane.agentStatus == .done {
+                if let completion = completionBeacons[pane.paneID] {
+                    bridgeBeacons[pane.paneID] = completion
+                }
+            }
+            bridgeServer.relay(snapshot: newSnapshot.addingBeacons(bridgeBeacons))
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)

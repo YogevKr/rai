@@ -48,15 +48,17 @@ draft take-over; per-pane display prefs.
    cheap. Carry two facts: Claude collapses pastes over ~400 chars into a
    `[Pasted text #N]` token (Collie ADR 0010), and Codex keeps only 1024
    chars of one send (`[Pasted Content N chars]`).
-2. **Agent hooks as the source of truth.** Collie installs Claude hooks so a
+2. **Agent hooks as the source of truth — LANDED on Mac (2026-09-02).** Rai
+   installs Claude hooks so a
    pane reports its name, status and session ref ("beacons"). Collie admits
    its push body cannot carry the question because parsing is client-side
    over the screen. rai can go further: a Claude Code `PermissionRequest` /
    `PreToolUse` hook posting tool name, tool input, `session_id` and
    `HERDR_PANE_ID` to the Mac gives the push a real body ("Run `bun run
    build` in ~/src/collie?") and gives AskUserQuestion its options as data.
-   Grid parsing stays as the fallback and as the race guard. Verify hook
-   payloads against the installed Claude Code before designing on them.
+   Grid parsing stays as the fallback and as the race guard. The Mac receiver,
+   notification bodies, bridge field, and sidebar text now ship. Structured
+   phone prompt controls remain in wave 2.
 3. **History from the transcript, not the screen.** Claude runs on the
    alternate screen, so the grid has no scrollback ring. Collie reads the
    agent's own JSONL transcript (`bridge/journal/`) and offers
@@ -133,7 +135,7 @@ Wave 1 — independent worktrees, one Codex job each:
    Settings → iPhone (items 6, 10).
 4. **offline-resilience** (iOS): cached last snapshot with "last seen",
    connection-cause diagnosis (items 7, 9 phone side).
-5. **hook-beacons** (Mac + hook script): Claude Code hook receiver, pane
+5. ✅ **hook-beacons** (Mac + hook script): Claude Code hook receiver, pane
    correlation via `HERDR_PANE_ID`, push body carries the question, beacon
    exposed over the bridge (item 2, Mac half).
 

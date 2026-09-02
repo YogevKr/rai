@@ -40,11 +40,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var notifiedBlockedPanes: Set<String> = []
     /// Phone pushes held while the user is active at the Mac, keyed by pane.
     private var heldPushes: [String: Task<Void, Never>] = [:]
+    private var activeNotificationStatuses: [String: AgentStatus] = [:]
+    private var pendingNotificationBodies: [String: String] = [:]
+    private var deliveredNotificationBodies: [String: String] = [:]
+    private var notificationConnectionID: UUID?
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
+    private var hookBeaconReceiver: HookBeaconReceiver?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: RaiApp.sharedModel)
+        startHookBeaconReceiver(model: RaiApp.sharedModel)
         installCloseRepeatGuard()
         installTerminalKeyMonitor()
         installTerminalScrollMonitor()
@@ -97,7 +103,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hookBeaconReceiver?.stop()
         microController?.stop()
+    }
+
+    private func startHookBeaconReceiver(model: RaiModel) {
+        let receiver = HookBeaconReceiver { [weak model] beacon in
+            Task { @MainActor in
+                await model?.receiveAgentBeacon(beacon)
+            }
+        }
+        do {
+            try receiver.start()
+            hookBeaconReceiver = receiver
+        } catch {
+            NSLog("rai: Claude hook receiver failed: %@", error.localizedDescription)
+        }
     }
 
     // macOS's window-restoration snapshotter re-captures the entire window
@@ -247,16 +268,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func postNotification(
         for transition: PaneStatusTransition,
         pane: Pane,
-        in snapshot: SessionSnapshot
+        in snapshot: SessionSnapshot,
+        body: String,
+        isUpdate: Bool = false
     ) {
         let content = UNMutableNotificationContent()
         content.title = snapshot.displayName(for: pane)
-        content.body = transition.newStatus == .blocked ? "Needs you" : "Finished"
+        content.body = body
         content.subtitle = snapshot.workspaceLabel(for: pane)
         let soundChoice = transition.newStatus == .blocked
             ? SettingsStore.shared.blockedNotificationSound
             : SettingsStore.shared.doneNotificationSound
-        content.sound = Self.notificationSound(for: soundChoice)
+        content.sound = isUpdate ? nil : Self.notificationSound(for: soundChoice)
         content.categoryIdentifier = transition.newStatus == .blocked
             ? Category.attention
             : Category.completion
@@ -301,9 +324,26 @@ extension AppDelegate: RaiSnapshotObserver {
         didRefresh snapshot: SessionSnapshot,
         transitions: [PaneStatusTransition]
     ) {
+        if notificationConnectionID != model.connectionIDForObservers {
+            clearAllNotificationState()
+            notificationConnectionID = model.connectionIDForObservers
+        }
         updateDockBadge(
             count: snapshot.panes.lazy.filter { $0.agentStatus == .blocked }.count
         )
+
+        let statuses = Dictionary(
+            uniqueKeysWithValues: snapshot.panes.map { ($0.paneID, $0.agentStatus) }
+        )
+        let staleNotificationPanes = activeNotificationStatuses.compactMap {
+            paneID, status in
+            statuses[paneID] != status || paneID == model.selectedPaneID
+                ? paneID
+                : nil
+        }
+        for paneID in staleNotificationPanes {
+            clearNotificationState(forPane: paneID)
+        }
 
         // Retract notifications the user has implicitly handled: the pane
         // they're looking at, and any pane that is no longer blocked (answered
@@ -332,6 +372,15 @@ extension AppDelegate: RaiSnapshotObserver {
             guard let pane = snapshot.panes.first(where: {
                 $0.paneID == transition.paneID
             }) else { continue }
+            activeNotificationStatuses[pane.paneID] = transition.newStatus
+            let beacon = model.beacon(forPane: pane.paneID)
+            let body = AgentNotificationBody.compose(
+                status: transition.newStatus,
+                beacon: beacon
+            )
+            let allowsRemoteActions = transition.newStatus == .blocked
+                && beacon == nil
+                && !ClaudeHooksInstaller.hasManagedHooks()
             if transition.newStatus == .done {
                 // herdr derives "done" from working→idle, so a session that
                 // paused to wait on a background shell/monitor reports done
@@ -341,11 +390,29 @@ extension AppDelegate: RaiSnapshotObserver {
                 Task { [weak self, weak model] in
                     guard let self, let model else { return }
                     let pending = await model.pendingBackgroundWork(forPane: pane.paneID)
-                    guard pending.isEmpty else { return }
-                    self.deliver(transition: transition, pane: pane, in: snapshot, model: model)
+                    guard pending.isEmpty else {
+                        self.clearNotificationState(forPane: pane.paneID)
+                        return
+                    }
+                    let currentBody = self.pendingNotificationBodies[pane.paneID] ?? body
+                    self.deliver(
+                        transition: transition,
+                        pane: pane,
+                        in: snapshot,
+                        model: model,
+                        body: currentBody,
+                        allowsRemoteActions: false
+                    )
                 }
             } else {
-                deliver(transition: transition, pane: pane, in: snapshot, model: model)
+                deliver(
+                    transition: transition,
+                    pane: pane,
+                    in: snapshot,
+                    model: model,
+                    body: body,
+                    allowsRemoteActions: allowsRemoteActions
+                )
             }
         }
     }
@@ -354,16 +421,27 @@ extension AppDelegate: RaiSnapshotObserver {
         transition: PaneStatusTransition,
         pane: Pane,
         in snapshot: SessionSnapshot,
-        model: RaiModel
+        model: RaiModel,
+        body: String,
+        allowsRemoteActions: Bool,
+        isUpdate: Bool = false
     ) {
         let title = snapshot.displayName(for: pane)
-        let body = transition.newStatus == .blocked ? "Needs you" : "Finished"
         let workspace = snapshot.workspaceLabel(for: pane)
         if transition.newStatus == .blocked {
             notifiedBlockedPanes.insert(pane.paneID)
         }
-        postNotification(for: transition, pane: pane, in: snapshot)
+        deliveredNotificationBodies[pane.paneID] = body
+        pendingNotificationBodies.removeValue(forKey: pane.paneID)
+        postNotification(
+            for: transition,
+            pane: pane,
+            in: snapshot,
+            body: body,
+            isUpdate: isUpdate
+        )
 
+        heldPushes.removeValue(forKey: pane.paneID)?.cancel()
         let sendPush = { [weak model] in
             model?.bridgeServer.sendPush(
                 title: title,
@@ -372,10 +450,9 @@ extension AppDelegate: RaiSnapshotObserver {
                 paneID: pane.paneID,
                 workspaceID: pane.workspaceID,
                 workspace: workspace,
-                requiresAttention: transition.newStatus == .blocked
+                requiresAttention: allowsRemoteActions
             )
         }
-        heldPushes.removeValue(forKey: pane.paneID)?.cancel()
         guard SettingsStore.shared.holdPushesWhileAtMac,
               UserPresence.idleSeconds < UserPresence.awayAfter else {
             sendPush()
@@ -410,5 +487,59 @@ extension AppDelegate: RaiSnapshotObserver {
                 }
             }
         }
+    }
+
+    func raiModel(
+        _ model: RaiModel,
+        didReceive beacon: AgentBeacon,
+        forPane paneID: String
+    ) {
+        guard !model.notificationsMuted,
+              paneID != model.selectedPaneID,
+              let snapshot = model.snapshot,
+              let pane = snapshot.panes.first(where: { $0.paneID == paneID }),
+              activeNotificationStatuses[paneID] == pane.agentStatus,
+              pane.agentStatus != .done || beacon.completionSummary != nil else { return }
+        let body = AgentNotificationBody.compose(
+            status: pane.agentStatus,
+            beacon: beacon
+        )
+        guard body != deliveredNotificationBodies[paneID] else { return }
+
+        pendingNotificationBodies[paneID] = body
+        guard deliveredNotificationBodies[paneID] != nil else { return }
+        deliver(
+            transition: PaneStatusTransition(
+                paneID: paneID,
+                newStatus: pane.agentStatus
+            ),
+            pane: pane,
+            in: snapshot,
+            model: model,
+            body: body,
+            allowsRemoteActions: false,
+            isUpdate: true
+        )
+    }
+
+    private func clearNotificationState(forPane paneID: String) {
+        activeNotificationStatuses.removeValue(forKey: paneID)
+        pendingNotificationBodies.removeValue(forKey: paneID)
+        deliveredNotificationBodies.removeValue(forKey: paneID)
+    }
+
+    private func clearAllNotificationState() {
+        let paneIDs = Set(activeNotificationStatuses.keys).union(notifiedBlockedPanes)
+        let identifiers = paneIDs.map { Self.notificationIdentifier(paneID: $0) }
+        if !identifiers.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
+        heldPushes.values.forEach { $0.cancel() }
+        heldPushes.removeAll()
+        activeNotificationStatuses.removeAll()
+        pendingNotificationBodies.removeAll()
+        deliveredNotificationBodies.removeAll()
+        notifiedBlockedPanes.removeAll()
     }
 }

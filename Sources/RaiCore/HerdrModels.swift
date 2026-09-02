@@ -338,6 +338,9 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let agentStatus: AgentStatus
     public let revision: UInt64
     public let scroll: PaneScroll?
+    /// Claude Code hook data added by Rai before a snapshot crosses the bridge.
+    /// Herdr snapshots and older Mac builds omit it.
+    public var beacon: AgentBeacon? = nil
 
     public var id: String { paneID }
 
@@ -346,7 +349,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
         case terminalID = "terminal_id"
         case workspaceID = "workspace_id"
         case tabID = "tab_id"
-        case focused, cwd, agent, revision, scroll
+        case focused, cwd, agent, revision, scroll, beacon
         case agentSession = "agent_session"
         case foregroundCWD = "foreground_cwd"
         case terminalTitle = "terminal_title"
@@ -384,6 +387,7 @@ extension Pane {
         agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
         revision = try container.decode(UInt64.self, forKey: .revision)
         scroll = try container.decodeIfPresent(PaneScroll.self, forKey: .scroll)
+        beacon = try container.decodeIfPresent(AgentBeacon.self, forKey: .beacon)
     }
 }
 
@@ -474,6 +478,28 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         case focusedWorkspaceID = "focused_workspace_id"
         case focusedTabID = "focused_tab_id"
         case focusedPaneID = "focused_pane_id"
+    }
+}
+
+public extension SessionSnapshot {
+    /// Returns a bridge copy with additive per-pane hook data.
+    func addingBeacons(_ beacons: [String: AgentBeacon]) -> SessionSnapshot {
+        var bridgePanes = panes
+        for index in bridgePanes.indices {
+            bridgePanes[index].beacon = beacons[bridgePanes[index].paneID]
+        }
+        return SessionSnapshot(
+            version: version,
+            protocol: `protocol`,
+            focusedWorkspaceID: focusedWorkspaceID,
+            focusedTabID: focusedTabID,
+            focusedPaneID: focusedPaneID,
+            workspaces: workspaces,
+            tabs: tabs,
+            panes: bridgePanes,
+            agents: agents,
+            layouts: layouts
+        )
     }
 }
 

@@ -46,3 +46,57 @@ final class APNsProviderJWTTests: XCTestCase {
         return Data(base64Encoded: base64)
     }
 }
+
+final class APNsDeliveryQueueTests: XCTestCase {
+    func testSerializesMatchingDeliveryKeys() async {
+        let queue = APNsDeliveryQueue<Int>()
+        let values = RecordedValues()
+        let firstStarted = expectation(description: "first delivery started")
+
+        let first = Task {
+            await queue.enqueue(key: "pane:device") {
+                firstStarted.fulfill()
+                try? await Task.sleep(for: .milliseconds(100))
+                await values.append(1)
+                return 1
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 1)
+        let second = Task {
+            await queue.enqueue(key: "pane:device") {
+                await values.append(2)
+                return 2
+            }
+        }
+
+        _ = await (first.value, second.value)
+
+        let recorded = await values.all()
+        XCTAssertEqual(recorded, [1, 2])
+    }
+}
+
+final class PushBadgeCounterTests: XCTestCase {
+    func testCountsEachCollapseKeyOnceUntilReset() {
+        var counter = PushBadgeCounter()
+
+        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
+        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
+        XCTAssertEqual(counter.badge(for: "connection:pane-2"), 2)
+
+        counter.reset()
+        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
+    }
+}
+
+private actor RecordedValues {
+    private var values: [Int] = []
+
+    func append(_ value: Int) {
+        values.append(value)
+    }
+
+    func all() -> [Int] {
+        values
+    }
+}

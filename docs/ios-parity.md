@@ -52,6 +52,10 @@ All additive, no version bump (old phones skip unknown message types):
   when a pane stops being blocked or is selected on the Mac (phone-side
   mirror of this retraction is a future nicety; APNs can't recall a
   delivered push without a service extension).
+- Snapshot pane objects now include an optional `beacon` from Claude Code hooks.
+  It carries bounded tool input, question text, and final assistant text.
+  The shared iOS model decodes it, but phone prompt controls remain in wave 2.
+  This field is additive, so bridge protocol version stays at 5.
 
 ## Backlog (value order)
 

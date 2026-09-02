@@ -1,6 +1,36 @@
 import CryptoKit
 import Foundation
 
+actor APNsDeliveryQueue<Value: Sendable> {
+    private struct Delivery {
+        let revision: UInt64
+        let task: Task<Value, Never>
+    }
+
+    private var nextRevision: UInt64 = 0
+    private var deliveries: [String: Delivery] = [:]
+
+    func enqueue(
+        key: String,
+        operation: @escaping @Sendable () async -> Value
+    ) async -> Value {
+        nextRevision &+= 1
+        let revision = nextRevision
+        let previous = deliveries[key]?.task
+        let task = Task {
+            if let previous { _ = await previous.value }
+            return await operation()
+        }
+        deliveries[key] = Delivery(revision: revision, task: task)
+
+        let value = await task.value
+        if deliveries[key]?.revision == revision {
+            deliveries[key] = nil
+        }
+        return value
+    }
+}
+
 struct APNsProviderJWT {
     static func make(
         configuration: APNsConfiguration,
@@ -69,6 +99,7 @@ actor APNsPusher {
 
     private var cachedJWT: CachedJWT?
     private let session: URLSession
+    private let deliveryQueue = APNsDeliveryQueue<Result>()
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -82,10 +113,43 @@ actor APNsPusher {
         subtitle: String?,
         body: String,
         paneID: String,
+        collapseKey: String,
         workspaceID: String,
         workspace: String?,
         category: String?,
         badge: Int? = nil
+    ) async -> Result {
+        await deliveryQueue.enqueue(key: "\(collapseKey):\(deviceToken)") { [self] in
+            await performSend(
+                configuration: configuration,
+                deviceToken: deviceToken,
+                environment: environment,
+                title: title,
+                subtitle: subtitle,
+                body: body,
+                paneID: paneID,
+                collapseKey: collapseKey,
+                workspaceID: workspaceID,
+                workspace: workspace,
+                category: category,
+                badge: badge
+            )
+        }
+    }
+
+    private func performSend(
+        configuration: APNsConfiguration,
+        deviceToken: String,
+        environment: String,
+        title: String,
+        subtitle: String?,
+        body: String,
+        paneID: String,
+        collapseKey: String,
+        workspaceID: String,
+        workspace: String?,
+        category: String?,
+        badge: Int?
     ) async -> Result {
         do {
             let jwt = try providerJWT(for: configuration)
@@ -102,6 +166,10 @@ actor APNsPusher {
             request.setValue("alert", forHTTPHeaderField: "apns-push-type")
             request.setValue("10", forHTTPHeaderField: "apns-priority")
             request.setValue("0", forHTTPHeaderField: "apns-expiration")
+            let collapseID = SHA256.hash(data: Data(collapseKey.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+            request.setValue(collapseID, forHTTPHeaderField: "apns-collapse-id")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try JSONEncoder().encode(Payload(
                 aps: .init(
