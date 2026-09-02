@@ -412,13 +412,21 @@ struct BridgeAuditEvent: Equatable {
     }
 }
 
-final class BridgeAuditLogger {
+final class BridgeAuditLogger: @unchecked Sendable {
+    typealias WriteOperation = @Sendable (Data) throws -> Void
+
     static let maximumBytes = 10 * 1_024 * 1_024
+    static let maximumPendingWrites = 1_024
 
     let fileURL: URL
-    private let maximumBytes: Int
     private let now: () -> Date
-    private let fileManager: FileManager
+    private let queue = DispatchQueue(label: "ai.sawmills.rai.bridge-audit", qos: .utility)
+    private let stateLock = NSLock()
+    private let writeOperation: WriteOperation
+    private let maximumPendingWrites: Int
+    private var healthy = true
+    private var pendingWrites = 0
+    private var failureHandler: (@Sendable (String) -> Void)?
 
     init(
         fileURL: URL = BridgeAuditLogger.defaultURL,
@@ -427,13 +435,48 @@ final class BridgeAuditLogger {
         fileManager: FileManager = .default
     ) throws {
         self.fileURL = fileURL
-        self.maximumBytes = maximumBytes
         self.now = now
-        self.fileManager = fileManager
-        try ensureFile()
+        self.maximumPendingWrites = Self.maximumPendingWrites
+        let writer = BridgeAuditFileWriter(
+            fileURL: fileURL,
+            maximumBytes: maximumBytes,
+            fileManager: fileManager
+        )
+        try writer.prepare()
+        writeOperation = { data in try writer.append(data) }
     }
 
-    func append(deviceID: String, deviceLabel: String, event: BridgeAuditEvent) throws {
+    init(
+        fileURL: URL,
+        now: @escaping () -> Date = Date.init,
+        maximumPendingWrites: Int = BridgeAuditLogger.maximumPendingWrites,
+        writeOperation: @escaping WriteOperation
+    ) {
+        self.fileURL = fileURL
+        self.now = now
+        self.maximumPendingWrites = maximumPendingWrites
+        self.writeOperation = writeOperation
+    }
+
+    var isHealthy: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return healthy
+    }
+
+    func setFailureHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        stateLock.lock()
+        failureHandler = handler
+        stateLock.unlock()
+    }
+
+    @discardableResult
+    func enqueue(
+        deviceID: String,
+        deviceLabel: String,
+        event: BridgeAuditEvent
+    ) -> Bool {
+        guard isHealthy else { return false }
         let entry = BridgeAuditEntry(
             ts: Self.timestamp(now()),
             deviceID: deviceID,
@@ -444,8 +487,90 @@ final class BridgeAuditLogger {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        var data = try encoder.encode(entry)
-        data.append(0x0A)
+        let data: Data
+        do {
+            var encoded = try encoder.encode(entry)
+            encoded.append(0x0A)
+            data = encoded
+        } catch {
+            recordFailure(error)
+            return false
+        }
+
+        stateLock.lock()
+        guard healthy, pendingWrites < maximumPendingWrites else {
+            stateLock.unlock()
+            return false
+        }
+        pendingWrites += 1
+        // Queue admission lets the current input continue without waiting for fsync.
+        // A failed write closes admission before later inputs can join the queue.
+        queue.async { [self] in
+            defer { completePendingWrite() }
+            do {
+                try writeOperation(data)
+            } catch {
+                recordFailure(error)
+            }
+        }
+        stateLock.unlock()
+        return true
+    }
+
+    func flush() async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: isHealthy)
+            }
+        }
+    }
+
+    private func recordFailure(_ error: Error) {
+        let handler: (@Sendable (String) -> Void)?
+        stateLock.lock()
+        if healthy {
+            healthy = false
+            handler = failureHandler
+        } else {
+            handler = nil
+        }
+        stateLock.unlock()
+        handler?(error.localizedDescription)
+    }
+
+    private func completePendingWrite() {
+        stateLock.lock()
+        pendingWrites -= 1
+        stateLock.unlock()
+    }
+
+    static var defaultURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Rai", isDirectory: true)
+            .appendingPathComponent("bridge-audit.jsonl")
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+}
+
+private final class BridgeAuditFileWriter: @unchecked Sendable {
+    private let fileURL: URL
+    private let maximumBytes: Int
+    private let fileManager: FileManager
+
+    init(fileURL: URL, maximumBytes: Int, fileManager: FileManager) {
+        self.fileURL = fileURL
+        self.maximumBytes = maximumBytes
+        self.fileManager = fileManager
+    }
+
+    func prepare() throws {
+        try ensureFile()
+    }
+
+    func append(_ data: Data) throws {
         let currentBytes = ((try? fileManager.attributesOfItem(atPath: fileURL.path)[.size]) as? NSNumber)?.intValue ?? 0
         if currentBytes > 0, currentBytes + data.count > maximumBytes {
             try rotate()
@@ -493,15 +618,6 @@ final class BridgeAuditLogger {
         )
     }
 
-    static var defaultURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Rai", isDirectory: true)
-            .appendingPathComponent("bridge-audit.jsonl")
-    }
-
-    private static func timestamp(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
-    }
 }
 
 private struct BridgeAuditEntry: Encodable {

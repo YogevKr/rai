@@ -211,7 +211,7 @@ final class BridgeCredentialTests: XCTestCase {
 }
 
 final class BridgeAuditTests: XCTestCase {
-    func testAuditLineShapeBoundsTextAndRedactsCredentials() throws {
+    func testAuditLineShapeBoundsTextAndRedactsCredentials() async throws {
         let directory = temporaryDirectory()
         let url = directory.appendingPathComponent("bridge-audit.jsonl")
         let date = Date(timeIntervalSince1970: 1_000)
@@ -225,15 +225,21 @@ final class BridgeAuditTests: XCTestCase {
                 )
             )
         )
-        try logger.append(deviceID: "device-1", deviceLabel: "Test Phone", event: input)
+        XCTAssertTrue(
+            logger.enqueue(deviceID: "device-1", deviceLabel: "Test Phone", event: input)
+        )
         let pushToken = String(repeating: "a", count: 64)
-        try logger.append(
-            deviceID: "device-1",
-            deviceLabel: "Test Phone",
-            event: try XCTUnwrap(
-                BridgeAuditEvent(.registerPush(deviceToken: pushToken, environment: "sandbox"))
+        XCTAssertTrue(
+            logger.enqueue(
+                deviceID: "device-1",
+                deviceLabel: "Test Phone",
+                event: try XCTUnwrap(
+                    BridgeAuditEvent(.registerPush(deviceToken: pushToken, environment: "sandbox"))
+                )
             )
         )
+        let didFlush = await logger.flush()
+        XCTAssertTrue(didFlush)
 
         let lines = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n")
@@ -266,7 +272,7 @@ final class BridgeAuditTests: XCTestCase {
         )
     }
 
-    func testAuditUsesByteCountForNonPrintableInputAndRotatesAtLimit() throws {
+    func testAuditUsesByteCountForNonPrintableInputAndRotatesAtLimit() async throws {
         let directory = temporaryDirectory()
         let url = directory.appendingPathComponent("bridge-audit.jsonl")
         let logger = try BridgeAuditLogger(fileURL: url, maximumBytes: 120)
@@ -275,8 +281,10 @@ final class BridgeAuditTests: XCTestCase {
                 .input(paneID: "pane-1", bytesBase64: Data([0, 0xFF]).base64EncodedString())
             )
         )
-        try logger.append(deviceID: "device-1", deviceLabel: "Phone", event: event)
-        try logger.append(deviceID: "device-1", deviceLabel: "Phone", event: event)
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        let didFlush = await logger.flush()
+        XCTAssertTrue(didFlush)
 
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
@@ -294,11 +302,131 @@ final class BridgeAuditTests: XCTestCase {
         XCTAssertEqual(rotatedPermissions.intValue & 0o777, 0o600)
     }
 
+    func testAuditPreservesOrderDuringBurst() async throws {
+        let directory = temporaryDirectory()
+        let url = directory.appendingPathComponent("bridge-audit.jsonl")
+        let logger = try BridgeAuditLogger(fileURL: url)
+
+        for index in 0..<100 {
+            let event = try XCTUnwrap(
+                BridgeAuditEvent(.selectPane(paneID: "pane-\(index)"))
+            )
+            XCTAssertTrue(
+                logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event)
+            )
+        }
+
+        let didFlush = await logger.flush()
+        XCTAssertTrue(didFlush)
+        let paneIDs = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n")
+            .map { line -> String in
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+                )
+                let targets = try XCTUnwrap(object["target_ids"] as? [String: String])
+                return try XCTUnwrap(targets["pane_id"])
+            }
+        XCTAssertEqual(paneIDs, (0..<100).map { "pane-\($0)" })
+    }
+
+    func testFailedFlushClosesAuditGate() async throws {
+        let writer = BlockingFailureAuditWriter()
+        let logger = BridgeAuditLogger(
+            fileURL: URL(fileURLWithPath: "/unused/bridge-audit.jsonl"),
+            writeOperation: { data in try writer.write(data) }
+        )
+        let event = try XCTUnwrap(BridgeAuditEvent(.selectPane(paneID: "pane-1")))
+
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        let firstFlush = await logger.flush()
+        XCTAssertTrue(firstFlush)
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertEqual(writer.failureStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        writer.releaseFailure.signal()
+        let failedFlush = await logger.flush()
+        XCTAssertFalse(failedFlush)
+
+        XCTAssertFalse(logger.isHealthy)
+        XCTAssertFalse(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertEqual(writer.writeCount, 3)
+    }
+
+    func testAuditBacklogRejectsWorkPastItsBound() async throws {
+        let writer = BlockingFirstAuditWriter()
+        let logger = BridgeAuditLogger(
+            fileURL: URL(fileURLWithPath: "/unused/bridge-audit.jsonl"),
+            maximumPendingWrites: 2,
+            writeOperation: { data in writer.write(data) }
+        )
+        let event = try XCTUnwrap(BridgeAuditEvent(.selectPane(paneID: "pane-1")))
+
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertEqual(writer.started.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertFalse(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+
+        writer.release.signal()
+        let didFlush = await logger.flush()
+        XCTAssertTrue(didFlush)
+        XCTAssertEqual(writer.writeCount, 2)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rai-bridge-tests-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
+    }
+}
+
+private final class BlockingFailureAuditWriter: @unchecked Sendable {
+    let failureStarted = DispatchSemaphore(value: 0)
+    let releaseFailure = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var writes = 0
+
+    var writeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
+    }
+
+    func write(_ data: Data) throws {
+        lock.lock()
+        writes += 1
+        let shouldFail = writes == 2
+        lock.unlock()
+        if shouldFail {
+            failureStarted.signal()
+            releaseFailure.wait()
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+}
+
+private final class BlockingFirstAuditWriter: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var writes = 0
+
+    var writeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
+    }
+
+    func write(_ data: Data) {
+        lock.lock()
+        writes += 1
+        let isFirst = writes == 1
+        lock.unlock()
+        if isFirst {
+            started.signal()
+            release.wait()
+        }
     }
 }
 

@@ -154,6 +154,11 @@ final class RaiBridgeServer: ObservableObject {
             pushRegistrations = saved
             registeredPushDeviceCount = saved.count
         }
+        auditLogger?.setFailureHandler { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statusMessage = "Bridge audit write failed. Write actions are blocked."
+            }
+        }
         schedulePairingExpiry()
     }
 
@@ -221,6 +226,9 @@ final class RaiBridgeServer: ObservableObject {
     func stopAndWait() async {
         stop()
         await tailscaleTask?.value
+        if let auditLogger {
+            _ = await auditLogger.flush()
+        }
     }
 
     private func startTailscaleServe() {
@@ -516,13 +524,11 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Bridge audit log is unavailable."), to: client)
                 return
             }
-            do {
-                try auditLogger.append(
-                    deviceID: client.deviceID ?? "unknown",
-                    deviceLabel: client.deviceLabel ?? "Unknown device",
-                    event: auditEvent
-                )
-            } catch {
+            guard auditLogger.enqueue(
+                deviceID: client.deviceID ?? "unknown",
+                deviceLabel: client.deviceLabel ?? "Unknown device",
+                event: auditEvent
+            ) else {
                 statusMessage = "Bridge audit write failed. Write actions are blocked."
                 send(.error(message: "Bridge audit write failed."), to: client)
                 return
