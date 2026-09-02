@@ -15,8 +15,18 @@ final class BridgeProtocolTests: XCTestCase {
             from: Data(snapshotJSON.utf8)
         )
         let bytes = Data([0x00, 0x1B, 0xFF]).base64EncodedString()
-        let client = ClientInfo(deviceID: "phone-1", name: "Yogev’s iPhone", platform: "iOS")
+        let client = ClientInfo(
+            deviceID: "phone-1",
+            name: "Yogev’s iPhone",
+            platform: "iOS",
+            model: "iPhone"
+        )
         let messages: [BridgeMessage] = [
+            .pair(
+                code: "23456789",
+                protocolVersion: bridgeProtocolVersion,
+                client: client
+            ),
             .hello(token: "pair-token", client: client),
             .subscribe,
             .attachStream(paneID: "pane-1", cols: 80, rows: 24, fullGrid: false),
@@ -38,6 +48,11 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
+            .paired(
+                token: "device-token",
+                protocolVersion: bridgeProtocolVersion,
+                sessionName: "default"
+            ),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
             .authFailed(reason: "Invalid pairing token"),
@@ -101,8 +116,8 @@ final class BridgeProtocolTests: XCTestCase {
         )
     }
 
-    func testBridgeProtocolVersionIsFive() {
-        XCTAssertEqual(bridgeProtocolVersion, 5)
+    func testBridgeProtocolVersionIsSix() {
+        XCTAssertEqual(bridgeProtocolVersion, 6)
     }
 
     // Additive-only messages (workspace ops, broadcast, sessions, background

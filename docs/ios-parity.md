@@ -6,7 +6,7 @@ bridge, and what *should* exist on the phone. The phone is deliberately a
 "everything you'd want while away from the Mac", not a 1:1 clone of a
 30-inch-display UI.
 
-Audited 2026-07-28 against `main` (bridge protocol v5).
+Audited 2026-09-02 against `main` (bridge protocol v6).
 
 ## Parity matrix
 
@@ -73,6 +73,15 @@ Items 1–2 require Mac-side changes — coordinate with whoever owns
 surface).
 
 ## Protocol-drift guardrails (learned the hard way)
+
+Protocol version 6 replaces the shared token with per-device credentials. The
+new `pair` message sends a short code, protocol version, and device data. The
+`paired` reply returns one device credential once. The phone confirms it with
+`hello`. A lost reply can retry the code until expiry. Later connections also
+use `hello`.
+
+This change is not compatible with protocol version 5. Old phones receive
+"Re-pair required" and must pair again.
 
 - The iOS client **skips** messages it cannot decode (see
   `BridgeConnection.receiveMessages`) instead of tearing down the socket —

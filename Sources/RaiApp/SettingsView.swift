@@ -285,7 +285,6 @@ struct SettingsView: View {
 private struct CompanionSettingsView: View {
     @ObservedObject private var server: RaiBridgeServer
     @ObservedObject private var apnsSettings: APNsSettings
-    @State private var isRegenerateConfirmationPresented = false
     @State private var keyP8Draft: String
     @State private var keyP8Error: String?
 
@@ -320,7 +319,7 @@ private struct CompanionSettingsView: View {
                     .toggleStyle(.switch)
 
                     Text(
-                        "V1 uses token authentication over WebSocket. "
+                        "Each phone gets its own credential over WebSocket. "
                             + "Connect only over a trusted LAN or Tailscale network."
                     )
                     .font(.system(size: 11))
@@ -329,22 +328,41 @@ private struct CompanionSettingsView: View {
                     if server.isEnabled {
                         Divider().overlay(Theme.hairline)
                         VStack(alignment: .leading, spacing: 16) {
-                            HStack(alignment: .top, spacing: 24) {
-                                pairingOption(
-                                    title: "Same Wi-Fi",
-                                    address: "\(server.displayHost):\(server.port)",
-                                    url: server.pairingURL
-                                )
-                                if let host = server.tailscaleHost {
-                                    pairingOption(
-                                        title: "Anywhere via Tailscale",
-                                        address: "\(host):\(server.tailscalePort)",
-                                        url: server.tailscalePairingURL
-                                    )
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                if let code = server.pairingCode,
+                                   let expiry = server.pairingCodeExpiresAt,
+                                   expiry > context.date {
+                                    VStack(alignment: .leading, spacing: 14) {
+                                        companionValue(label: "Pairing code", value: code)
+                                        Text("Expires in \(remainingTime(until: expiry, now: context.date))")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(Theme.textTertiary)
+                                        HStack(alignment: .top, spacing: 24) {
+                                            pairingOption(
+                                                title: "Same Wi-Fi",
+                                                address: "\(server.displayHost):\(server.port)",
+                                                url: server.pairingURL
+                                            )
+                                            if let host = server.tailscaleHost {
+                                                pairingOption(
+                                                    title: "Anywhere via Tailscale",
+                                                    address: "\(host):\(server.tailscalePort)",
+                                                    url: server.tailscalePairingURL
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Text("The pairing code expired or was used.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textTertiary)
                                 }
                             }
 
-                            companionValue(label: "Pairing token", value: server.pairingToken)
+                            Button("New Pairing Code") {
+                                server.regeneratePairingCode()
+                            }
+
                             companionValue(
                                 label: "Connected",
                                 value: "\(server.connectedDeviceCount) device"
@@ -363,14 +381,43 @@ private struct CompanionSettingsView: View {
                                     .font(.system(size: 11))
                                     .foregroundStyle(Theme.textTertiary)
                             }
-                            Button("Regenerate Token", role: .destructive) {
-                                isRegenerateConfirmationPresented = true
-                            }
                         }
                     }
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.textPrimary)
+                }
+
+                SettingsSection(title: "Paired Devices") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if server.pairedDevices.isEmpty {
+                            Text("No phones are paired.")
+                                .foregroundStyle(Theme.textTertiary)
+                        } else {
+                            ForEach(server.pairedDevices) { device in
+                                HStack(alignment: .top, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(device.label)
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text("Paired \(device.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                        Text("Last seen \(device.lastSeen.formatted(date: .abbreviated, time: .shortened))")
+                                    }
+                                    .foregroundStyle(Theme.textTertiary)
+                                    Spacer()
+                                    Button("Revoke", role: .destructive) {
+                                        server.revokeDevice(id: device.id)
+                                    }
+                                }
+                                if device.id != server.pairedDevices.last?.id {
+                                    Divider().overlay(Theme.hairline)
+                                }
+                            }
+                        }
+                        Button("Show audit log") {
+                            NSWorkspace.shared.activateFileViewerSelecting([server.auditLogURL])
+                        }
+                    }
+                    .font(.system(size: 12))
                 }
 
                 if showPushSettings {
@@ -439,14 +486,11 @@ private struct CompanionSettingsView: View {
             }
         }
         .settingsTabBackground()
-        .alert("Regenerate Pairing Token?", isPresented: $isRegenerateConfirmationPresented) {
-            Button("Cancel", role: .cancel) {}
-            Button("Regenerate", role: .destructive) {
-                server.regenerateToken()
-            }
-        } message: {
-            Text("All connected companion devices will be disconnected and must pair again.")
-        }
+    }
+
+    private func remainingTime(until expiry: Date, now: Date) -> String {
+        let seconds = max(0, Int(ceil(expiry.timeIntervalSince(now))))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func pushField(_ label: String, text: Binding<String>) -> some View {

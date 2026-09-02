@@ -5,7 +5,7 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if appModel.pairing == nil {
+            if appModel.pairing == nil, appModel.pendingPairing == nil {
                 PairingView()
             } else {
                 MonitorView(appModel: appModel, connection: appModel.connection) {

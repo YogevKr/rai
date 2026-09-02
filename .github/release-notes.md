@@ -2,6 +2,9 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### Fixed in this release
 
+- **Rai Remote now uses one credential for each phone.** Pair with a short code.
+  Revoke one phone without changing other phones. Old phones must pair again.
+- **Phone write actions now have an audit log.** Open it from Settings → iPhone.
 - **Tab titles on the phone no longer show a bare number.** herdr auto-names
   a fresh tab after its own number ("3") until it gets a real title. The Mac
   already knew to treat that as no title and fall back to the pane's terminal

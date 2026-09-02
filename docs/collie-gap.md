@@ -67,13 +67,11 @@ draft take-over; per-pane display prefs.
    and says "Collie will not type"; it also stops storing the draft. rai's
    outbox is memory-only, but the notification Reply action and quick
    replies would type into a sudo prompt blind.
-5. **Per-device credentials and audit.** rai has one long-lived token shared
-   by every phone, regenerate as the only revoke, no attempt limit. Collie:
-   8-char code, 10-min TTL, 5 attempts, per-device token hashed at rest, live
-   revoke, JSONL audit (0600) of every write, write gate fails closed to
-   read-only. Also: rai's LAN pairing URL is plain `ws://`, so token and pane
-   content cross the LAN unencrypted; Collie binds loopback and publishes one
-   TLS door only.
+5. **Per-device credentials and audit.** ✅ Rai now uses an 8-character code,
+   a 10-minute limit, five attempts, hashed device credentials, live revoke,
+   and a `0600` JSONL write audit. **LAN TLS remains open.** The LAN pairing
+   URL still uses plain `ws://`, so pane content crosses the LAN without TLS.
+   The Tailscale path uses `wss://` through `tailscale serve`.
 6. **Doctor and push-test.** `collie doctor` is one read-only pass over the
    traps that fail silently, each finding naming the fix; `collie push-test`
    proves delivery. rai already fixed a silent missing-APNs-key drop.
@@ -126,8 +124,8 @@ taking later: a single "All sessions" triage list.
 Wave 1 — independent worktrees, one Codex job each:
 
 1. **guarded-send** (iOS): verified send + no-echo prompt guard (items 1, 4).
-2. **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
-   per-device tokens, revoke, audit log (item 5).
+2. ✅ **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
+   per-device tokens, revoke, audit log (item 5). LAN TLS remains open.
 3. **push-intelligence** (Mac + iOS notification delegate): coalescing,
    thread grouping, phone-side retraction, test push + Doctor in
    Settings → iPhone (items 6, 10).

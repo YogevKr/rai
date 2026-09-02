@@ -3,16 +3,27 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
+    @Published private(set) var pendingPairing: PairingInvitation?
     @Published var pendingOpenPaneID: String?
     @Published private(set) var backgroundWorkByPaneID: [String: [String]] = [:]
-    let connection = BridgeConnection()
+    let connection: BridgeConnection
 
-    private let pairingStore = PairingStore()
+    private let pairingStore: any PairingStoring
     private var deviceToken: String?
 
-    init() {
+    init(
+        pairingStore: any PairingStoring = PairingStore(),
+        connection: BridgeConnection? = nil,
+        launchPairURL: String? = ProcessInfo.processInfo.environment["RAI_PAIR_URL"]
+    ) {
+        self.pairingStore = pairingStore
+        self.connection = connection ?? BridgeConnection()
+        let connection = self.connection
         connection.didConnect = { [weak self] in
             self?.registerPushIfPossible()
+        }
+        connection.didPair = { [weak self] pairing in
+            self?.didExchangeCredential(pairing)
         }
         connection.didReceiveBackgroundWork = { [weak self] work in
             self?.backgroundWorkByPaneID = Dictionary(
@@ -23,10 +34,10 @@ final class AppModel: ObservableObject {
         // Testing/automation affordance: pair straight from a launch env var,
         // e.g. `simctl launch --setenv RAI_PAIR_URL "rai://pair?..."`. Harmless
         // in normal use (the var is never set); lets e2e tests skip the QR/UI.
-        if let urlString = ProcessInfo.processInfo.environment["RAI_PAIR_URL"] {
-            NSLog("rai-ios: RAI_PAIR_URL present: \(urlString)")
-            if let launchPairing = try? Pairing(urlString: urlString) {
-                pair(launchPairing)
+        if let urlString = launchPairURL {
+            NSLog("rai-ios: RAI_PAIR_URL is present")
+            if let invitation = try? PairingInvitation(urlString: urlString) {
+                pair(invitation)
                 return
             } else {
                 NSLog("rai-ios: RAI_PAIR_URL failed to parse")
@@ -38,9 +49,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func pair(_ pairing: Pairing) {
+    func pair(_ invitation: PairingInvitation) {
+        pendingPairing = invitation
+        pairing = nil
+        connection.pair(using: invitation)
+    }
+
+    func didExchangeCredential(_ pairing: Pairing) {
         self.pairing = pairing
-        connection.connect(to: pairing)
+        pendingPairing = nil
         do {
             try pairingStore.save(pairing)
         } catch {
@@ -63,6 +80,7 @@ final class AppModel: ObservableObject {
         }
         pairingStore.clear()
         pairing = nil
+        pendingPairing = nil
     }
 
     func setPushDeviceToken(_ token: String) {
