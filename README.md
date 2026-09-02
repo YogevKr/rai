@@ -69,6 +69,10 @@ crook for the herd:
 
 - **Triage first** — agents that *need you* float to the top, with Working /
   Idle groups and per-workspace status.
+- **Useful offline** — the last herd appears at launch with its saved time.
+  Rai mutes cached rows and replaces them after the Mac sends a live snapshot.
+- **Clear connection help** — the phone names DNS, route, listener, TLS,
+  pairing, and missing-herdr failures. Raw connection details remain available.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away.

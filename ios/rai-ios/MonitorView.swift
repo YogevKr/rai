@@ -45,7 +45,7 @@ struct MonitorView: View {
         AnyView(NavigationStack(path: $path) {
             Group {
                 if let snapshot = connection.snapshot {
-                    if connection.status.isConnected, snapshot.panes.isEmpty {
+                    if connection.shouldShowEmptyHerd {
                         emptyHerdState
                     } else {
                         herdList(snapshot)
@@ -60,6 +60,12 @@ struct MonitorView: View {
                 }
             }
             .onChange(of: connection.snapshot?.panes.map(\.paneID) ?? []) { _, panes in
+                autoOpenIfRequested(panes: panes)
+                openPendingPush(panes: panes)
+            }
+            .onChange(of: connection.isShowingCachedSnapshot) { _, isCached in
+                guard !isCached else { return }
+                let panes = connection.snapshot?.panes.map(\.paneID) ?? []
                 autoOpenIfRequested(panes: panes)
                 openPendingPush(panes: panes)
             }
@@ -129,28 +135,14 @@ struct MonitorView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if case .failed = connection.status {
-                    HStack {
-                        Image(systemName: "wifi.exclamationmark")
-                        Text(connection.status.label)
-                            .lineLimit(1)
-                        Spacer()
-                        if connection.requiresRepair {
-                            Button("Pair Again", action: forgetPairing)
-                        } else {
-                            Button("Reconnect") { connection.retryNow() }
-                        }
-                    }
-                    .font(.footnote)
-                    .padding(.horizontal)
-                    .padding(.vertical, 10)
-                    .background(.bar)
+                if let diagnosis = connection.status.diagnosis,
+                   connection.snapshot != nil {
+                    ConnectionIssueBar(
+                        diagnosis: diagnosis,
+                        lastSnapshotAt: connection.lastSnapshotAt,
+                        recover: { recover(from: diagnosis) }
+                    )
                 }
-            }
-            .alert("Pairing Rejected", isPresented: repairBinding) {
-                Button("Pair Again", action: forgetPairing)
-            } message: {
-                Text(connection.status.label)
             }
         })
         .sheet(isPresented: $showingAgentLauncher) {
@@ -246,18 +238,12 @@ struct MonitorView: View {
         closeTarget = nil
     }
 
-    private var repairBinding: Binding<Bool> {
-        Binding(
-            get: { connection.requiresRepair },
-            set: { _ in }
-        )
-    }
-
     // Testing/automation affordance mirroring RAI_PAIR_URL: auto-open a pane's
     // terminal on first sight so end-to-end runs are deterministic. Never set in
     // normal use.
     private func autoOpenIfRequested(panes: [String]) {
-        guard !didAutoOpen,
+        guard !connection.isShowingCachedSnapshot,
+              !didAutoOpen,
               let target = ProcessInfo.processInfo.environment["RAI_OPEN_PANE"],
               panes.contains(target)
         else { return }
@@ -266,7 +252,10 @@ struct MonitorView: View {
     }
 
     private func openPendingPush(panes: [String]) {
-        guard let paneID = appModel.pendingOpenPaneID, panes.contains(paneID) else { return }
+        guard !connection.isShowingCachedSnapshot,
+              let paneID = appModel.pendingOpenPaneID,
+              panes.contains(paneID)
+        else { return }
         if path.last != paneID {
             path.append(paneID)
         }
@@ -285,8 +274,8 @@ struct MonitorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .connected:
             emptyHerdState
-        case let .failed(reason):
-            failureState(reason: reason)
+        case let .failed(diagnosis):
+            failureState(diagnosis: diagnosis)
         case .disconnected:
             ContentUnavailableView {
                 Label("Disconnected", systemImage: "wifi.slash")
@@ -313,17 +302,20 @@ struct MonitorView: View {
         .refreshable { await connection.refreshSnapshot() }
     }
 
-    private func failureState(reason: String) -> some View {
-        ContentUnavailableView {
-            Label("Connection failed", systemImage: "wifi.exclamationmark")
-        } description: {
-            Text(reason)
-        } actions: {
-            if connection.requiresRepair {
-                Button("Pair Again", action: forgetPairing)
-            } else {
-                Button("Reconnect") { connection.retryNow() }
-            }
+    private func failureState(diagnosis: ConnectionDiagnosis) -> some View {
+        ConnectionIssueState(
+            diagnosis: diagnosis,
+            lastSnapshotAt: connection.lastSnapshotAt,
+            recover: { recover(from: diagnosis) }
+        )
+    }
+
+    private func recover(from diagnosis: ConnectionDiagnosis) {
+        switch diagnosis.action {
+        case .reconnect:
+            connection.retryNow()
+        case .pairAgain:
+            forgetPairing()
         }
     }
 
@@ -339,101 +331,122 @@ struct MonitorView: View {
                     finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
                     working: working.count,
                     quiet: quiet,
+                    lastSeenAt: connection.isShowingCachedSnapshot
+                        && !connection.status.isConnected
+                        ? connection.lastSnapshotAt
+                        : nil,
                     filter: $filter
                 )
             }
             .listRowInsets(EdgeInsets())
-            if let filter {
-                filteredSection(
-                    filter,
-                    snapshot: snapshot,
-                    needsYou: needsYou,
-                    working: working
-                )
-            } else {
-            if !needsYou.isEmpty {
-                Section {
-                    ForEach(needsYou) { item in
-                        NavigationLink(value: item.pane.paneID) {
-                            NightAgentRow(
-                                item: item,
-                                backgroundWork: backgroundWork(for: item.pane),
-                                approve: item.pane.agentStatus == .blocked
-                                    ? { connection.sendInput([0x0D], to: item.pane.paneID) }
-                                    : nil,
-                                deny: item.pane.agentStatus == .blocked
-                                    ? { connection.sendInput([0x1B], to: item.pane.paneID) }
-                                    : nil
-                            )
-                        }
-                        .listRowBackground(
-                            item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
-                        )
-                        .contextMenu { backgroundWorkButton(for: item.pane) }
-                    }
-                } header: {
-                    let anyBlocked = needsYou.contains { $0.pane.agentStatus == .blocked }
-                    NightSectionHeader(
-                        title: anyBlocked ? "Needs you" : "Finished",
-                        detail: "\(needsYou.count)",
-                        hot: anyBlocked
+            Group {
+                if let filter {
+                    filteredSection(
+                        filter,
+                        snapshot: snapshot,
+                        needsYou: needsYou,
+                        working: working
                     )
-                }
-            }
-            if !working.isEmpty {
-                Section {
-                    ForEach(working) { item in
-                        NavigationLink(value: item.pane.paneID) {
-                            NightAgentRow(
-                                item: item,
-                                backgroundWork: backgroundWork(for: item.pane)
+                } else {
+                    if !needsYou.isEmpty {
+                        Section {
+                            ForEach(needsYou) { item in
+                                NavigationLink(value: item.pane.paneID) {
+                                    NightAgentRow(
+                                        item: item,
+                                        backgroundWork: backgroundWork(for: item.pane),
+                                        approve: connection.status.isConnected
+                                            && item.pane.agentStatus == .blocked
+                                            ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                                            : nil,
+                                        deny: connection.status.isConnected
+                                            && item.pane.agentStatus == .blocked
+                                            ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                                            : nil
+                                    )
+                                }
+                                .listRowBackground(
+                                    item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
+                                )
+                                .contextMenu { backgroundWorkButton(for: item.pane) }
+                            }
+                        } header: {
+                            let anyBlocked = needsYou.contains {
+                                $0.pane.agentStatus == .blocked
+                            }
+                            NightSectionHeader(
+                                title: anyBlocked ? "Needs you" : "Finished",
+                                detail: "\(needsYou.count)",
+                                hot: anyBlocked
                             )
                         }
-                        .listRowBackground(Night.row)
-                        .contextMenu { backgroundWorkButton(for: item.pane) }
                     }
-                } header: {
-                    NightSectionHeader(title: "Working", detail: "\(working.count)")
-                }
-            }
 
-            ForEach(snapshot.workspaces) { workspace in
-                Section {
-                    let tabs = snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
-                    ForEach(tabs) { tab in
-                        TabGroup(
-                            tab: tab,
-                            panes: snapshot.panes.filter { $0.tabID == tab.tabID },
-                            backgroundWorkByPaneID: appModel.backgroundWorkByPaneID,
-                            rename: beginRename,
-                            close: { closeTarget = $0 },
-                            showBackgroundWork: { backgroundWorkTarget = $0 }
-                        )
-                        .listRowBackground(Night.row)
-                    }
-                } header: {
-                    HStack {
-                        Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
-                            .font(.caption.monospaced().weight(.semibold))
-                            .foregroundStyle(Night.faint)
-                        Spacer()
-                        StatusPill(status: workspace.agentStatus)
-                    }
-                    .contentShape(Rectangle())
-                    .contextMenu {
-                        Button("Rename", systemImage: "pencil") {
-                            beginRename(.workspace(workspace.workspaceID, workspace.label))
+                    if !working.isEmpty {
+                        Section {
+                            ForEach(working) { item in
+                                NavigationLink(value: item.pane.paneID) {
+                                    NightAgentRow(
+                                        item: item,
+                                        backgroundWork: backgroundWork(for: item.pane)
+                                    )
+                                }
+                                .listRowBackground(Night.row)
+                                .contextMenu { backgroundWorkButton(for: item.pane) }
+                            }
+                        } header: {
+                            NightSectionHeader(title: "Working", detail: "\(working.count)")
                         }
-                        Button("Close", systemImage: "xmark", role: .destructive) {
-                            closeTarget = .workspace(
-                                workspace.workspaceID,
-                                workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label
-                            )
+                    }
+
+                    ForEach(snapshot.workspaces) { workspace in
+                        Section {
+                            let tabs = snapshot.tabs.filter {
+                                $0.workspaceID == workspace.workspaceID
+                            }
+                            ForEach(tabs) { tab in
+                                TabGroup(
+                                    tab: tab,
+                                    panes: snapshot.panes.filter { $0.tabID == tab.tabID },
+                                    backgroundWorkByPaneID: appModel.backgroundWorkByPaneID,
+                                    rename: beginRename,
+                                    close: { closeTarget = $0 },
+                                    showBackgroundWork: { backgroundWorkTarget = $0 }
+                                )
+                                .listRowBackground(Night.row)
+                            }
+                        } header: {
+                            HStack {
+                                Text(
+                                    workspace.label.isEmpty
+                                        ? "Space \(workspace.number)" : workspace.label
+                                )
+                                .font(.caption.monospaced().weight(.semibold))
+                                .foregroundStyle(Night.faint)
+                                Spacer()
+                                StatusPill(status: workspace.agentStatus)
+                            }
+                            .contentShape(Rectangle())
+                            .contextMenu {
+                                Button("Rename", systemImage: "pencil") {
+                                    beginRename(
+                                        .workspace(workspace.workspaceID, workspace.label)
+                                    )
+                                }
+                                Button("Close", systemImage: "xmark", role: .destructive) {
+                                    closeTarget = .workspace(
+                                        workspace.workspaceID,
+                                        workspace.label.isEmpty
+                                            ? "Space \(workspace.number)" : workspace.label
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
-            }
+            .disabled(connection.isShowingCachedSnapshot)
+            .opacity(connection.isShowingCachedSnapshot ? 0.52 : 1)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -692,21 +705,29 @@ private struct PulseLine: View {
     let finished: Int
     let working: Int
     let quiet: Int
+    let lastSeenAt: Date?
     @Binding var filter: HerdFilter?
 
     var body: some View {
-        HStack(spacing: 2) {
-            if needsYou > 0 {
-                segment("\(needsYou) needs you", .needsYou, Night.amber)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 2) {
+                if needsYou > 0 {
+                    segment("\(needsYou) needs you", .needsYou, Night.amber)
+                    sep
+                }
+                if finished > 0 {
+                    segment("\(finished) finished", .finished, Night.green)
+                    sep
+                }
+                segment("\(working) working", .working, Night.dim)
                 sep
+                segment("\(quiet) idle", .quiet, Night.faint)
             }
-            if finished > 0 {
-                segment("\(finished) finished", .finished, Night.green)
-                sep
+            if let lastSeenAt {
+                Text(SnapshotFreshness.lastSeen(at: lastSeenAt))
+                    .foregroundStyle(Night.faint)
+                    .padding(.horizontal, 6)
             }
-            segment("\(working) working", .working, Night.dim)
-            sep
-            segment("\(quiet) idle", .quiet, Night.faint)
         }
         .font(.footnote.monospaced())
         .textCase(nil)
@@ -738,6 +759,97 @@ private struct PulseLine: View {
         .buttonStyle(.borderless)
         .accessibilityLabel("\(label)\(filter == target ? ", filtered" : "")")
         .accessibilityHint(filter == target ? "Shows everything" : "Shows only these")
+    }
+}
+
+private struct ConnectionIssueBar: View {
+    let diagnosis: ConnectionDiagnosis
+    let lastSnapshotAt: Date?
+    let recover: () -> Void
+    @State private var showsRawDetails = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "wifi.exclamationmark")
+                    .foregroundStyle(.red)
+                    .padding(.top, 2)
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        showsRawDetails.toggle()
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(diagnosis.message)
+                            .multilineTextAlignment(.leading)
+                        if let lastSnapshotAt {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                Text(
+                                    SnapshotFreshness.syncedAgo(
+                                        since: lastSnapshotAt,
+                                        now: context.date
+                                    )
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 6)
+                Button(diagnosis.action.title, action: recover)
+                    .buttonStyle(.bordered)
+            }
+            if showsRawDetails {
+                Text(diagnosis.rawDetails)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .transition(.opacity)
+            }
+        }
+        .font(.footnote)
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .accessibilityHint("Tap the diagnosis to show connection details")
+    }
+}
+
+private struct ConnectionIssueState: View {
+    let diagnosis: ConnectionDiagnosis
+    let lastSnapshotAt: Date?
+    let recover: () -> Void
+    @State private var showsRawDetails = false
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Connection failed", systemImage: "wifi.exclamationmark")
+        } description: {
+            VStack(spacing: 8) {
+                Text(diagnosis.message)
+                if let lastSnapshotAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(
+                            SnapshotFreshness.syncedAgo(
+                                since: lastSnapshotAt,
+                                now: context.date
+                            )
+                        )
+                    }
+                }
+                Button(showsRawDetails ? "Hide details" : "Show details") {
+                    showsRawDetails.toggle()
+                }
+                if showsRawDetails {
+                    Text(diagnosis.rawDetails)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        } actions: {
+            Button(diagnosis.action.title, action: recover)
+        }
     }
 }
 

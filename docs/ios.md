@@ -82,6 +82,24 @@ Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:
 Then: watch your herd, tap a pane to open its live terminal, and use the on‑screen
 keys / compose bar to drive the agent.
 
+## Offline behavior
+
+The phone saves the latest herd snapshot in Application Support.
+It writes JSON atomically and limits writes to one every three seconds.
+The first snapshot writes at once. Later snapshots use a three-second write limit.
+The cache contains display data only. It omits resume IDs, full paths, and terminal frames.
+The cache file is excluded from device backups.
+The cache belongs to one pairing and never crosses to another Mac.
+
+On cold launch, the saved herd appears before the socket connects.
+The pulse line shows `last seen HH:MM`, and cached rows use a muted style.
+A live snapshot replaces the cache. Forget Mac removes the saved snapshot.
+
+After a socket failure, the connection bar shows the last sync age.
+The age updates each second while the connection remains down.
+The bar maps DNS, route, listener, TLS, pairing, and missing-herdr failures to actions.
+Tap the diagnosis to show the raw system or bridge error.
+
 ## Simulator e2e (for development)
 
 The simulator shares the Mac's network, so it reaches the bridge at `localhost`.
@@ -112,6 +130,6 @@ Caveats learned end to end:
 
 ## Status
 
-Working end to end: pair, monitor, raw terminal streaming, input, and native APNs
-push with tap-to-open navigation. Real push delivery remains pending the user's
-Apple Developer enrollment, credentials, signing, and a physical iPhone.
+Working end to end: pair, monitor, cached herd display, diagnosed reconnects,
+raw terminal streaming, input, and native APNs push with tap-to-open navigation.
+Real push delivery needs Apple Developer enrollment, credentials, signing, and a physical iPhone.
