@@ -131,7 +131,7 @@ final class RaiBridgeServer: ObservableObject {
     private let apnsPusher = APNsPusher()
     private struct PendingPushDelivery {
         let revision: UInt64
-        let task: Task<[String], Never>
+        let task: Task<APNsPusher.Result, Never>
     }
     private var nextPushDeliveryRevision: UInt64 = 0
     private var pendingPushDeliveries: [String: PendingPushDelivery] = [:]
@@ -350,49 +350,39 @@ final class RaiBridgeServer: ObservableObject {
         let pusher = apnsPusher
         let collapseKey = "\(model.connectionIDForObservers.uuidString):\(paneID)"
         let badge = pushBadgeCounter.badge(for: collapseKey)
-        nextPushDeliveryRevision &+= 1
-        let deliveryRevision = nextPushDeliveryRevision
-        let previousDelivery = pendingPushDeliveries[collapseKey]?.task
-
-        let delivery = Task.detached {
-            if let previousDelivery { _ = await previousDelivery.value }
-            return await withTaskGroup(of: String?.self, returning: [String].self) { group in
-                for registration in registrations {
-                    group.addTask {
-                        let result = await pusher.send(
-                            configuration: configuration,
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            title: title,
-                            subtitle: subtitle,
-                            body: body,
-                            paneID: paneID,
-                            collapseKey: collapseKey,
-                            workspaceID: workspaceID,
-                            workspace: workspace,
-                            category: requiresAttention ? "agent-attention" : nil,
-                            badge: badge
-                        )
-                        return result == .deadToken ? registration.deviceToken : nil
-                    }
-                }
-                var deadTokens: [String] = []
-                for await deadToken in group {
-                    if let deadToken { deadTokens.append(deadToken) }
-                }
-                return deadTokens
+        for registration in registrations {
+            let deliveryKey = "\(collapseKey):\(registration.deviceToken)"
+            nextPushDeliveryRevision &+= 1
+            let deliveryRevision = nextPushDeliveryRevision
+            let previousDelivery = pendingPushDeliveries[deliveryKey]?.task
+            let delivery = Task.detached {
+                if let previousDelivery { _ = await previousDelivery.value }
+                return await pusher.send(
+                    configuration: configuration,
+                    deviceToken: registration.deviceToken,
+                    environment: registration.environment,
+                    title: title,
+                    subtitle: subtitle,
+                    body: body,
+                    paneID: paneID,
+                    collapseKey: collapseKey,
+                    workspaceID: workspaceID,
+                    workspace: workspace,
+                    category: requiresAttention ? "agent-attention" : nil,
+                    badge: badge
+                )
             }
-        }
-        pendingPushDeliveries[collapseKey] = PendingPushDelivery(
-            revision: deliveryRevision,
-            task: delivery
-        )
-        Task { [weak self] in
-            for deadToken in await delivery.value {
-                self?.removePushRegistration(deviceToken: deadToken)
-            }
-            if self?.pendingPushDeliveries[collapseKey]?.revision == deliveryRevision {
-                self?.pendingPushDeliveries[collapseKey] = nil
+            pendingPushDeliveries[deliveryKey] = PendingPushDelivery(
+                revision: deliveryRevision,
+                task: delivery
+            )
+            Task { [weak self] in
+                if await delivery.value == .deadToken {
+                    self?.removePushRegistration(deviceToken: registration.deviceToken)
+                }
+                if self?.pendingPushDeliveries[deliveryKey]?.revision == deliveryRevision {
+                    self?.pendingPushDeliveries[deliveryKey] = nil
+                }
             }
         }
     }

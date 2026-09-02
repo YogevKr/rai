@@ -74,6 +74,33 @@ final class APNsDeliveryQueueTests: XCTestCase {
         let recorded = await values.all()
         XCTAssertEqual(recorded, [1, 2])
     }
+
+    func testStalledDeviceDoesNotDelayAnotherDevice() async {
+        let queue = APNsDeliveryQueue<Int>()
+        let gate = AsyncGate()
+        let stalledStarted = expectation(description: "stalled device started")
+        let healthyDelivered = expectation(description: "healthy device delivered")
+
+        let stalled = Task {
+            await queue.enqueue(key: "pane:stalled-device") {
+                stalledStarted.fulfill()
+                await gate.wait()
+                return 1
+            }
+        }
+        await fulfillment(of: [stalledStarted], timeout: 1)
+
+        let healthy = Task {
+            await queue.enqueue(key: "pane:healthy-device") {
+                healthyDelivered.fulfill()
+                return 2
+            }
+        }
+        await fulfillment(of: [healthyDelivered], timeout: 1)
+
+        await gate.open()
+        _ = await (stalled.value, healthy.value)
+    }
 }
 
 final class PushBadgeCounterTests: XCTestCase {
@@ -98,5 +125,24 @@ private actor RecordedValues {
 
     func all() -> [Int] {
         values
+    }
+}
+
+private actor AsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
