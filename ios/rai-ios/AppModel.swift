@@ -26,12 +26,16 @@ struct CachedHerdSnapshot: Codable, Equatable {
 /// Stores only the herd model. Terminal frames stay memory-only.
 final class SnapshotCacheStore {
     private let fileURL: URL
-    private let queue = DispatchQueue(label: "rai.snapshot-cache")
+    private let queue: DispatchQueue
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(fileURL: URL = SnapshotCacheStore.defaultURL()) {
+    init(
+        fileURL: URL = SnapshotCacheStore.defaultURL(),
+        queue: DispatchQueue = DispatchQueue(label: "rai.snapshot-cache")
+    ) {
         self.fileURL = fileURL
+        self.queue = queue
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
     }
@@ -43,38 +47,47 @@ final class SnapshotCacheStore {
         }
     }
 
-    func save(_ cached: CachedHerdSnapshot) throws {
-        try queue.sync {
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let sanitized = CachedHerdSnapshot(
-                snapshot: try sanitizedSnapshot(cached.snapshot),
-                savedAt: cached.savedAt,
-                pairingID: cached.pairingID
-            )
-            try encoder.encode(sanitized).write(to: fileURL, options: .atomic)
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var savedURL = fileURL
-            do {
-                try savedURL.setResourceValues(values)
-            } catch {
-                try? FileManager.default.removeItem(at: fileURL)
-                throw error
-            }
+    func save(
+        _ cached: CachedHerdSnapshot,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result { try write(cached) })
         }
     }
 
-    func clear() {
-        queue.sync {
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-            do {
-                try FileManager.default.removeItem(at: fileURL)
-            } catch {
-                NSLog("rai-ios: Could not clear snapshot cache: %@", error.localizedDescription)
+    func clear(completion: (() -> Void)? = nil) {
+        queue.async { [self] in
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
+                } catch {
+                    NSLog("rai-ios: Could not clear snapshot cache: %@", error.localizedDescription)
+                }
             }
+            completion?()
+        }
+    }
+
+    private func write(_ cached: CachedHerdSnapshot) throws {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let sanitized = CachedHerdSnapshot(
+            snapshot: try sanitizedSnapshot(cached.snapshot),
+            savedAt: cached.savedAt,
+            pairingID: cached.pairingID
+        )
+        try encoder.encode(sanitized).write(to: fileURL, options: .atomic)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var savedURL = fileURL
+        do {
+            try savedURL.setResourceValues(values)
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
         }
     }
 
@@ -129,6 +142,8 @@ final class AppModel: ObservableObject {
     private var deviceToken: String?
     private var pendingCache: CachedHerdSnapshot?
     private var cacheWriteTask: Task<Void, Never>?
+    private var cacheWriteInProgress = false
+    private var cacheWriteGeneration: UInt = 0
 
     init(
         connection: BridgeConnection? = nil,
@@ -237,45 +252,53 @@ final class AppModel: ObservableObject {
             savedAt: receivedAt,
             pairingID: CachedHerdSnapshot.pairingID(for: pairing)
         )
-        guard cacheWriteTask == nil else {
+        guard !cacheWriteInProgress, cacheWriteTask == nil else {
             pendingCache = cached
             return
         }
 
-        persistSnapshotCache(cached)
-        startCacheWriteCooldown()
+        startCacheWrite(cached)
     }
 
-    private func startCacheWriteCooldown() {
+    private func startCacheWrite(_ cached: CachedHerdSnapshot) {
+        cacheWriteInProgress = true
+        let generation = cacheWriteGeneration
+        snapshotCacheStore.save(cached) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.finishCacheWrite(result, generation: generation)
+            }
+        }
+    }
+
+    private func finishCacheWrite(_ result: Result<Void, Error>, generation: UInt) {
+        guard generation == cacheWriteGeneration else { return }
+        cacheWriteInProgress = false
+        if case let .failure(error) = result {
+            NSLog("rai-ios: Could not persist snapshot cache: %@", error.localizedDescription)
+        }
+        startCacheWriteCooldown(generation: generation)
+    }
+
+    private func startCacheWriteCooldown(generation: UInt) {
         cacheWriteTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(3))
             } catch {
-                self?.cacheWriteTask = nil
                 return
             }
-            guard let self, let cached = self.pendingCache else {
-                self?.cacheWriteTask = nil
-                return
-            }
-            self.pendingCache = nil
+            guard let self, generation == self.cacheWriteGeneration else { return }
             self.cacheWriteTask = nil
-            self.persistSnapshotCache(cached)
-            self.startCacheWriteCooldown()
-        }
-    }
-
-    private func persistSnapshotCache(_ cached: CachedHerdSnapshot) {
-        do {
-            try snapshotCacheStore.save(cached)
-        } catch {
-            NSLog("rai-ios: Could not persist snapshot cache: %@", error.localizedDescription)
+            guard let cached = self.pendingCache else { return }
+            self.pendingCache = nil
+            self.startCacheWrite(cached)
         }
     }
 
     private func discardSnapshotCache() {
+        cacheWriteGeneration &+= 1
         cacheWriteTask?.cancel()
         cacheWriteTask = nil
+        cacheWriteInProgress = false
         pendingCache = nil
         snapshotCacheStore.clear()
     }

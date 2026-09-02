@@ -18,7 +18,14 @@ final class OfflineResilienceTests: XCTestCase {
             pairingID: "pairing-id"
         )
 
-        try store.save(cached)
+        let saved = expectation(description: "snapshot saved")
+        store.save(cached) { result in
+            if case let .failure(error) = result {
+                XCTFail("Snapshot save failed: \(error)")
+            }
+            saved.fulfill()
+        }
+        wait(for: [saved], timeout: 2)
 
         let loaded = try XCTUnwrap(store.load())
         XCTAssertEqual(loaded.savedAt, cached.savedAt)
@@ -34,8 +41,47 @@ final class OfflineResilienceTests: XCTestCase {
             true
         )
 
-        store.clear()
+        let cleared = expectation(description: "snapshot cleared")
+        store.clear {
+            cleared.fulfill()
+        }
+        wait(for: [cleared], timeout: 2)
 
+        XCTAssertNil(store.load())
+    }
+
+    func testSnapshotCacheWriteRunsOffMainAndClearWins() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-offline-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let queue = DispatchQueue(label: "rai.snapshot-cache.tests")
+        queue.suspend()
+        let store = SnapshotCacheStore(
+            fileURL: directory.appendingPathComponent("snapshot.json"),
+            queue: queue
+        )
+        let cached = CachedHerdSnapshot(
+            snapshot: try snapshot(paneCount: 1),
+            savedAt: Date(timeIntervalSince1970: 1_788_361_500),
+            pairingID: "pairing-id"
+        )
+        let saved = expectation(description: "snapshot saved off main")
+        let cleared = expectation(description: "pending snapshot cleared")
+
+        store.save(cached) { result in
+            XCTAssertFalse(Thread.isMainThread)
+            if case let .failure(error) = result {
+                XCTFail("Snapshot save failed: \(error)")
+            }
+            saved.fulfill()
+        }
+        store.clear {
+            XCTAssertFalse(Thread.isMainThread)
+            cleared.fulfill()
+        }
+        queue.resume()
+
+        wait(for: [saved, cleared], timeout: 2, enforceOrder: true)
         XCTAssertNil(store.load())
     }
 
