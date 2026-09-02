@@ -68,7 +68,9 @@ A native iOS app (`ios/`) that pairs with the Mac over your LAN or Tailscale
 crook for the herd:
 
 - **Triage first** — agents that *need you* float to the top, with Working /
-  Idle groups and per-workspace status.
+  Idle groups and per-workspace status. A **Triage groups** toggle in the
+  connection menu turns the groups and the pulse line off for a plain
+  space → tab → pane list.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away.

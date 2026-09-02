@@ -40,6 +40,8 @@ struct MonitorView: View {
     @State private var closeTarget: CloseTarget?
     @State private var backgroundWorkTarget: BackgroundWorkTarget?
     @State private var filter: HerdFilter?
+    /// Off = just the spaces, no pulse line and no Needs you / Working groups.
+    @AppStorage(HerdListLayout.triageDefaultsKey) private var triageEnabled = true
 
     var body: some View {
         AnyView(NavigationStack(path: $path) {
@@ -116,6 +118,14 @@ struct MonitorView: View {
                         Text("Mac: \(connection.host)")
                             .onAppear { connection.requestSessions() }
                         Text("App: v\(Self.appVersion) (\(Self.appBuild))")
+                        Divider()
+                        Toggle("Triage groups", isOn: Binding(
+                            get: { triageEnabled },
+                            set: { enabled in
+                                triageEnabled = enabled
+                                if !enabled { filter = nil }
+                            }
+                        ))
                         Divider()
                         if connection.requiresRepair {
                             Button("Pair Again", action: forgetPairing)
@@ -331,114 +341,131 @@ struct MonitorView: View {
         let needsYou = agents(in: snapshot) { $0 == .blocked || $0 == .done }
         let working = agents(in: snapshot) { $0 == .working }
         let quiet = max(0, snapshot.panes.count - needsYou.count - working.count)
+        let layout = HerdListLayout.resolve(triageEnabled: triageEnabled, filter: filter)
         return List {
-            Section {
-            } header: {
-                PulseLine(
-                    needsYou: needsYou.filter { $0.pane.agentStatus == .blocked }.count,
-                    finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
-                    working: working.count,
-                    quiet: quiet,
-                    filter: $filter
-                )
+            if layout != .plain {
+                Section {
+                } header: {
+                    PulseLine(
+                        needsYou: needsYou.filter { $0.pane.agentStatus == .blocked }.count,
+                        finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
+                        working: working.count,
+                        quiet: quiet,
+                        filter: $filter
+                    )
+                }
+                .listRowInsets(EdgeInsets())
             }
-            .listRowInsets(EdgeInsets())
-            if let filter {
+            switch layout {
+            case let .filtered(filter):
                 filteredSection(
                     filter,
                     snapshot: snapshot,
                     needsYou: needsYou,
                     working: working
                 )
-            } else {
-            if !needsYou.isEmpty {
-                Section {
-                    ForEach(needsYou) { item in
-                        NavigationLink(value: item.pane.paneID) {
-                            NightAgentRow(
-                                item: item,
-                                backgroundWork: backgroundWork(for: item.pane),
-                                approve: item.pane.agentStatus == .blocked
-                                    ? { connection.sendInput([0x0D], to: item.pane.paneID) }
-                                    : nil,
-                                deny: item.pane.agentStatus == .blocked
-                                    ? { connection.sendInput([0x1B], to: item.pane.paneID) }
-                                    : nil
-                            )
-                        }
-                        .listRowBackground(
-                            item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
-                        )
-                        .contextMenu { backgroundWorkButton(for: item.pane) }
-                    }
-                } header: {
-                    let anyBlocked = needsYou.contains { $0.pane.agentStatus == .blocked }
-                    NightSectionHeader(
-                        title: anyBlocked ? "Needs you" : "Finished",
-                        detail: "\(needsYou.count)",
-                        hot: anyBlocked
-                    )
-                }
-            }
-            if !working.isEmpty {
-                Section {
-                    ForEach(working) { item in
-                        NavigationLink(value: item.pane.paneID) {
-                            NightAgentRow(
-                                item: item,
-                                backgroundWork: backgroundWork(for: item.pane)
-                            )
-                        }
-                        .listRowBackground(Night.row)
-                        .contextMenu { backgroundWorkButton(for: item.pane) }
-                    }
-                } header: {
-                    NightSectionHeader(title: "Working", detail: "\(working.count)")
-                }
-            }
-
-            ForEach(snapshot.workspaces) { workspace in
-                Section {
-                    let tabs = snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
-                    ForEach(tabs) { tab in
-                        TabGroup(
-                            tab: tab,
-                            panes: snapshot.panes.filter { $0.tabID == tab.tabID },
-                            backgroundWorkByPaneID: appModel.backgroundWorkByPaneID,
-                            rename: beginRename,
-                            close: { closeTarget = $0 },
-                            showBackgroundWork: { backgroundWorkTarget = $0 }
-                        )
-                        .listRowBackground(Night.row)
-                    }
-                } header: {
-                    HStack {
-                        Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
-                            .font(.caption.monospaced().weight(.semibold))
-                            .foregroundStyle(Night.faint)
-                        Spacer()
-                        StatusPill(status: workspace.agentStatus)
-                    }
-                    .contentShape(Rectangle())
-                    .contextMenu {
-                        Button("Rename", systemImage: "pencil") {
-                            beginRename(.workspace(workspace.workspaceID, workspace.label))
-                        }
-                        Button("Close", systemImage: "xmark", role: .destructive) {
-                            closeTarget = .workspace(
-                                workspace.workspaceID,
-                                workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label
-                            )
-                        }
-                    }
-                }
-            }
+            case .triage:
+                triageSections(needsYou: needsYou, working: working)
+                spaceSections(snapshot)
+            case .plain:
+                spaceSections(snapshot)
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Night.ground)
         .refreshable { await connection.refreshSnapshot() }
+    }
+
+    /// Needs you / Finished, then Working — the groups above the spaces.
+    @ViewBuilder
+    private func triageSections(needsYou: [NeedsYouAgent], working: [NeedsYouAgent]) -> some View {
+        if !needsYou.isEmpty {
+            Section {
+                ForEach(needsYou) { item in
+                    NavigationLink(value: item.pane.paneID) {
+                        NightAgentRow(
+                            item: item,
+                            backgroundWork: backgroundWork(for: item.pane),
+                            approve: item.pane.agentStatus == .blocked
+                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                                : nil,
+                            deny: item.pane.agentStatus == .blocked
+                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                                : nil
+                        )
+                    }
+                    .listRowBackground(
+                        item.pane.agentStatus == .blocked ? Night.hotRow : Night.row
+                    )
+                    .contextMenu { backgroundWorkButton(for: item.pane) }
+                }
+            } header: {
+                let anyBlocked = needsYou.contains { $0.pane.agentStatus == .blocked }
+                NightSectionHeader(
+                    title: anyBlocked ? "Needs you" : "Finished",
+                    detail: "\(needsYou.count)",
+                    hot: anyBlocked
+                )
+            }
+        }
+        if !working.isEmpty {
+            Section {
+                ForEach(working) { item in
+                    NavigationLink(value: item.pane.paneID) {
+                        NightAgentRow(
+                            item: item,
+                            backgroundWork: backgroundWork(for: item.pane)
+                        )
+                    }
+                    .listRowBackground(Night.row)
+                    .contextMenu { backgroundWorkButton(for: item.pane) }
+                }
+            } header: {
+                NightSectionHeader(title: "Working", detail: "\(working.count)")
+            }
+        }
+    }
+
+    /// The plain herd: space → tab → pane, always present.
+    @ViewBuilder
+    private func spaceSections(_ snapshot: SessionSnapshot) -> some View {
+        ForEach(snapshot.workspaces) { workspace in
+            Section {
+                let tabs = snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
+                ForEach(tabs) { tab in
+                    TabGroup(
+                        tab: tab,
+                        panes: snapshot.panes.filter { $0.tabID == tab.tabID },
+                        backgroundWorkByPaneID: appModel.backgroundWorkByPaneID,
+                        rename: beginRename,
+                        close: { closeTarget = $0 },
+                        showBackgroundWork: { backgroundWorkTarget = $0 }
+                    )
+                    .listRowBackground(Night.row)
+                }
+            } header: {
+                HStack {
+                    Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(Night.faint)
+                    Spacer()
+                    StatusPill(status: workspace.agentStatus)
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button("Rename", systemImage: "pencil") {
+                        beginRename(.workspace(workspace.workspaceID, workspace.label))
+                    }
+                    Button("Close", systemImage: "xmark", role: .destructive) {
+                        closeTarget = .workspace(
+                            workspace.workspaceID,
+                            workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private func backgroundWork(for pane: Pane) -> [String] {
@@ -528,6 +555,25 @@ struct MonitorView: View {
                 hot: filter == .needsYou
             )
         }
+    }
+}
+
+/// What the herd list shows above the plain space → tab → pane list.
+enum HerdListLayout: Equatable {
+    /// Pulse line plus Needs you / Working groups above the spaces.
+    case triage
+    /// One flat section for the tapped pulse-line segment.
+    case filtered(HerdFilter)
+    /// Just the spaces: no pulse line, no groups.
+    case plain
+
+    /// UserDefaults key behind the "Triage groups" toggle; on by default.
+    static let triageDefaultsKey = "triageGroupsEnabled"
+
+    static func resolve(triageEnabled: Bool, filter: HerdFilter?) -> HerdListLayout {
+        guard triageEnabled else { return .plain }
+        if let filter { return .filtered(filter) }
+        return .triage
     }
 }
 
