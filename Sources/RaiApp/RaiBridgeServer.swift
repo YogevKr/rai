@@ -3,7 +3,7 @@ import Network
 import RaiCore
 import SystemConfiguration
 
-/// Token-authenticated WebSocket bridge from companion devices to RaiModel's
+/// Per-device authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
 /// The bridge uses cleartext WebSocket on the LAN. When available, Tailscale
@@ -17,11 +17,14 @@ final class RaiBridgeServer: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusMessage: String?
     @Published private(set) var connectedDeviceCount = 0
-    @Published private(set) var pairingToken: String
+    @Published private(set) var pairingCode: String?
+    @Published private(set) var pairingCodeExpiresAt: Date?
+    @Published private(set) var pairedDevices: [BridgePairedDevice]
     @Published private(set) var registeredPushDeviceCount = 0
     @Published private(set) var tailscaleHost: String?
 
     let apnsSettings: APNsSettings
+    let auditLogURL: URL
     let tailscalePort: UInt16 = 8443
 
     var isEnabled: Bool {
@@ -79,13 +82,16 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func makePairingURL(host: String, port: UInt16, useTLS: Bool) -> URL? {
+        guard let pairingCode, let pairingCodeExpiresAt, pairingCodeExpiresAt > Date() else {
+            return nil
+        }
         var components = URLComponents()
         components.scheme = "rai"
         components.host = "pair"
         components.queryItems = [
             URLQueryItem(name: "host", value: host),
             URLQueryItem(name: "port", value: String(port)),
-            URLQueryItem(name: "token", value: pairingToken),
+            URLQueryItem(name: "code", value: pairingCode),
         ]
         if useTLS {
             components.queryItems?.append(URLQueryItem(name: "tls", value: "1"))
@@ -94,13 +100,17 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private static let enabledKey = "companionBridgeEnabled"
-    private static let tokenKey = "companionBridgePairingToken"
     private static let pushRegistrationsKey = "companionBridgePushRegistrations"
+    private static let credentialMigrationKey = "companionBridgeCredentialMigrationV1"
     private unowned let model: RaiModel
     private let userDefaults: UserDefaults
     private let queue = DispatchQueue(label: "ai.sawmills.rai.bridge")
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
+    private let liveConnections = BridgeLiveConnectionRegistry()
+    private let credentialStore: BridgeDeviceCredentialStore
+    private let auditLogger: BridgeAuditLogger?
+    private var pairingExpiryTask: Task<Void, Never>?
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
     /// Consecutive unexpected observe exits per (client, pane); reset when a
     /// stream produces frames again. Guards the auto-restart loop below.
@@ -118,23 +128,33 @@ final class RaiBridgeServer: ObservableObject {
     init(
         model: RaiModel,
         userDefaults: UserDefaults = .standard,
-        apnsSettings: APNsSettings? = nil
+        apnsSettings: APNsSettings? = nil,
+        auditLogURL: URL? = nil
     ) {
         self.model = model
         self.userDefaults = userDefaults
         self.apnsSettings = apnsSettings ?? .shared
-        if let saved = userDefaults.string(forKey: Self.tokenKey), !saved.isEmpty {
-            pairingToken = saved
+        if !userDefaults.bool(forKey: Self.credentialMigrationKey) {
+            userDefaults.removeObject(forKey: "companionBridgePairingToken")
+            userDefaults.removeObject(forKey: Self.pushRegistrationsKey)
+            userDefaults.set(true, forKey: Self.credentialMigrationKey)
         } else {
-            let token = Self.makeToken()
-            pairingToken = token
-            userDefaults.set(token, forKey: Self.tokenKey)
+            userDefaults.removeObject(forKey: "companionBridgePairingToken")
         }
+        let credentialStore = BridgeDeviceCredentialStore(defaults: userDefaults)
+        self.credentialStore = credentialStore
+        pairingCode = credentialStore.pairingCode?.value
+        pairingCodeExpiresAt = credentialStore.pairingCode?.expiresAt
+        pairedDevices = credentialStore.devices
+        let resolvedAuditURL = auditLogURL ?? BridgeAuditLogger.defaultURL
+        self.auditLogURL = resolvedAuditURL
+        auditLogger = try? BridgeAuditLogger(fileURL: resolvedAuditURL)
         if let data = userDefaults.data(forKey: Self.pushRegistrationsKey),
            let saved = try? JSONDecoder().decode(Set<PushRegistration>.self, from: data) {
             pushRegistrations = saved
             registeredPushDeviceCount = saved.count
         }
+        schedulePairingExpiry()
     }
 
     func startIfEnabled() {
@@ -145,6 +165,11 @@ final class RaiBridgeServer: ObservableObject {
 
     func start() {
         guard listener == nil else { return }
+        if credentialStore.validPairingCode() == nil {
+            _ = credentialStore.regeneratePairingCode()
+            syncCredentialState()
+            schedulePairingExpiry()
+        }
         do {
             let webSocket = NWProtocolWebSocket.Options()
             webSocket.autoReplyPing = true
@@ -188,6 +213,7 @@ final class RaiBridgeServer: ObservableObject {
             client.connection.cancel()
         }
         clients.removeAll()
+        liveConnections.removeAll()
         connectedDeviceCount = 0
         isRunning = false
     }
@@ -236,22 +262,29 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
-    func regenerateToken() {
-        pairingToken = Self.makeToken()
-        userDefaults.set(pairingToken, forKey: Self.tokenKey)
-        // Authentication is connection-scoped, so changing the token also
-        // disconnects already-paired devices immediately.
-        stopAllObserveStreams()
-        for client in clients.values {
-            client.connection.cancel()
+    func regeneratePairingCode() {
+        _ = credentialStore.regeneratePairingCode()
+        syncCredentialState()
+        schedulePairingExpiry()
+        if pairingCode == nil {
+            statusMessage = "Secure random data is unavailable."
         }
-        clients.removeAll()
-        connectedDeviceCount = 0
-        // Revoking bridge access must also revoke push delivery: a device that
-        // can no longer connect (its token no longer matches) would otherwise
-        // keep receiving pane names, workspace labels, and status pushes.
-        pushRegistrations.removeAll()
+    }
+
+    func revokeDevice(id: String) {
+        guard credentialStore.revoke(deviceID: id) else { return }
+        let revokedClients = liveConnections.revoke(deviceID: id)
+        for clientID in revokedClients {
+            stopObserveStreams(for: clientID)
+            clients.removeValue(forKey: clientID)
+        }
+        pushRegistrations = Set(pushRegistrations.filter { $0.deviceID != id })
         persistPushRegistrations()
+        if credentialStore.devices.isEmpty {
+            credentialStore.invalidatePairingCode()
+        }
+        syncCredentialState()
+        updateConnectedDeviceCount()
     }
 
     func relay(events: [HerdrEvent]) {
@@ -430,26 +463,70 @@ final class RaiBridgeServer: ObservableObject {
         }
 
         if !client.isAuthenticated {
-            guard case let .hello(token, info) = message else {
-                reject(client, reason: "hello must be the first message")
-                return
+            switch message {
+            case let .pair(code, clientProtocolVersion, info):
+                guard clientProtocolVersion == bridgeProtocolVersion else {
+                    reject(client, reason: "Re-pair required")
+                    return
+                }
+                switch credentialStore.exchange(code: code, client: info) {
+                case let .success(result):
+                    syncCredentialState()
+                    send(
+                        .paired(
+                            token: result.token,
+                            protocolVersion: bridgeProtocolVersion,
+                            sessionName: model.currentSessionName
+                        ),
+                        to: client
+                    )
+                case .failure(.invalidOrExpired):
+                    syncCredentialState()
+                    reject(client, reason: "Pairing code invalid or expired")
+                case .failure(.entropyUnavailable):
+                    statusMessage = "Secure random data is unavailable."
+                    reject(client, reason: "Pairing is unavailable")
+                }
+            case let .hello(token, info):
+                guard let device = credentialStore.authenticate(token: token) else {
+                    reject(client, reason: "Re-pair required")
+                    return
+                }
+                syncCredentialState()
+                if credentialStore.pairingCode == nil {
+                    pairingExpiryTask?.cancel()
+                }
+                authenticate(client, as: device, info: info)
+                send(
+                    .welcome(
+                        protocolVersion: bridgeProtocolVersion,
+                        sessionName: model.currentSessionName
+                    ),
+                    to: client
+                )
+            default:
+                reject(client, reason: "Pair or hello must be the first message")
             }
-            guard token == pairingToken else {
-                reject(client, reason: "Invalid pairing token")
-                return
-            }
-            client.isAuthenticated = true
-            outstandingPushCount = 0
-            client.info = info
-            updateConnectedDeviceCount()
-            send(
-                .welcome(
-                    protocolVersion: bridgeProtocolVersion,
-                    sessionName: model.currentSessionName
-                ),
-                to: client
-            )
             return
+        }
+
+        if let auditEvent = BridgeAuditEvent(message) {
+            guard let auditLogger else {
+                statusMessage = "Bridge audit log is unavailable. Write actions are blocked."
+                send(.error(message: "Bridge audit log is unavailable."), to: client)
+                return
+            }
+            do {
+                try auditLogger.append(
+                    deviceID: client.deviceID ?? "unknown",
+                    deviceLabel: client.deviceLabel ?? "Unknown device",
+                    event: auditEvent
+                )
+            } catch {
+                statusMessage = "Bridge audit write failed. Write actions are blocked."
+                send(.error(message: "Bridge audit write failed."), to: client)
+                return
+            }
         }
 
         switch message {
@@ -625,12 +702,16 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Push device token must be 64 hexadecimal characters."), to: client)
                 return
             }
-            registerPush(deviceToken: normalizedToken, environment: environment)
+            registerPush(
+                deviceToken: normalizedToken,
+                environment: environment,
+                deviceID: client.deviceID
+            )
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
-        case .hello:
+        case .pair, .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
-        case .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
+        case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
              .backgroundWork, .sessions:
             send(.error(message: "Server-to-client message received from client."), to: client)
         }
@@ -941,16 +1022,19 @@ final class RaiBridgeServer: ObservableObject {
     private func removeClient(_ id: ObjectIdentifier) {
         stopObserveStreams(for: id)
         clients.removeValue(forKey: id)
+        liveConnections.remove(id: id)
         updateConnectedDeviceCount()
     }
 
     private func updateConnectedDeviceCount() {
-        connectedDeviceCount = clients.values.lazy.filter(\.isAuthenticated).count
+        connectedDeviceCount = liveConnections.connectedDeviceCount
     }
 
-    private func registerPush(deviceToken: String, environment: String) {
+    private func registerPush(deviceToken: String, environment: String, deviceID: String?) {
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
-        pushRegistrations.insert(.init(deviceToken: deviceToken, environment: environment))
+        pushRegistrations.insert(
+            .init(deviceToken: deviceToken, environment: environment, deviceID: deviceID)
+        )
         persistPushRegistrations()
     }
 
@@ -969,14 +1053,47 @@ final class RaiBridgeServer: ObservableObject {
         registeredPushDeviceCount = pushRegistrations.count
     }
 
-    private static func makeToken() -> String {
-        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    private func authenticate(
+        _ client: BridgeClient,
+        as device: BridgePairedDevice,
+        info: ClientInfo
+    ) {
+        client.isAuthenticated = true
+        client.info = info
+        client.deviceID = device.id
+        client.deviceLabel = device.label
+        outstandingPushCount = 0
+        let id = ObjectIdentifier(client.connection)
+        liveConnections.register(id: id, deviceID: device.id) { [weak self, weak client] in
+            guard let self, let client else { return }
+            self.reject(client, reason: "Re-pair required")
+        }
+        updateConnectedDeviceCount()
+    }
+
+    private func syncCredentialState() {
+        let active = credentialStore.validPairingCode()
+        pairingCode = active?.value
+        pairingCodeExpiresAt = active?.expiresAt
+        pairedDevices = credentialStore.devices
+    }
+
+    private func schedulePairingExpiry() {
+        pairingExpiryTask?.cancel()
+        guard let expiry = credentialStore.pairingCode?.expiresAt else { return }
+        pairingExpiryTask = Task { [weak self] in
+            let delay = max(0, expiry.timeIntervalSinceNow)
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.syncCredentialState()
+        }
     }
 }
 
 private struct PushRegistration: Codable, Hashable, Sendable {
     let deviceToken: String
     let environment: String
+    let deviceID: String?
 }
 
 private struct ObserveFrame: Decodable {
@@ -1057,6 +1174,8 @@ private final class BridgeClient: @unchecked Sendable {
     var isAuthenticated = false
     var isSubscribed = false
     var info: ClientInfo?
+    var deviceID: String?
+    var deviceLabel: String?
 
     init(connection: NWConnection) {
         self.connection = connection

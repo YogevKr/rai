@@ -4,17 +4,19 @@ import Foundation
 ///
 /// Versioning is independent of herdr's RPC protocol so the Mac and companion
 /// app can negotiate their wire contract without exposing daemon internals.
-public let bridgeProtocolVersion = 5
+public let bridgeProtocolVersion = 6
 
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
     public let name: String
     public let platform: String
+    public let model: String?
 
-    public init(deviceID: String, name: String, platform: String) {
+    public init(deviceID: String, name: String, platform: String, model: String? = nil) {
         self.deviceID = deviceID
         self.name = name
         self.platform = platform
+        self.model = model
     }
 }
 
@@ -69,6 +71,7 @@ public struct BridgeSessionInfo: Codable, Equatable, Sendable {
 
 public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
+    case pair(code: String, protocolVersion: Int, client: ClientInfo)
     case hello(token: String, client: ClientInfo)
     case subscribe
     /// `fullGrid: true` (newer clients) opts into a stream that is never
@@ -104,6 +107,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case selectSession(name: String)
 
     // Server -> client
+    case paired(token: String, protocolVersion: Int, sessionName: String?)
     case welcome(protocolVersion: Int, sessionName: String?)
     case authFailed(reason: String)
     case snapshot(SessionSnapshot)
@@ -121,7 +125,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case type
-        case token, client
+        case token, code, client
         case fullGrid
         case paneID, tabID, workspaceID, agent, cwd, label
         case bytesBase64, filename
@@ -135,7 +139,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     }
 
     private enum MessageType: String, Codable {
-        case hello, subscribe, attachStream, detachStream
+        case pair, hello, subscribe, attachStream, detachStream
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
@@ -143,12 +147,18 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case renameWorkspace, closeWorkspace, broadcastInput
         case listSessions, selectSession
         case backgroundWork, sessions
-        case welcome, authFailed, snapshot, event, paneFrame, error
+        case paired, welcome, authFailed, snapshot, event, paneFrame, error
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(MessageType.self, forKey: .type) {
+        case .pair:
+            self = .pair(
+                code: try container.decode(String.self, forKey: .code),
+                protocolVersion: try container.decode(Int.self, forKey: .protocolVersion),
+                client: try container.decode(ClientInfo.self, forKey: .client)
+            )
         case .hello:
             self = .hello(
                 token: try container.decode(String.self, forKey: .token),
@@ -258,6 +268,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .sessions(
                 try container.decode([BridgeSessionInfo].self, forKey: .sessions)
             )
+        case .paired:
+            self = .paired(
+                token: try container.decode(String.self, forKey: .token),
+                protocolVersion: try container.decode(Int.self, forKey: .protocolVersion),
+                sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
+            )
         case .welcome:
             self = .welcome(
                 protocolVersion: try container.decode(Int.self, forKey: .protocolVersion),
@@ -286,6 +302,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case let .pair(code, protocolVersion, client):
+            try container.encode(MessageType.pair, forKey: .type)
+            try container.encode(code, forKey: .code)
+            try container.encode(protocolVersion, forKey: .protocolVersion)
+            try container.encode(client, forKey: .client)
         case let .hello(token, client):
             try container.encode(MessageType.hello, forKey: .type)
             try container.encode(token, forKey: .token)
@@ -383,6 +404,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .sessions(sessions):
             try container.encode(MessageType.sessions, forKey: .type)
             try container.encode(sessions, forKey: .sessions)
+        case let .paired(token, protocolVersion, sessionName):
+            try container.encode(MessageType.paired, forKey: .type)
+            try container.encode(token, forKey: .token)
+            try container.encode(protocolVersion, forKey: .protocolVersion)
+            try container.encodeIfPresent(sessionName, forKey: .sessionName)
         case let .welcome(protocolVersion, sessionName):
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)

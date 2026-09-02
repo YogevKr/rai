@@ -19,6 +19,30 @@ struct Pairing: Equatable {
         self.token = trimmedToken
         self.useTLS = useTLS
     }
+}
+
+struct PairingInvitation: Equatable {
+    static let codeAlphabet = CharacterSet(charactersIn: "23456789ABCDEFGHJKLMNPQRSTUVWXYZ")
+
+    let host: String
+    let port: Int
+    let code: String
+    let useTLS: Bool
+
+    init(host: String, port: Int, code: String, useTLS: Bool = false) throws {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !trimmedHost.isEmpty else { throw PairingError.invalidHost }
+        guard (1...65_535).contains(port) else { throw PairingError.invalidPort }
+        guard normalizedCode.count == 8,
+              normalizedCode.unicodeScalars.allSatisfy(Self.codeAlphabet.contains)
+        else { throw PairingError.invalidCode }
+
+        self.host = trimmedHost
+        self.port = port
+        self.code = normalizedCode
+        self.useTLS = useTLS
+    }
 
     init(urlString: String) throws {
         guard let components = URLComponents(string: urlString),
@@ -30,11 +54,21 @@ struct Pairing: Equatable {
         guard let host = queryItems.first(where: { $0.name == "host" })?.value,
               let portString = queryItems.first(where: { $0.name == "port" })?.value,
               let port = Int(portString),
-              let token = queryItems.first(where: { $0.name == "token" })?.value else {
+              let code = queryItems.first(where: { $0.name == "code" })?.value else {
             throw PairingError.invalidCode
         }
         let useTLS = queryItems.first(where: { $0.name == "tls" })?.value == "1"
-        try self.init(host: host, port: port, token: token, useTLS: useTLS)
+        try self.init(host: host, port: port, code: code, useTLS: useTLS)
+    }
+
+    func credential(token: String) throws -> Pairing {
+        let alphabet = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        )
+        guard token.utf8.count == 43,
+              token.unicodeScalars.allSatisfy(alphabet.contains)
+        else { throw PairingError.invalidToken }
+        return try Pairing(host: host, port: port, token: token, useTLS: useTLS)
     }
 }
 
@@ -50,13 +84,19 @@ enum PairingError: LocalizedError {
         case .invalidCode: "That is not a valid rai pairing code."
         case .invalidHost: "Enter the Mac's host name or IP address."
         case .invalidPort: "Port must be between 1 and 65535."
-        case .invalidToken: "Enter the pairing token."
+        case .invalidToken: "The Mac returned an invalid device credential."
         case let .keychain(status): "Could not save the token (Keychain error \(status))."
         }
     }
 }
 
-final class PairingStore {
+protocol PairingStoring {
+    func load() -> Pairing?
+    func save(_ pairing: Pairing) throws
+    func clear()
+}
+
+final class PairingStore: PairingStoring {
     private let defaults: UserDefaults
     private let service = "gr.krig.rai.ios.bridge"
     private let account = "pairing-token"

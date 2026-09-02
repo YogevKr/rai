@@ -83,7 +83,7 @@ crook for the herd:
 - **Push notifications** (APNs) when an agent blocks or finishes, with
   Approve / Deny / Reply actions right on the notification.
 
-The Mac side is the hub: a token-authenticated WebSocket bridge
+The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through
 `tailscale serve`. Build, pairing, and push setup live in
 [docs/ios.md](docs/ios.md).
@@ -177,7 +177,7 @@ to reorder.
    │                  content   ← pane read / terminal frame stream
    │                  keystrokes → pane input
    │                  splits     ← layout snapshots + ratios
-   └─ Bridge        token-authenticated WebSocket for Rai Remote
+   └─ Bridge        per-device authenticated WebSocket for Rai Remote
         ▲
         │  ws:// on the LAN · wss:// via tailscale serve
   Rai Remote (iPhone)

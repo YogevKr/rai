@@ -42,16 +42,18 @@ final class BridgeConnection: ObservableObject {
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
     var didConnect: (() -> Void)?
+    var didPair: ((Pairing) -> Void)?
     var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
 
     var host: String {
-        pairing?.host ?? "Mac"
+        pairing?.host ?? invitation?.host ?? "Mac"
     }
 
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var pairing: Pairing?
+    private var invitation: PairingInvitation?
     private var reconnectAttempt = 0
     private var shouldReconnect = false
     private let encoder = JSONEncoder()
@@ -72,6 +74,17 @@ final class BridgeConnection: ObservableObject {
     func connect(to pairing: Pairing) {
         disconnect(clearPairing: false)
         self.pairing = pairing
+        invitation = nil
+        shouldReconnect = true
+        requiresRepair = false
+        reconnectAttempt = 0
+        openSocket()
+    }
+
+    func pair(using invitation: PairingInvitation) {
+        disconnect(clearPairing: false)
+        pairing = nil
+        self.invitation = invitation
         shouldReconnect = true
         requiresRepair = false
         reconnectAttempt = 0
@@ -83,7 +96,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     func retryNow() {
-        guard pairing != nil else { return }
+        guard pairing != nil || invitation != nil else { return }
         task?.cancel(with: .goingAway, reason: nil)
         receiveTask?.cancel()
         reconnectTask?.cancel()
@@ -412,7 +425,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func openSocket() {
-        guard let pairing, let url = webSocketURL(for: pairing), shouldReconnect else {
+        guard let url = webSocketURL(), shouldReconnect else {
             status = .failed(reason: "Invalid bridge address")
             return
         }
@@ -426,7 +439,7 @@ final class BridgeConnection: ObservableObject {
         receiveTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.sendHelloAndSubscribe(pairing: pairing)
+                try await self.sendAuthentication()
                 try await self.receiveMessages(from: socket)
             } catch is CancellationError {
                 return
@@ -436,7 +449,24 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func sendHelloAndSubscribe(pairing: Pairing) async throws {
+    private func sendAuthentication() async throws {
+        let client = clientInfo()
+        if let invitation {
+            try await send(
+                .pair(
+                    code: invitation.code,
+                    protocolVersion: bridgeProtocolVersion,
+                    client: client
+                )
+            )
+        } else if let pairing {
+            try await send(.hello(token: pairing.token, client: client))
+        } else {
+            throw URLError(.userAuthenticationRequired)
+        }
+    }
+
+    private func clientInfo() -> ClientInfo {
         let defaults = UserDefaults.standard
         let deviceIDKey = "bridge.deviceID"
         let deviceID: String
@@ -446,13 +476,12 @@ final class BridgeConnection: ObservableObject {
             deviceID = UUID().uuidString
             defaults.set(deviceID, forKey: deviceIDKey)
         }
-        let client = ClientInfo(
+        return ClientInfo(
             deviceID: deviceID,
             name: UIDevice.current.name,
-            platform: "iOS"
+            platform: "iOS",
+            model: UIDevice.current.model
         )
-        try await send(.hello(token: pairing.token, client: client))
-        try await send(.subscribe)
     }
 
     private func receiveMessages(from socket: URLSessionWebSocketTask) async throws {
@@ -470,7 +499,7 @@ final class BridgeConnection: ObservableObject {
             // A message this client can't decode (e.g. a newer Mac added a
             // message type) must not kill the connection: throwing here would
             // reconnect, replay the same message, and loop forever. Skip it —
-            // true incompatibility is caught by the welcome version check.
+            // true incompatibility is caught by the authentication reply check.
             do {
                 handle(try decoder.decode(BridgeMessage.self, from: data))
             } catch {
@@ -484,51 +513,42 @@ final class BridgeConnection: ObservableObject {
 
     private func handle(_ message: BridgeMessage) {
         switch message {
-        case let .welcome(protocolVersion, sessionName):
+        case let .paired(token, protocolVersion, sessionName):
             guard protocolVersion == bridgeProtocolVersion else {
-                stopWithFailure("Unsupported bridge protocol \(protocolVersion)")
+                requiresRepair = true
+                stopWithFailure("Re-pair required: Unsupported bridge protocol \(protocolVersion)")
                 return
             }
-            reconnectAttempt = 0
-            status = .connected
-            self.sessionName = sessionName
-            didConnect?()
-            requestSessions()
-            // Same reasoning as the scrollback seed below: work lost to a
-            // dropped connection is retried on the next welcome rather than
-            // dropped forever. Composed lines are the user's own words, so
-            // they deserve at least that.
-            flushOutbox()
-            for (paneID, size) in desiredStreams {
-                let needsSeed = !seededPanes.contains(paneID)
-                Task {
-                    do {
-                        if needsSeed {
-                            try await send(
-                                .readScrollback(
-                                    paneID: paneID,
-                                    lines: 1000,
-                                    rows: size.rows,
-                                    fullGrid: true
-                                )
-                            )
-                        }
-                        try await send(
-                            .attachStream(
-                                paneID: paneID,
-                                cols: size.cols,
-                                rows: size.rows,
-                                fullGrid: true
-                            )
-                        )
-                    } catch {
-                        handleSocketFailure(error)
-                    }
+            guard let invitation,
+                  let pairing = try? Self.exchangedPairing(token: token, invitation: invitation)
+            else {
+                requiresRepair = true
+                stopWithFailure("Re-pair required: Invalid pairing reply")
+                return
+            }
+            self.pairing = pairing
+            self.invitation = nil
+            didPair?(pairing)
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.send(.hello(token: pairing.token, client: self.clientInfo()))
+                } catch {
+                    self.handleSocketFailure(error)
                 }
             }
+        case let .welcome(protocolVersion, sessionName):
+            guard invitation == nil, pairing != nil else {
+                requiresRepair = true
+                stopWithFailure("Re-pair required: Invalid pairing reply")
+                return
+            }
+            finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
         case let .authFailed(reason):
             requiresRepair = true
-            stopWithFailure("Re-pair required: \(reason)")
+            stopWithFailure(
+                reason.hasPrefix("Re-pair required") ? reason : "Re-pair required: \(reason)"
+            )
         case let .snapshot(snapshot):
             self.snapshot = snapshot
         case let .sessions(list):
@@ -572,7 +592,13 @@ final class BridgeConnection: ObservableObject {
                 handler(data)
             }
         case let .error(message):
-            if message.hasPrefix("Invalid bridge message")
+            if Self.isPairingProtocolRejection(
+                message,
+                pairingInProgress: invitation != nil
+            ) {
+                requiresRepair = true
+                stopWithFailure("Re-pair required: Update Rai on this Mac")
+            } else if message.hasPrefix("Invalid bridge message")
                 || message.hasPrefix("Could not read scrollback") {
                 // Old Mac that predates readScrollback, or a transient history
                 // read failure. Scrollback is progressive enhancement; don't
@@ -585,13 +611,67 @@ final class BridgeConnection: ObservableObject {
             }
         case .event:
             break
-        case .hello, .subscribe, .attachStream, .detachStream,
+        case .pair, .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
              .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
              .listSessions, .selectSession:
             break
+        }
+    }
+
+    static func exchangedPairing(token: String, invitation: PairingInvitation) throws -> Pairing {
+        try invitation.credential(token: token)
+    }
+
+    static func isPairingProtocolRejection(
+        _ message: String,
+        pairingInProgress: Bool
+    ) -> Bool {
+        pairingInProgress && message.hasPrefix("Invalid bridge message")
+    }
+
+    private func finishAuthentication(protocolVersion: Int, sessionName: String?) {
+        guard protocolVersion == bridgeProtocolVersion else {
+            requiresRepair = true
+            stopWithFailure("Re-pair required: Unsupported bridge protocol \(protocolVersion)")
+            return
+        }
+        reconnectAttempt = 0
+        status = .connected
+        self.sessionName = sessionName
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.send(.subscribe)
+                self.didConnect?()
+                self.requestSessions()
+                self.flushOutbox()
+                for (paneID, size) in self.desiredStreams {
+                    let needsSeed = !self.seededPanes.contains(paneID)
+                    if needsSeed {
+                        try await self.send(
+                            .readScrollback(
+                                paneID: paneID,
+                                lines: 1000,
+                                rows: size.rows,
+                                fullGrid: true
+                            )
+                        )
+                    }
+                    try await self.send(
+                        .attachStream(
+                            paneID: paneID,
+                            cols: size.cols,
+                            rows: size.rows,
+                            fullGrid: true
+                        )
+                    )
+                }
+            } catch {
+                self.handleSocketFailure(error)
+            }
         }
     }
 
@@ -615,7 +695,8 @@ final class BridgeConnection: ObservableObject {
     }
 
     private static func isActionError(_ message: String) -> Bool {
-        message == "Agent must be claude or codex."
+        message.hasPrefix("Bridge audit ")
+            || message == "Agent must be claude or codex."
             || message.hasPrefix("Unknown workspace ")
             || message.hasPrefix("Could not launch ")
             || message.hasPrefix("Could not rename ")
@@ -684,14 +765,21 @@ final class BridgeConnection: ObservableObject {
         didReceiveBackgroundWork?([])
         desiredStreams.removeAll()
         seededPanes.removeAll()
-        if clearPairing { pairing = nil }
+        if clearPairing {
+            pairing = nil
+            invitation = nil
+        }
     }
 
-    private func webSocketURL(for pairing: Pairing) -> URL? {
+    private func webSocketURL() -> URL? {
+        let host = pairing?.host ?? invitation?.host
+        let port = pairing?.port ?? invitation?.port
+        let useTLS = pairing?.useTLS ?? invitation?.useTLS
+        guard let host, let port, let useTLS else { return nil }
         var components = URLComponents()
-        components.scheme = pairing.useTLS ? "wss" : "ws"
-        components.host = pairing.host
-        components.port = pairing.port
+        components.scheme = useTLS ? "wss" : "ws"
+        components.host = host
+        components.port = port
         components.path = "/"
         return components.url
     }

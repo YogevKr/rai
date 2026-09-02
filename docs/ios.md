@@ -17,9 +17,13 @@ the root Swift package.
 ## 1. Turn on the Mac bridge
 
 In rai on your Mac: **Settings → iPhone** → enable the companion bridge. It shows
-the LAN address, port (**47837**), a pairing token, and a QR code. The bridge is
-token‑authenticated cleartext WebSocket — intended for a trusted LAN or Tailscale,
-not the open internet.
+the LAN address, port (**47837**), a short pairing code, and a QR code. The code
+expires after 10 minutes. It also stops after five failed attempts or one success.
+The phone confirms its new device credential before the Mac spends the code.
+A lost reply can retry the same code until its expiry.
+
+The bridge uses cleartext WebSocket on the LAN. Use it only on a trusted LAN.
+The Tailscale path uses secure WebSocket through `tailscale serve`.
 
 ## 2. Build
 
@@ -72,12 +76,29 @@ uses. The private key is stored in the Mac's Keychain, not in preferences.
 
 ## 4. Pair
 
-Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:
+Three ways produce the same `rai://pair?host=…&port=…&code=…` link:
+
 - **Scan** the QR from the Mac's Settings → iPhone.
 - **Enter manually**: host (`<mac>.local` or its Tailscale name/IP), port `47837`,
-  and the token.
+  and the eight-character code.
 - **Deep link**: open a `rai://pair?…` URL on the phone (the app registers the
   `rai` scheme).
+
+The phone exchanges the code and its device name for a device credential. The
+Mac returns this credential once. The phone stores it in Keychain.
+
+The Mac stores only a SHA-256 credential hash. It also stores the device label,
+pair date, and last-seen date. Settings lists each paired device.
+
+Use **Revoke** to remove one device. Rai closes that device's live bridge
+connections. The phone then shows its Pair Again flow.
+
+Use **Show audit log** to reveal `~/Library/Application Support/Rai/bridge-audit.jsonl`.
+The log records every phone write action. Rai sets mode `0600` and rotates it at
+about 10 MB.
+
+Rai protocol version 6 removes the old shared token. Existing phones must pair
+again. Rai does not accept the old token.
 
 Then: watch your herd, tap a pane to open its live terminal, and use the on‑screen
 keys / compose bar to drive the agent.
@@ -89,7 +110,7 @@ Skip the pairing UI with a launch env var:
 
 ```sh
 xcrun simctl install <udid> /tmp/rai-ios-dd/Build/Products/Debug-iphonesimulator/rai.app
-SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&token=<token>" \
+SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&code=<code>" \
   xcrun simctl launch <udid> com.whetstone.rai.ios
 ```
 
@@ -107,8 +128,7 @@ Caveats learned end to end:
   open: both GUIs `herdr terminal attach --takeover` the focused pane and kick
   each other in a loop. `RAI_BRIDGE_PORT` isolates the *port*, not the
   terminal attach. Point the simulator at the one running rai instead.
-- The pairing token lives in the `gr.krig.rai` defaults domain
-  (`companionBridgePairingToken`), handy for scripting the pair URL.
+- Pairing codes exist only in Mac memory. Generate a new code for each test.
 
 ## Status
 
