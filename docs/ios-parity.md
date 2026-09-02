@@ -13,6 +13,8 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Capability | macOS | iOS | Verdict |
 | --- | --- | --- | --- |
 | Live herd (spaces → tabs → panes, statuses) | sidebar | list + "Needs you" section | ✅ parity |
+| Herd before connection | current in-memory snapshot | saved snapshot with `last seen HH:MM` | ✅ phone offline support |
+| Connection diagnosis | Mac connection state | cause, action, raw details, sync age | ✅ phone remote support |
 | Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar | ✅ parity |
 | Scrollback search | ⌘F find bar | find bar with match count | ✅ parity |
 | Send image to agent | paste screenshot | photo picker → temp file path | ✅ parity |
@@ -88,7 +90,9 @@ This change is not compatible with protocol version 5. Old phones receive
   before this, one unknown/changed message put the app in a permanent
   reconnect loop. Keep it that way when adding messages.
 - True incompatibility is expressed by bumping `bridgeProtocolVersion` in
-  `Sources/RaiCore/Bridge/BridgeProtocol.swift`; the welcome check hard-fails
-  with "Re-pair required".
+  `Sources/RaiCore/Bridge/BridgeProtocol.swift`; the welcome check stops and
+  asks the user to update Rai without clearing the pairing.
 - A dev Mac app (rebuilt from a feature branch) and a released phone build
   routinely coexist — additive protocol changes only, or version-gate.
+- The current Mac reports a missing herd as `Herdr is not connected.`
+  The phone maps this existing error, so offline resilience needs no protocol change.

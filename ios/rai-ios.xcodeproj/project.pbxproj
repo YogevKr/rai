@@ -20,6 +20,7 @@
 		496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */; };
 		55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BE1878923A0D1203A33641D /* PairingTests.swift */; };
 		8485449A51E1C585A0439512 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28A9944E5B3DBD0E0B55C06 /* RootView.swift */; };
+		88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */; };
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
 		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
 		A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */; };
@@ -40,6 +41,7 @@
 
 /* Begin PBXFileReference section */
 		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
+		2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineResilienceTests.swift; sourceTree = "<group>"; };
 		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
 		3A18C263735F80641EEDBADC /* OutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxTests.swift; sourceTree = "<group>"; };
@@ -88,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */,
+				2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */,
 				3A18C263735F80641EEDBADC /* OutboxTests.swift */,
 				7BE1878923A0D1203A33641D /* PairingTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
@@ -233,6 +236,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */,
+				88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */,
 				1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */,
 				55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,

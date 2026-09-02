@@ -75,16 +75,14 @@ draft take-over; per-pane display prefs.
 6. **Doctor and push-test.** `collie doctor` is one read-only pass over the
    traps that fail silently, each finding naming the fix; `collie push-test`
    proves delivery. rai already fixed a silent missing-APNs-key drop.
-7. **Cached last screen on cold boot**, stamped "last seen HH:MM", plus a
-   "synced Ns ago" freshness promise (ADR 0031). rai iOS shows nothing until
-   the socket is up.
+7. ✅ **Cached last screen on cold boot**, stamped "last seen HH:MM", plus a
+   ticking "synced Ns ago" freshness promise (ADR 0031). Landed on iOS.
 8. **Operator config files.** `commands.toml`, `keys.toml`,
    `quick-replies.toml`, live-reloaded, with a `scope` so rows replace the
    shipped catalog on matching panes (ADR 0018). rai hardcodes both catalogs
    in `Composer.swift`.
-9. **Stable error codes from the bridge.** rai rejects with prose; Collie
-   sends `{code, detail}` so the phone can tell "herdr is down on the Mac"
-   from "bridge unreachable" and offer the right button.
+9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
+   TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
 10. **Push grouping.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
@@ -129,7 +127,7 @@ Wave 1 — independent worktrees, one Codex job each:
 3. **push-intelligence** (Mac + iOS notification delegate): coalescing,
    thread grouping, phone-side retraction, test push + Doctor in
    Settings → iPhone (items 6, 10).
-4. **offline-resilience** (iOS): cached last snapshot with "last seen",
+4. ✅ **offline-resilience** (iOS): cached last snapshot with "last seen",
    connection-cause diagnosis (items 7, 9 phone side).
 5. **hook-beacons** (Mac + hook script): Claude Code hook receiver, pane
    correlation via `HERDR_PANE_ID`, push body carries the question, beacon

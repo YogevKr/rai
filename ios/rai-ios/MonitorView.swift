@@ -47,7 +47,7 @@ struct MonitorView: View {
         AnyView(NavigationStack(path: $path) {
             Group {
                 if let snapshot = connection.snapshot {
-                    if connection.status.isConnected, snapshot.panes.isEmpty {
+                    if connection.shouldShowEmptyHerd {
                         emptyHerdState
                     } else {
                         herdList(snapshot)
@@ -62,6 +62,12 @@ struct MonitorView: View {
                 }
             }
             .onChange(of: connection.snapshot?.panes.map(\.paneID) ?? []) { _, panes in
+                autoOpenIfRequested(panes: panes)
+                openPendingPush(panes: panes)
+            }
+            .onChange(of: connection.isShowingCachedSnapshot) { _, isCached in
+                guard !isCached else { return }
+                let panes = connection.snapshot?.panes.map(\.paneID) ?? []
                 autoOpenIfRequested(panes: panes)
                 openPendingPush(panes: panes)
             }
@@ -139,28 +145,14 @@ struct MonitorView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if case .failed = connection.status {
-                    HStack {
-                        Image(systemName: "wifi.exclamationmark")
-                        Text(connection.status.label)
-                            .lineLimit(1)
-                        Spacer()
-                        if connection.requiresRepair {
-                            Button("Pair Again", action: forgetPairing)
-                        } else {
-                            Button("Reconnect") { connection.retryNow() }
-                        }
-                    }
-                    .font(.footnote)
-                    .padding(.horizontal)
-                    .padding(.vertical, 10)
-                    .background(.bar)
+                if let diagnosis = connection.status.diagnosis,
+                   connection.snapshot != nil {
+                    ConnectionIssueBar(
+                        diagnosis: diagnosis,
+                        lastSnapshotAt: connection.lastSnapshotAt,
+                        recover: { recover(from: diagnosis) }
+                    )
                 }
-            }
-            .alert("Pairing Rejected", isPresented: repairBinding) {
-                Button("Pair Again", action: forgetPairing)
-            } message: {
-                Text(connection.status.label)
             }
         })
         .sheet(isPresented: $showingAgentLauncher) {
@@ -256,18 +248,12 @@ struct MonitorView: View {
         closeTarget = nil
     }
 
-    private var repairBinding: Binding<Bool> {
-        Binding(
-            get: { connection.requiresRepair },
-            set: { _ in }
-        )
-    }
-
     // Testing/automation affordance mirroring RAI_PAIR_URL: auto-open a pane's
     // terminal on first sight so end-to-end runs are deterministic. Never set in
     // normal use.
     private func autoOpenIfRequested(panes: [String]) {
-        guard !didAutoOpen,
+        guard !connection.isShowingCachedSnapshot,
+              !didAutoOpen,
               let target = ProcessInfo.processInfo.environment["RAI_OPEN_PANE"],
               panes.contains(target)
         else { return }
@@ -276,7 +262,10 @@ struct MonitorView: View {
     }
 
     private func openPendingPush(panes: [String]) {
-        guard let paneID = appModel.pendingOpenPaneID, panes.contains(paneID) else { return }
+        guard !connection.isShowingCachedSnapshot,
+              let paneID = appModel.pendingOpenPaneID,
+              panes.contains(paneID)
+        else { return }
         if path.last != paneID {
             path.append(paneID)
         }
@@ -295,8 +284,8 @@ struct MonitorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .connected:
             emptyHerdState
-        case let .failed(reason):
-            failureState(reason: reason)
+        case let .failed(diagnosis):
+            failureState(diagnosis: diagnosis)
         case .disconnected:
             ContentUnavailableView {
                 Label("Disconnected", systemImage: "wifi.slash")
@@ -323,17 +312,20 @@ struct MonitorView: View {
         .refreshable { await connection.refreshSnapshot() }
     }
 
-    private func failureState(reason: String) -> some View {
-        ContentUnavailableView {
-            Label("Connection failed", systemImage: "wifi.exclamationmark")
-        } description: {
-            Text(reason)
-        } actions: {
-            if connection.requiresRepair {
-                Button("Pair Again", action: forgetPairing)
-            } else {
-                Button("Reconnect") { connection.retryNow() }
-            }
+    private func failureState(diagnosis: ConnectionDiagnosis) -> some View {
+        ConnectionIssueState(
+            diagnosis: diagnosis,
+            lastSnapshotAt: connection.lastSnapshotAt,
+            recover: { recover(from: diagnosis) }
+        )
+    }
+
+    private func recover(from diagnosis: ConnectionDiagnosis) {
+        switch diagnosis.action {
+        case .reconnect:
+            connection.retryNow()
+        case .pairAgain:
+            forgetPairing()
         }
     }
 
@@ -342,6 +334,10 @@ struct MonitorView: View {
         let working = agents(in: snapshot) { $0 == .working }
         let quiet = max(0, snapshot.panes.count - needsYou.count - working.count)
         let layout = HerdListLayout.resolve(triageEnabled: triageEnabled, filter: filter)
+        let lastSeenStamp: Date? = connection.isShowingCachedSnapshot
+            && !connection.status.isConnected
+            ? connection.lastSnapshotAt
+            : nil
         return List {
             if layout != .plain {
                 Section {
@@ -351,25 +347,42 @@ struct MonitorView: View {
                         finished: needsYou.filter { $0.pane.agentStatus == .done }.count,
                         working: working.count,
                         quiet: quiet,
+                        lastSeenAt: lastSeenStamp,
                         filter: $filter
                     )
                 }
                 .listRowInsets(EdgeInsets())
+            } else if let lastSeenStamp {
+                // Plain list, offline: the freshness stamp still has to show.
+                Section {
+                } header: {
+                    Text(SnapshotFreshness.lastSeen(at: lastSeenStamp))
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(Night.faint)
+                        .textCase(nil)
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 2)
+                }
+                .listRowInsets(EdgeInsets())
             }
-            switch layout {
-            case let .filtered(filter):
-                filteredSection(
-                    filter,
-                    snapshot: snapshot,
-                    needsYou: needsYou,
-                    working: working
-                )
-            case .triage:
-                triageSections(needsYou: needsYou, working: working)
-                spaceSections(snapshot)
-            case .plain:
-                spaceSections(snapshot)
+            Group {
+                switch layout {
+                case let .filtered(filter):
+                    filteredSection(
+                        filter,
+                        snapshot: snapshot,
+                        needsYou: needsYou,
+                        working: working
+                    )
+                case .triage:
+                    triageSections(needsYou: needsYou, working: working)
+                    spaceSections(snapshot)
+                case .plain:
+                    spaceSections(snapshot)
+                }
             }
+            .disabled(connection.isShowingCachedSnapshot)
+            .opacity(connection.isShowingCachedSnapshot ? 0.52 : 1)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -387,10 +400,12 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: item.pane.agentStatus == .blocked
+                            approve: connection.status.isConnected
+                                && item.pane.agentStatus == .blocked
                                 ? { connection.sendInput([0x0D], to: item.pane.paneID) }
                                 : nil,
-                            deny: item.pane.agentStatus == .blocked
+                            deny: connection.status.isConnected
+                                && item.pane.agentStatus == .blocked
                                 ? { connection.sendInput([0x1B], to: item.pane.paneID) }
                                 : nil
                         )
@@ -534,10 +549,12 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: item.pane.agentStatus == .blocked
+                            approve: connection.status.isConnected
+                                && item.pane.agentStatus == .blocked
                                 ? { connection.sendInput([0x0D], to: item.pane.paneID) }
                                 : nil,
-                            deny: item.pane.agentStatus == .blocked
+                            deny: connection.status.isConnected
+                                && item.pane.agentStatus == .blocked
                                 ? { connection.sendInput([0x1B], to: item.pane.paneID) }
                                 : nil
                         )
@@ -738,21 +755,29 @@ private struct PulseLine: View {
     let finished: Int
     let working: Int
     let quiet: Int
+    let lastSeenAt: Date?
     @Binding var filter: HerdFilter?
 
     var body: some View {
-        HStack(spacing: 2) {
-            if needsYou > 0 {
-                segment("\(needsYou) needs you", .needsYou, Night.amber)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 2) {
+                if needsYou > 0 {
+                    segment("\(needsYou) needs you", .needsYou, Night.amber)
+                    sep
+                }
+                if finished > 0 {
+                    segment("\(finished) finished", .finished, Night.green)
+                    sep
+                }
+                segment("\(working) working", .working, Night.dim)
                 sep
+                segment("\(quiet) idle", .quiet, Night.faint)
             }
-            if finished > 0 {
-                segment("\(finished) finished", .finished, Night.green)
-                sep
+            if let lastSeenAt {
+                Text(SnapshotFreshness.lastSeen(at: lastSeenAt))
+                    .foregroundStyle(Night.faint)
+                    .padding(.horizontal, 6)
             }
-            segment("\(working) working", .working, Night.dim)
-            sep
-            segment("\(quiet) idle", .quiet, Night.faint)
         }
         .font(.footnote.monospaced())
         .textCase(nil)
@@ -784,6 +809,97 @@ private struct PulseLine: View {
         .buttonStyle(.borderless)
         .accessibilityLabel("\(label)\(filter == target ? ", filtered" : "")")
         .accessibilityHint(filter == target ? "Shows everything" : "Shows only these")
+    }
+}
+
+private struct ConnectionIssueBar: View {
+    let diagnosis: ConnectionDiagnosis
+    let lastSnapshotAt: Date?
+    let recover: () -> Void
+    @State private var showsRawDetails = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "wifi.exclamationmark")
+                    .foregroundStyle(.red)
+                    .padding(.top, 2)
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        showsRawDetails.toggle()
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(diagnosis.message)
+                            .multilineTextAlignment(.leading)
+                        if let lastSnapshotAt {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                Text(
+                                    SnapshotFreshness.syncedAgo(
+                                        since: lastSnapshotAt,
+                                        now: context.date
+                                    )
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 6)
+                Button(diagnosis.action.title, action: recover)
+                    .buttonStyle(.bordered)
+            }
+            if showsRawDetails {
+                Text(diagnosis.rawDetails)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .transition(.opacity)
+            }
+        }
+        .font(.footnote)
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .accessibilityHint("Tap the diagnosis to show connection details")
+    }
+}
+
+private struct ConnectionIssueState: View {
+    let diagnosis: ConnectionDiagnosis
+    let lastSnapshotAt: Date?
+    let recover: () -> Void
+    @State private var showsRawDetails = false
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Connection failed", systemImage: "wifi.exclamationmark")
+        } description: {
+            VStack(spacing: 8) {
+                Text(diagnosis.message)
+                if let lastSnapshotAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(
+                            SnapshotFreshness.syncedAgo(
+                                since: lastSnapshotAt,
+                                now: context.date
+                            )
+                        )
+                    }
+                }
+                Button(showsRawDetails ? "Hide details" : "Show details") {
+                    showsRawDetails.toggle()
+                }
+                if showsRawDetails {
+                    Text(diagnosis.rawDetails)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        } actions: {
+            Button(diagnosis.action.title, action: recover)
+        }
     }
 }
 

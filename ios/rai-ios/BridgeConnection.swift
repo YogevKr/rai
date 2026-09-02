@@ -1,6 +1,208 @@
 import Foundation
+import Network
 import RaiCore
 import UIKit
+
+enum ConnectionRecoveryAction: Equatable {
+    case reconnect
+    case pairAgain
+
+    var title: String {
+        switch self {
+        case .reconnect: "Reconnect"
+        case .pairAgain: "Pair Again"
+        }
+    }
+}
+
+struct ConnectionDiagnosis: Equatable {
+    let message: String
+    let rawDetails: String
+    let action: ConnectionRecoveryAction
+
+    static func transport(_ error: Error, host: String) -> ConnectionDiagnosis {
+        let rawDetails = String(reflecting: error)
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cannotFindHost, .dnsLookupFailed:
+                return hostMissing(host, rawDetails: rawDetails)
+            case .cannotConnectToHost:
+                return macNotListening(rawDetails: rawDetails)
+            case .timedOut, .notConnectedToInternet, .cannotLoadFromNetwork:
+                return noRoute(rawDetails: rawDetails)
+            case .networkConnectionLost:
+                return connectionLost(host: host, rawDetails: rawDetails)
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .clientCertificateRejected,
+                 .clientCertificateRequired:
+                return tls(rawDetails: rawDetails)
+            default:
+                break
+            }
+        }
+
+        if let networkError = error as? NWError {
+            switch networkError {
+            case .dns:
+                return hostMissing(host, rawDetails: rawDetails)
+            case let .posix(code):
+                switch code {
+                case .ECONNREFUSED, .ECONNRESET:
+                    return macNotListening(rawDetails: rawDetails)
+                case .ECONNABORTED, .EPIPE:
+                    return connectionLost(host: host, rawDetails: rawDetails)
+                case .ETIMEDOUT, .ENETUNREACH, .EHOSTUNREACH, .ENETDOWN, .EHOSTDOWN:
+                    return noRoute(rawDetails: rawDetails)
+                default:
+                    break
+                }
+            case .tls:
+                return tls(rawDetails: rawDetails)
+            default:
+                break
+            }
+        }
+
+        return ConnectionDiagnosis(
+            message: "Connection to \(host) failed",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    static func helloRejected(reason: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Pairing was rejected by the Mac",
+            rawDetails: reason,
+            action: .pairAgain
+        )
+    }
+
+    static func invalidPairingReply() -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "The Mac sent an invalid pairing reply",
+            rawDetails: "Invalid pairing reply",
+            action: .pairAgain
+        )
+    }
+
+    static func macPredatesPairing() -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Update Rai on the Mac — it predates device pairing",
+            rawDetails: "The Mac rejected the pair message as an invalid bridge message",
+            action: .pairAgain
+        )
+    }
+
+    static func protocolMismatch(_ version: Int) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Rai versions don't match — update Rai on the Mac or iPhone",
+            rawDetails: "Unsupported bridge protocol \(version)",
+            action: .reconnect
+        )
+    }
+
+    static func herdMissing(rawDetails: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "herdr isn't running on the Mac",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    static func invalidAddress(host: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "The address for \(host) isn't valid",
+            rawDetails: "Invalid bridge address",
+            action: .pairAgain
+        )
+    }
+
+    static func serverError(_ message: String, host: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Connection to \(host) failed",
+            rawDetails: message,
+            action: .reconnect
+        )
+    }
+
+    static func bridgeError(_ message: String, host: String) -> ConnectionDiagnosis {
+        let normalized = message.lowercased()
+        if normalized == "herdr is not connected."
+            || normalized == "herdr is unavailable." {
+            return herdMissing(rawDetails: message)
+        }
+        return serverError(message, host: host)
+    }
+
+    private static func hostMissing(
+        _ host: String,
+        rawDetails: String
+    ) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Can't find \(host) on this network",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    private static func macNotListening(rawDetails: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Rai on the Mac isn't listening — is Rai running with the bridge on?",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    private static func noRoute(rawDetails: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "No route to the Mac — same Wi-Fi, or Tailscale on?",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    private static func connectionLost(
+        host: String,
+        rawDetails: String
+    ) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "Connection to \(host) was lost",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+
+    private static func tls(rawDetails: String) -> ConnectionDiagnosis {
+        ConnectionDiagnosis(
+            message: "TLS failed — check Tailscale Serve on the Mac",
+            rawDetails: rawDetails,
+            action: .reconnect
+        )
+    }
+}
+
+enum SnapshotFreshness {
+    static func lastSeen(at date: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm"
+        return "last seen \(formatter.string(from: date))"
+    }
+
+    static func syncedAgo(since date: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "synced \(seconds)s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "synced \(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "synced \(hours)h ago" }
+        return "synced \(hours / 24)d ago"
+    }
+}
 
 /// Grid dimensions of a streamed pane frame — the size the emulator must be
 /// for the frame's cell-addressed paints to land where herdr rendered them.
@@ -15,14 +217,14 @@ final class BridgeConnection: ObservableObject {
         case disconnected
         case connecting
         case connected
-        case failed(reason: String)
+        case failed(ConnectionDiagnosis)
 
         var label: String {
             switch self {
             case .disconnected: "Disconnected"
             case .connecting: "Connecting…"
             case .connected: "Connected"
-            case let .failed(reason): reason
+            case let .failed(diagnosis): diagnosis.message
             }
         }
 
@@ -30,11 +232,17 @@ final class BridgeConnection: ObservableObject {
             if case .connected = self { return true }
             return false
         }
+
+        var diagnosis: ConnectionDiagnosis? {
+            if case let .failed(diagnosis) = self { return diagnosis }
+            return nil
+        }
     }
 
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
-    @Published private(set) var requiresRepair = false
+    @Published private(set) var isShowingCachedSnapshot = false
+    @Published private(set) var lastSnapshotAt: Date?
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
@@ -43,7 +251,18 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var outbox: [QueuedLine] = []
     var didConnect: (() -> Void)?
     var didPair: ((Pairing) -> Void)?
+    var didReceiveSnapshot: ((SessionSnapshot, Date) -> Void)?
     var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
+
+    var requiresRepair: Bool {
+        status.diagnosis?.action == .pairAgain
+    }
+
+    var shouldShowEmptyHerd: Bool {
+        status.isConnected
+            && snapshot?.panes.isEmpty == true
+            && !isShowingCachedSnapshot
+    }
 
     var host: String {
         pairing?.host ?? invitation?.host ?? "Mac"
@@ -72,27 +291,30 @@ final class BridgeConnection: ObservableObject {
     private var seededPanes: Set<String> = []
 
     func connect(to pairing: Pairing) {
-        disconnect(clearPairing: false)
+        let changesMac = self.pairing.map { $0 != pairing } ?? false
+        disconnect(clearPairing: false, clearSnapshot: changesMac)
         self.pairing = pairing
         invitation = nil
         shouldReconnect = true
-        requiresRepair = false
         reconnectAttempt = 0
         openSocket()
     }
 
     func pair(using invitation: PairingInvitation) {
-        disconnect(clearPairing: false)
+        // A code for another Mac must not keep showing this Mac's herd.
+        let changesMac = pairing.map {
+            $0.host != invitation.host || $0.port != invitation.port
+        } ?? true
+        disconnect(clearPairing: false, clearSnapshot: changesMac)
         pairing = nil
         self.invitation = invitation
         shouldReconnect = true
-        requiresRepair = false
         reconnectAttempt = 0
         openSocket()
     }
 
     func disconnect() {
-        disconnect(clearPairing: true)
+        disconnect(clearPairing: true, clearSnapshot: true)
     }
 
     func retryNow() {
@@ -102,8 +324,22 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectAttempt = 0
         shouldReconnect = true
-        requiresRepair = false
+        status = .connecting
         openSocket()
+    }
+
+    func restoreCachedSnapshot(_ cached: CachedHerdSnapshot) {
+        snapshot = cached.snapshot
+        lastSnapshotAt = cached.savedAt
+        isShowingCachedSnapshot = true
+    }
+
+    func replaceWithLiveSnapshot(_ snapshot: SessionSnapshot, receivedAt: Date = Date()) {
+        self.snapshot = snapshot
+        lastSnapshotAt = receivedAt
+        isShowingCachedSnapshot = false
+        status = .connected
+        didReceiveSnapshot?(snapshot, receivedAt)
     }
 
     func refreshSnapshot() async {
@@ -426,12 +662,14 @@ final class BridgeConnection: ObservableObject {
 
     private func openSocket() {
         guard let url = webSocketURL(), shouldReconnect else {
-            status = .failed(reason: "Invalid bridge address")
+            status = .failed(.invalidAddress(host: host))
             return
         }
 
         reconnectTask?.cancel()
-        status = .connecting
+        if status.diagnosis == nil {
+            status = .connecting
+        }
         let socket = URLSession.shared.webSocketTask(with: url)
         task = socket
         socket.resume()
@@ -487,6 +725,7 @@ final class BridgeConnection: ObservableObject {
     private func receiveMessages(from socket: URLSessionWebSocketTask) async throws {
         while !Task.isCancelled {
             let frame = try await socket.receive()
+            guard task === socket else { return }
             let data: Data
             switch frame {
             case let .string(text):
@@ -515,15 +754,13 @@ final class BridgeConnection: ObservableObject {
         switch message {
         case let .paired(token, protocolVersion, sessionName):
             guard protocolVersion == bridgeProtocolVersion else {
-                requiresRepair = true
-                stopWithFailure("Re-pair required: Unsupported bridge protocol \(protocolVersion)")
+                stopWithFailure(.protocolMismatch(protocolVersion))
                 return
             }
             guard let invitation,
                   let pairing = try? Self.exchangedPairing(token: token, invitation: invitation)
             else {
-                requiresRepair = true
-                stopWithFailure("Re-pair required: Invalid pairing reply")
+                stopWithFailure(.invalidPairingReply())
                 return
             }
             self.pairing = pairing
@@ -539,18 +776,14 @@ final class BridgeConnection: ObservableObject {
             }
         case let .welcome(protocolVersion, sessionName):
             guard invitation == nil, pairing != nil else {
-                requiresRepair = true
-                stopWithFailure("Re-pair required: Invalid pairing reply")
+                stopWithFailure(.invalidPairingReply())
                 return
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
         case let .authFailed(reason):
-            requiresRepair = true
-            stopWithFailure(
-                reason.hasPrefix("Re-pair required") ? reason : "Re-pair required: \(reason)"
-            )
+            stopWithFailure(.helloRejected(reason: reason))
         case let .snapshot(snapshot):
-            self.snapshot = snapshot
+            replaceWithLiveSnapshot(snapshot)
         case let .sessions(list):
             sessions = list
             if let current = list.first(where: { $0.isCurrent }) {
@@ -596,8 +829,7 @@ final class BridgeConnection: ObservableObject {
                 message,
                 pairingInProgress: invitation != nil
             ) {
-                requiresRepair = true
-                stopWithFailure("Re-pair required: Update Rai on this Mac")
+                stopWithFailure(.macPredatesPairing())
             } else if message.hasPrefix("Invalid bridge message")
                 || message.hasPrefix("Could not read scrollback") {
                 // Old Mac that predates readScrollback, or a transient history
@@ -607,7 +839,7 @@ final class BridgeConnection: ObservableObject {
             } else if Self.isActionError(message) {
                 actionError = message
             } else {
-                status = .failed(reason: message)
+                status = .failed(.bridgeError(message, host: host))
             }
         case .event:
             break
@@ -634,8 +866,7 @@ final class BridgeConnection: ObservableObject {
 
     private func finishAuthentication(protocolVersion: Int, sessionName: String?) {
         guard protocolVersion == bridgeProtocolVersion else {
-            requiresRepair = true
-            stopWithFailure("Re-pair required: Unsupported bridge protocol \(protocolVersion)")
+            stopWithFailure(.protocolMismatch(protocolVersion))
             return
         }
         reconnectAttempt = 0
@@ -729,7 +960,7 @@ final class BridgeConnection: ObservableObject {
         task = nil
         receiveTask = nil
         reconnectAttempt += 1
-        status = .failed(reason: failureReason(for: error))
+        status = .failed(.transport(error, host: host))
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -739,7 +970,7 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func stopWithFailure(_ message: String) {
+    private func stopWithFailure(_ diagnosis: ConnectionDiagnosis) {
         shouldReconnect = false
         task?.cancel(with: .policyViolation, reason: nil)
         task = nil
@@ -747,10 +978,10 @@ final class BridgeConnection: ObservableObject {
         receiveTask = nil
         reconnectTask?.cancel()
         reconnectTask = nil
-        status = .failed(reason: message)
+        status = .failed(diagnosis)
     }
 
-    private func disconnect(clearPairing: Bool) {
+    private func disconnect(clearPairing: Bool, clearSnapshot: Bool) {
         shouldReconnect = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -759,8 +990,11 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .disconnected
-        requiresRepair = false
-        snapshot = nil
+        if clearSnapshot {
+            snapshot = nil
+            lastSnapshotAt = nil
+            isShowingCachedSnapshot = false
+        }
         sessionName = nil
         didReceiveBackgroundWork?([])
         desiredStreams.removeAll()
@@ -784,19 +1018,4 @@ final class BridgeConnection: ObservableObject {
         return components.url
     }
 
-    private func failureReason(for error: Error) -> String {
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .notConnectedToInternet:
-                return "No network connection"
-            case .cannotConnectToHost, .networkConnectionLost:
-                return "Mac connection lost"
-            case .timedOut:
-                return "Connection timed out"
-            default:
-                break
-            }
-        }
-        return "Connection lost"
-    }
 }
