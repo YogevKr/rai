@@ -70,6 +70,39 @@ The same `.p8` authentication key serves both APNs sandbox and production. The
 environment attached to each device token determines which APNs host the Mac
 uses. The private key is stored in the Mac's Keychain, not in preferences.
 
+rai waits 15 seconds to collect a push burst. One event keeps its pane link and
+Approve / Deny / Reply actions. A burst becomes one triage alert, such as
+`3 agents need you`, with the pane names in its body and no pane actions.
+Bursts above 32 panes split to stay within APNs' 4,096-byte payload limit.
+Large retraction sets also split without dropping pane identifiers.
+
+Alert payloads set `thread-id` to the workspace ID. They also set `summary-arg`
+to the workspace name and `summary-arg-count` to the represented agent count.
+A burst across workspaces uses the `rai-triage` thread.
+
+Each alert carries stable `agent-<paneID>` values in `notificationIDs`. A single
+alert also carries `notificationID`. `notificationTimestamp` protects a newer
+alert from a delayed retraction. When the Mac handles, closes, or changes a
+pane, it sends a silent retraction payload:
+
+```json
+{
+  "aps": {"content-available": 1},
+  "retractNotificationIDs": ["agent-<paneID>"],
+  "retractedBefore": 1788386400
+}
+```
+
+The retraction request uses `apns-push-type: background` and `apns-priority: 5`.
+APNs can retain it for seven days when the phone is offline.
+The iPhone removes matching older alerts and sets its badge to the remaining
+delivered count. iOS can delay, throttle, or omit background pushes. It does not
+wake an app that the user force-quit.
+
+Settings → iPhone includes **Send test push**. It sends `rai test · HH:MM` to
+every registered device and shows each APNs status and reason. The read-only
+Doctor checks the bridge, Bonjour, Tailscale, APNs, devices, gate, and last push.
+
 ## 4. Pair
 
 Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:
@@ -94,9 +127,41 @@ SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&token=<token>" \
 ```
 
 Add `SIMCTL_CHILD_RAI_OPEN_PANE=<paneID>` to auto-open a pane's terminal on
-launch, and `xcrun simctl push <udid> com.whetstone.rai.ios payload.json` to
-exercise the notification banner + tap-to-open without APNs (include `paneID`
-and `"Simulator Target Bundle"` in the payload).
+launch. Use this payload with `xcrun simctl push <udid>
+com.whetstone.rai.ios payload.json` to test a single alert:
+
+```json
+{
+  "Simulator Target Bundle": "com.whetstone.rai.ios",
+  "aps": {
+    "alert": {
+      "title": "Agent",
+      "body": "Needs you",
+      "summary-arg": "rai",
+      "summary-arg-count": 1
+    },
+    "category": "agent-attention",
+    "thread-id": "workspace-1"
+  },
+  "paneID": "<paneID>",
+  "workspaceID": "workspace-1",
+  "workspace": "rai",
+  "notificationID": "agent-<paneID>",
+  "notificationIDs": ["agent-<paneID>"],
+  "notificationTimestamp": 1788386300
+}
+```
+
+Use this payload to test phone-side retraction:
+
+```json
+{
+  "Simulator Target Bundle": "com.whetstone.rai.ios",
+  "aps": {"content-available": 1},
+  "retractNotificationIDs": ["agent-<paneID>"],
+  "retractedBefore": 1788386400
+}
+```
 
 (Keychain persistence fails in unsigned simulator builds, so pairing there is
 per‑session — fine for testing; real signed device builds persist it.)
@@ -112,6 +177,7 @@ Caveats learned end to end:
 
 ## Status
 
-Working end to end: pair, monitor, raw terminal streaming, input, and native APNs
-push with tap-to-open navigation. Real push delivery remains pending the user's
-Apple Developer enrollment, credentials, signing, and a physical iPhone.
+Working in builds and simulator tests: pair, monitor, terminal streaming, input,
+push links, burst planning, grouping payloads, and retraction handling. Real APNs
+delivery, background wake timing, grouping display, and actions need a signed
+build, valid credentials, and a physical iPhone.

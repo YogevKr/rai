@@ -21,11 +21,21 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     self.pendingPaneID = nil
                 }
             }
+            if pendingTriage {
+                Task { @MainActor in
+                    appModel?.openTriage()
+                    self.pendingTriage = false
+                }
+            }
         }
     }
 
     private var deviceToken: String?
     private var pendingPaneID: String?
+    private var pendingTriage = false
+    private lazy var retractionHandler = PhoneNotificationRetractionHandler(
+        center: SystemPhoneNotificationCenter()
+    )
 
     func application(
         _ application: UIApplication,
@@ -71,6 +81,17 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     func application(
         _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task {
+            let handled = await retractionHandler.handle(userInfo: userInfo)
+            completionHandler(handled ? .newData : .noData)
+        }
+    }
+
+    func application(
+        _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
@@ -96,7 +117,11 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let paneID = response.notification.request.content.userInfo["paneID"] as? String else {
+        let userInfo = response.notification.request.content.userInfo
+        guard let paneID = userInfo["paneID"] as? String else {
+            if userInfo["triage"] as? Bool == true {
+                await openTriage()
+            }
             return
         }
         let bytes: [UInt8]?
@@ -136,6 +161,14 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         await MainActor.run {
             appModel?.pendingOpenPaneID = paneID
             if appModel != nil { pendingPaneID = nil }
+        }
+    }
+
+    private func openTriage() async {
+        pendingTriage = true
+        await MainActor.run {
+            appModel?.openTriage()
+            if appModel != nil { pendingTriage = false }
         }
     }
 }
