@@ -21,7 +21,7 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
-| Notifications on blocked/done | native macOS + dock badge | APNs push, Approve/Deny/Reply actions, tap-to-open | ✅ parity (device-only delivery) |
+| Notifications on blocked/done | native macOS + dock badge | APNs bursts, workspace groups, actions, retraction, tap-to-open | ✅ parity (physical delivery not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -51,9 +51,21 @@ All additive, no version bump (old phones skip unknown message types):
   the pane row, summaries in a detail view — a waiting agent must not
   read as plain Idle.
 - Mac notifications now use stable per-pane identifiers and are RETRACTED
-  when a pane stops being blocked or is selected on the Mac (phone-side
-  mirror of this retraction is a future nicety; APNs can't recall a
-  delivered push without a service extension).
+  when a pane changes, closes, or is selected on the Mac.
+
+## Push intelligence LANDED (2026-09-02)
+
+- The presence gate has one worker for presence checks and a 15-second burst
+  window. Bursts become one triage push. Single pushes keep pane actions.
+- APNs alert payloads group by workspace with `thread-id`, `summary-arg`, and
+  `summary-arg-count`. Cross-workspace bursts use the `rai-triage` thread.
+- Alert payloads carry shared `agent-<paneID>` values and creation timestamps.
+  Mac retraction sends identifiers with a cutoff timestamp.
+- iOS removes matching older notifications and keeps newer replacements.
+  Badge recomputation excludes alerts seen during the last app activation.
+- Background retraction is additive. Old phones ignore the custom payload.
+- Settings → iPhone now has per-device test results and a read-only Doctor.
+- The bridge protocol remains v5. No WebSocket message changed.
 
 ## Backlog (value order)
 
@@ -96,3 +108,4 @@ This change is not compatible with protocol version 5. Old phones receive
   routinely coexist — additive protocol changes only, or version-gate.
 - The current Mac reports a missing herd as `Herdr is not connected.`
   The phone maps this existing error, so offline resilience needs no protocol change.
+- APNs custom keys are additive. Old iOS builds ignore new push fields.

@@ -285,6 +285,7 @@ struct SettingsView: View {
 private struct CompanionSettingsView: View {
     @ObservedObject private var server: RaiBridgeServer
     @ObservedObject private var apnsSettings: APNsSettings
+    @ObservedObject private var presenceStatus = PushPresenceStatus.shared
     @State private var keyP8Draft: String
     @State private var keyP8Error: String?
 
@@ -302,6 +303,25 @@ private struct CompanionSettingsView: View {
     private var showPushSettings: Bool {
         apnsSettings.isConfigured
             || UserDefaults.standard.bool(forKey: "companionPushSettingsVisible")
+    }
+
+    private var doctorFindings: [DoctorFinding] {
+        CompanionDoctor.findings(for: CompanionDoctorState(
+            bridgeEnabled: server.isEnabled,
+            bridgeListening: server.isRunning,
+            bonjourAdvertised: server.isBonjourAdvertised,
+            bridgePort: server.port,
+            tailscaleState: server.tailscaleServeState,
+            tailscaleURL: server.tailscaleWSSURL?.absoluteString,
+            apnsKeyState: apnsSettings.keyReadState,
+            apnsEnvironment: apnsSettings.defaultEnvironment,
+            registeredDeviceCount: server.registeredPushDeviceCount,
+            presenceGateEnabled: SettingsStore.shared.holdPushesWhileAtMac,
+            presenceGateIsAway: presenceStatus.isAway,
+            pendingPushCount: presenceStatus.pendingCount,
+            lastPushResult: server.lastPushResult,
+            lastPushSucceeded: server.lastPushSucceeded
+        ))
     }
 
     var body: some View {
@@ -483,6 +503,59 @@ private struct CompanionSettingsView: View {
                     .foregroundStyle(Theme.textPrimary)
                 }
                 }
+
+                SettingsSection(title: "Push Test") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Button(server.isSendingTestPush ? "Sending…" : "Send test push") {
+                            server.sendTestPush()
+                        }
+                        .disabled(server.isSendingTestPush)
+
+                        ForEach(server.testPushResults) { result in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Circle()
+                                    .fill(result.succeeded ? Color.green : Color.red)
+                                    .frame(width: 7, height: 7)
+                                Text("\(result.deviceLabel) · \(result.environment)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                Spacer()
+                                Text("\(result.status.map(String.init) ?? "—") · \(result.reason)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(
+                                        result.succeeded
+                                            ? Theme.status(.done)
+                                            : Theme.status(.blocked)
+                                    )
+                            }
+                        }
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
+                }
+
+                SettingsSection(title: "Doctor") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(doctorFindings) { finding in
+                            HStack(alignment: .top, spacing: 9) {
+                                Circle()
+                                    .fill(doctorColor(finding.severity))
+                                    .frame(width: 8, height: 8)
+                                    .padding(.top, 4)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(finding.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text(finding.detail)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textSecondary)
+                                    Text("Fix: \(finding.fix)")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                            }
+                        }
+                    }
+                    .foregroundStyle(Theme.textPrimary)
+                }
             }
         }
         .settingsTabBackground()
@@ -501,6 +574,14 @@ private struct CompanionSettingsView: View {
                 .textFieldStyle(.roundedBorder)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func doctorColor(_ severity: DoctorSeverity) -> Color {
+        switch severity {
+        case .green: .green
+        case .amber: .orange
+        case .red: .red
+        }
     }
 
     private func companionValue(label: String, value: String) -> some View {

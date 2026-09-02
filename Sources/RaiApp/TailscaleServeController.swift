@@ -1,5 +1,13 @@
 import Foundation
 
+enum TailscaleServeState: Equatable, Sendable {
+    case stopped
+    case checking
+    case active(host: String)
+    case unavailable
+    case failed(message: String)
+}
+
 actor TailscaleServeController {
     enum StartResult {
         case active(host: String)
@@ -10,9 +18,14 @@ actor TailscaleServeController {
     private var executableURL: URL?
     private var ownsServe = false
     private let ownershipKey = "companionBridgeOwnsTailscaleServe8443"
+    private(set) var state: TailscaleServeState = .stopped
 
     func start(bridgePort: UInt16, httpsPort: UInt16) async -> StartResult {
-        guard let executableURL = Self.findExecutable() else { return .unavailable }
+        state = .checking
+        guard let executableURL = Self.findExecutable() else {
+            state = .unavailable
+            return .unavailable
+        }
         self.executableURL = executableURL
 
         let status = await Self.run(executableURL, arguments: ["status", "--json"])
@@ -21,6 +34,7 @@ actor TailscaleServeController {
               let node = try? JSONDecoder().decode(Status.self, from: data),
               node.selfNode.online,
               !node.selfNode.dnsName.isEmpty else {
+            state = .unavailable
             return .unavailable
         }
 
@@ -28,7 +42,10 @@ actor TailscaleServeController {
         while host.hasSuffix(".") {
             host.removeLast()
         }
-        guard !host.isEmpty else { return .unavailable }
+        guard !host.isEmpty else {
+            state = .unavailable
+            return .unavailable
+        }
 
         let serveStatus = await Self.run(
             executableURL,
@@ -40,16 +57,18 @@ actor TailscaleServeController {
                   httpsPort: httpsPort,
                   bridgePort: bridgePort
               ) else {
+            state = .unavailable
             return .unavailable
         }
         switch portState {
         case .matching:
             ownsServe = UserDefaults.standard.bool(forKey: ownershipKey)
+            state = .active(host: host)
             return .active(host: host)
         case .conflict:
-            return .failed(
-                message: "Tailscale Serve port \(httpsPort) is already in use."
-            )
+            let message = "Tailscale Serve port \(httpsPort) is already in use."
+            state = .failed(message: message)
+            return .failed(message: message)
         case .free:
             break
         }
@@ -61,22 +80,32 @@ actor TailscaleServeController {
         guard serve.exitCode == 0 else {
             let detail = serve.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
             let suffix = detail.isEmpty ? "" : " \(detail)"
-            return .failed(message: "Tailscale Serve could not start.\(suffix)")
+            let message = "Tailscale Serve could not start.\(suffix)"
+            state = .failed(message: message)
+            return .failed(message: message)
         }
         ownsServe = true
         UserDefaults.standard.set(true, forKey: ownershipKey)
+        state = .active(host: host)
         return .active(host: host)
     }
 
     func stop(httpsPort: UInt16) async {
-        guard ownsServe, let executableURL else { return }
+        guard ownsServe, let executableURL else {
+            state = .stopped
+            return
+        }
         let result = await Self.run(
             executableURL,
             arguments: ["serve", "--https=\(httpsPort)", "off"]
         )
-        guard result.exitCode == 0 else { return }
+        guard result.exitCode == 0 else {
+            state = .failed(message: "Tailscale Serve could not stop.")
+            return
+        }
         ownsServe = false
         UserDefaults.standard.removeObject(forKey: ownershipKey)
+        state = .stopped
     }
 
     private static func findExecutable() -> URL? {

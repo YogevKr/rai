@@ -1,3 +1,4 @@
+import Combine
 import CoreGraphics
 import Foundation
 import RaiCore
@@ -27,11 +28,157 @@ enum HeldPushDecision: Equatable {
     }
 }
 
+struct PhonePushEvent: Equatable, Sendable {
+    let paneID: String
+    let paneName: String
+    let workspaceID: String
+    let workspaceName: String
+    let status: AgentStatus
+    let occurredAt: Date
+}
+
+struct PhonePushBurst: Equatable, Sendable {
+    let events: [PhonePushEvent]
+
+    var isSummary: Bool { events.count > 1 }
+
+    var title: String {
+        guard isSummary else { return events[0].paneName }
+        // The product copy intentionally covers blocked and done events with
+        // one triage-focused summary. The pane list shows the current details.
+        return "\(events.count) agents need you"
+    }
+
+    var body: String {
+        guard isSummary else {
+            return events[0].status == .blocked ? "Needs you" : "Finished"
+        }
+        return events.map(\.paneName).joined(separator: ", ")
+    }
+
+    var paneID: String? { isSummary ? nil : events[0].paneID }
+    var requiresAttention: Bool { !isSummary && events[0].status == .blocked }
+    var notificationIDs: [String] {
+        events.map { PushNotificationIdentity.pane($0.paneID) }
+    }
+
+    var workspaceID: String? {
+        let values = Set(events.map(\.workspaceID))
+        return values.count == 1 ? values.first : nil
+    }
+
+    var workspaceName: String? {
+        let values = Set(events.map(\.workspaceName))
+        return values.count == 1 ? values.first : nil
+    }
+
+    var threadID: String {
+        workspaceID ?? "rai-triage"
+    }
+
+    var summaryArgument: String {
+        workspaceName ?? "rai"
+    }
+
+    var occurredAt: Date {
+        events.map(\.occurredAt).max() ?? .distantPast
+    }
+}
+
+enum PushBurstPlanner {
+    /// Keeps stable identifier arrays well below APNs' 4,096-byte limit.
+    static let maximumEventsPerPush = 32
+
+    /// Groups consecutive events while each event remains inside the window
+    /// that starts at the prior event.
+    static func plan(
+        events: [PhonePushEvent],
+        window: TimeInterval
+    ) -> [PhonePushBurst] {
+        guard !events.isEmpty else { return [] }
+        let ordered = events.enumerated().sorted {
+            if $0.element.occurredAt == $1.element.occurredAt {
+                return $0.offset < $1.offset
+            }
+            return $0.element.occurredAt < $1.element.occurredAt
+        }.map(\.element)
+
+        var groups: [[PhonePushEvent]] = [[ordered[0]]]
+        for event in ordered.dropFirst() {
+            let previous = groups[groups.count - 1].last!
+            if event.occurredAt.timeIntervalSince(previous.occurredAt) <= window {
+                groups[groups.count - 1].append(event)
+            } else {
+                groups.append([event])
+            }
+        }
+        return groups.flatMap { group in
+            stride(from: 0, to: group.count, by: maximumEventsPerPush).map { offset in
+                PhonePushBurst(events: Array(
+                    group[offset..<min(offset + maximumEventsPerPush, group.count)]
+                ))
+            }
+        }
+    }
+}
+
+enum NotifiedPaneStore {
+    private static let key = "pushNotifiedPaneStatuses"
+
+    static func load(defaults: UserDefaults = .standard) -> [String: AgentStatus] {
+        guard let data = defaults.data(forKey: key) else { return [:] }
+        return (try? JSONDecoder().decode([String: AgentStatus].self, from: data)) ?? [:]
+    }
+
+    static func save(
+        _ statuses: [String: AgentStatus],
+        defaults: UserDefaults = .standard
+    ) {
+        if statuses.isEmpty {
+            defaults.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(statuses) {
+            defaults.set(data, forKey: key)
+        }
+    }
+}
+
+enum NotificationRetractionPlanner {
+    static func paneIDs(
+        notifiedStatuses: [String: AgentStatus],
+        currentStatuses: [String: AgentStatus],
+        selectedPaneID: String?
+    ) -> Set<String> {
+        Set(notifiedStatuses.compactMap { paneID, notifiedStatus in
+            if paneID == selectedPaneID || currentStatuses[paneID] != notifiedStatus {
+                paneID
+            } else {
+                nil
+            }
+        })
+    }
+}
+
+@MainActor
+final class PushPresenceStatus: ObservableObject {
+    static let shared = PushPresenceStatus()
+
+    @Published private(set) var pendingCount = 0
+    @Published private(set) var isAway = false
+
+    func update(pendingCount: Int, isAway: Bool) {
+        self.pendingCount = pendingCount
+        self.isAway = isAway
+    }
+}
+
 enum UserPresence {
     /// User counts as away after this much input silence.
     static let awayAfter: TimeInterval = 120
     /// Held pushes re-check on this cadence.
     static let pollInterval: TimeInterval = 15
+    /// A single gate worker waits this long after the newest event. Events in
+    /// this interval become one phone push instead of several alerts.
+    static let burstWindow: TimeInterval = 15
 
     /// Seconds since the user last touched keyboard or mouse, session-wide.
     /// Minimum across concrete event types — the kCGAnyInputEventType trick

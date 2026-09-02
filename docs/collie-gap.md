@@ -29,14 +29,13 @@ of what rai should absorb.
 
 Closed since the July audit: single-choice permission/trust prompt buttons
 with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac-side
-notification retraction; triage groups with counts and a filter pulse line
-(Nightwatch); session follow.
+two-tap danger; destructive-input confirm; push presence gate; Mac and phone
+notification retraction; push coalescing and grouping; triage groups with counts
+and a filter pulse line (Nightwatch); session follow.
 
 Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; phone-side retraction, coalescing, per-kind toggles, DND/snooze;
-statusline strip; connection-cause diagnosis; read-only tier + audit log;
-draft take-over; per-pane display prefs.
+blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
+diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -72,7 +71,7 @@ draft take-over; per-pane display prefs.
    and a `0600` JSONL write audit. **LAN TLS remains open.** The LAN pairing
    URL still uses plain `ws://`, so pane content crosses the LAN without TLS.
    The Tailscale path uses `wss://` through `tailscale serve`.
-6. **Doctor and push-test.** `collie doctor` is one read-only pass over the
+6. **Doctor and push-test. ✅ Landed 2026-09-02.** `collie doctor` is one read-only pass over the
    traps that fail silently, each finding naming the fix; `collie push-test`
    proves delivery. rai already fixed a silent missing-APNs-key drop.
 7. ✅ **Cached last screen on cold boot**, stamped "last seen HH:MM", plus a
@@ -83,7 +82,7 @@ draft take-over; per-pane display prefs.
    in `Composer.swift`.
 9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
    TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
-10. **Push grouping.** Collie batches simultaneous blocks into one summary.
+10. **Push grouping. ✅ Landed 2026-09-02.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
     the Mac handles it.
@@ -124,7 +123,7 @@ Wave 1 — independent worktrees, one Codex job each:
 1. **guarded-send** (iOS): verified send + no-echo prompt guard (items 1, 4).
 2. ✅ **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
    per-device tokens, revoke, audit log (item 5). LAN TLS remains open.
-3. **push-intelligence** (Mac + iOS notification delegate): coalescing,
+3. **push-intelligence ✅ complete** (Mac + iOS notification delegate): coalescing,
    thread grouping, phone-side retraction, test push + Doctor in
    Settings → iPhone (items 6, 10).
 4. ✅ **offline-resilience** (iOS): cached last snapshot with "last seen",

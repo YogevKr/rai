@@ -1,5 +1,12 @@
+import CryptoKit
 import Foundation
 import Security
+
+enum APNsKeyReadState: Equatable, Sendable {
+    case missing
+    case readable
+    case unreadable
+}
 
 struct APNsConfiguration: Sendable {
     let teamID: String
@@ -69,6 +76,16 @@ final class APNsSettings: ObservableObject {
         )
     }
 
+    var keyReadState: APNsKeyReadState {
+        guard hasStoredKey else { return .missing }
+        let value = keyP8.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              (try? P256.Signing.PrivateKey(pemRepresentation: value)) != nil else {
+            return .unreadable
+        }
+        return .readable
+    }
+
     private enum Key {
         static let teamID = "apns.teamID"
         static let keyID = "apns.keyID"
@@ -85,7 +102,7 @@ final class APNsSettings: ObservableObject {
         self.defaults = defaults
         teamID = defaults.string(forKey: Key.teamID) ?? ""
         keyID = defaults.string(forKey: Key.keyID) ?? ""
-        bundleID = defaults.string(forKey: Key.bundleID) ?? "gr.krig.rai.ios"
+        bundleID = defaults.string(forKey: Key.bundleID) ?? "com.whetstone.rai.ios"
         defaultEnvironment = defaults.string(forKey: Key.defaultEnvironment) ?? "sandbox"
         // No keychain read here. See `keyP8`.
         //

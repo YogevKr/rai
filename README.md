@@ -86,8 +86,8 @@ crook for the herd:
   rides herdr's key semantics, so Enter submits and Backspace erases.
 - **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
   workspace or a fresh one at a chosen directory.
-- **Push notifications** (APNs) when an agent blocks or finishes, with
-  Approve / Deny / Reply actions right on the notification.
+- **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
+  workspaces group, handled alerts retract, and single alerts keep actions.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through

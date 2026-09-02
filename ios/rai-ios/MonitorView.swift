@@ -74,6 +74,10 @@ struct MonitorView: View {
             .onChange(of: appModel.pendingOpenPaneID) { _, _ in
                 openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
+            .onChange(of: appModel.triageRequest) { _, _ in
+                path.removeAll()
+                filter = nil
+            }
             .onAppear {
                 autoOpenIfRequested(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
                 openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])

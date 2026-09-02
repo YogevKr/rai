@@ -135,6 +135,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
     @Published private(set) var pendingPairing: PairingInvitation?
     @Published var pendingOpenPaneID: String?
+    @Published private(set) var triageRequest = 0
     @Published private(set) var backgroundWorkByPaneID: [String: [String]] = [:]
     let connection: BridgeConnection
 
@@ -260,6 +261,11 @@ final class AppModel: ObservableObject {
     func sendNotificationInput(_ bytes: [UInt8], to paneID: String) async -> Bool {
         guard let pairing else { return false }
         return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
+    }
+
+    func openTriage() {
+        pendingOpenPaneID = nil
+        triageRequest += 1
     }
 
     private func registerPushIfPossible() {

@@ -3,6 +3,56 @@ import Network
 import RaiCore
 import SystemConfiguration
 
+struct PushDeliveryReport: Identifiable, Equatable, Sendable {
+    let deviceToken: String
+    let environment: String
+    let status: Int?
+    let reason: String
+
+    var id: String { "\(environment):\(deviceToken)" }
+    var deviceLabel: String { "…\(deviceToken.suffix(8))" }
+    var succeeded: Bool { status == 200 }
+}
+
+struct PushBadgeLedger<Device: Hashable> {
+    private var activePushesByDevice: [Device: [Set<String>]] = [:]
+
+    func proposedBadge(adding identifiers: Set<String>, for device: Device) -> Int {
+        var active = activePushesByDevice[device] ?? []
+        active.removeAll { !$0.isDisjoint(with: identifiers) }
+        active.append(identifiers)
+        return active.count
+    }
+
+    mutating func commitAlert(identifiers: Set<String>, for device: Device) {
+        var active = activePushesByDevice[device] ?? []
+        active.removeAll { !$0.isDisjoint(with: identifiers) }
+        active.append(identifiers)
+        activePushesByDevice[device] = active
+    }
+
+    mutating func commitRetraction(identifiers: Set<String>, for device: Device) {
+        activePushesByDevice[device]?.removeAll {
+            !$0.isDisjoint(with: identifiers)
+        }
+    }
+
+    mutating func removeAll() {
+        activePushesByDevice.removeAll()
+    }
+
+    mutating func removeDevices(where shouldRemove: (Device) -> Bool) {
+        activePushesByDevice = activePushesByDevice.filter {
+            !shouldRemove($0.key)
+        }
+    }
+}
+
+private struct RetractionDeliveryReport: Sendable {
+    let pushReport: PushDeliveryReport
+    let acceptedNotificationIDs: Set<String>
+}
+
 /// Per-device authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
@@ -22,6 +72,12 @@ final class RaiBridgeServer: ObservableObject {
     @Published private(set) var pairedDevices: [BridgePairedDevice]
     @Published private(set) var registeredPushDeviceCount = 0
     @Published private(set) var tailscaleHost: String?
+    @Published private(set) var tailscaleServeState: TailscaleServeState = .stopped
+    @Published private(set) var isBonjourAdvertised = false
+    @Published private(set) var testPushResults: [PushDeliveryReport] = []
+    @Published private(set) var isSendingTestPush = false
+    @Published private(set) var lastPushResult: String?
+    @Published private(set) var lastPushSucceeded: Bool?
 
     let apnsSettings: APNsSettings
     let auditLogURL: URL
@@ -116,14 +172,15 @@ final class RaiBridgeServer: ObservableObject {
     /// stream produces frames again. Guards the auto-restart loop below.
     private var observeRestarts: [ObjectIdentifier: [String: Int]] = [:]
     private var pushRegistrations: Set<PushRegistration> = []
-    /// Pushes delivered since a phone last connected; sent as the APNs badge
-    /// so the app icon shows how many notifications await. Reset when a
-    /// client authenticates — opening the app reconnects the bridge, which
-    /// is the closest signal we have for "the user looked".
-    private var outstandingPushCount = 0
+    /// Atomic delivered alerts per device. A summary counts as one alert.
+    /// Opening any client resets this optimistic state, as before.
+    private var pushBadgeLedger = PushBadgeLedger<PushRegistration>()
     private let apnsPusher = APNsPusher()
+    /// Serializes alert, retraction, and test batches in their creation order.
+    private var pushOperationTail: Task<Void, Never>?
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
+    private var registeredBonjourEndpoints: Set<NWEndpoint> = []
 
     init(
         model: RaiModel,
@@ -175,6 +232,7 @@ final class RaiBridgeServer: ObservableObject {
             syncCredentialState()
             schedulePairingExpiry()
         }
+        tailscaleServeState = .checking
         do {
             let webSocket = NWProtocolWebSocket.Options()
             webSocket.autoReplyPing = true
@@ -189,6 +247,9 @@ final class RaiBridgeServer: ObservableObject {
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor in self?.listenerDidChange(state) }
             }
+            listener.serviceRegistrationUpdateHandler = { [weak self] change in
+                Task { @MainActor in self?.bonjourRegistrationDidChange(change) }
+            }
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in self?.accept(connection) }
             }
@@ -198,6 +259,7 @@ final class RaiBridgeServer: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
             isRunning = false
+            tailscaleServeState = .stopped
         }
     }
 
@@ -205,6 +267,9 @@ final class RaiBridgeServer: ObservableObject {
         let previousTailscaleTask = tailscaleTask
         previousTailscaleTask?.cancel()
         tailscaleHost = nil
+        tailscaleServeState = .stopped
+        registeredBonjourEndpoints.removeAll()
+        isBonjourAdvertised = false
         let tailscaleServe = tailscaleServe
         let tailscalePort = tailscalePort
         tailscaleTask = Task {
@@ -255,13 +320,16 @@ final class RaiBridgeServer: ObservableObject {
                 switch result {
                 case let .active(host):
                     self.tailscaleHost = host
+                    self.tailscaleServeState = .active(host: host)
                     return
                 case let .failed(message):
                     // A real conflict (port taken, serve rejected) won't
                     // self-heal; surface it and stop retrying.
                     self.statusMessage = message
+                    self.tailscaleServeState = .failed(message: message)
                     return
                 case .unavailable:
+                    self.tailscaleServeState = .unavailable
                     break
                 }
                 try? await Task.sleep(for: delay)
@@ -346,61 +414,236 @@ final class RaiBridgeServer: ObservableObject {
         broadcast(.backgroundWork(work), onlyToSubscribers: true)
     }
 
-    func sendPush(
-        title: String,
-        subtitle: String?,
-        body: String,
-        paneID: String,
-        workspaceID: String,
-        workspace: String?,
-        requiresAttention: Bool
-    ) {
+    func sendPush(_ burst: PhonePushBurst) {
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
-        guard !registrations.isEmpty else { return }
+        guard !registrations.isEmpty else {
+            recordNoDelivery("Push not sent: no registered devices.")
+            return
+        }
         guard configuration.isConfigured else {
             // A phone expects pushes but the APNs key is gone (e.g. removed
             // from the keychain). Losing them SILENTLY cost a debugging
             // session — say so where the bridge status is shown.
             statusMessage = "Push disabled: APNs auth key missing — re-add it in Settings."
+            recordNoDelivery("Push not sent: APNs configuration is incomplete.")
             return
         }
         let pusher = apnsPusher
-        outstandingPushCount += 1
-        let badge = outstandingPushCount
+        let stableIDs = Set(burst.notificationIDs)
 
-        let delivery = Task.detached {
-            await withTaskGroup(of: String?.self, returning: [String].self) { group in
+        let previousOperation = pushOperationTail
+        let operation = Task { [weak self] in
+            await previousOperation?.value
+            guard let self else { return }
+            let badges = Dictionary(uniqueKeysWithValues: registrations.map {
+                ($0, self.pushBadgeLedger.proposedBadge(adding: stableIDs, for: $0))
+            })
+            let reports = await withTaskGroup(
+                of: PushDeliveryReport.self,
+                returning: [PushDeliveryReport].self
+            ) { group in
                 for registration in registrations {
                     group.addTask {
-                        let result = await pusher.send(
+                        let result = await pusher.sendAlert(
+                            configuration: configuration,
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            title: burst.title,
+                            subtitle: burst.workspaceName,
+                            body: burst.body,
+                            paneID: burst.paneID,
+                            workspaceID: burst.workspaceID,
+                            workspace: burst.workspaceName,
+                            category: burst.requiresAttention ? "agent-attention" : nil,
+                            notificationIDs: burst.notificationIDs,
+                            threadID: burst.threadID,
+                            summaryArgument: burst.summaryArgument,
+                            summaryArgumentCount: burst.events.count,
+                            occurredAt: burst.occurredAt,
+                            badge: badges[registration]
+                        )
+                        return PushDeliveryReport(
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            status: result.status,
+                            reason: result.reason
+                        )
+                    }
+                }
+                var values: [PushDeliveryReport] = []
+                for await report in group {
+                    values.append(report)
+                }
+                return values.sorted { $0.id < $1.id }
+            }
+            for report in reports where report.succeeded {
+                self.pushBadgeLedger.commitAlert(
+                    identifiers: stableIDs,
+                    for: .init(
+                        deviceToken: report.deviceToken,
+                        environment: report.environment
+                    )
+                )
+            }
+            self.recordDelivery(reports)
+            for report in reports where Self.isDeadToken(report) {
+                self.removePushRegistration(deviceToken: report.deviceToken)
+            }
+        }
+        pushOperationTail = operation
+    }
+
+    func retractPushNotifications(identifiers: [String]) {
+        let identifiers = Array(Set(identifiers)).sorted()
+        guard !identifiers.isEmpty else { return }
+        let configuration = apnsSettings.configuration
+        let registrations = pushRegistrations
+        guard !registrations.isEmpty else { return }
+        guard configuration.isConfigured else {
+            recordNoDelivery("Retraction not sent: APNs configuration is incomplete.")
+            return
+        }
+        let pusher = apnsPusher
+        let retractedBefore = Date()
+        let previousOperation = pushOperationTail
+        let operation = Task { [weak self] in
+            await previousOperation?.value
+            let reports = await withTaskGroup(
+                of: RetractionDeliveryReport.self,
+                returning: [RetractionDeliveryReport].self
+            ) { group in
+                for registration in registrations {
+                    group.addTask {
+                        let result = await pusher.sendRetraction(
+                            configuration: configuration,
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            notificationIDs: identifiers,
+                            retractedBefore: retractedBefore
+                        )
+                        return RetractionDeliveryReport(
+                            pushReport: .init(
+                                deviceToken: registration.deviceToken,
+                                environment: registration.environment,
+                                status: result.status,
+                                reason: result.reason
+                            ),
+                            acceptedNotificationIDs: result.acceptedNotificationIDs
+                        )
+                    }
+                }
+                var values: [RetractionDeliveryReport] = []
+                for await report in group { values.append(report) }
+                return values.sorted { $0.pushReport.id < $1.pushReport.id }
+            }
+            guard let self else { return }
+            for report in reports where !report.acceptedNotificationIDs.isEmpty {
+                self.pushBadgeLedger.commitRetraction(
+                    identifiers: report.acceptedNotificationIDs,
+                    for: .init(
+                        deviceToken: report.pushReport.deviceToken,
+                        environment: report.pushReport.environment
+                    )
+                )
+            }
+            let pushReports = reports.map(\.pushReport)
+            self.recordDelivery(pushReports, label: "Retraction")
+            for report in pushReports where Self.isDeadToken(report) {
+                self.removePushRegistration(deviceToken: report.deviceToken)
+            }
+        }
+        pushOperationTail = operation
+    }
+
+    func sendTestPush(now: Date = Date()) {
+        let configuration = apnsSettings.configuration
+        let registrations = pushRegistrations
+        testPushResults = []
+        guard !registrations.isEmpty else {
+            recordNoDelivery("Test push not sent: no registered devices.")
+            return
+        }
+        guard configuration.isConfigured else {
+            recordNoDelivery("Test push not sent: APNs configuration is incomplete.")
+            return
+        }
+        isSendingTestPush = true
+        let pusher = apnsPusher
+        let title = "rai test · \(Self.pushTime(now))"
+        let previousOperation = pushOperationTail
+        let operation = Task { [weak self] in
+            await previousOperation?.value
+            let reports = await withTaskGroup(
+                of: PushDeliveryReport.self,
+                returning: [PushDeliveryReport].self
+            ) { group in
+                for registration in registrations {
+                    group.addTask {
+                        let result = await pusher.sendAlert(
                             configuration: configuration,
                             deviceToken: registration.deviceToken,
                             environment: registration.environment,
                             title: title,
-                            subtitle: subtitle,
-                            body: body,
-                            paneID: paneID,
-                            workspaceID: workspaceID,
-                            workspace: workspace,
-                            category: requiresAttention ? "agent-attention" : nil,
-                            badge: badge
+                            subtitle: nil,
+                            body: "Push delivery works.",
+                            paneID: nil,
+                            workspaceID: nil,
+                            workspace: nil,
+                            category: nil,
+                            notificationIDs: [],
+                            threadID: "rai-test",
+                            summaryArgument: "rai",
+                            summaryArgumentCount: 1,
+                            occurredAt: now,
+                            badge: nil
                         )
-                        return result == .deadToken ? registration.deviceToken : nil
+                        return PushDeliveryReport(
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            status: result.status,
+                            reason: result.reason
+                        )
                     }
                 }
-                var deadTokens: [String] = []
-                for await deadToken in group {
-                    if let deadToken { deadTokens.append(deadToken) }
-                }
-                return deadTokens
+                var values: [PushDeliveryReport] = []
+                for await report in group { values.append(report) }
+                return values.sorted { $0.id < $1.id }
+            }
+            guard let self else { return }
+            self.isSendingTestPush = false
+            self.testPushResults = reports
+            self.recordDelivery(reports, label: "Test push")
+            for report in reports where Self.isDeadToken(report) {
+                self.removePushRegistration(deviceToken: report.deviceToken)
             }
         }
-        Task { [weak self] in
-            for deadToken in await delivery.value {
-                self?.removePushRegistration(deviceToken: deadToken)
-            }
-        }
+        pushOperationTail = operation
+    }
+
+    private static func pushTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func isDeadToken(_ report: PushDeliveryReport) -> Bool {
+        report.status == 410
+            || (report.status == 400
+                && ["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"]
+                    .contains(report.reason))
+    }
+
+    private func recordDelivery(_ reports: [PushDeliveryReport], label: String = "Push") {
+        let delivered = reports.lazy.filter(\.succeeded).count
+        lastPushSucceeded = delivered == reports.count && !reports.isEmpty
+        lastPushResult = "\(label): \(delivered) of \(reports.count) delivered."
+    }
+
+    private func recordNoDelivery(_ message: String) {
+        lastPushSucceeded = false
+        lastPushResult = message
     }
 
     private func listenerDidChange(_ state: NWListener.State) {
@@ -410,12 +653,28 @@ final class RaiBridgeServer: ObservableObject {
             statusMessage = nil
         case .failed(let error):
             statusMessage = error.localizedDescription
+            isBonjourAdvertised = false
             stop()
         case .cancelled:
             isRunning = false
+            isBonjourAdvertised = false
         default:
             break
         }
+    }
+
+    private func bonjourRegistrationDidChange(
+        _ change: NWListener.ServiceRegistrationChange
+    ) {
+        switch change {
+        case let .add(endpoint):
+            registeredBonjourEndpoints.insert(endpoint)
+        case let .remove(endpoint):
+            registeredBonjourEndpoints.remove(endpoint)
+        @unknown default:
+            break
+        }
+        isBonjourAdvertised = !registeredBonjourEndpoints.isEmpty
     }
 
     private func accept(_ connection: NWConnection) {
@@ -1037,6 +1296,7 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func registerPush(deviceToken: String, environment: String, deviceID: String?) {
+        pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         pushRegistrations.insert(
             .init(deviceToken: deviceToken, environment: environment, deviceID: deviceID)
@@ -1045,6 +1305,7 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func removePushRegistration(deviceToken: String) {
+        pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         let oldCount = pushRegistrations.count
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         if pushRegistrations.count != oldCount {
@@ -1068,7 +1329,7 @@ final class RaiBridgeServer: ObservableObject {
         client.info = info
         client.deviceID = device.id
         client.deviceLabel = device.label
-        outstandingPushCount = 0
+        pushBadgeLedger.removeAll()
         let id = ObjectIdentifier(client.connection)
         liveConnections.register(id: id, deviceID: device.id) { [weak self, weak client] in
             guard let self, let client else { return }
@@ -1096,10 +1357,28 @@ final class RaiBridgeServer: ObservableObject {
     }
 }
 
+/// One APNs registration. Identity is the token + environment pair: the
+/// paired-device id is metadata, so a ledger key rebuilt from a delivery
+/// report (which carries no device id) still finds the registration.
 private struct PushRegistration: Codable, Hashable, Sendable {
     let deviceToken: String
     let environment: String
     let deviceID: String?
+
+    init(deviceToken: String, environment: String, deviceID: String? = nil) {
+        self.deviceToken = deviceToken
+        self.environment = environment
+        self.deviceID = deviceID
+    }
+
+    static func == (lhs: PushRegistration, rhs: PushRegistration) -> Bool {
+        lhs.deviceToken == rhs.deviceToken && lhs.environment == rhs.environment
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(deviceToken)
+        hasher.combine(environment)
+    }
 }
 
 private struct ObserveFrame: Decodable {
