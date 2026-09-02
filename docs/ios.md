@@ -96,8 +96,9 @@ pane, it sends a silent retraction payload:
 The retraction request uses `apns-push-type: background` and `apns-priority: 5`.
 APNs can retain it for seven days when the phone is offline.
 The iPhone removes matching older alerts and sets its badge to the remaining
-delivered count. iOS can delay, throttle, or omit background pushes. It does not
-wake an app that the user force-quit.
+unread count. Opening rai marks delivered alerts as seen, so a later retraction
+does not restore their badge. iOS can delay, throttle, or omit background pushes.
+It does not wake an app that the user force-quit.
 
 Settings → iPhone includes **Send test push**. It sends `rai test · HH:MM` to
 every registered device and shows each APNs status and reason. The read-only

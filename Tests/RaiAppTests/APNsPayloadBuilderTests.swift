@@ -118,6 +118,25 @@ final class APNsPayloadBuilderTests: XCTestCase {
         XCTAssertEqual(decoded, identifiers)
     }
 
+    func testRetractionBatchRequestsIdentifyEachPayloadsIdentifiers() throws {
+        let identifiers = (0..<300).map {
+            "agent-\($0)-" + String(repeating: "x", count: 40)
+        }
+        let batches = try APNsPayloadBuilder.retractionBatchRequests(
+            notificationIDs: identifiers,
+            retractedBefore: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertGreaterThan(batches.count, 1)
+        XCTAssertEqual(batches.flatMap(\.notificationIDs), identifiers)
+        for batch in batches {
+            XCTAssertEqual(
+                try json(batch.payload)["retractNotificationIDs"] as? [String],
+                batch.notificationIDs
+            )
+        }
+    }
+
     private func json(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }

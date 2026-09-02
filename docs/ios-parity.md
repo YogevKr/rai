@@ -60,6 +60,7 @@ All additive, no version bump (old phones skip unknown message types):
 - Alert payloads carry shared `agent-<paneID>` values and creation timestamps.
   Mac retraction sends identifiers with a cutoff timestamp.
 - iOS removes matching older notifications and keeps newer replacements.
+  Badge recomputation excludes alerts seen during the last app activation.
 - Background retraction is additive. Old phones ignore the custom payload.
 - Settings → iPhone now has per-device test results and a read-only Doctor.
 - The bridge protocol remains v5. No WebSocket message changed.

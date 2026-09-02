@@ -14,6 +14,45 @@ struct PushDeliveryReport: Identifiable, Equatable, Sendable {
     var succeeded: Bool { status == 200 }
 }
 
+struct PushBadgeLedger<Device: Hashable> {
+    private var activePushesByDevice: [Device: [Set<String>]] = [:]
+
+    func proposedBadge(adding identifiers: Set<String>, for device: Device) -> Int {
+        var active = activePushesByDevice[device] ?? []
+        active.removeAll { !$0.isDisjoint(with: identifiers) }
+        active.append(identifiers)
+        return active.count
+    }
+
+    mutating func commitAlert(identifiers: Set<String>, for device: Device) {
+        var active = activePushesByDevice[device] ?? []
+        active.removeAll { !$0.isDisjoint(with: identifiers) }
+        active.append(identifiers)
+        activePushesByDevice[device] = active
+    }
+
+    mutating func commitRetraction(identifiers: Set<String>, for device: Device) {
+        activePushesByDevice[device]?.removeAll {
+            !$0.isDisjoint(with: identifiers)
+        }
+    }
+
+    mutating func removeAll() {
+        activePushesByDevice.removeAll()
+    }
+
+    mutating func removeDevices(where shouldRemove: (Device) -> Bool) {
+        activePushesByDevice = activePushesByDevice.filter {
+            !shouldRemove($0.key)
+        }
+    }
+}
+
+private struct RetractionDeliveryReport: Sendable {
+    let pushReport: PushDeliveryReport
+    let acceptedNotificationIDs: Set<String>
+}
+
 /// Token-authenticated WebSocket bridge from companion devices to RaiModel's
 /// current herdr session.
 ///
@@ -125,7 +164,7 @@ final class RaiBridgeServer: ObservableObject {
     private var pushRegistrations: Set<PushRegistration> = []
     /// Atomic delivered alerts per device. A summary counts as one alert.
     /// Opening any client resets this optimistic state, as before.
-    private var activePushesByDevice: [PushRegistration: [Set<String>]] = [:]
+    private var pushBadgeLedger = PushBadgeLedger<PushRegistration>()
     private let apnsPusher = APNsPusher()
     /// Serializes alert, retraction, and test batches in their creation order.
     private var pushOperationTail: Task<Void, Never>?
@@ -351,18 +390,14 @@ final class RaiBridgeServer: ObservableObject {
         }
         let pusher = apnsPusher
         let stableIDs = Set(burst.notificationIDs)
-        var badges: [PushRegistration: Int] = [:]
-        for registration in registrations {
-            var active = activePushesByDevice[registration] ?? []
-            active.removeAll { !$0.isDisjoint(with: stableIDs) }
-            active.append(stableIDs)
-            activePushesByDevice[registration] = active
-            badges[registration] = active.count
-        }
 
         let previousOperation = pushOperationTail
         let operation = Task { [weak self] in
             await previousOperation?.value
+            guard let self else { return }
+            let badges = Dictionary(uniqueKeysWithValues: registrations.map {
+                ($0, self.pushBadgeLedger.proposedBadge(adding: stableIDs, for: $0))
+            })
             let reports = await withTaskGroup(
                 of: PushDeliveryReport.self,
                 returning: [PushDeliveryReport].self
@@ -401,7 +436,15 @@ final class RaiBridgeServer: ObservableObject {
                 }
                 return values.sorted { $0.id < $1.id }
             }
-            guard let self else { return }
+            for report in reports where report.succeeded {
+                self.pushBadgeLedger.commitAlert(
+                    identifiers: stableIDs,
+                    for: .init(
+                        deviceToken: report.deviceToken,
+                        environment: report.environment
+                    )
+                )
+            }
             self.recordDelivery(reports)
             for report in reports where Self.isDeadToken(report) {
                 self.removePushRegistration(deviceToken: report.deviceToken)
@@ -420,20 +463,14 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Retraction not sent: APNs configuration is incomplete.")
             return
         }
-        let stableIDs = Set(identifiers)
-        for registration in registrations {
-            activePushesByDevice[registration]?.removeAll {
-                !$0.isDisjoint(with: stableIDs)
-            }
-        }
         let pusher = apnsPusher
         let retractedBefore = Date()
         let previousOperation = pushOperationTail
         let operation = Task { [weak self] in
             await previousOperation?.value
             let reports = await withTaskGroup(
-                of: PushDeliveryReport.self,
-                returning: [PushDeliveryReport].self
+                of: RetractionDeliveryReport.self,
+                returning: [RetractionDeliveryReport].self
             ) { group in
                 for registration in registrations {
                     group.addTask {
@@ -444,21 +481,34 @@ final class RaiBridgeServer: ObservableObject {
                             notificationIDs: identifiers,
                             retractedBefore: retractedBefore
                         )
-                        return PushDeliveryReport(
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            status: result.status,
-                            reason: result.reason
+                        return RetractionDeliveryReport(
+                            pushReport: .init(
+                                deviceToken: registration.deviceToken,
+                                environment: registration.environment,
+                                status: result.status,
+                                reason: result.reason
+                            ),
+                            acceptedNotificationIDs: result.acceptedNotificationIDs
                         )
                     }
                 }
-                var values: [PushDeliveryReport] = []
+                var values: [RetractionDeliveryReport] = []
                 for await report in group { values.append(report) }
-                return values.sorted { $0.id < $1.id }
+                return values.sorted { $0.pushReport.id < $1.pushReport.id }
             }
             guard let self else { return }
-            self.recordDelivery(reports, label: "Retraction")
-            for report in reports where Self.isDeadToken(report) {
+            for report in reports where !report.acceptedNotificationIDs.isEmpty {
+                self.pushBadgeLedger.commitRetraction(
+                    identifiers: report.acceptedNotificationIDs,
+                    for: .init(
+                        deviceToken: report.pushReport.deviceToken,
+                        environment: report.pushReport.environment
+                    )
+                )
+            }
+            let pushReports = reports.map(\.pushReport)
+            self.recordDelivery(pushReports, label: "Retraction")
+            for report in pushReports where Self.isDeadToken(report) {
                 self.removePushRegistration(deviceToken: report.deviceToken)
             }
         }
@@ -648,7 +698,7 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             client.isAuthenticated = true
-            activePushesByDevice.removeAll()
+            pushBadgeLedger.removeAll()
             client.info = info
             updateConnectedDeviceCount()
             send(
@@ -1158,18 +1208,14 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func registerPush(deviceToken: String, environment: String) {
-        activePushesByDevice = activePushesByDevice.filter {
-            $0.key.deviceToken != deviceToken
-        }
+        pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         pushRegistrations.insert(.init(deviceToken: deviceToken, environment: environment))
         persistPushRegistrations()
     }
 
     private func removePushRegistration(deviceToken: String) {
-        activePushesByDevice = activePushesByDevice.filter {
-            $0.key.deviceToken != deviceToken
-        }
+        pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         let oldCount = pushRegistrations.count
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         if pushRegistrations.count != oldCount {

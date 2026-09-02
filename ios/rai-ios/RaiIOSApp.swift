@@ -34,8 +34,13 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     private var pendingPaneID: String?
     private var pendingTriage = false
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
-        center: SystemPhoneNotificationCenter()
+        center: SystemPhoneNotificationCenter(),
+        readStateStore: UserDefaultsPhoneNotificationReadStateStore()
     )
+
+    func markDeliveredNotificationsSeen() {
+        Task { await retractionHandler.markDeliveredNotificationsSeen() }
+    }
 
     func application(
         _ application: UIApplication,
@@ -199,7 +204,7 @@ struct RaiIOSApp: App {
             // app delegate's applicationDidBecomeActive (the first version
             // of this fix silently did nothing).
             if phase == .active {
-                UNUserNotificationCenter.current().setBadgeCount(0)
+                appDelegate.markDeliveredNotificationsSeen()
             }
         }
     }

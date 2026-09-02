@@ -45,6 +45,12 @@ actor APNsPusher {
         }
     }
 
+    struct RetractionResult: Equatable, Sendable {
+        let status: Int?
+        let reason: String
+        let acceptedNotificationIDs: Set<String>
+    }
+
     private struct CachedJWT {
         let value: String
         let createdAt: Date
@@ -117,17 +123,22 @@ actor APNsPusher {
         environment: String,
         notificationIDs: [String],
         retractedBefore: Date
-    ) async -> Result {
-        let payloads: [Data]
+    ) async -> RetractionResult {
+        let batches: [APNsRetractionBatch]
         do {
-            payloads = try APNsPayloadBuilder.retractionBatches(
+            batches = try APNsPayloadBuilder.retractionBatchRequests(
                 notificationIDs: notificationIDs,
                 retractedBefore: retractedBefore
             )
         } catch {
-            return Result(status: nil, reason: error.localizedDescription)
+            return RetractionResult(
+                status: nil,
+                reason: error.localizedDescription,
+                acceptedNotificationIDs: []
+            )
         }
-        for payload in payloads {
+        var acceptedNotificationIDs: Set<String> = []
+        for batch in batches {
             let result = await send(
                 configuration: configuration,
                 deviceToken: deviceToken,
@@ -137,11 +148,22 @@ actor APNsPusher {
                 expiration: String(Int(
                     retractedBefore.addingTimeInterval(7 * 24 * 60 * 60).timeIntervalSince1970
                 )),
-                payload: payload
+                payload: batch.payload
             )
-            guard result.status == 200 else { return result }
+            guard result.status == 200 else {
+                return RetractionResult(
+                    status: result.status,
+                    reason: result.reason,
+                    acceptedNotificationIDs: acceptedNotificationIDs
+                )
+            }
+            acceptedNotificationIDs.formUnion(batch.notificationIDs)
         }
-        return Result(status: 200, reason: "Success")
+        return RetractionResult(
+            status: 200,
+            reason: "Success",
+            acceptedNotificationIDs: acceptedNotificationIDs
+        )
     }
 
     private func send(
@@ -200,6 +222,11 @@ actor APNsPusher {
         cachedJWT = CachedJWT(value: value, createdAt: now, credentials: credentials)
         return value
     }
+}
+
+struct APNsRetractionBatch: Equatable, Sendable {
+    let notificationIDs: [String]
+    let payload: Data
 }
 
 enum APNsPayloadBuilder {
@@ -312,8 +339,18 @@ enum APNsPayloadBuilder {
         notificationIDs: [String],
         retractedBefore: Date
     ) throws -> [Data] {
+        try retractionBatchRequests(
+            notificationIDs: notificationIDs,
+            retractedBefore: retractedBefore
+        ).map(\.payload)
+    }
+
+    static func retractionBatchRequests(
+        notificationIDs: [String],
+        retractedBefore: Date
+    ) throws -> [APNsRetractionBatch] {
         guard !notificationIDs.isEmpty else { return [] }
-        var batches: [Data] = []
+        var batches: [APNsRetractionBatch] = []
         var batch: [String] = []
         for identifier in notificationIDs {
             let candidate = batch + [identifier]
@@ -325,9 +362,12 @@ enum APNsPayloadBuilder {
                 batch = candidate
             } catch PayloadError.tooLarge {
                 guard !batch.isEmpty else { throw PayloadError.tooLarge(identifier.utf8.count) }
-                batches.append(try retraction(
+                batches.append(.init(
                     notificationIDs: batch,
-                    retractedBefore: retractedBefore
+                    payload: try retraction(
+                        notificationIDs: batch,
+                        retractedBefore: retractedBefore
+                    )
                 ))
                 batch = [identifier]
                 _ = try retraction(
@@ -337,9 +377,12 @@ enum APNsPayloadBuilder {
             }
         }
         if !batch.isEmpty {
-            batches.append(try retraction(
+            batches.append(.init(
                 notificationIDs: batch,
-                retractedBefore: retractedBefore
+                payload: try retraction(
+                    notificationIDs: batch,
+                    retractedBefore: retractedBefore
+                )
             ))
         }
         return batches

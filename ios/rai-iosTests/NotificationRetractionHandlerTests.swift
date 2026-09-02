@@ -92,6 +92,70 @@ final class NotificationRetractionHandlerTests: XCTestCase {
         XCTAssertEqual(Set(center.removedIdentifiers), ["system-1", "system-2"])
         XCTAssertEqual(center.badgeCount, 0)
     }
+
+    func testRetractionDoesNotRestoreBadgeForAlertsSeenAtActivation() async {
+        let center = FakePhoneNotificationCenter(delivered: [
+            .init(
+                requestIdentifier: "system-seen",
+                stableIdentifiers: ["agent-seen"],
+                notificationTimestamp: 100
+            ),
+            .init(
+                requestIdentifier: "system-retracted",
+                stableIdentifiers: ["agent-retracted"],
+                notificationTimestamp: 100
+            ),
+        ])
+        let store = FakePhoneNotificationReadStateStore()
+        let handler = PhoneNotificationRetractionHandler(
+            center: center,
+            readStateStore: store
+        )
+        await handler.markDeliveredNotificationsSeen()
+
+        let handled = await handler.handle(userInfo: [
+            "retractNotificationIDs": ["agent-retracted"],
+            "retractedBefore": 200.0,
+        ])
+
+        XCTAssertTrue(handled)
+        XCTAssertEqual(center.badgeCount, 0)
+        XCTAssertEqual(store.seenRequestIdentifiers, ["system-seen"])
+    }
+
+    func testRetractionCountsOnlyAlertsDeliveredAfterActivation() async {
+        let center = FakePhoneNotificationCenter(delivered: [
+            .init(
+                requestIdentifier: "system-seen",
+                stableIdentifiers: ["agent-seen"],
+                notificationTimestamp: 100
+            ),
+        ])
+        let handler = PhoneNotificationRetractionHandler(center: center)
+        await handler.markDeliveredNotificationsSeen()
+        center.deliver(.init(
+            requestIdentifier: "system-unread",
+            stableIdentifiers: ["agent-unread"],
+            notificationTimestamp: 200
+        ))
+
+        _ = await handler.handle(userInfo: [
+            "retractNotificationIDs": ["missing"],
+            "retractedBefore": 300.0,
+        ])
+
+        XCTAssertEqual(center.badgeCount, 1)
+    }
+}
+
+private final class FakePhoneNotificationReadStateStore: PhoneNotificationReadStateStore {
+    private(set) var seenRequestIdentifiers: Set<String> = []
+
+    func loadSeenRequestIdentifiers() -> Set<String> { seenRequestIdentifiers }
+
+    func saveSeenRequestIdentifiers(_ identifiers: Set<String>) {
+        seenRequestIdentifiers = identifiers
+    }
 }
 
 private final class FakePhoneNotificationCenter: PhoneNotificationCenter {
@@ -105,6 +169,10 @@ private final class FakePhoneNotificationCenter: PhoneNotificationCenter {
 
     func deliveredNotifications() async -> [DeliveredNotificationRecord] {
         delivered
+    }
+
+    func deliver(_ notification: DeliveredNotificationRecord) {
+        delivered.append(notification)
     }
 
     func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {

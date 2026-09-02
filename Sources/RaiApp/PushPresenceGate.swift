@@ -142,6 +142,22 @@ enum NotifiedPaneStore {
     }
 }
 
+enum NotificationRetractionPlanner {
+    static func paneIDs(
+        notifiedStatuses: [String: AgentStatus],
+        currentStatuses: [String: AgentStatus],
+        selectedPaneID: String?
+    ) -> Set<String> {
+        Set(notifiedStatuses.compactMap { paneID, notifiedStatus in
+            if paneID == selectedPaneID || currentStatuses[paneID] != notifiedStatus {
+                paneID
+            } else {
+                nil
+            }
+        })
+    }
+}
+
 @MainActor
 final class PushPresenceStatus: ObservableObject {
     static let shared = PushPresenceStatus()

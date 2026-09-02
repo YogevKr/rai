@@ -35,7 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private weak var model: RaiModel?
     private var pendingPaneID: String?
-    private var lastSelectedPaneID: String?
     /// The status represented by each stable local notification identifier.
     private var notifiedPaneStatuses = NotifiedPaneStore.load()
     /// Phone events waiting for the presence and burst gates, keyed by pane.
@@ -311,20 +310,13 @@ extension AppDelegate: RaiSnapshotObserver {
         // notification whose represented status is no longer current.
         var retractIDs: [String] = []
         let panesByID = Dictionary(uniqueKeysWithValues: snapshot.panes.map { ($0.paneID, $0) })
-        if let selected = model.selectedPaneID, selected != lastSelectedPaneID {
-            retractIDs.append(Self.notificationIdentifier(paneID: selected))
-        }
-        lastSelectedPaneID = model.selectedPaneID
-        var notifiedPaneIDsToRemove: [String] = []
-        for (paneID, notifiedStatus) in notifiedPaneStatuses {
-            let isSelected = paneID == model.selectedPaneID
-            let currentStatus = panesByID[paneID]?.agentStatus
-            if isSelected || currentStatus != notifiedStatus {
-                retractIDs.append(Self.notificationIdentifier(paneID: paneID))
-                notifiedPaneIDsToRemove.append(paneID)
-            }
-        }
+        let notifiedPaneIDsToRemove = NotificationRetractionPlanner.paneIDs(
+            notifiedStatuses: notifiedPaneStatuses,
+            currentStatuses: panesByID.mapValues(\.agentStatus),
+            selectedPaneID: model.selectedPaneID
+        )
         for paneID in notifiedPaneIDsToRemove {
+            retractIDs.append(Self.notificationIdentifier(paneID: paneID))
             notifiedPaneStatuses.removeValue(forKey: paneID)
         }
         if !notifiedPaneIDsToRemove.isEmpty {

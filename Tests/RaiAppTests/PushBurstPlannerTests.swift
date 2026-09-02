@@ -108,6 +108,26 @@ final class PushBurstPlannerTests: XCTestCase {
         XCTAssertEqual(NotifiedPaneStore.load(defaults: defaults), [:])
     }
 
+    func testUntrackedSelectedPaneDoesNotCauseRetraction() {
+        let paneIDs = NotificationRetractionPlanner.paneIDs(
+            notifiedStatuses: ["tracked": .blocked],
+            currentStatuses: ["tracked": .blocked, "selected": .working],
+            selectedPaneID: "selected"
+        )
+
+        XCTAssertTrue(paneIDs.isEmpty)
+    }
+
+    func testTrackedSelectedPaneCausesRetraction() {
+        let paneIDs = NotificationRetractionPlanner.paneIDs(
+            notifiedStatuses: ["selected": .blocked],
+            currentStatuses: ["selected": .blocked],
+            selectedPaneID: "selected"
+        )
+
+        XCTAssertEqual(paneIDs, ["selected"])
+    }
+
     private func event(
         _ paneID: String,
         _ name: String,
