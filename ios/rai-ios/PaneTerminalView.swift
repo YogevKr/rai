@@ -629,26 +629,21 @@ private struct StreamingTerminalView: UIViewRepresentable {
     }
 }
 
-/// Captures SwiftTerm's active buffer object through its delegate callbacks,
-/// then reads the bottom `rows` rendered grid lines. This deliberately ignores
-/// the user's scrollback viewport: historical prompts must never become live
-/// native actions.
-private final class GridReadableTerminalView: TerminalView {
-    private weak var gridTerminal: SwiftTerm.Terminal?
-
-    override func bufferActivated(source: SwiftTerm.Terminal) {
-        gridTerminal = source
-        super.bufferActivated(source: source)
-    }
-
-    override func linefeed(source: SwiftTerm.Terminal) {
-        gridTerminal = source
-        super.linefeed(source: source)
-    }
-
+/// Reads the bottom `rows` rendered grid lines straight from SwiftTerm's
+/// active buffer. This deliberately ignores the user's scrollback viewport:
+/// historical prompts must never become live native actions.
+///
+/// The terminal comes from `getTerminal()`, never from a delegate callback.
+/// An earlier version captured it in `bufferActivated`/`linefeed`, and for an
+/// agent pane neither ever fires: herdr's observe stream paints every cell by
+/// cursor address without a single line feed or alt-screen switch, and the
+/// scrollback seed is empty because herdr's `recent` read of an alt-screen
+/// TUI is just the viewport the bridge drops. The grid then read as "" and
+/// prompt buttons never appeared.
+final class GridReadableTerminalView: TerminalView {
     func liveGridText() -> String {
-        guard let terminal = gridTerminal,
-              let text = String(data: terminal.getBufferAsData(), encoding: .utf8)
+        let terminal = getTerminal()
+        guard let text = String(data: terminal.getBufferAsData(), encoding: .utf8)
         else { return "" }
 
         var lines = text.components(separatedBy: "\n")
