@@ -2,6 +2,13 @@ import Foundation
 import SwiftTerm
 
 enum PasswordPromptGuard {
+    enum State: Equatable {
+        case unknown
+        case clear
+        case prompt
+    }
+
+    static let waiting = "Waiting for the screen"
     static let refusal = "This is a password prompt — it shows nothing as you type, "
         + "so nothing sent from here can be verified. Use the keyboard (Type) to answer it yourself."
 
@@ -56,6 +63,10 @@ final class PasswordPromptGridReader {
 
     func remove(_ paneID: String) {
         terminals.removeValue(forKey: paneID)
+    }
+
+    func removeAll() {
+        terminals.removeAll()
     }
 }
 

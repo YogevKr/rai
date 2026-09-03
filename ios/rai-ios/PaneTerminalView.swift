@@ -15,6 +15,7 @@ struct PaneTerminalView: View {
     @State private var imageError: String?
     @State private var showingCommandPalette = false
     @State private var destructiveArmed = false
+    @State private var lineSendMessage: String?
     @FocusState private var composeFocused: Bool
     @StateObject private var terminalSearch = TerminalSearchController()
     @StateObject private var promptController = TerminalPromptController()
@@ -186,6 +187,16 @@ struct PaneTerminalView: View {
                 .padding(.vertical, 8)
                 .background(.bar)
 
+                if let lineSendMessage {
+                    Text(lineSendMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                        .background(.bar)
+                }
+
                 if pane.agent != nil, promptController.prompt == nil {
                     QuickReplyRow { text in
                         sendLine(text)
@@ -291,23 +302,28 @@ struct PaneTerminalView: View {
             return
         }
         destructiveArmed = false
-        // The connection either sends, queues, or refuses this line.
-        // Clear the matching draft so a later tap cannot send it twice.
+        // Sent and queued lines clear the draft. Refused lines remain editable.
         Task {
-            _ = await connection.sendComposedLine(
+            let result = await connection.sendComposedLine(
                 Array(text.utf8) + [0x0D], to: pane.paneID)
-            if composedLine == text {
+            if ComposedLineDraftPolicy.shouldClear(after: result), composedLine == text {
                 composedLine = ""
             }
+            lineSendMessage = result == .refused
+                ? connection.actionError ?? PasswordPromptGuard.refusal
+                : nil
         }
     }
 
     private func sendLine(_ text: String) {
         Task {
-            _ = await connection.sendComposedLine(
+            let result = await connection.sendComposedLine(
                 Array(text.utf8) + [0x0D],
                 to: pane.paneID
             )
+            lineSendMessage = result == .refused
+                ? connection.actionError ?? PasswordPromptGuard.refusal
+                : nil
         }
     }
 
@@ -350,6 +366,12 @@ struct PaneTerminalView: View {
         }
         guard let data, data.count <= 5 * 1_024 * 1_024 else { return nil }
         return data
+    }
+}
+
+enum ComposedLineDraftPolicy {
+    static func shouldClear(after result: ComposedLineSendResult) -> Bool {
+        result == .accepted || result == .queued
     }
 }
 

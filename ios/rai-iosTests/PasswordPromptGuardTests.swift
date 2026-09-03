@@ -72,4 +72,10 @@ final class PasswordPromptGuardTests: XCTestCase {
 
         XCTAssertFalse(PasswordPromptGuard.isPasswordPrompt(text))
     }
+
+    func testRefusedSendKeepsDraftWhileAcceptedAndQueuedSendsClearIt() {
+        XCTAssertTrue(ComposedLineDraftPolicy.shouldClear(after: .accepted))
+        XCTAssertTrue(ComposedLineDraftPolicy.shouldClear(after: .queued))
+        XCTAssertFalse(ComposedLineDraftPolicy.shouldClear(after: .refused))
+    }
 }

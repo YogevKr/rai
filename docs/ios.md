@@ -190,6 +190,8 @@ Use Type mode to send direct keyboard input when you choose to answer the prompt
 
 Notification replies wait for one pane frame when no live grid exists.
 Rai sends nothing when that frame is unavailable.
+The guard accepts only grids received after the current connection welcome.
+Outbox lines stay queued until their pane receives a current grid.
 
 The match is anchored to the last non-empty row.
 Quoted password text does not match when an agent composer row appears below it.

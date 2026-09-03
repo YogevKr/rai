@@ -1,4 +1,5 @@
 import XCTest
+import RaiCore
 @testable import rai
 
 /// A composed line typed with no signal used to be lost twice over: the send
@@ -81,10 +82,14 @@ final class OutboxTests: XCTestCase {
         )
     }
 
-    func testNotificationReplyUsesPasswordPromptGuardBeforeConnecting() async throws {
-        let connection = BridgeConnection()
+    func testNotificationReplyUsesCurrentPasswordPromptGrid() async throws {
+        let connection = BridgeConnection(messageSender: { _ in })
         let pairing = try Pairing(host: "studio.local", port: 9_876, token: "secret")
-        connection.updateVisibleGrid("Password:", for: "pane-a")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("build output\r\nPassword:\u{1B}[0m", paneID: "pane-a"))
 
         let delivered = await connection.connectAndSendComposedLine(
             line("secret"), to: "pane-a", pairing: pairing
@@ -93,5 +98,51 @@ final class OutboxTests: XCTestCase {
         XCTAssertFalse(delivered)
         XCTAssertEqual(connection.actionError, PasswordPromptGuard.refusal)
         XCTAssertTrue(connection.outbox.isEmpty)
+    }
+
+    func testReconnectWaitsForCurrentGridBeforeFlushing() async throws {
+        var sentInputs: [String] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .input(_, bytesBase64) = message,
+               let data = Data(base64Encoded: bytesBase64) {
+                sentInputs.append(String(decoding: data, as: UTF8.self))
+            }
+        })
+        connection.updateVisibleGrid("$", for: "pane-a")
+        _ = await connection.sendComposedLine(line("held"), to: "pane-a")
+
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertTrue(sentInputs.isEmpty)
+        XCTAssertEqual(connection.outbox.map(\.text), ["held\r"])
+        XCTAssertEqual(connection.actionError, PasswordPromptGuard.waiting)
+
+        connection.handle(frame("build output\r\nPassword:\u{1B}[0m", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertTrue(sentInputs.isEmpty)
+        XCTAssertTrue(connection.outbox.isEmpty)
+        XCTAssertTrue(connection.actionError?.hasPrefix(PasswordPromptGuard.refusal) == true)
+
+        connection.handle(frame("$", paneID: "pane-a"))
+        let result = await connection.sendComposedLine(line("safe"), to: "pane-a")
+
+        XCTAssertEqual(result, .accepted)
+        XCTAssertEqual(sentInputs, ["safe\r"])
+    }
+
+    private func frame(_ text: String, paneID: String) -> BridgeMessage {
+        .paneFrame(
+            paneID: paneID,
+            bytesBase64: Data(("\u{1B}[H" + text).utf8).base64EncodedString(),
+            full: true,
+            seq: 0,
+            cols: 80,
+            rows: 24
+        )
     }
 }
