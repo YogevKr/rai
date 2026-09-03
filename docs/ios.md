@@ -17,9 +17,13 @@ the root Swift package.
 ## 1. Turn on the Mac bridge
 
 In rai on your Mac: **Settings → iPhone** → enable the companion bridge. It shows
-the LAN address, port (**47837**), a pairing token, and a QR code. The bridge is
-token‑authenticated cleartext WebSocket — intended for a trusted LAN or Tailscale,
-not the open internet.
+the LAN address, port (**47837**), a short pairing code, and a QR code. The code
+expires after 10 minutes. It also stops after five failed attempts or one success.
+The phone confirms its new device credential before the Mac spends the code.
+A lost reply can retry the same code until its expiry.
+
+The bridge uses cleartext WebSocket on the LAN. Use it only on a trusted LAN.
+The Tailscale path uses secure WebSocket through `tailscale serve`.
 
 ## 2. Build
 
@@ -70,23 +74,96 @@ The same `.p8` authentication key serves both APNs sandbox and production. The
 environment attached to each device token determines which APNs host the Mac
 uses. The private key is stored in the Mac's Keychain, not in preferences.
 
-Rai can use Claude Code hooks for accurate push text. Install them from
-**Settings → Integrations → Install Claude Code hooks** on the Mac.
+Rai can use Claude Code hooks for accurate notification and push text. Install
+them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
+Single-pane pushes use the current tool request, question, or completion line.
+Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
 
 The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
 model decodes it. A later iOS task will add structured prompt controls.
 
+rai waits 15 seconds to collect a push burst. One event keeps its pane link and
+Approve / Deny / Reply actions. A burst becomes one triage alert, such as
+`3 agents need you`, with the pane names in its body and no pane actions.
+Bursts above 32 panes split to stay within APNs' 4,096-byte payload limit.
+Large retraction sets also split without dropping pane identifiers.
+
+Alert payloads set `thread-id` to the workspace ID. They also set `summary-arg`
+to the workspace name and `summary-arg-count` to the represented agent count.
+A burst across workspaces uses the `rai-triage` thread.
+
+Each alert carries stable `agent-<paneID>` values in `notificationIDs`. A single
+alert also carries `notificationID`. `notificationTimestamp` protects a newer
+alert from a delayed retraction. When the Mac handles, closes, or changes a
+pane, it sends a silent retraction payload:
+
+```json
+{
+  "aps": {"content-available": 1},
+  "retractNotificationIDs": ["agent-<paneID>"],
+  "retractedBefore": 1788386400
+}
+```
+
+The retraction request uses `apns-push-type: background` and `apns-priority: 5`.
+APNs can retain it for seven days when the phone is offline.
+The iPhone removes matching older alerts and sets its badge to the remaining
+unread count. Opening rai marks delivered alerts as seen, so a later retraction
+does not restore their badge. iOS can delay, throttle, or omit background pushes.
+It does not wake an app that the user force-quit.
+
+Settings → iPhone includes **Send test push**. It sends `rai test · HH:MM` to
+every registered device and shows each APNs status and reason. The read-only
+Doctor checks the bridge, Bonjour, Tailscale, APNs, devices, gate, and last push.
+Each device has an independent delivery queue. One stalled device cannot delay
+alerts, retractions, or test pushes for another device.
+
 ## 4. Pair
 
-Three ways, all producing the same `rai://pair?host=…&port=…&token=…`:
+Three ways produce the same `rai://pair?host=…&port=…&code=…` link:
+
 - **Scan** the QR from the Mac's Settings → iPhone.
 - **Enter manually**: host (`<mac>.local` or its Tailscale name/IP), port `47837`,
-  and the token.
+  and the eight-character code.
 - **Deep link**: open a `rai://pair?…` URL on the phone (the app registers the
   `rai` scheme).
 
+The phone exchanges the code and its device name for a device credential. The
+Mac returns this credential once. The phone stores it in Keychain.
+
+The Mac stores only a SHA-256 credential hash. It also stores the device label,
+pair date, and last-seen date. Settings lists each paired device.
+
+Use **Revoke** to remove one device. Rai closes that device's live bridge
+connections. The phone then shows its Pair Again flow.
+
+Use **Show audit log** to reveal `~/Library/Application Support/Rai/bridge-audit.jsonl`.
+The log records every phone write action. Rai sets mode `0600` and rotates it at
+about 10 MB.
+
+Rai protocol version 6 removes the old shared token. Existing phones must pair
+again. Rai does not accept the old token.
+
 Then: watch your herd, tap a pane to open its live terminal, and use the on‑screen
 keys / compose bar to drive the agent.
+
+## Offline behavior
+
+The phone saves the latest herd snapshot in Application Support.
+It writes JSON atomically and limits writes to one every three seconds.
+The first snapshot writes at once. Later snapshots use a three-second write limit.
+The cache contains display data only. It omits resume IDs, full paths, and terminal frames.
+The cache file is excluded from device backups.
+The cache belongs to one pairing and never crosses to another Mac.
+
+On cold launch, the saved herd appears before the socket connects.
+The pulse line shows `last seen HH:MM`, and cached rows use a muted style.
+A live snapshot replaces the cache. Forget Mac removes the saved snapshot.
+
+After a socket failure, the connection bar shows the last sync age.
+The age updates each second while the connection remains down.
+The bar maps DNS, route, listener, TLS, pairing, and missing-herdr failures to actions.
+Tap the diagnosis to show the raw system or bridge error.
 
 ## Simulator e2e (for development)
 
@@ -95,14 +172,46 @@ Skip the pairing UI with a launch env var:
 
 ```sh
 xcrun simctl install <udid> /tmp/rai-ios-dd/Build/Products/Debug-iphonesimulator/rai.app
-SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&token=<token>" \
+SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=47837&code=<code>" \
   xcrun simctl launch <udid> com.whetstone.rai.ios
 ```
 
 Add `SIMCTL_CHILD_RAI_OPEN_PANE=<paneID>` to auto-open a pane's terminal on
-launch, and `xcrun simctl push <udid> com.whetstone.rai.ios payload.json` to
-exercise the notification banner + tap-to-open without APNs (include `paneID`
-and `"Simulator Target Bundle"` in the payload).
+launch. Use this payload with `xcrun simctl push <udid>
+com.whetstone.rai.ios payload.json` to test a single alert:
+
+```json
+{
+  "Simulator Target Bundle": "com.whetstone.rai.ios",
+  "aps": {
+    "alert": {
+      "title": "Agent",
+      "body": "Needs you",
+      "summary-arg": "rai",
+      "summary-arg-count": 1
+    },
+    "category": "agent-attention",
+    "thread-id": "workspace-1"
+  },
+  "paneID": "<paneID>",
+  "workspaceID": "workspace-1",
+  "workspace": "rai",
+  "notificationID": "agent-<paneID>",
+  "notificationIDs": ["agent-<paneID>"],
+  "notificationTimestamp": 1788386300
+}
+```
+
+Use this payload to test phone-side retraction:
+
+```json
+{
+  "Simulator Target Bundle": "com.whetstone.rai.ios",
+  "aps": {"content-available": 1},
+  "retractNotificationIDs": ["agent-<paneID>"],
+  "retractedBefore": 1788386400
+}
+```
 
 (Keychain persistence fails in unsigned simulator builds, so pairing there is
 per‑session — fine for testing; real signed device builds persist it.)
@@ -113,11 +222,12 @@ Caveats learned end to end:
   open: both GUIs `herdr terminal attach --takeover` the focused pane and kick
   each other in a loop. `RAI_BRIDGE_PORT` isolates the *port*, not the
   terminal attach. Point the simulator at the one running rai instead.
-- The pairing token lives in the `gr.krig.rai` defaults domain
-  (`companionBridgePairingToken`), handy for scripting the pair URL.
+- Pairing codes exist only in Mac memory. Generate a new code for each test.
 
 ## Status
 
-Working end to end: pair, monitor, raw terminal streaming, input, and native APNs
-push with tap-to-open navigation. Real push delivery remains pending the user's
-Apple Developer enrollment, credentials, signing, and a physical iPhone.
+Working end to end in builds and simulator tests: pair, monitor, cached herd
+display, diagnosed reconnects, raw terminal streaming, input, push links, burst
+planning, grouping payloads, and retraction handling. Real APNs delivery,
+background wake timing, grouping display, and notification actions need a
+signed build, valid credentials, and a physical iPhone.

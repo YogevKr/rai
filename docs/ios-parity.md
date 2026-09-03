@@ -6,20 +6,22 @@ bridge, and what *should* exist on the phone. The phone is deliberately a
 "everything you'd want while away from the Mac", not a 1:1 clone of a
 30-inch-display UI.
 
-Audited 2026-07-28 against `main` (bridge protocol v5).
+Audited 2026-09-02 against `main` (bridge protocol v6).
 
 ## Parity matrix
 
 | Capability | macOS | iOS | Verdict |
 | --- | --- | --- | --- |
 | Live herd (spaces → tabs → panes, statuses) | sidebar | list + "Needs you" section | ✅ parity |
+| Herd before connection | current in-memory snapshot | saved snapshot with `last seen HH:MM` | ✅ phone offline support |
+| Connection diagnosis | Mac connection state | cause, action, raw details, sync age | ✅ phone remote support |
 | Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar | ✅ parity |
 | Scrollback search | ⌘F find bar | find bar with match count | ✅ parity |
 | Send image to agent | paste screenshot | photo picker → temp file path | ✅ parity |
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
-| Notifications on blocked/done | native macOS + dock badge | APNs push, Approve/Deny/Reply actions, tap-to-open | ✅ parity (device-only delivery) |
+| Notifications on blocked/done | native macOS + dock badge | APNs bursts, workspace groups, actions, retraction, tap-to-open | ✅ parity (physical delivery not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -49,13 +51,24 @@ All additive, no version bump (old phones skip unknown message types):
   the pane row, summaries in a detail view — a waiting agent must not
   read as plain Idle.
 - Mac notifications now use stable per-pane identifiers and are RETRACTED
-  when a pane stops being blocked or is selected on the Mac (phone-side
-  mirror of this retraction is a future nicety; APNs can't recall a
-  delivered push without a service extension).
-- Snapshot pane objects now include an optional `beacon` from Claude Code hooks.
-  It carries bounded tool input, question text, and final assistant text.
+  when a pane changes, closes, or is selected on the Mac.
+
+## Push intelligence LANDED (2026-09-02)
+
+- The presence gate has one worker for presence checks and a 15-second burst
+  window. Bursts become one triage push. Single pushes keep pane actions.
+- APNs alert payloads group by workspace with `thread-id`, `summary-arg`, and
+  `summary-arg-count`. Cross-workspace bursts use the `rai-triage` thread.
+- Alert payloads carry shared `agent-<paneID>` values and creation timestamps.
+  Mac retraction sends identifiers with a cutoff timestamp.
+- iOS removes matching older notifications and keeps newer replacements.
+  Badge recomputation excludes alerts seen during the last app activation.
+- Background retraction is additive. Old phones ignore the custom payload.
+- Settings → iPhone now has per-device test results and a read-only Doctor.
+- APNs work uses one queue per device. A stalled device does not delay another device.
+- Snapshot pane objects include an optional Claude hook `beacon` value.
   The shared iOS model decodes it, but phone prompt controls remain in wave 2.
-  This field is additive, so bridge protocol version stays at 5.
+- The beacon field is additive within protocol v6. It does not require another bump.
 
 ## Backlog (value order)
 
@@ -78,12 +91,24 @@ surface).
 
 ## Protocol-drift guardrails (learned the hard way)
 
+Protocol version 6 replaces the shared token with per-device credentials. The
+new `pair` message sends a short code, protocol version, and device data. The
+`paired` reply returns one device credential once. The phone confirms it with
+`hello`. A lost reply can retry the code until expiry. Later connections also
+use `hello`.
+
+This change is not compatible with protocol version 5. Old phones receive
+"Re-pair required" and must pair again.
+
 - The iOS client **skips** messages it cannot decode (see
   `BridgeConnection.receiveMessages`) instead of tearing down the socket —
   before this, one unknown/changed message put the app in a permanent
   reconnect loop. Keep it that way when adding messages.
 - True incompatibility is expressed by bumping `bridgeProtocolVersion` in
-  `Sources/RaiCore/Bridge/BridgeProtocol.swift`; the welcome check hard-fails
-  with "Re-pair required".
+  `Sources/RaiCore/Bridge/BridgeProtocol.swift`; the welcome check stops and
+  asks the user to update Rai without clearing the pairing.
 - A dev Mac app (rebuilt from a feature branch) and a released phone build
   routinely coexist — additive protocol changes only, or version-gate.
+- The current Mac reports a missing herd as `Herdr is not connected.`
+  The phone maps this existing error, so offline resilience needs no protocol change.
+- APNs custom keys are additive. Old iOS builds ignore new push fields.

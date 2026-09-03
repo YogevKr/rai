@@ -70,7 +70,13 @@ A native iOS app (`ios/`) that pairs with the Mac over your LAN or Tailscale
 crook for the herd:
 
 - **Triage first** — agents that *need you* float to the top, with Working /
-  Idle groups and per-workspace status.
+  Idle groups and per-workspace status. A **Triage groups** toggle in the
+  connection menu turns the groups and the pulse line off for a plain
+  space → tab → pane list.
+- **Useful offline** — the last herd appears at launch with its saved time.
+  Rai mutes cached rows and replaces them after the Mac sends a live snapshot.
+- **Clear connection help** — the phone names DNS, route, listener, TLS,
+  pairing, and missing-herdr failures. Raw connection details remain available.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away.
@@ -82,10 +88,10 @@ crook for the herd:
   rides herdr's key semantics, so Enter submits and Backspace erases.
 - **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
   workspace or a fresh one at a chosen directory.
-- **Push notifications** (APNs) when an agent blocks or finishes, with
-  Approve / Deny / Reply actions right on the notification.
+- **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
+  workspaces group, handled alerts retract, and single alerts keep actions.
 
-The Mac side is the hub: a token-authenticated WebSocket bridge
+The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through
 `tailscale serve`. Build, pairing, and push setup live in
 [docs/ios.md](docs/ios.md).
@@ -180,7 +186,7 @@ to reorder.
    │                  content   ← pane read / terminal frame stream
    │                  keystrokes → pane input
    │                  splits     ← layout snapshots + ratios
-   └─ Bridge        token-authenticated WebSocket for Rai Remote
+   └─ Bridge        per-device authenticated WebSocket for Rai Remote
         ▲
         │  ws:// on the LAN · wss:// via tailscale serve
   Rai Remote (iPhone)

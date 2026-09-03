@@ -1,29 +1,31 @@
 import CryptoKit
 import Foundation
 
-actor APNsDeliveryQueue<Value: Sendable> {
+/// Keeps APNs operations ordered for one device without coupling different devices.
+actor APNsDeliveryQueue {
     private struct Delivery {
         let revision: UInt64
-        let task: Task<Value, Never>
+        let task: Task<Void, Never>
     }
 
     private var nextRevision: UInt64 = 0
     private var deliveries: [String: Delivery] = [:]
 
-    func enqueue(
+    func enqueue<Value: Sendable>(
         key: String,
         operation: @escaping @Sendable () async -> Value
     ) async -> Value {
         nextRevision &+= 1
         let revision = nextRevision
         let previous = deliveries[key]?.task
-        let task = Task {
-            if let previous { _ = await previous.value }
+        let valueTask = Task {
+            await previous?.value
             return await operation()
         }
-        deliveries[key] = Delivery(revision: revision, task: task)
+        let tail = Task { _ = await valueTask.value }
+        deliveries[key] = Delivery(revision: revision, task: tail)
 
-        let value = await task.value
+        let value = await valueTask.value
         if deliveries[key]?.revision == revision {
             deliveries[key] = nil
         }
@@ -61,10 +63,24 @@ struct APNsProviderJWT {
 }
 
 actor APNsPusher {
-    enum Result: Equatable {
-        case delivered
-        case deadToken
-        case failed
+    struct Result: Equatable, Sendable {
+        let status: Int?
+        let reason: String
+
+        var isDelivered: Bool { status == 200 }
+
+        var isDeadToken: Bool {
+            status == 410
+                || (status == 400
+                    && ["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"]
+                        .contains(reason))
+        }
+    }
+
+    struct RetractionResult: Equatable, Sendable {
+        let status: Int?
+        let reason: String
+        let acceptedNotificationIDs: Set<String>
     }
 
     private struct CachedJWT {
@@ -77,79 +93,119 @@ actor APNsPusher {
         let reason: String?
     }
 
-    private struct Payload: Encodable {
-        struct APS: Encodable {
-            struct Alert: Encodable {
-                let title: String
-                let subtitle: String?
-                let body: String
-            }
-
-            let alert: Alert
-            let sound: String
-            let category: String?
-            let badge: Int?
-        }
-
-        let aps: APS
-        let paneID: String
-        let workspaceID: String
-        let workspace: String?
-    }
-
     private var cachedJWT: CachedJWT?
     private let session: URLSession
-    private let deliveryQueue = APNsDeliveryQueue<Result>()
 
     init(session: URLSession = .shared) {
         self.session = session
     }
 
-    func send(
+    func sendAlert(
         configuration: APNsConfiguration,
         deviceToken: String,
         environment: String,
         title: String,
         subtitle: String?,
         body: String,
-        paneID: String,
-        collapseKey: String,
-        workspaceID: String,
+        paneID: String?,
+        workspaceID: String?,
         workspace: String?,
         category: String?,
+        notificationIDs: [String],
+        threadID: String,
+        summaryArgument: String,
+        summaryArgumentCount: Int,
+        occurredAt: Date,
         badge: Int? = nil
     ) async -> Result {
-        await deliveryQueue.enqueue(key: "\(collapseKey):\(deviceToken)") { [self] in
-            await performSend(
-                configuration: configuration,
-                deviceToken: deviceToken,
-                environment: environment,
+        let payload: Data
+        do {
+            payload = try APNsPayloadBuilder.alert(
                 title: title,
                 subtitle: subtitle,
                 body: body,
                 paneID: paneID,
-                collapseKey: collapseKey,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 category: category,
+                notificationIDs: notificationIDs,
+                threadID: threadID,
+                summaryArgument: summaryArgument,
+                summaryArgumentCount: summaryArgumentCount,
+                occurredAt: occurredAt,
                 badge: badge
             )
+        } catch {
+            return Result(status: nil, reason: error.localizedDescription)
         }
+        return await send(
+            configuration: configuration,
+            deviceToken: deviceToken,
+            environment: environment,
+            pushType: "alert",
+            priority: "10",
+            expiration: "0",
+            payload: payload
+        )
     }
 
-    private func performSend(
+    func sendRetraction(
         configuration: APNsConfiguration,
         deviceToken: String,
         environment: String,
-        title: String,
-        subtitle: String?,
-        body: String,
-        paneID: String,
-        collapseKey: String,
-        workspaceID: String,
-        workspace: String?,
-        category: String?,
-        badge: Int?
+        notificationIDs: [String],
+        retractedBefore: Date
+    ) async -> RetractionResult {
+        let batches: [APNsRetractionBatch]
+        do {
+            batches = try APNsPayloadBuilder.retractionBatchRequests(
+                notificationIDs: notificationIDs,
+                retractedBefore: retractedBefore
+            )
+        } catch {
+            return RetractionResult(
+                status: nil,
+                reason: error.localizedDescription,
+                acceptedNotificationIDs: []
+            )
+        }
+        var acceptedNotificationIDs: Set<String> = []
+        for batch in batches {
+            let result = await send(
+                configuration: configuration,
+                deviceToken: deviceToken,
+                environment: environment,
+                pushType: "background",
+                priority: "5",
+                expiration: String(Int(
+                    retractedBefore.addingTimeInterval(7 * 24 * 60 * 60).timeIntervalSince1970
+                )),
+                payload: batch.payload
+            )
+            guard result.status == 200 else {
+                return RetractionResult(
+                    status: result.status,
+                    reason: result.reason,
+                    acceptedNotificationIDs: acceptedNotificationIDs
+                )
+            }
+            acceptedNotificationIDs.formUnion(batch.notificationIDs)
+        }
+        return RetractionResult(
+            status: 200,
+            reason: "Success",
+            acceptedNotificationIDs: acceptedNotificationIDs
+        )
+    }
+
+    private func send(
+        configuration: APNsConfiguration,
+        deviceToken: String,
+        environment: String,
+        pushType: String,
+        priority: String,
+        expiration: String,
+        payload: Data
     ) async -> Result {
         do {
             let jwt = try providerJWT(for: configuration)
@@ -157,53 +213,32 @@ actor APNsPusher {
                 ? "api.push.apple.com"
                 : "api.sandbox.push.apple.com"
             guard let url = URL(string: "https://\(host)/3/device/\(deviceToken)") else {
-                return .failed
+                return Result(status: nil, reason: "Invalid APNs URL")
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("bearer \(jwt)", forHTTPHeaderField: "authorization")
             request.setValue(configuration.bundleID, forHTTPHeaderField: "apns-topic")
-            request.setValue("alert", forHTTPHeaderField: "apns-push-type")
-            request.setValue("10", forHTTPHeaderField: "apns-priority")
-            request.setValue("0", forHTTPHeaderField: "apns-expiration")
-            let collapseID = SHA256.hash(data: Data(collapseKey.utf8))
-                .map { String(format: "%02x", $0) }
-                .joined()
-            request.setValue(collapseID, forHTTPHeaderField: "apns-collapse-id")
+            request.setValue(pushType, forHTTPHeaderField: "apns-push-type")
+            request.setValue(priority, forHTTPHeaderField: "apns-priority")
+            request.setValue(expiration, forHTTPHeaderField: "apns-expiration")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
-            request.httpBody = try JSONEncoder().encode(Payload(
-                aps: .init(
-                    alert: .init(title: title, subtitle: subtitle, body: body),
-                    sound: "default",
-                    category: category,
-                    badge: badge
-                ),
-                paneID: paneID,
-                workspaceID: workspaceID,
-                workspace: workspace
-            ))
+            request.httpBody = payload
 
             let (data, response) = try await session.data(for: request)
             guard let response = response as? HTTPURLResponse else {
-                NSLog("rai: APNs returned a non-HTTP response")
-                return .failed
+                return Result(status: nil, reason: "Non-HTTP APNs response")
             }
             if response.statusCode == 200 {
-                return .delivered
+                return Result(status: 200, reason: "Success")
             }
             let reason = try? JSONDecoder().decode(ResponseBody.self, from: data).reason
-            if response.statusCode == 410
-                || (response.statusCode == 400
-                    && (reason == "BadDeviceToken"
-                        || reason == "DeviceTokenNotForTopic"
-                        || reason == "Unregistered")) {
-                return .deadToken
-            }
-            NSLog("rai: APNs request failed (%d): %@", response.statusCode, reason ?? "unknown")
-            return .failed
+            let value = reason ?? "Unknown APNs error"
+            NSLog("rai: APNs request failed (%d): %@", response.statusCode, value)
+            return Result(status: response.statusCode, reason: value)
         } catch {
             NSLog("rai: APNs request failed: %@", error.localizedDescription)
-            return .failed
+            return Result(status: nil, reason: error.localizedDescription)
         }
     }
 
@@ -221,11 +256,245 @@ actor APNsPusher {
     }
 }
 
+struct APNsRetractionBatch: Equatable, Sendable {
+    let notificationIDs: [String]
+    let payload: Data
+}
+
+enum APNsPayloadBuilder {
+    static let maximumPayloadBytes = 4_096
+
+    enum PayloadError: LocalizedError {
+        case tooLarge(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case let .tooLarge(size):
+                "APNs payload is \(size) bytes; the limit is \(maximumPayloadBytes)."
+            }
+        }
+    }
+
+    static func alert(
+        title: String,
+        subtitle: String?,
+        body: String,
+        paneID: String?,
+        workspaceID: String?,
+        workspace: String?,
+        category: String?,
+        notificationIDs: [String],
+        threadID: String,
+        summaryArgument: String,
+        summaryArgumentCount: Int,
+        occurredAt: Date,
+        badge: Int?
+    ) throws -> Data {
+        let title = title.apnsPrefix(maxBytes: 256)
+        let subtitle = subtitle?.apnsPrefix(maxBytes: 256)
+        let paneID = paneID.flatMap {
+            $0.utf8.count <= 512 ? $0 : nil
+        }
+        let workspaceID = workspaceID.flatMap {
+            $0.utf8.count <= 512 ? $0 : nil
+        }
+        let workspace = workspace?.apnsPrefix(maxBytes: 256)
+        let threadID = threadID.apnsPrefix(maxBytes: 256)
+        let summaryArgument = summaryArgument.apnsPrefix(maxBytes: 128)
+
+        func payload(body: String) -> AlertPayload {
+            AlertPayload(
+                aps: .init(
+                    alert: .init(
+                        title: title,
+                        subtitle: subtitle,
+                        body: body,
+                        summaryArgument: summaryArgument,
+                        summaryArgumentCount: summaryArgumentCount
+                    ),
+                    sound: "default",
+                    category: category,
+                    badge: badge,
+                    threadID: threadID
+                ),
+                paneID: paneID,
+                workspaceID: workspaceID,
+                workspace: workspace,
+                notificationID: notificationIDs.count == 1 ? notificationIDs[0] : nil,
+                notificationIDs: notificationIDs,
+                notificationTimestamp: occurredAt.timeIntervalSince1970,
+                triage: notificationIDs.count > 1 ? true : nil
+            )
+        }
+
+        let encoder = JSONEncoder()
+        let full = try encoder.encode(payload(body: body))
+        guard full.count > maximumPayloadBytes else { return full }
+
+        // Keep every stable identifier, then shorten only display copy. This
+        // preserves complete retraction data and one APNs request per burst.
+        let characters = Array(body)
+        var lowerBound = 0
+        var upperBound = characters.count
+        var best: Data?
+        while lowerBound <= upperBound {
+            let midpoint = (lowerBound + upperBound) / 2
+            let candidateBody = String(characters.prefix(midpoint)) + "…"
+            let candidate = try encoder.encode(payload(body: candidateBody))
+            if candidate.count <= maximumPayloadBytes {
+                best = candidate
+                lowerBound = midpoint + 1
+            } else {
+                upperBound = midpoint - 1
+            }
+        }
+        guard let best else { throw PayloadError.tooLarge(full.count) }
+        return best
+    }
+
+    static func retraction(
+        notificationIDs: [String],
+        retractedBefore: Date
+    ) throws -> Data {
+        let data = try JSONEncoder().encode(RetractionPayload(
+            aps: .init(contentAvailable: 1),
+            retractNotificationIDs: notificationIDs,
+            retractedBefore: retractedBefore.timeIntervalSince1970
+        ))
+        guard data.count <= maximumPayloadBytes else {
+            throw PayloadError.tooLarge(data.count)
+        }
+        return data
+    }
+
+    static func retractionBatches(
+        notificationIDs: [String],
+        retractedBefore: Date
+    ) throws -> [Data] {
+        try retractionBatchRequests(
+            notificationIDs: notificationIDs,
+            retractedBefore: retractedBefore
+        ).map(\.payload)
+    }
+
+    static func retractionBatchRequests(
+        notificationIDs: [String],
+        retractedBefore: Date
+    ) throws -> [APNsRetractionBatch] {
+        guard !notificationIDs.isEmpty else { return [] }
+        var batches: [APNsRetractionBatch] = []
+        var batch: [String] = []
+        for identifier in notificationIDs {
+            let candidate = batch + [identifier]
+            do {
+                _ = try retraction(
+                    notificationIDs: candidate,
+                    retractedBefore: retractedBefore
+                )
+                batch = candidate
+            } catch PayloadError.tooLarge {
+                guard !batch.isEmpty else { throw PayloadError.tooLarge(identifier.utf8.count) }
+                batches.append(.init(
+                    notificationIDs: batch,
+                    payload: try retraction(
+                        notificationIDs: batch,
+                        retractedBefore: retractedBefore
+                    )
+                ))
+                batch = [identifier]
+                _ = try retraction(
+                    notificationIDs: batch,
+                    retractedBefore: retractedBefore
+                )
+            }
+        }
+        if !batch.isEmpty {
+            batches.append(.init(
+                notificationIDs: batch,
+                payload: try retraction(
+                    notificationIDs: batch,
+                    retractedBefore: retractedBefore
+                )
+            ))
+        }
+        return batches
+    }
+
+    private struct AlertPayload: Encodable {
+        struct APS: Encodable {
+            struct Alert: Encodable {
+                let title: String
+                let subtitle: String?
+                let body: String
+                let summaryArgument: String
+                let summaryArgumentCount: Int
+
+                enum CodingKeys: String, CodingKey {
+                    case title, subtitle, body
+                    case summaryArgument = "summary-arg"
+                    case summaryArgumentCount = "summary-arg-count"
+                }
+            }
+
+            let alert: Alert
+            let sound: String
+            let category: String?
+            let badge: Int?
+            let threadID: String
+
+            enum CodingKeys: String, CodingKey {
+                case alert, sound, category, badge
+                case threadID = "thread-id"
+            }
+        }
+
+        let aps: APS
+        let paneID: String?
+        let workspaceID: String?
+        let workspace: String?
+        let notificationID: String?
+        let notificationIDs: [String]
+        let notificationTimestamp: TimeInterval
+        let triage: Bool?
+    }
+
+    private struct RetractionPayload: Encodable {
+        struct APS: Encodable {
+            let contentAvailable: Int
+
+            enum CodingKeys: String, CodingKey {
+                case contentAvailable = "content-available"
+            }
+        }
+
+        let aps: APS
+        let retractNotificationIDs: [String]
+        let retractedBefore: TimeInterval
+    }
+}
+
 private extension Data {
     func base64URLEncoded() -> String {
         base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private extension String {
+    func apnsPrefix(maxBytes: Int) -> String {
+        guard utf8.count > maxBytes else { return self }
+        let suffix = "…"
+        let contentLimit = maxBytes - suffix.utf8.count
+        var result = ""
+        var byteCount = 0
+        for character in self {
+            let characterBytes = String(character).utf8.count
+            guard byteCount + characterBytes <= contentLimit else { break }
+            result.append(character)
+            byteCount += characterBytes
+        }
+        return result + suffix
     }
 }

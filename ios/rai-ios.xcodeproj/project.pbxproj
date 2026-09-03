@@ -8,19 +8,24 @@
 
 /* Begin PBXBuildFile section */
 		001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */; };
+		05AD621F149C70D175777D4A /* NotificationRetractionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */; };
 		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
 		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
 		196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */; };
 		1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A18C263735F80641EEDBADC /* OutboxTests.swift */; };
+		22D4D3C013BF36E48B1ABC7F /* NotificationRetractionHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAE12994A8BF6F421738221 /* NotificationRetractionHandlerTests.swift */; };
 		34B948A1A6F5F394B4D3A72C /* PaneTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */; };
 		364263F635053B13874BD7DE /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */; };
 		420DC582A71B10CCB2BC28A6 /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E9B4094B34953B946FDDDD /* Composer.swift */; };
 		45DB2BF7F6DB981D2556E39A /* PromptDetection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9104D912B4487B9223AD236C /* PromptDetection.swift */; };
 		48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */; };
 		496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */; };
+		55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BE1878923A0D1203A33641D /* PairingTests.swift */; };
 		8485449A51E1C585A0439512 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28A9944E5B3DBD0E0B55C06 /* RootView.swift */; };
+		88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */; };
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
 		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
+		A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */; };
 		C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */; };
 		E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */; };
 		F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ECD4F2FE845F00F88608F /* MonitorView.swift */; };
@@ -38,6 +43,7 @@
 
 /* Begin PBXFileReference section */
 		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
+		2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineResilienceTests.swift; sourceTree = "<group>"; };
 		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
 		3A18C263735F80641EEDBADC /* OutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxTests.swift; sourceTree = "<group>"; };
@@ -45,13 +51,17 @@
 		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
 		3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaiIOSApp.swift; sourceTree = "<group>"; };
 		3D076077933E7F528040D0BE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3FAE12994A8BF6F421738221 /* NotificationRetractionHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandlerTests.swift; sourceTree = "<group>"; };
 		48E9B4094B34953B946FDDDD /* Composer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composer.swift; sourceTree = "<group>"; };
 		4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTerminalView.swift; sourceTree = "<group>"; };
+		5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdListLayoutTests.swift; sourceTree = "<group>"; };
+		5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-hook-beacons-0902-230811-70z1"; path = ..; sourceTree = SOURCE_ROOT; };
 		7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetectionTests.swift; sourceTree = "<group>"; };
+		7BE1878923A0D1203A33641D /* PairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingTests.swift; sourceTree = "<group>"; };
 		9104D912B4487B9223AD236C /* PromptDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetection.swift; sourceTree = "<group>"; };
 		970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
+		9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandler.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		A94AED5CC385FC1F5FD41FE9 /* rai */ = {isa = PBXFileReference; lastKnownFileType = folder; name = rai; path = ..; sourceTree = SOURCE_ROOT; };
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C28A9944E5B3DBD0E0B55C06 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
@@ -75,7 +85,7 @@
 		2DA318A8F4154999D3174BCB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				A94AED5CC385FC1F5FD41FE9 /* rai */,
+				5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -83,7 +93,11 @@
 		6B6A202ACF1B463B34798192 /* rai-iosTests */ = {
 			isa = PBXGroup;
 			children = (
+				5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */,
+				3FAE12994A8BF6F421738221 /* NotificationRetractionHandlerTests.swift */,
+				2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */,
 				3A18C263735F80641EEDBADC /* OutboxTests.swift */,
+				7BE1878923A0D1203A33641D /* PairingTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
 			);
@@ -108,6 +122,7 @@
 				48E9B4094B34953B946FDDDD /* Composer.swift */,
 				2CA038B4352450A677BF46AE /* Info.plist */,
 				310ECD4F2FE845F00F88608F /* MonitorView.swift */,
+				9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */,
 				1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */,
 				DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */,
 				4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */,
@@ -226,7 +241,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */,
+				22D4D3C013BF36E48B1ABC7F /* NotificationRetractionHandlerTests.swift in Sources */,
+				88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */,
 				1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */,
+				55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
 			);
@@ -240,6 +259,7 @@
 				001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */,
 				420DC582A71B10CCB2BC28A6 /* Composer.swift in Sources */,
 				F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */,
+				05AD621F149C70D175777D4A /* NotificationRetractionHandler.swift in Sources */,
 				364263F635053B13874BD7DE /* Pairing.swift in Sources */,
 				E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */,
 				34B948A1A6F5F394B4D3A72C /* PaneTerminalView.swift in Sources */,

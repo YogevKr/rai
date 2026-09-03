@@ -21,11 +21,26 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     self.pendingPaneID = nil
                 }
             }
+            if pendingTriage {
+                Task { @MainActor in
+                    appModel?.openTriage()
+                    self.pendingTriage = false
+                }
+            }
         }
     }
 
     private var deviceToken: String?
     private var pendingPaneID: String?
+    private var pendingTriage = false
+    private lazy var retractionHandler = PhoneNotificationRetractionHandler(
+        center: SystemPhoneNotificationCenter(),
+        readStateStore: UserDefaultsPhoneNotificationReadStateStore()
+    )
+
+    func markDeliveredNotificationsSeen() {
+        Task { await retractionHandler.markDeliveredNotificationsSeen() }
+    }
 
     func application(
         _ application: UIApplication,
@@ -71,6 +86,17 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     func application(
         _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task {
+            let handled = await retractionHandler.handle(userInfo: userInfo)
+            completionHandler(handled ? .newData : .noData)
+        }
+    }
+
+    func application(
+        _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
@@ -96,7 +122,11 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let paneID = response.notification.request.content.userInfo["paneID"] as? String else {
+        let userInfo = response.notification.request.content.userInfo
+        guard let paneID = userInfo["paneID"] as? String else {
+            if userInfo["triage"] as? Bool == true {
+                await openTriage()
+            }
             return
         }
         let bytes: [UInt8]?
@@ -138,6 +168,14 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             if appModel != nil { pendingPaneID = nil }
         }
     }
+
+    private func openTriage() async {
+        pendingTriage = true
+        await MainActor.run {
+            appModel?.openTriage()
+            if appModel != nil { pendingTriage = false }
+        }
+    }
 }
 
 @main
@@ -154,8 +192,8 @@ struct RaiIOSApp: App {
                 .onOpenURL { url in
                     // Deep-link pairing: tapping (or opening) a rai://pair link
                     // pairs and connects, same path as scanning the QR.
-                    if let pairing = try? Pairing(urlString: url.absoluteString) {
-                        appModel.pair(pairing)
+                    if let invitation = try? PairingInvitation(urlString: url.absoluteString) {
+                        appModel.pair(invitation)
                     }
                 }
         }
@@ -166,7 +204,7 @@ struct RaiIOSApp: App {
             // app delegate's applicationDidBecomeActive (the first version
             // of this fix silently did nothing).
             if phase == .active {
-                UNUserNotificationCenter.current().setBadgeCount(0)
+                appDelegate.markDeliveredNotificationsSeen()
             }
         }
     }

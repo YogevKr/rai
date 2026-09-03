@@ -285,7 +285,7 @@ struct SettingsView: View {
 private struct CompanionSettingsView: View {
     @ObservedObject private var server: RaiBridgeServer
     @ObservedObject private var apnsSettings: APNsSettings
-    @State private var isRegenerateConfirmationPresented = false
+    @ObservedObject private var presenceStatus = PushPresenceStatus.shared
     @State private var keyP8Draft: String
     @State private var keyP8Error: String?
 
@@ -305,6 +305,25 @@ private struct CompanionSettingsView: View {
             || UserDefaults.standard.bool(forKey: "companionPushSettingsVisible")
     }
 
+    private var doctorFindings: [DoctorFinding] {
+        CompanionDoctor.findings(for: CompanionDoctorState(
+            bridgeEnabled: server.isEnabled,
+            bridgeListening: server.isRunning,
+            bonjourAdvertised: server.isBonjourAdvertised,
+            bridgePort: server.port,
+            tailscaleState: server.tailscaleServeState,
+            tailscaleURL: server.tailscaleWSSURL?.absoluteString,
+            apnsKeyState: apnsSettings.keyReadState,
+            apnsEnvironment: apnsSettings.defaultEnvironment,
+            registeredDeviceCount: server.registeredPushDeviceCount,
+            presenceGateEnabled: SettingsStore.shared.holdPushesWhileAtMac,
+            presenceGateIsAway: presenceStatus.isAway,
+            pendingPushCount: presenceStatus.pendingCount,
+            lastPushResult: server.lastPushResult,
+            lastPushSucceeded: server.lastPushSucceeded
+        ))
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -320,7 +339,7 @@ private struct CompanionSettingsView: View {
                     .toggleStyle(.switch)
 
                     Text(
-                        "V1 uses token authentication over WebSocket. "
+                        "Each phone gets its own credential over WebSocket. "
                             + "Connect only over a trusted LAN or Tailscale network."
                     )
                     .font(.system(size: 11))
@@ -329,22 +348,41 @@ private struct CompanionSettingsView: View {
                     if server.isEnabled {
                         Divider().overlay(Theme.hairline)
                         VStack(alignment: .leading, spacing: 16) {
-                            HStack(alignment: .top, spacing: 24) {
-                                pairingOption(
-                                    title: "Same Wi-Fi",
-                                    address: "\(server.displayHost):\(server.port)",
-                                    url: server.pairingURL
-                                )
-                                if let host = server.tailscaleHost {
-                                    pairingOption(
-                                        title: "Anywhere via Tailscale",
-                                        address: "\(host):\(server.tailscalePort)",
-                                        url: server.tailscalePairingURL
-                                    )
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                if let code = server.pairingCode,
+                                   let expiry = server.pairingCodeExpiresAt,
+                                   expiry > context.date {
+                                    VStack(alignment: .leading, spacing: 14) {
+                                        companionValue(label: "Pairing code", value: code)
+                                        Text("Expires in \(remainingTime(until: expiry, now: context.date))")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(Theme.textTertiary)
+                                        HStack(alignment: .top, spacing: 24) {
+                                            pairingOption(
+                                                title: "Same Wi-Fi",
+                                                address: "\(server.displayHost):\(server.port)",
+                                                url: server.pairingURL
+                                            )
+                                            if let host = server.tailscaleHost {
+                                                pairingOption(
+                                                    title: "Anywhere via Tailscale",
+                                                    address: "\(host):\(server.tailscalePort)",
+                                                    url: server.tailscalePairingURL
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Text("The pairing code expired or was used.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textTertiary)
                                 }
                             }
 
-                            companionValue(label: "Pairing token", value: server.pairingToken)
+                            Button("New Pairing Code") {
+                                server.regeneratePairingCode()
+                            }
+
                             companionValue(
                                 label: "Connected",
                                 value: "\(server.connectedDeviceCount) device"
@@ -363,14 +401,43 @@ private struct CompanionSettingsView: View {
                                     .font(.system(size: 11))
                                     .foregroundStyle(Theme.textTertiary)
                             }
-                            Button("Regenerate Token", role: .destructive) {
-                                isRegenerateConfirmationPresented = true
-                            }
                         }
                     }
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.textPrimary)
+                }
+
+                SettingsSection(title: "Paired Devices") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if server.pairedDevices.isEmpty {
+                            Text("No phones are paired.")
+                                .foregroundStyle(Theme.textTertiary)
+                        } else {
+                            ForEach(server.pairedDevices) { device in
+                                HStack(alignment: .top, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(device.label)
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text("Paired \(device.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                        Text("Last seen \(device.lastSeen.formatted(date: .abbreviated, time: .shortened))")
+                                    }
+                                    .foregroundStyle(Theme.textTertiary)
+                                    Spacer()
+                                    Button("Revoke", role: .destructive) {
+                                        server.revokeDevice(id: device.id)
+                                    }
+                                }
+                                if device.id != server.pairedDevices.last?.id {
+                                    Divider().overlay(Theme.hairline)
+                                }
+                            }
+                        }
+                        Button("Show audit log") {
+                            NSWorkspace.shared.activateFileViewerSelecting([server.auditLogURL])
+                        }
+                    }
+                    .font(.system(size: 12))
                 }
 
                 if showPushSettings {
@@ -436,17 +503,67 @@ private struct CompanionSettingsView: View {
                     .foregroundStyle(Theme.textPrimary)
                 }
                 }
+
+                SettingsSection(title: "Push Test") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Button(server.isSendingTestPush ? "Sending…" : "Send test push") {
+                            server.sendTestPush()
+                        }
+                        .disabled(server.isSendingTestPush)
+
+                        ForEach(server.testPushResults) { result in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Circle()
+                                    .fill(result.succeeded ? Color.green : Color.red)
+                                    .frame(width: 7, height: 7)
+                                Text("\(result.deviceLabel) · \(result.environment)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                Spacer()
+                                Text("\(result.status.map(String.init) ?? "—") · \(result.reason)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(
+                                        result.succeeded
+                                            ? Theme.status(.done)
+                                            : Theme.status(.blocked)
+                                    )
+                            }
+                        }
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textPrimary)
+                }
+
+                SettingsSection(title: "Doctor") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(doctorFindings) { finding in
+                            HStack(alignment: .top, spacing: 9) {
+                                Circle()
+                                    .fill(doctorColor(finding.severity))
+                                    .frame(width: 8, height: 8)
+                                    .padding(.top, 4)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(finding.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text(finding.detail)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textSecondary)
+                                    Text("Fix: \(finding.fix)")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                            }
+                        }
+                    }
+                    .foregroundStyle(Theme.textPrimary)
+                }
             }
         }
         .settingsTabBackground()
-        .alert("Regenerate Pairing Token?", isPresented: $isRegenerateConfirmationPresented) {
-            Button("Cancel", role: .cancel) {}
-            Button("Regenerate", role: .destructive) {
-                server.regenerateToken()
-            }
-        } message: {
-            Text("All connected companion devices will be disconnected and must pair again.")
-        }
+    }
+
+    private func remainingTime(until expiry: Date, now: Date) -> String {
+        let seconds = max(0, Int(ceil(expiry.timeIntervalSince(now))))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func pushField(_ label: String, text: Binding<String>) -> some View {
@@ -457,6 +574,14 @@ private struct CompanionSettingsView: View {
                 .textFieldStyle(.roundedBorder)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func doctorColor(_ severity: DoctorSeverity) -> Color {
+        switch severity {
+        case .green: .green
+        case .amber: .orange
+        case .red: .red
+        }
     }
 
     private func companionValue(label: String, value: String) -> some View {

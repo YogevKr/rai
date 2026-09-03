@@ -4,7 +4,8 @@ struct PairingView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var host = ""
     @State private var port = ""
-    @State private var token = ""
+    @State private var code = ""
+    @State private var useTLS = false
     @State private var showingScanner = false
     @State private var errorMessage: String?
 
@@ -28,11 +29,12 @@ struct PairingView: View {
                         .autocorrectionDisabled()
                     TextField("Port", text: $port)
                         .keyboardType(.numberPad)
-                    SecureField("Token", text: $token)
-                        .textInputAutocapitalization(.never)
+                    TextField("8-character code", text: $code)
+                        .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
+                    Toggle("Use TLS", isOn: $useTLS)
                     Button("Pair and Connect", action: pairManually)
-                        .disabled(host.isEmpty || port.isEmpty || token.isEmpty)
+                        .disabled(host.isEmpty || port.isEmpty || code.isEmpty)
                 }
             }
             .navigationTitle("Pair with rai")
@@ -73,7 +75,14 @@ struct PairingView: View {
             return
         }
         do {
-            appModel.pair(try Pairing(host: host, port: portNumber, token: token))
+            appModel.pair(
+                try PairingInvitation(
+                    host: host,
+                    port: portNumber,
+                    code: code,
+                    useTLS: useTLS
+                )
+            )
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -81,8 +90,8 @@ struct PairingView: View {
 
     private func handleScan(_ result: Result<String, Error>) {
         do {
-            let code = try result.get()
-            appModel.pair(try Pairing(urlString: code))
+            let url = try result.get()
+            appModel.pair(try PairingInvitation(urlString: url))
         } catch {
             errorMessage = error.localizedDescription
         }

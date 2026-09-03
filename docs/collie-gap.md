@@ -29,14 +29,13 @@ of what rai should absorb.
 
 Closed since the July audit: single-choice permission/trust prompt buttons
 with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac-side
-notification retraction; triage groups with counts and a filter pulse line
-(Nightwatch); session follow.
+two-tap danger; destructive-input confirm; push presence gate; Mac and phone
+notification retraction; push coalescing and grouping; triage groups with counts
+and a filter pulse line (Nightwatch); session follow.
 
 Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; phone-side retraction, coalescing, per-kind toggles, DND/snooze;
-statusline strip; connection-cause diagnosis; read-only tier + audit log;
-draft take-over; per-pane display prefs.
+blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
+diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -69,27 +68,23 @@ draft take-over; per-pane display prefs.
    and says "Collie will not type"; it also stops storing the draft. rai's
    outbox is memory-only, but the notification Reply action and quick
    replies would type into a sudo prompt blind.
-5. **Per-device credentials and audit.** rai has one long-lived token shared
-   by every phone, regenerate as the only revoke, no attempt limit. Collie:
-   8-char code, 10-min TTL, 5 attempts, per-device token hashed at rest, live
-   revoke, JSONL audit (0600) of every write, write gate fails closed to
-   read-only. Also: rai's LAN pairing URL is plain `ws://`, so token and pane
-   content cross the LAN unencrypted; Collie binds loopback and publishes one
-   TLS door only.
-6. **Doctor and push-test.** `collie doctor` is one read-only pass over the
+5. **Per-device credentials and audit.** ✅ Rai now uses an 8-character code,
+   a 10-minute limit, five attempts, hashed device credentials, live revoke,
+   and a `0600` JSONL write audit. **LAN TLS remains open.** The LAN pairing
+   URL still uses plain `ws://`, so pane content crosses the LAN without TLS.
+   The Tailscale path uses `wss://` through `tailscale serve`.
+6. **Doctor and push-test. ✅ Landed 2026-09-02.** `collie doctor` is one read-only pass over the
    traps that fail silently, each finding naming the fix; `collie push-test`
    proves delivery. rai already fixed a silent missing-APNs-key drop.
-7. **Cached last screen on cold boot**, stamped "last seen HH:MM", plus a
-   "synced Ns ago" freshness promise (ADR 0031). rai iOS shows nothing until
-   the socket is up.
+7. ✅ **Cached last screen on cold boot**, stamped "last seen HH:MM", plus a
+   ticking "synced Ns ago" freshness promise (ADR 0031). Landed on iOS.
 8. **Operator config files.** `commands.toml`, `keys.toml`,
    `quick-replies.toml`, live-reloaded, with a `scope` so rows replace the
    shipped catalog on matching panes (ADR 0018). rai hardcodes both catalogs
    in `Composer.swift`.
-9. **Stable error codes from the bridge.** rai rejects with prose; Collie
-   sends `{code, detail}` so the phone can tell "herdr is down on the Mac"
-   from "bridge unreachable" and offer the right button.
-10. **Push grouping.** Collie batches simultaneous blocks into one summary.
+9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
+   TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
+10. **Push grouping. ✅ Landed 2026-09-02.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
     the Mac handles it.
@@ -128,12 +123,12 @@ taking later: a single "All sessions" triage list.
 Wave 1 — independent worktrees, one Codex job each:
 
 1. **guarded-send** (iOS): verified send + no-echo prompt guard (items 1, 4).
-2. **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
-   per-device tokens, revoke, audit log (item 5).
-3. **push-intelligence** (Mac + iOS notification delegate): coalescing,
+2. ✅ **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
+   per-device tokens, revoke, audit log (item 5). LAN TLS remains open.
+3. **push-intelligence ✅ complete** (Mac + iOS notification delegate): coalescing,
    thread grouping, phone-side retraction, test push + Doctor in
    Settings → iPhone (items 6, 10).
-4. **offline-resilience** (iOS): cached last snapshot with "last seen",
+4. ✅ **offline-resilience** (iOS): cached last snapshot with "last seen",
    connection-cause diagnosis (items 7, 9 phone side).
 5. ✅ **hook-beacons** (Mac + hook script): Claude Code hook receiver, pane
    correlation via `HERDR_PANE_ID`, push body carries the question, beacon

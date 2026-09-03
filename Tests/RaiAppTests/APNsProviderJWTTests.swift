@@ -49,7 +49,7 @@ final class APNsProviderJWTTests: XCTestCase {
 
 final class APNsDeliveryQueueTests: XCTestCase {
     func testSerializesMatchingDeliveryKeys() async {
-        let queue = APNsDeliveryQueue<Int>()
+        let queue = APNsDeliveryQueue()
         let values = RecordedValues()
         let firstStarted = expectation(description: "first delivery started")
 
@@ -76,7 +76,7 @@ final class APNsDeliveryQueueTests: XCTestCase {
     }
 
     func testStalledDeviceDoesNotDelayAnotherDevice() async {
-        let queue = APNsDeliveryQueue<Int>()
+        let queue = APNsDeliveryQueue()
         let gate = AsyncGate()
         let stalledStarted = expectation(description: "stalled device started")
         let healthyDelivered = expectation(description: "healthy device delivered")
@@ -100,19 +100,6 @@ final class APNsDeliveryQueueTests: XCTestCase {
 
         await gate.open()
         _ = await (stalled.value, healthy.value)
-    }
-}
-
-final class PushBadgeCounterTests: XCTestCase {
-    func testCountsEachCollapseKeyOnceUntilReset() {
-        var counter = PushBadgeCounter()
-
-        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
-        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
-        XCTAssertEqual(counter.badge(for: "connection:pane-2"), 2)
-
-        counter.reset()
-        XCTAssertEqual(counter.badge(for: "connection:pane-1"), 1)
     }
 }
 

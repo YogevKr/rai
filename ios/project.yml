@@ -50,7 +50,7 @@ targets:
         # Source of truth for the build number: xcodegen REGENERATES
         # Info.plist from this file, so bumping the plist alone is
         # silently reverted on the next `xcodegen generate`.
-        CFBundleVersion: "28"
+        CFBundleVersion: "29"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -67,6 +67,8 @@ targets:
         NSLocalNetworkUsageDescription: Connect to the rai bridge running on your Mac.
         NSBonjourServices:
           - _rai._tcp
+        UIBackgroundModes:
+          - remote-notification
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         CFBundleURLTypes:

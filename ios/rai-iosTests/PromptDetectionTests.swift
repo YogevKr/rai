@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import rai
 
@@ -52,6 +53,30 @@ final class PromptDetectionTests: XCTestCase {
         """
 
         XCTAssertNil(PromptDetector.detect(in: grid))
+    }
+
+    @MainActor
+    func testLiveGridTextReadsCursorAddressedFramesWithoutLinefeeds() {
+        // herdr's observe stream paints every cell by cursor address and never
+        // sends a line feed or an alt-screen switch, and an agent pane's
+        // history seed is empty. The grid must still be readable, or prompt
+        // detection silently sees an empty screen (build 28 regression).
+        let view = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 320))
+        view.pinGridSize(cols: 80, rows: 8)
+        let frame = "\u{1B}[H\u{1B}[2J"
+            + "\u{1B}[1;1HDo you want to proceed?"
+            + "\u{1B}[2;1H❯ 1. Yes"
+            + "\u{1B}[3;1H  2. No"
+            + "\u{1B}[4;1HEsc to cancel · Tab to amend"
+        view.feed(byteArray: Array(frame.utf8)[...])
+
+        let grid = view.liveGridText()
+
+        XCTAssertTrue(grid.contains("1. Yes"), "grid was: \(grid)")
+        XCTAssertEqual(
+            PromptDetector.detect(in: grid)?.options.map(\.label),
+            ["Yes", "No"]
+        )
     }
 
     func testMovedScreenSignatureDoesNotMatch() throws {

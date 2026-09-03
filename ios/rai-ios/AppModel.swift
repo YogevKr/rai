@@ -1,18 +1,170 @@
+import CryptoKit
 import Foundation
+import RaiCore
+
+private enum SnapshotCacheError: Error {
+    case invalidSnapshot
+}
+
+struct CachedHerdSnapshot: Codable, Equatable {
+    let snapshot: SessionSnapshot
+    let savedAt: Date
+    let pairingID: String
+
+    func belongs(to pairing: Pairing) -> Bool {
+        pairingID == Self.pairingID(for: pairing)
+    }
+
+    static func pairingID(for pairing: Pairing) -> String {
+        let value = "\(pairing.host.lowercased())|\(pairing.port)|\(pairing.useTLS)|\(pairing.token)"
+        return SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+}
+
+/// Stores only the herd model. Terminal frames stay memory-only.
+final class SnapshotCacheStore {
+    private let fileURL: URL
+    private let queue: DispatchQueue
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(
+        fileURL: URL = SnapshotCacheStore.defaultURL(),
+        queue: DispatchQueue = DispatchQueue(label: "rai.snapshot-cache")
+    ) {
+        self.fileURL = fileURL
+        self.queue = queue
+        encoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
+    }
+
+    func load() -> CachedHerdSnapshot? {
+        queue.sync {
+            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            return try? decoder.decode(CachedHerdSnapshot.self, from: data)
+        }
+    }
+
+    func save(
+        _ cached: CachedHerdSnapshot,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result { try write(cached) })
+        }
+    }
+
+    func clear(completion: (() -> Void)? = nil) {
+        queue.async { [self] in
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
+                } catch {
+                    NSLog("rai-ios: Could not clear snapshot cache: %@", error.localizedDescription)
+                }
+            }
+            completion?()
+        }
+    }
+
+    private func write(_ cached: CachedHerdSnapshot) throws {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let sanitized = CachedHerdSnapshot(
+            snapshot: try sanitizedSnapshot(cached.snapshot),
+            savedAt: cached.savedAt,
+            pairingID: cached.pairingID
+        )
+        try encoder.encode(sanitized).write(to: fileURL, options: .atomic)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var savedURL = fileURL
+        do {
+            try savedURL.setResourceValues(values)
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
+        }
+    }
+
+    private static func defaultURL() -> URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return support
+            .appendingPathComponent("com.whetstone.rai.ios", isDirectory: true)
+            .appendingPathComponent("last-herd-snapshot.json")
+    }
+
+    private func sanitizedSnapshot(_ snapshot: SessionSnapshot) throws -> SessionSnapshot {
+        let data = try encoder.encode(snapshot)
+        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var panes = root["panes"] as? [[String: Any]] else {
+            throw SnapshotCacheError.invalidSnapshot
+        }
+        for index in panes.indices {
+            panes[index].removeValue(forKey: "agent_session")
+            panes[index].removeValue(forKey: "foreground_cwd")
+            panes[index].removeValue(forKey: "scroll")
+            panes[index].removeValue(forKey: "terminal_title")
+            if let cwd = panes[index]["cwd"] as? String {
+                panes[index]["cwd"] = (cwd as NSString).lastPathComponent
+            }
+        }
+        root["panes"] = panes
+        if var workspaces = root["workspaces"] as? [[String: Any]] {
+            for index in workspaces.indices {
+                workspaces[index].removeValue(forKey: "worktree")
+            }
+            root["workspaces"] = workspaces
+        }
+        root.removeValue(forKey: "agents")
+        root["layouts"] = []
+        let sanitizedData = try JSONSerialization.data(withJSONObject: root)
+        return try decoder.decode(SessionSnapshot.self, from: sanitizedData)
+    }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
+    @Published private(set) var pendingPairing: PairingInvitation?
     @Published var pendingOpenPaneID: String?
+    @Published private(set) var triageRequest = 0
     @Published private(set) var backgroundWorkByPaneID: [String: [String]] = [:]
-    let connection = BridgeConnection()
+    let connection: BridgeConnection
 
-    private let pairingStore = PairingStore()
+    private let pairingStore: any PairingStoring
+    private let snapshotCacheStore: SnapshotCacheStore
     private var deviceToken: String?
+    private var pendingCache: CachedHerdSnapshot?
+    private var cacheWriteTask: Task<Void, Never>?
+    private var cacheWriteInProgress = false
+    private var cacheWriteGeneration: UInt = 0
 
-    init() {
+    init(
+        pairingStore: any PairingStoring = PairingStore(),
+        connection: BridgeConnection? = nil,
+        snapshotCacheStore: SnapshotCacheStore = SnapshotCacheStore(),
+        launchPairURL: String? = ProcessInfo.processInfo.environment["RAI_PAIR_URL"]
+    ) {
+        self.pairingStore = pairingStore
+        self.connection = connection ?? BridgeConnection()
+        self.snapshotCacheStore = snapshotCacheStore
+        let connection = self.connection
         connection.didConnect = { [weak self] in
             self?.registerPushIfPossible()
+        }
+        connection.didPair = { [weak self] pairing in
+            self?.didExchangeCredential(pairing)
+        }
+        connection.didReceiveSnapshot = { [weak self] snapshot, receivedAt in
+            self?.scheduleSnapshotCache(snapshot, receivedAt: receivedAt)
         }
         connection.didReceiveBackgroundWork = { [weak self] work in
             self?.backgroundWorkByPaneID = Dictionary(
@@ -23,24 +175,58 @@ final class AppModel: ObservableObject {
         // Testing/automation affordance: pair straight from a launch env var,
         // e.g. `simctl launch --setenv RAI_PAIR_URL "rai://pair?..."`. Harmless
         // in normal use (the var is never set); lets e2e tests skip the QR/UI.
-        if let urlString = ProcessInfo.processInfo.environment["RAI_PAIR_URL"] {
-            NSLog("rai-ios: RAI_PAIR_URL present: \(urlString)")
-            if let launchPairing = try? Pairing(urlString: urlString) {
-                pair(launchPairing)
+        if let urlString = launchPairURL {
+            NSLog("rai-ios: RAI_PAIR_URL is present")
+            if let invitation = try? PairingInvitation(urlString: urlString) {
+                pair(invitation)
                 return
             } else {
                 NSLog("rai-ios: RAI_PAIR_URL failed to parse")
             }
         }
-        pairing = pairingStore.load()
-        if let pairing {
-            connection.connect(to: pairing)
+        if let storedPairing = pairingStore.load() {
+            adopt(storedPairing, connect: true, persist: false)
         }
     }
 
-    func pair(_ pairing: Pairing) {
+    func pair(_ invitation: PairingInvitation) {
+        // A code for a different Mac means the cached herd is someone else's.
+        if let current = pairing,
+           current.host != invitation.host || current.port != invitation.port {
+            discardSnapshotCache()
+        }
+        pendingPairing = invitation
+        pairing = nil
+        connection.pair(using: invitation)
+    }
+
+    /// The Mac exchanged the pairing code for this device's credential. The
+    /// socket that did the exchange is already sending `hello`, so adopt and
+    /// persist the credential without reconnecting.
+    func didExchangeCredential(_ pairing: Pairing) {
+        pendingPairing = nil
+        adopt(pairing, connect: false, persist: true)
+    }
+
+    /// Adopt a credential: drop a cache that belongs to another Mac, restore
+    /// the cached herd for this one while the socket comes up, and connect.
+    private func adopt(_ pairing: Pairing, connect: Bool, persist: Bool) {
+        let changesMac = self.pairing.map { $0 != pairing } ?? false
+        if changesMac {
+            discardSnapshotCache()
+        }
         self.pairing = pairing
-        connection.connect(to: pairing)
+        if connect {
+            if connection.snapshot == nil, let cached = snapshotCacheStore.load() {
+                if cached.belongs(to: pairing) {
+                    connection.restoreCachedSnapshot(cached)
+                } else {
+                    snapshotCacheStore.clear()
+                }
+            }
+            connection.connect(to: pairing)
+        }
+        guard persist else { return }
         do {
             try pairingStore.save(pairing)
         } catch {
@@ -62,7 +248,9 @@ final class AppModel: ObservableObject {
             connection.disconnect()
         }
         pairingStore.clear()
+        discardSnapshotCache()
         pairing = nil
+        pendingPairing = nil
     }
 
     func setPushDeviceToken(_ token: String) {
@@ -75,12 +263,75 @@ final class AppModel: ObservableObject {
         return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
     }
 
+    func openTriage() {
+        pendingOpenPaneID = nil
+        triageRequest += 1
+    }
+
     private func registerPushIfPossible() {
         guard let deviceToken, connection.status.isConnected else { return }
         connection.registerPush(
             deviceToken: deviceToken,
             environment: Self.apnsEnvironment
         )
+    }
+
+    private func scheduleSnapshotCache(_ snapshot: SessionSnapshot, receivedAt: Date) {
+        guard let pairing else { return }
+        let cached = CachedHerdSnapshot(
+            snapshot: snapshot,
+            savedAt: receivedAt,
+            pairingID: CachedHerdSnapshot.pairingID(for: pairing)
+        )
+        guard !cacheWriteInProgress, cacheWriteTask == nil else {
+            pendingCache = cached
+            return
+        }
+
+        startCacheWrite(cached)
+    }
+
+    private func startCacheWrite(_ cached: CachedHerdSnapshot) {
+        cacheWriteInProgress = true
+        let generation = cacheWriteGeneration
+        snapshotCacheStore.save(cached) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.finishCacheWrite(result, generation: generation)
+            }
+        }
+    }
+
+    private func finishCacheWrite(_ result: Result<Void, Error>, generation: UInt) {
+        guard generation == cacheWriteGeneration else { return }
+        cacheWriteInProgress = false
+        if case let .failure(error) = result {
+            NSLog("rai-ios: Could not persist snapshot cache: %@", error.localizedDescription)
+        }
+        startCacheWriteCooldown(generation: generation)
+    }
+
+    private func startCacheWriteCooldown(generation: UInt) {
+        cacheWriteTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(3))
+            } catch {
+                return
+            }
+            guard let self, generation == self.cacheWriteGeneration else { return }
+            self.cacheWriteTask = nil
+            guard let cached = self.pendingCache else { return }
+            self.pendingCache = nil
+            self.startCacheWrite(cached)
+        }
+    }
+
+    private func discardSnapshotCache() {
+        cacheWriteGeneration &+= 1
+        cacheWriteTask?.cancel()
+        cacheWriteTask = nil
+        cacheWriteInProgress = false
+        pendingCache = nil
+        snapshotCacheStore.clear()
     }
 
     /// The APNs token's environment is fixed by the signed `aps-environment`
