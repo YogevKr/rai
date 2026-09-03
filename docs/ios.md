@@ -86,6 +86,8 @@ Rai never puts the key in logs, its audit log, or bridge messages.
 Rai migrates a valid key from its old Keychain item on the first launch.
 The migration leaves the Keychain item unchanged.
 Doctor asks for a new paste when the old item is invalid.
+Rai attempts automatic migration once per Mac launch.
+Settings offers Retry Migration after a temporary Keychain read failure.
 
 Rai can use Claude Code hooks for accurate notification and push text. Install
 them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
