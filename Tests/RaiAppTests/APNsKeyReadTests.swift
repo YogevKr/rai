@@ -40,7 +40,7 @@ final class APNsKeyReadTests: XCTestCase {
     }
 
     func testEmptyKeyIsNamedNotAnASN1Error() {
-        let configuration = APNsConfiguration(teamID: "T", keyID: "K", keyP8: "", bundleID: "b", defaultEnvironment: "sandbox")
+        let configuration = APNsConfiguration(teamID: "T", keyID: "K", bundleID: "b", keyP8: "", defaultEnvironment: "sandbox")
         XCTAssertThrowsError(try APNsProviderJWT.make(configuration: configuration)) { error in
             XCTAssertEqual(error as? APNsKeyError, .missing)
             XCTAssertTrue(error.localizedDescription.contains("Keychain"))
