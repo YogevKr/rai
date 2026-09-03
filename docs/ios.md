@@ -181,6 +181,8 @@ The reader scans at most the latest 32 MiB from a transcript file.
 The protocol remains version 6. Old phone builds skip the new reply.
 Each request has pane, session, and request IDs. Replies echo the request identity.
 The phone rejects stale replies after an agent restart.
+Generic errors include optional history request context. The phone ignores unrelated errors.
+Connection-level errors cancel pending history and keep their normal connection diagnosis.
 
 History cards show prompts, replies, tool calls, results, and times.
 Use the find field to filter the loaded turns.

@@ -105,6 +105,29 @@ final class BridgeErrorPolicyTests: XCTestCase {
     }
 
     @MainActor
+    func testHerdMissingDuringHistoryRefreshCompletesRequestAndShowsDiagnosis() {
+        let connection = BridgeConnection(messageSender: { _ in })
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: "herd"
+        )
+        connection.requestHistory(paneID: "pane-1", sessionID: "session-1")
+        XCTAssertEqual(connection.pendingHistoryRequestCount, 1)
+
+        connection.handle(.error(
+            message: "Herdr is unavailable.",
+            code: .herdMissing,
+            detail: "No live snapshot."
+        ))
+
+        XCTAssertEqual(connection.pendingHistoryRequestCount, 0)
+        XCTAssertFalse(connection.status.isConnected)
+        XCTAssertEqual(connection.status.diagnosis?.action, .reconnect)
+        XCTAssertEqual(connection.status.diagnosis?.rawDetails, "No live snapshot.")
+        XCTAssertNil(connection.historyErrors["pane-1"])
+    }
+
+    @MainActor
     func testProtocolMismatchStopsWithoutRequiringRepair() {
         let connection = BridgeConnection()
 

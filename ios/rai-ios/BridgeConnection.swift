@@ -72,6 +72,18 @@ enum BridgeErrorPolicy {
         destinations[phase]?[code] ?? .actionError
     }
 
+    static func isConnectionLevel(
+        _ code: BridgeErrorCode,
+        phase: BridgeErrorPhase
+    ) -> Bool {
+        switch destination(for: code, phase: phase) {
+        case .reconnect, .pairAgain, .updateRequired:
+            true
+        case .actionError, .ignore:
+            false
+        }
+    }
+
     static func authenticationProseDestination(_ message: String) -> BridgeErrorDestination {
         let normalized = message.lowercased()
         if normalized.contains("protocol") || normalized.contains("version mismatch") {
@@ -430,6 +442,10 @@ final class BridgeConnection: ObservableObject {
 
     var hasPendingReconnect: Bool {
         reconnectTask != nil
+    }
+
+    var pendingHistoryRequestCount: Int {
+        pendingHistoryRequests.count
     }
 
     var pushPreferencesSyncStatus: String? {
@@ -1503,16 +1519,22 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data)
             }
-        case let .error(message, code, detail):
+        case let .error(message, code, detail, paneID, requestID):
             let historyMessage = code == .unknownMessage
                 ? "History is not supported by this Mac."
                 : detail ?? message
-            if let paneErrors = TranscriptHistoryErrorRouter.consumeAnyError(
+            let connectionLevel = code.map {
+                BridgeErrorPolicy.isConnectionLevel($0, phase: .operation)
+            } ?? false
+            if let paneError = TranscriptHistoryErrorRouter.consumeError(
                 pending: &pendingHistoryRequests,
+                paneID: paneID,
+                requestID: requestID,
+                allowPaneOnly: !connectionLevel,
                 message: historyMessage
             ) {
-                historyErrors.merge(paneErrors) { _, latest in latest }
-                return
+                historyErrors[paneError.paneID] = paneError.message
+                if !connectionLevel { return }
             }
             if let code {
                 handleCodedError(code, message: message, detail: detail, phase: .operation)
@@ -1829,6 +1851,7 @@ final class BridgeConnection: ObservableObject {
         case .actionError:
             actionError = message
         case .reconnect, .pairAgain, .updateRequired:
+            pendingHistoryRequests.removeAll()
             let diagnosis = ConnectionDiagnosis.coded(
                 code,
                 message: message,
@@ -2262,13 +2285,24 @@ struct TranscriptHistoryErrorRouter {
         return (paneID, message)
     }
 
-    static func consumeAnyError(
+    static func consumeError(
         pending: inout [String: PendingHistoryRequest],
+        paneID: String?,
+        requestID: String?,
+        allowPaneOnly: Bool,
         message: String
-    ) -> [String: String]? {
-        let affected = Array(pending.keys)
-        guard !affected.isEmpty else { return nil }
-        for paneID in affected { pending.removeValue(forKey: paneID) }
-        return Dictionary(uniqueKeysWithValues: affected.map { ($0, message) })
+    ) -> (paneID: String, message: String)? {
+        if let requestID {
+            guard let match = pending.first(where: {
+                $0.value.requestID == requestID
+                    && (paneID == nil || $0.value.paneID == paneID)
+            }) else { return nil }
+            pending.removeValue(forKey: match.key)
+            return (match.key, message)
+        }
+        guard allowPaneOnly, let paneID, pending.removeValue(forKey: paneID) != nil else {
+            return nil
+        }
+        return (paneID, message)
     }
 }

@@ -351,7 +351,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case error(
         message: String,
         code: BridgeErrorCode? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        paneID: String? = nil,
+        requestID: String? = nil
     )
     case paneError(paneID: String, message: String)
     case decisionResult(paneID: String, requestID: String, accepted: Bool, message: String?)
@@ -628,7 +630,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 message: try container.decode(String.self, forKey: .message),
                 code: try container.decodeIfPresent(String.self, forKey: .code)
                     .flatMap(BridgeErrorCode.init(rawValue:)),
-                detail: try container.decodeIfPresent(String.self, forKey: .detail)
+                detail: try container.decodeIfPresent(String.self, forKey: .detail),
+                paneID: try container.decodeIfPresent(String.self, forKey: .paneID),
+                requestID: try container.decodeIfPresent(String.self, forKey: .requestID)
             )
         case .paneError:
             self = .paneError(
@@ -834,11 +838,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(seq, forKey: .seq)
             try container.encodeIfPresent(cols, forKey: .cols)
             try container.encodeIfPresent(rows, forKey: .rows)
-        case let .error(message, code, detail):
+        case let .error(message, code, detail, paneID, requestID):
             try container.encode(MessageType.error, forKey: .type)
             try container.encode(message, forKey: .message)
             try container.encodeIfPresent(code, forKey: .code)
             try container.encodeIfPresent(detail, forKey: .detail)
+            try container.encodeIfPresent(paneID, forKey: .paneID)
+            try container.encodeIfPresent(requestID, forKey: .requestID)
         case let .paneError(paneID, message):
             try container.encode(MessageType.paneError, forKey: .type)
             try container.encode(paneID, forKey: .paneID)

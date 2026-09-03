@@ -873,10 +873,14 @@ final class RaiBridgeServer: ObservableObject {
         do {
             message = try JSONDecoder().decode(BridgeMessage.self, from: data)
         } catch {
+            let reference = try? JSONDecoder().decode(BridgeRequestReference.self, from: data)
+            let historyReference = reference?.type == "history" ? reference : nil
             send(.error(
                 message: "Invalid bridge message: \(error.localizedDescription)",
                 code: .unknownMessage,
-                detail: error.localizedDescription
+                detail: error.localizedDescription,
+                paneID: historyReference?.paneID,
+                requestID: historyReference?.requestID
             ), to: client)
             return
         }
@@ -2036,6 +2040,12 @@ private struct ObserveFrame: Decodable {
     let bytes: String
     let width: Int?
     let height: Int?
+}
+
+private struct BridgeRequestReference: Decodable {
+    let type: String?
+    let paneID: String?
+    let requestID: String?
 }
 
 private final class ObserveStream: @unchecked Sendable {
