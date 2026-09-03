@@ -430,41 +430,33 @@ final class RaiBridgeServer: ObservableObject {
             return
         }
         let stableIDs = Set(burst.notificationIDs)
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return PushDeliveryReport(
+                        deviceToken: registration.deviceToken,
+                        environment: registration.environment,
+                        status: nil,
+                        reason: "Bridge stopped"
+                    )
+                }
+                return await self.deliverAlert(
+                    configuration: configuration,
+                    registration: registration,
+                    burst: burst,
+                    stableIDs: stableIDs
+                )
+            }
+        }
 
         Task { [weak self] in
             guard let self else { return }
-            let reports = await withTaskGroup(
-                of: PushDeliveryReport.self,
-                returning: [PushDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask { [weak self] in
-                        guard let self else {
-                            return PushDeliveryReport(
-                                deviceToken: registration.deviceToken,
-                                environment: registration.environment,
-                                status: nil,
-                                reason: "Bridge stopped"
-                            )
-                        }
-                        let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
-                        return await self.pushDeliveryQueue.enqueue(key: deliveryKey) {
-                            await self.deliverAlert(
-                                configuration: configuration,
-                                registration: registration,
-                                burst: burst,
-                                stableIDs: stableIDs
-                            )
-                        }
-                    }
-                }
-                var values: [PushDeliveryReport] = []
-                for await report in group {
-                    values.append(report)
-                }
-                return values.sorted { $0.id < $1.id }
+            var reports: [PushDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
             }
-            self.recordDelivery(reports)
+            self.recordDelivery(reports.sorted { $0.id < $1.id })
         }
     }
 
@@ -479,41 +471,35 @@ final class RaiBridgeServer: ObservableObject {
             return
         }
         let retractedBefore = Date()
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return RetractionDeliveryReport(
+                        pushReport: .init(
+                            deviceToken: registration.deviceToken,
+                            environment: registration.environment,
+                            status: nil,
+                            reason: "Bridge stopped"
+                        ),
+                        acceptedNotificationIDs: []
+                    )
+                }
+                return await self.deliverRetraction(
+                    configuration: configuration,
+                    registration: registration,
+                    identifiers: identifiers,
+                    retractedBefore: retractedBefore
+                )
+            }
+        }
         Task { [weak self] in
             guard let self else { return }
-            let reports = await withTaskGroup(
-                of: RetractionDeliveryReport.self,
-                returning: [RetractionDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask { [weak self] in
-                        guard let self else {
-                            return RetractionDeliveryReport(
-                                pushReport: .init(
-                                    deviceToken: registration.deviceToken,
-                                    environment: registration.environment,
-                                    status: nil,
-                                    reason: "Bridge stopped"
-                                ),
-                                acceptedNotificationIDs: []
-                            )
-                        }
-                        let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
-                        return await self.pushDeliveryQueue.enqueue(key: deliveryKey) {
-                            await self.deliverRetraction(
-                                configuration: configuration,
-                                registration: registration,
-                                identifiers: identifiers,
-                                retractedBefore: retractedBefore
-                            )
-                        }
-                    }
-                }
-                var values: [RetractionDeliveryReport] = []
-                for await report in group { values.append(report) }
-                return values.sorted { $0.pushReport.id < $1.pushReport.id }
+            var reports: [RetractionDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
             }
-            let pushReports = reports.map(\.pushReport)
+            let pushReports = reports.map(\.pushReport).sorted { $0.id < $1.id }
             self.recordDelivery(pushReports, label: "Retraction")
         }
     }
@@ -532,40 +518,34 @@ final class RaiBridgeServer: ObservableObject {
         }
         isSendingTestPush = true
         let title = "rai test · \(Self.pushTime(now))"
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return PushDeliveryReport(
+                        deviceToken: registration.deviceToken,
+                        environment: registration.environment,
+                        status: nil,
+                        reason: "Bridge stopped"
+                    )
+                }
+                return await self.deliverTestAlert(
+                    configuration: configuration,
+                    registration: registration,
+                    title: title,
+                    now: now
+                )
+            }
+        }
         Task { [weak self] in
             guard let self else { return }
-            let reports = await withTaskGroup(
-                of: PushDeliveryReport.self,
-                returning: [PushDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask { [weak self] in
-                        guard let self else {
-                            return PushDeliveryReport(
-                                deviceToken: registration.deviceToken,
-                                environment: registration.environment,
-                                status: nil,
-                                reason: "Bridge stopped"
-                            )
-                        }
-                        let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
-                        return await self.pushDeliveryQueue.enqueue(key: deliveryKey) {
-                            await self.deliverTestAlert(
-                                configuration: configuration,
-                                registration: registration,
-                                title: title,
-                                now: now
-                            )
-                        }
-                    }
-                }
-                var values: [PushDeliveryReport] = []
-                for await report in group { values.append(report) }
-                return values.sorted { $0.id < $1.id }
+            var reports: [PushDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
             }
             self.isSendingTestPush = false
-            self.testPushResults = reports
-            self.recordDelivery(reports, label: "Test push")
+            self.testPushResults = reports.sorted { $0.id < $1.id }
+            self.recordDelivery(self.testPushResults, label: "Test push")
         }
     }
 

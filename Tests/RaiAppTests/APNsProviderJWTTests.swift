@@ -47,26 +47,23 @@ final class APNsProviderJWTTests: XCTestCase {
     }
 }
 
+@MainActor
 final class APNsDeliveryQueueTests: XCTestCase {
     func testSerializesMatchingDeliveryKeys() async {
         let queue = APNsDeliveryQueue()
         let values = RecordedValues()
         let firstStarted = expectation(description: "first delivery started")
 
-        let first = Task {
-            await queue.enqueue(key: "pane:device") {
-                firstStarted.fulfill()
-                try? await Task.sleep(for: .milliseconds(100))
-                await values.append(1)
-                return 1
-            }
+        let first = queue.enqueue(key: "pane:device") {
+            firstStarted.fulfill()
+            try? await Task.sleep(for: .milliseconds(100))
+            await values.append(1)
+            return 1
         }
         await fulfillment(of: [firstStarted], timeout: 1)
-        let second = Task {
-            await queue.enqueue(key: "pane:device") {
-                await values.append(2)
-                return 2
-            }
+        let second = queue.enqueue(key: "pane:device") {
+            await values.append(2)
+            return 2
         }
 
         _ = await (first.value, second.value)
@@ -81,25 +78,48 @@ final class APNsDeliveryQueueTests: XCTestCase {
         let stalledStarted = expectation(description: "stalled device started")
         let healthyDelivered = expectation(description: "healthy device delivered")
 
-        let stalled = Task {
-            await queue.enqueue(key: "pane:stalled-device") {
-                stalledStarted.fulfill()
-                await gate.wait()
-                return 1
-            }
+        let stalled = queue.enqueue(key: "pane:stalled-device") {
+            stalledStarted.fulfill()
+            await gate.wait()
+            return 1
         }
         await fulfillment(of: [stalledStarted], timeout: 1)
 
-        let healthy = Task {
-            await queue.enqueue(key: "pane:healthy-device") {
-                healthyDelivered.fulfill()
-                return 2
-            }
+        let healthy = queue.enqueue(key: "pane:healthy-device") {
+            healthyDelivered.fulfill()
+            return 2
         }
         await fulfillment(of: [healthyDelivered], timeout: 1)
 
         await gate.open()
         _ = await (stalled.value, healthy.value)
+    }
+
+    func testSlowAlertCannotBeOvertakenByImmediateRetraction() async {
+        let queue = APNsDeliveryQueue()
+        let gate = AsyncGate()
+        let values = RecordedValues()
+        let alertStarted = expectation(description: "alert network call started")
+
+        let alert = queue.enqueue(key: "sandbox:device") {
+            alertStarted.fulfill()
+            await gate.wait()
+            await values.append(1)
+            return 1
+        }
+        let retraction = queue.enqueue(key: "sandbox:device") {
+            await values.append(2)
+            return 2
+        }
+
+        await fulfillment(of: [alertStarted], timeout: 1)
+        let beforeRelease = await values.all()
+        XCTAssertEqual(beforeRelease, [])
+        await gate.open()
+        _ = await (alert.value, retraction.value)
+
+        let delivered = await values.all()
+        XCTAssertEqual(delivered, [1, 2])
     }
 }
 
