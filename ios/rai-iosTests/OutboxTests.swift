@@ -135,7 +135,7 @@ final class OutboxTests: XCTestCase {
         XCTAssertEqual(sentInputs, ["safe\r"])
     }
 
-    func testFlushSendsOneLineThenWaitsForANewerFrame() async throws {
+    func testReconnectSendsOneLineAndManualNextRefusesAtPasswordPrompt() async throws {
         var sentInputs: [String] = []
         let connection = BridgeConnection(messageSender: { message in
             if case let .input(_, bytesBase64) = message,
@@ -156,12 +156,66 @@ final class OutboxTests: XCTestCase {
         XCTAssertEqual(sentInputs, ["first\r"])
         XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
 
-        connection.handle(frame("Password:\u{1B}[0m", paneID: "pane-a"))
-        try await Task.sleep(for: .milliseconds(50))
+        connection.handle(frame("first\r\n$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(100))
 
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        connection.handle(frame("Password:\u{1B}[0m", paneID: "pane-a"))
+        let result = await connection.sendNextQueuedLine(for: "pane-a")
+
+        XCTAssertEqual(result, .refused)
         XCTAssertEqual(sentInputs, ["first\r"])
         XCTAssertTrue(connection.outbox.isEmpty)
         XCTAssertTrue(connection.actionError?.hasPrefix(PasswordPromptGuard.refusal) == true)
+    }
+
+    func testAutoReplayAllowancePersistsAcrossReconnectsUntilQueueEmpties() async throws {
+        var sentInputs: [String] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .input(_, bytesBase64) = message,
+               let data = Data(base64Encoded: bytesBase64) {
+                sentInputs.append(String(decoding: data, as: UTF8.self))
+            }
+        })
+        _ = await connection.sendComposedLine(line("first"), to: "pane-a")
+        _ = await connection.sendComposedLine(line("second"), to: "pane-a")
+
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        connection.disconnect()
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        let manualResult = await connection.sendNextQueuedLine(for: "pane-a")
+        XCTAssertEqual(manualResult, .accepted)
+        XCTAssertEqual(sentInputs, ["first\r", "second\r"])
+        XCTAssertTrue(connection.outbox.isEmpty)
+
+        connection.disconnect()
+        _ = await connection.sendComposedLine(line("third"), to: "pane-a")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r", "second\r", "third\r"])
+        XCTAssertTrue(connection.outbox.isEmpty)
     }
 
     func testUnknownGridHoldStillExpiresOnANewFrame() async throws {
@@ -211,6 +265,86 @@ final class OutboxTests: XCTestCase {
         XCTAssertFalse(delivered)
         XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
         XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "keep me")
+    }
+
+    func testReplyConnectionWaitUsesTheSameBudgetAndKeepsDraft() async throws {
+        let connection = BridgeConnection(
+            messageSender: { _ in },
+            replyFrameWaitIterations: 1
+        )
+        let pairing = try Pairing(host: "127.0.0.1", port: 1, token: "secret")
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("keep offline"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
+        XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "keep offline")
+        connection.disconnect()
+    }
+
+    func testNotificationReplyQueuesBehindExistingPaneLines() async throws {
+        var sentInputs: [String] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .input(_, bytesBase64) = message,
+               let data = Data(base64Encoded: bytesBase64) {
+                sentInputs.append(String(decoding: data, as: UTF8.self))
+            }
+        })
+        _ = await connection.sendComposedLine(line("first"), to: "pane-a")
+        _ = await connection.sendComposedLine(line("second"), to: "pane-a")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        let pairing = try Pairing(host: "studio.local", port: 9_876, token: "secret")
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("reply"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r", "reply\r"])
+    }
+
+    func testReplyDeadlineIncludesSlowAttachStep() async throws {
+        let clearFrame = frame("$", paneID: "pane-a")
+        var connection: BridgeConnection!
+        var sentInputs: [String] = []
+        connection = BridgeConnection(
+            messageSender: { message in
+                switch message {
+                case .attachStream:
+                    try await Task.sleep(for: .milliseconds(150))
+                    await MainActor.run { connection.handle(clearFrame) }
+                case let .input(_, bytesBase64):
+                    if let data = Data(base64Encoded: bytesBase64) {
+                        sentInputs.append(String(decoding: data, as: UTF8.self))
+                    }
+                default:
+                    break
+                }
+            },
+            replyFrameWaitIterations: 1
+        )
+        let pairing = try Pairing(host: "studio.local", port: 9_876, token: "secret")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("late reply"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertTrue(sentInputs.isEmpty)
+        XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
+        XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "late reply")
     }
 
     private func frame(_ text: String, paneID: String) -> BridgeMessage {

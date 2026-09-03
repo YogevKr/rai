@@ -180,6 +180,7 @@ final class RaiBridgeServer: ObservableObject {
     private let clock: () -> Date
     private var pairingExpiryTask: Task<Void, Never>?
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
+    private var pendingObserveStartIDs: [ObjectIdentifier: [String: UUID]] = [:]
     /// Consecutive unexpected observe exits per (client, pane); reset when a
     /// stream produces frames again. Guards the auto-restart loop below.
     private var observeRestarts: [ObjectIdentifier: [String: Int]] = [:]
@@ -1010,24 +1011,15 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
-            // The recent-history seed can be empty for an alt-screen agent.
-            // Paint one current grid before observe starts, so a slow first
-            // observe frame does not leave the phone blank. Both this frame
-            // and observe's first frame are full paints, so each replaces the
-            // visible grid without adding another copy at the history seam.
-            if fullGrid,
-               let size = nativeGridSize(paneID: paneID, fallbackCols: cols, fallbackRows: rows),
-               let frame = await PaneFirstFrameCapture.capture(
-                   paneID: paneID,
-                   cols: size.cols,
-                   rows: size.rows,
-                   run: Self.runHerdrCapture
-               ) {
-                send(frame.message(paneID: paneID), to: client)
-            }
-            startObserveStream(
-                paneID: paneID, cols: cols, rows: rows, fullGrid: fullGrid, for: client)
+            scheduleObserveStreamStart(
+                paneID: paneID,
+                cols: cols,
+                rows: rows,
+                fullGrid: fullGrid,
+                for: client
+            )
         case let .detachStream(paneID):
+            cancelPendingObserveStart(paneID: paneID, for: client)
             stopObserveStream(paneID: paneID, for: client)
         case let .input(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else {
@@ -1509,8 +1501,9 @@ final class RaiBridgeServer: ObservableObject {
         return Data((history + "\n\u{1B}[0m").utf8)
     }
 
-    private static func runHerdrCapture(_ arguments: [String]) async -> Data? {
+    nonisolated private static func runHerdrCapture(_ arguments: [String]) async -> Data? {
         let process = Process()
+        let cancellableProcess = CancellableCaptureProcess(process)
         let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
         process.arguments = arguments
@@ -1522,13 +1515,71 @@ final class RaiBridgeServer: ObservableObject {
         } catch {
             return nil
         }
-        // Drain stdout concurrently with the exit wait: the payload can exceed
-        // the pipe buffer, and reading only after exit would deadlock herdr.
-        let data = await Task.detached {
-            stdout.fileHandleForReading.readDataToEndOfFile()
-        }.value
-        await Task.detached { process.waitUntilExit() }.value
-        return process.terminationStatus == 0 ? data : nil
+        return await withTaskCancellationHandler {
+            // Drain stdout concurrently with the exit wait: the payload can exceed
+            // the pipe buffer, and reading only after exit would deadlock herdr.
+            let data = await Task.detached {
+                stdout.fileHandleForReading.readDataToEndOfFile()
+            }.value
+            await Task.detached { process.waitUntilExit() }.value
+            return !Task.isCancelled && process.terminationStatus == 0 ? data : nil
+        } onCancel: {
+            cancellableProcess.terminate()
+        }
+    }
+
+    private func scheduleObserveStreamStart(
+        paneID: String,
+        cols: Int,
+        rows: Int,
+        fullGrid: Bool,
+        for client: BridgeClient
+    ) {
+        let clientID = ObjectIdentifier(client.connection)
+        let startID = UUID()
+        pendingObserveStartIDs[clientID, default: [:]][paneID] = startID
+        let nativeSize = fullGrid
+            ? nativeGridSize(paneID: paneID, fallbackCols: cols, fallbackRows: rows)
+            : nil
+        Task { [weak self, weak client] in
+            let frame: PaneFirstFrame?
+            if let nativeSize {
+                frame = await PaneFirstFrameCapture.capture(
+                    paneID: paneID,
+                    cols: nativeSize.cols,
+                    rows: nativeSize.rows,
+                    run: { arguments in
+                        await Self.runHerdrCapture(arguments)
+                    }
+                )
+            } else {
+                frame = nil
+            }
+            guard let self, let client,
+                  self.clients[clientID] === client,
+                  self.pendingObserveStartIDs[clientID]?[paneID] == startID else {
+                return
+            }
+            self.cancelPendingObserveStart(paneID: paneID, for: client)
+            if let frame {
+                self.send(frame.message(paneID: paneID), to: client)
+            }
+            self.startObserveStream(
+                paneID: paneID,
+                cols: cols,
+                rows: rows,
+                fullGrid: fullGrid,
+                for: client
+            )
+        }
+    }
+
+    private func cancelPendingObserveStart(paneID: String, for client: BridgeClient) {
+        let clientID = ObjectIdentifier(client.connection)
+        pendingObserveStartIDs[clientID]?.removeValue(forKey: paneID)
+        if pendingObserveStartIDs[clientID]?.isEmpty == true {
+            pendingObserveStartIDs.removeValue(forKey: clientID)
+        }
     }
 
     private func nativeGridSize(
@@ -1742,6 +1793,7 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func stopObserveStreams(for clientID: ObjectIdentifier) {
+        pendingObserveStartIDs.removeValue(forKey: clientID)
         guard let streams = observeStreams.removeValue(forKey: clientID) else { return }
         for stream in streams.values {
             stream.stop()
@@ -1750,6 +1802,7 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func stopAllObserveStreams() {
+        pendingObserveStartIDs.removeAll()
         let streams = observeStreams.values.flatMap(\.values)
         observeStreams.removeAll()
         for stream in streams {
@@ -2009,20 +2062,46 @@ struct PaneFirstFrame: Equatable, Sendable {
     }
 }
 
+private final class CancellableCaptureProcess: @unchecked Sendable {
+    private let process: Process
+
+    init(_ process: Process) {
+        self.process = process
+    }
+
+    func terminate() {
+        if process.isRunning {
+            process.terminate()
+        }
+    }
+}
+
 enum PaneFirstFrameCapture {
-    typealias Runner = ([String]) async -> Data?
+    typealias Runner = @Sendable ([String]) async -> Data?
 
     static func capture(
         paneID: String,
         cols: Int,
         rows: Int,
-        run: Runner
+        timeout: Duration = .seconds(2),
+        run: @escaping Runner
     ) async -> PaneFirstFrame? {
-        guard cols > 0, rows > 0,
-              let data = await run([
-                  "pane", "read", paneID,
-                  "--source", "visible", "--format", "ansi",
-              ]),
+        guard cols > 0, rows > 0 else { return nil }
+        let arguments = [
+            "pane", "read", paneID,
+            "--source", "visible", "--format", "ansi",
+        ]
+        let data = await withTaskGroup(of: Data?.self, returning: Data?.self) { group in
+            group.addTask { await run(arguments) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let data,
               var text = String(data: data, encoding: .utf8) else {
             return nil
         }

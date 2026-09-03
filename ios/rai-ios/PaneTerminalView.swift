@@ -245,21 +245,17 @@ struct PaneTerminalView: View {
                     )
                 }
 
-                // Held lines are stated, not just kept. A queue the user cannot
-                // see is only marginally better than the silent drop it
-                // replaced — they still cannot tell whether the Mac got it.
-                if !connection.outbox.isEmpty {
+                let queuedLineCount = connection.queuedLineCount(for: pane.paneID)
+                if queuedLineCount > 0 {
                     HStack(spacing: 8) {
                         Image(systemName: "clock.arrow.circlepath")
-                        Text(
-                            connection.outbox.count == 1
-                                ? "1 line waiting for a connection"
-                                : "\(connection.outbox.count) lines waiting for a connection"
-                        )
-                        .font(.footnote)
+                        Text("\(queuedLineCount) queued —")
+                            .font(.footnote)
+                        Button("Send next", action: sendNextQueuedLine)
+                            .font(.footnote)
                         Spacer()
                         Button("Discard", role: .destructive) {
-                            connection.discardOutbox()
+                            connection.discardOutbox(for: pane.paneID)
                         }
                         .font(.footnote)
                     }
@@ -500,6 +496,15 @@ struct PaneTerminalView: View {
             lineSendMessage = result == .refused
                 ? connection.actionError ?? PasswordPromptGuard.refusal
                 : nil
+        }
+    }
+
+    private func sendNextQueuedLine() {
+        Task {
+            let result = await connection.sendNextQueuedLine(for: pane.paneID)
+            lineSendMessage = result == .accepted
+                ? nil
+                : connection.actionError
         }
     }
 
