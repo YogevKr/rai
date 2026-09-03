@@ -166,6 +166,108 @@ public struct BridgeSessionInfo: Codable, Equatable, Sendable {
     }
 }
 
+public enum TranscriptHistoryState: String, Codable, Equatable, Sendable {
+    case available
+    case notFound = "not_found"
+    case ambiguous
+    case hookRequired = "hook_required"
+}
+
+public struct TranscriptHistoryPage: Codable, Equatable, Sendable {
+    public let paneID: String
+    public let sessionID: String
+    public let resolvedSessionID: String?
+    public let requestID: String
+    public let herdSessionName: String?
+    public let turns: [TranscriptTurn]
+    public let hasMore: Bool
+    public let sinceLastSeen: Int?
+    public let state: TranscriptHistoryState
+
+    public init(
+        paneID: String,
+        sessionID: String,
+        resolvedSessionID: String? = nil,
+        requestID: String = "",
+        herdSessionName: String? = nil,
+        turns: [TranscriptTurn],
+        hasMore: Bool,
+        sinceLastSeen: Int? = nil,
+        state: TranscriptHistoryState = .available
+    ) {
+        self.paneID = paneID
+        self.sessionID = sessionID
+        self.resolvedSessionID = resolvedSessionID
+        self.requestID = requestID
+        self.herdSessionName = herdSessionName
+        self.turns = turns
+        self.hasMore = hasMore
+        self.sinceLastSeen = sinceLastSeen
+        self.state = state
+    }
+
+    public var agentSessionID: String {
+        resolvedSessionID ?? sessionID
+    }
+}
+
+public enum TranscriptPagination {
+    public static let maximumLimit = 50
+    public static let maximumTextBytes = 8_192
+
+    public static func page(
+        paneID: String,
+        sessionID: String,
+        herdSessionName: String? = nil,
+        turns: [TranscriptTurn],
+        beforeTurnIndex: Int?,
+        limit: Int,
+        sinceLastSeen: Int? = nil
+    ) -> TranscriptHistoryPage {
+        let boundedLimit = min(max(limit, 1), maximumLimit)
+        let eligible = turns.filter { turn in
+            beforeTurnIndex.map { turn.index < $0 } ?? true
+        }
+        let selected = eligible.suffix(boundedLimit).map(bound)
+        return TranscriptHistoryPage(
+            paneID: paneID,
+            sessionID: sessionID,
+            herdSessionName: herdSessionName,
+            turns: selected,
+            hasMore: eligible.count > selected.count,
+            sinceLastSeen: sinceLastSeen
+        )
+    }
+
+    private static func bound(_ turn: TranscriptTurn) -> TranscriptTurn {
+        let boundedText = TranscriptReader.bytePrefix(turn.text, limit: maximumTextBytes)
+        let boundedTool = turn.tool.map { tool in
+            TranscriptTool(
+                name: TranscriptReader.bytePrefix(
+                    tool.name,
+                    limit: TranscriptReader.maximumToolSummaryBytes
+                ).text,
+                summary: TranscriptReader.bytePrefix(
+                    tool.summary,
+                    limit: TranscriptReader.maximumToolSummaryBytes
+                ).text
+            )
+        }
+        let toolWasTruncated = zip(
+            [turn.tool?.name, turn.tool?.summary].compactMap { $0 },
+            [boundedTool?.name, boundedTool?.summary].compactMap { $0 }
+        ).contains { pair in pair.0.utf8.count != pair.1.utf8.count }
+        return TranscriptTurn(
+            index: turn.index,
+            role: turn.role,
+            text: boundedText.text,
+            tool: boundedTool,
+            timestamp: turn.timestamp,
+            truncated: turn.truncated || boundedText.truncated || toolWasTruncated
+        )
+    }
+}
+
 public enum BridgeMessage: Codable, Equatable, Sendable {
     // Client -> server
     case pair(code: String, protocolVersion: Int, client: ClientInfo)
@@ -204,6 +306,21 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case broadcastInput(tabID: String, text: String)
     case listSessions
     case selectSession(name: String)
+    case history(
+        paneID: String,
+        sessionID: String,
+        requestID: String,
+        beforeTurnIndex: Int?,
+        limit: Int,
+        herdSessionName: String?
+    )
+    case historyReceived(
+        paneID: String,
+        sessionID: String,
+        requestID: String,
+        herdSessionName: String?,
+        throughTurnIndex: Int?
+    )
     case pushPrefs(PushPreferences)
 
     // Server -> client
@@ -215,7 +332,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         detail: String? = nil,
         unrecognizedCode: String? = nil
     )
-    case snapshot(SessionSnapshot)
+    case snapshot(SessionSnapshot, sessionName: String?)
     case event(BridgeEvent)
     /// `cols`/`rows` are the frame's grid dimensions (present on newer
     /// Macs): the client pins its emulator grid to them so a pane larger
@@ -226,6 +343,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case scrollback(paneID: String, bytesBase64: String)
     case backgroundWork([PaneBackgroundWork])
     case sessions([BridgeSessionInfo])
+    case historyPage(TranscriptHistoryPage)
+    case historyError(
+        paneID: String, sessionID: String, requestID: String, message: String
+    )
     case pushPrefsState(PushPreferences)
     case error(
         message: String,
@@ -247,7 +368,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case reason, detail, snapshot, event, message, accepted, available, pushAuthorized
         case deviceToken, environment
         case lines, keys
-        case text, name, work, sessions, requestID, decision, kinds, snoozeUntil, dnd
+        case text, name, work, sessions, decision, kinds, snoozeUntil, dnd
+        case beforeTurnIndex, limit, sessionID, resolvedSessionID, requestID
+        case turns, hasMore, sinceLastSeen, historyState
+        case throughTurnIndex, herdSessionName
     }
 
     private enum MessageType: String, Codable {
@@ -257,7 +381,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case registerPush, unregisterPush
         case readScrollback, scrollback, sendKeys, decide, decisionAvailability
         case renameWorkspace, closeWorkspace, broadcastInput
-        case listSessions, selectSession
+        case listSessions, selectSession, history, historyReceived, historyPage, historyError
         case pushPrefs, pushPrefsState
         case backgroundWork, sessions
         case paired, welcome, authFailed, snapshot, event, paneFrame, error, paneError
@@ -388,6 +512,61 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .listSessions
         case .selectSession:
             self = .selectSession(name: try container.decode(String.self, forKey: .name))
+        case .history:
+            self = .history(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                sessionID: try container.decodeIfPresent(String.self, forKey: .sessionID) ?? "",
+                requestID: try container.decodeIfPresent(String.self, forKey: .requestID) ?? "",
+                beforeTurnIndex: try container.decodeIfPresent(
+                    Int.self,
+                    forKey: .beforeTurnIndex
+                ),
+                limit: try container.decode(Int.self, forKey: .limit),
+                herdSessionName: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .herdSessionName
+                )
+            )
+        case .historyReceived:
+            self = .historyReceived(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                sessionID: try container.decode(String.self, forKey: .sessionID),
+                requestID: try container.decodeIfPresent(String.self, forKey: .requestID) ?? "",
+                herdSessionName: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .herdSessionName
+                ),
+                throughTurnIndex: try container.decodeIfPresent(
+                    Int.self,
+                    forKey: .throughTurnIndex
+                )
+            )
+        case .historyPage:
+            self = .historyPage(TranscriptHistoryPage(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                sessionID: try container.decode(String.self, forKey: .sessionID),
+                resolvedSessionID: try container.decodeIfPresent(
+                    String.self, forKey: .resolvedSessionID
+                ),
+                requestID: try container.decodeIfPresent(String.self, forKey: .requestID) ?? "",
+                herdSessionName: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .herdSessionName
+                ),
+                turns: try container.decode([TranscriptTurn].self, forKey: .turns),
+                hasMore: try container.decode(Bool.self, forKey: .hasMore),
+                sinceLastSeen: try container.decodeIfPresent(Int.self, forKey: .sinceLastSeen),
+                state: try container.decodeIfPresent(
+                    TranscriptHistoryState.self, forKey: .historyState
+                ) ?? .available
+            ))
+        case .historyError:
+            self = .historyError(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                sessionID: try container.decode(String.self, forKey: .sessionID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                message: try container.decode(String.self, forKey: .message)
+            )
         case .pushPrefs:
             self = .pushPrefs(PushPreferences(
                 kinds: try container.decode(PushNotificationKinds.self, forKey: .kinds),
@@ -429,7 +608,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 unrecognizedCode: code == nil ? rawCode : nil
             )
         case .snapshot:
-            self = .snapshot(try container.decode(SessionSnapshot.self, forKey: .snapshot))
+            self = .snapshot(
+                try container.decode(SessionSnapshot.self, forKey: .snapshot),
+                sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
+            )
         case .event:
             self = .event(try container.decode(BridgeEvent.self, forKey: .event))
         case .paneFrame:
@@ -571,6 +753,25 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .selectSession(name):
             try container.encode(MessageType.selectSession, forKey: .type)
             try container.encode(name, forKey: .name)
+        case let .history(
+            paneID, sessionID, requestID, beforeTurnIndex, limit, herdSessionName
+        ):
+            try container.encode(MessageType.history, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encodeIfPresent(beforeTurnIndex, forKey: .beforeTurnIndex)
+            try container.encode(limit, forKey: .limit)
+            try container.encodeIfPresent(herdSessionName, forKey: .herdSessionName)
+        case let .historyReceived(
+            paneID, sessionID, requestID, herdSessionName, throughTurnIndex
+        ):
+            try container.encode(MessageType.historyReceived, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encodeIfPresent(herdSessionName, forKey: .herdSessionName)
+            try container.encodeIfPresent(throughTurnIndex, forKey: .throughTurnIndex)
         case let .pushPrefs(preferences):
             try container.encode(MessageType.pushPrefs, forKey: .type)
             try container.encode(preferences.kinds, forKey: .kinds)
@@ -587,6 +788,23 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .sessions(sessions):
             try container.encode(MessageType.sessions, forKey: .type)
             try container.encode(sessions, forKey: .sessions)
+        case let .historyPage(page):
+            try container.encode(MessageType.historyPage, forKey: .type)
+            try container.encode(page.paneID, forKey: .paneID)
+            try container.encode(page.sessionID, forKey: .sessionID)
+            try container.encodeIfPresent(page.resolvedSessionID, forKey: .resolvedSessionID)
+            try container.encode(page.requestID, forKey: .requestID)
+            try container.encodeIfPresent(page.herdSessionName, forKey: .herdSessionName)
+            try container.encode(page.turns, forKey: .turns)
+            try container.encode(page.hasMore, forKey: .hasMore)
+            try container.encodeIfPresent(page.sinceLastSeen, forKey: .sinceLastSeen)
+            try container.encode(page.state, forKey: .historyState)
+        case let .historyError(paneID, sessionID, requestID, message):
+            try container.encode(MessageType.historyError, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(message, forKey: .message)
         case let .paired(token, protocolVersion, sessionName):
             try container.encode(MessageType.paired, forKey: .type)
             try container.encode(token, forKey: .token)
@@ -601,9 +819,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(reason, forKey: .reason)
             try container.encodeIfPresent(code?.rawValue ?? unrecognizedCode, forKey: .code)
             try container.encodeIfPresent(detail, forKey: .detail)
-        case let .snapshot(snapshot):
+        case let .snapshot(snapshot, sessionName):
             try container.encode(MessageType.snapshot, forKey: .type)
             try container.encode(snapshot, forKey: .snapshot)
+            try container.encodeIfPresent(sessionName, forKey: .sessionName)
         case let .event(event):
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(event, forKey: .event)

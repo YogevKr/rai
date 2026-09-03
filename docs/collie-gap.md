@@ -57,11 +57,15 @@ Still open from July: draft take-over; per-pane display preferences.
    The Mac receiver, notification bodies, bridge field, and sidebar text ship.
    Permission requests now use authenticated data decisions from the phone.
    Request IDs, deadlines, audit records, and key fallback close stale-answer races.
-3. **History from the transcript, not the screen.** Claude runs on the
+3. ✅ **History from the transcript, not the screen.** Claude runs on the
    alternate screen, so the grid has no scrollback ring. Collie reads the
    agent's own JSONL transcript (`bridge/journal/`) and offers
-   find-in-history and jump-to-user-turn. rai seeds ~1000 lines of herdr
-   history; a transcript view would serve Mac and phone alike.
+   find-in-history and jump-to-user-turn. Rai now reads local Claude JSONL.
+   The phone shows paged cards, search, an away divider, and prompt jump.
+   Request identity blocks stale pages after restarts. History requires the Claude
+   hook's transcript path and session ID. Rai never guesses from cwd.
+   Phone caches and delivery cursors have hard limits.
+   Codex and remote-host transcript history remain out of scope.
 4. **Password prompt recognition changes copy, never keys** (ADR 0017).
    Collie matches `[sudo] password for`, `'s password:`, `Enter passphrase`
    and says "Collie will not type"; it also stops storing the draft. rai's
@@ -153,8 +157,9 @@ It also tolerates brief reconnects and refreshes notification permission after e
 
 Later notification grants restart APNs registration. Token redaction now handles punctuation and non-path slash values.
 
-Wave 2: ✅ structured prompt blocks now use beacons and verified grid steps on iOS.
-Remaining work includes transcript history, operator config files, and LAN TLS.
+Wave 2 prompt blocks now use beacons and verified grid steps on iOS.
+Transcript history also ships and requires the Claude hook.
+Remaining work includes operator config files and LAN TLS.
 
 Wave 2 quality-of-life outcome (2026-09-03):
 

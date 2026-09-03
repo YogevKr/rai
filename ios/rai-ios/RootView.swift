@@ -5,6 +5,9 @@ struct RootView: View {
 
     var body: some View {
         RootContent(appModel: appModel, connection: appModel.connection)
+            .task {
+                await appModel.restoreTranscriptHistoryAfterFirstRender()
+            }
     }
 }
 

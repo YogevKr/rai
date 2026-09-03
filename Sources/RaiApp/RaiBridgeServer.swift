@@ -193,6 +193,14 @@ final class RaiBridgeServer: ObservableObject {
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
+    private var transcriptPaneStates: [String: TranscriptPaneIdentity] = [:]
+    private var historyDelivery = HistoryDeliveryTracker<String, ObjectIdentifier>()
+    private var historyReceipts = HistoryReceiptLedger<ObjectIdentifier>()
+    private var transcriptSnapshotSessionName: String?
+    private let transcriptIndex = ClaudeTranscriptIndex(
+        claudeDirectory: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".claude", isDirectory: true)
+    )
     var pushPreferencesDidChange: ((String, PushPreferences) -> Void)?
 
     init(
@@ -299,7 +307,9 @@ final class RaiBridgeServer: ObservableObject {
         listener?.cancel()
         listener = nil
         stopAllObserveStreams()
-        for client in clients.values {
+        for (id, client) in clients {
+            historyDelivery.removeConnection(id)
+            historyReceipts.removeConnection(id)
             client.connection.cancel()
         }
         clients.removeAll()
@@ -374,7 +384,10 @@ final class RaiBridgeServer: ObservableObject {
         for clientID in revokedClients {
             stopObserveStreams(for: clientID)
             clients.removeValue(forKey: clientID)
+            historyDelivery.removeConnection(clientID)
+            historyReceipts.removeConnection(clientID)
         }
+        historyDelivery.removeDevice(id)
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceID != id })
         persistPushRegistrations()
         if credentialStore.devices.isEmpty {
@@ -401,7 +414,12 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     func relay(snapshot: SessionSnapshot) {
-        broadcast(.snapshot(snapshot), onlyToSubscribers: true)
+        transcriptSnapshotSessionName = model.currentSessionName
+        invalidateTranscriptCache(using: snapshot)
+        broadcast(
+            .snapshot(snapshot, sessionName: transcriptSnapshotSessionName),
+            onlyToSubscribers: true
+        )
         restartStreamsWhosePaneResized(snapshot)
     }
 
@@ -954,7 +972,16 @@ final class RaiBridgeServer: ObservableObject {
         case .subscribe:
             client.isSubscribed = true
             if let snapshot = model.snapshot {
-                send(.snapshot(snapshot.addingBeacons(model.beaconsForBridge)), to: client)
+                if transcriptSnapshotSessionName == nil {
+                    transcriptSnapshotSessionName = model.currentSessionName
+                }
+                send(
+                    .snapshot(
+                        snapshot.addingBeacons(model.beaconsForBridge),
+                        sessionName: transcriptSnapshotSessionName
+                    ),
+                    to: client
+                )
             } else {
                 send(.error(
                     message: "Herdr is not connected.",
@@ -1241,6 +1268,82 @@ final class RaiBridgeServer: ObservableObject {
                 .scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()),
                 to: client
             )
+        case let .history(
+            paneID, requestedSessionID, requestID, beforeTurnIndex, limit, herdSessionName
+        ):
+            guard herdSessionName == nil
+                    || (herdSessionName == model.currentSessionName
+                        && herdSessionName == transcriptSnapshotSessionName)
+            else {
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "History is not ready for the selected session."
+                ), to: client)
+                return
+            }
+            guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "This pane is closed."
+                ), to: client)
+                return
+            }
+            let currentSessionID = model.beacon(forPane: paneID)?.sessionID ?? ""
+            guard requestedSessionID.isEmpty || currentSessionID.isEmpty
+                    || requestedSessionID == currentSessionID else {
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "The agent session changed. Refresh history."
+                ), to: client)
+                return
+            }
+            let page = await transcriptHistoryPage(
+                for: pane,
+                requestedSessionID: requestedSessionID,
+                requestID: requestID,
+                beforeTurnIndex: beforeTurnIndex,
+                limit: limit,
+                herdSessionName: transcriptSnapshotSessionName,
+                client: client
+            )
+            historyReceipts.recordSent(
+                HistoryPageReceipt(
+                    paneID: page.paneID,
+                    sessionID: page.agentSessionID,
+                    requestID: page.requestID,
+                    herdSessionName: page.herdSessionName,
+                    throughTurnIndex: page.turns.last?.index
+                ),
+                connection: ObjectIdentifier(client.connection)
+            )
+            send(.historyPage(page), to: client)
+        case let .historyReceived(
+            paneID, sessionID, requestID, herdSessionName, throughTurnIndex
+        ):
+            let connectionID = ObjectIdentifier(client.connection)
+            let receipt = HistoryPageReceipt(
+                paneID: paneID,
+                sessionID: sessionID,
+                requestID: requestID,
+                herdSessionName: herdSessionName,
+                throughTurnIndex: throughTurnIndex
+            )
+            guard historyReceipts.acknowledge(receipt, connection: connectionID) else {
+                return
+            }
+            historyDelivery.recordDelivery(
+                device: client.deviceID ?? "unknown",
+                connection: connectionID,
+                paneID: paneID,
+                sessionID: sessionID,
+                highestTurnIndex: throughTurnIndex
+            )
         case let .registerPush(deviceToken, environment):
             guard environment == "sandbox" || environment == "production" else {
                 send(.error(
@@ -1277,12 +1380,91 @@ final class RaiBridgeServer: ObservableObject {
             ), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
              .paneError, .decisionResult,
-             .backgroundWork, .sessions, .pushPrefsState:
+             .backgroundWork, .sessions, .historyPage, .historyError, .pushPrefsState:
             send(.error(
                 message: "Server-to-client message received from client.",
                 code: .unknownMessage,
                 detail: "The message direction is invalid."
             ), to: client)
+        }
+    }
+
+    private func transcriptHistoryPage(
+        for pane: Pane,
+        requestedSessionID: String,
+        requestID: String,
+        beforeTurnIndex: Int?,
+        limit: Int,
+        herdSessionName: String?,
+        client: BridgeClient
+    ) async -> TranscriptHistoryPage {
+        let beacon = model.beacon(forPane: pane.paneID)
+        let basePage = await transcriptIndex.page(
+            paneID: pane.paneID,
+            beaconPath: model.remoteTarget == nil ? beacon?.transcriptPath : nil,
+            sessionID: model.remoteTarget == nil ? beacon?.sessionID : nil,
+            requestedSessionID: requestedSessionID,
+            requestID: requestID,
+            herdSessionName: herdSessionName,
+            beforeTurnIndex: beforeTurnIndex,
+            limit: limit
+        )
+        let sessionID = basePage.agentSessionID
+        let sinceLastSeen = historyDelivery.sinceLastSeen(
+            device: client.deviceID ?? "unknown",
+            connection: ObjectIdentifier(client.connection),
+            paneID: pane.paneID,
+            sessionID: sessionID
+        )
+        return Self.historyPage(
+            basePage,
+            requestedSessionID: requestedSessionID,
+            requestID: requestID,
+            sinceLastSeen: sinceLastSeen
+        )
+    }
+
+    static func historyPage(
+        _ basePage: TranscriptHistoryPage,
+        requestedSessionID: String,
+        requestID: String,
+        sinceLastSeen: Int?
+    ) -> TranscriptHistoryPage {
+        TranscriptHistoryPage(
+            paneID: basePage.paneID,
+            sessionID: requestedSessionID,
+            resolvedSessionID: basePage.agentSessionID.isEmpty
+                ? nil : basePage.agentSessionID,
+            requestID: requestID,
+            herdSessionName: basePage.herdSessionName,
+            turns: basePage.turns,
+            hasMore: basePage.hasMore,
+            sinceLastSeen: sinceLastSeen,
+            state: basePage.state
+        )
+    }
+
+    private func invalidateTranscriptCache(using snapshot: SessionSnapshot) {
+        let livePaneIDs = Set(snapshot.panes.map(\.paneID))
+        transcriptPaneStates = transcriptPaneStates.filter { livePaneIDs.contains($0.key) }
+        var invalidated: [String] = []
+        for pane in snapshot.panes {
+            let state = TranscriptPaneIdentity(
+                agent: pane.agent,
+                sessionID: pane.beacon?.sessionID ?? pane.agentSession?.value,
+                status: pane.agentStatus
+            )
+            if let previous = transcriptPaneStates[pane.paneID],
+               state.requiresTranscriptResolution(after: previous) {
+                invalidated.append(pane.paneID)
+            }
+            transcriptPaneStates[pane.paneID] = state
+        }
+        Task { [transcriptIndex] in
+            await transcriptIndex.retainPanes(livePaneIDs)
+            for paneID in invalidated {
+                await transcriptIndex.invalidate(paneID: paneID)
+            }
         }
     }
 
@@ -1645,6 +1827,8 @@ final class RaiBridgeServer: ObservableObject {
         stopObserveStreams(for: id)
         clients.removeValue(forKey: id)
         liveConnections.remove(id: id)
+        historyDelivery.removeConnection(id)
+        historyReceipts.removeConnection(id)
         updateConnectedDeviceCount()
         model.reevaluatePendingDecisions()
     }

@@ -424,10 +424,10 @@ struct BridgeAuditEvent: Equatable {
         case .pushPrefs:
             self.init(action: "pushPrefs")
         case .pair, .hello, .subscribe, .attachStream, .detachStream, .readScrollback,
-             .decisionAvailability,
+             .history, .historyReceived, .decisionAvailability,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
-             .paneFrame, .scrollback, .backgroundWork, .sessions, .pushPrefsState,
-             .error, .paneError, .decisionResult:
+             .paneFrame, .scrollback, .backgroundWork, .sessions, .historyPage,
+             .historyError, .pushPrefsState, .error, .paneError, .decisionResult:
             return nil
         }
     }

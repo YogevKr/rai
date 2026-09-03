@@ -52,6 +52,19 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
+            .history(
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-1",
+                beforeTurnIndex: 12, limit: 50,
+                herdSessionName: "default"),
+            .history(
+                paneID: "pane-1", sessionID: "", requestID: "request-2",
+                beforeTurnIndex: nil, limit: 25,
+                herdSessionName: nil),
+            .historyReceived(
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-1",
+                herdSessionName: "default",
+                throughTurnIndex: 12
+            ),
             .decide(paneID: "pane-1", requestID: "request-1", decision: .allow),
             .decisionAvailability(available: false, pushAuthorized: false),
             .pushPrefs(PushPreferences(
@@ -71,7 +84,8 @@ final class BridgeProtocolTests: XCTestCase {
                 code: .repairRequired,
                 detail: "Credential not found"
             ),
-            .snapshot(snapshot),
+            .snapshot(snapshot, sessionName: "default"),
+            .snapshot(snapshot, sessionName: nil),
             .event(BridgeEvent(
                 name: "layout.updated",
                 payload: ["tab_id": .string("tab-1")]
@@ -83,6 +97,26 @@ final class BridgeProtocolTests: XCTestCase {
                 paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1,
                 cols: 80, rows: 29),
             .scrollback(paneID: "pane-1", bytesBase64: bytes),
+            .historyPage(TranscriptHistoryPage(
+                paneID: "pane-1",
+                sessionID: "session-1",
+                resolvedSessionID: "session-1",
+                requestID: "request-1",
+                herdSessionName: "default",
+                turns: [TranscriptTurn(
+                    index: 7,
+                    role: .assistant,
+                    text: "Done",
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )],
+                hasMore: true,
+                sinceLastSeen: 4,
+                state: .hookRequired
+            )),
+            .historyError(
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-2",
+                message: "This pane is closed."
+            ),
             .pushPrefsState(.default),
             .error(
                 message: "Herdr is unavailable",
@@ -156,6 +190,27 @@ final class BridgeProtocolTests: XCTestCase {
         XCTAssertEqual(
             try JSONDecoder().decode(BridgeMessage.self, from: scrollback),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false)
+        )
+        let history = Data(
+            """
+            {"type":"history","paneID":"pane-1","limit":25}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: history),
+            .history(
+                paneID: "pane-1", sessionID: "", requestID: "",
+                beforeTurnIndex: nil, limit: 25, herdSessionName: nil
+            )
+        )
+        let page = Data(
+            """
+            {"type":"historyPage","paneID":"pane-1","sessionID":"session-1","turns":[],"hasMore":false}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: page),
+            .historyPage(TranscriptHistoryPage(
+                paneID: "pane-1", sessionID: "session-1", turns: [], hasMore: false
+            ))
         )
         let error = Data(#"{"type":"error","message":"Old Mac prose"}"#.utf8)
         XCTAssertEqual(
@@ -236,13 +291,14 @@ final class BridgeProtocolTests: XCTestCase {
             """.utf8
         )
 
-        guard case let .snapshot(snapshot) = try JSONDecoder().decode(
+        guard case let .snapshot(snapshot, sessionName) = try JSONDecoder().decode(
             BridgeMessage.self,
             from: data
         ) else {
             return XCTFail("Expected snapshot")
         }
         XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
+        XCTAssertNil(sessionName)
         XCTAssertEqual(snapshot.panes.first?.beacon?.requestID, "request-1")
         XCTAssertTrue(snapshot.panes.first?.beacon?.awaitsDecision == true)
         XCTAssertNotNil(snapshot.panes.first?.beacon?.deadline)

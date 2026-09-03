@@ -169,6 +169,46 @@ footers from Claude Code 2.1.259. A one-question wizard does not need Submit arr
 Plan approval uses the documented `Would you like to proceed?` shape, but lacks a real capture.
 Use the raw terminal when a new Claude dialog shape does not match.
 
+The pane toolbar has a clock button for Claude conversation history.
+The Mac reads only the hook beacon's transcript path and session ID.
+It rejects project directories and files that resolve outside Claude's projects root.
+It does not scan by cwd or select an unkeyed transcript.
+Without a complete beacon, the phone shows **History needs the Claude hook**.
+The empty state points to Settings → Integrations for hook setup.
+It sends at most 50 turns per page through additive bridge messages.
+Each turn has an 8 KiB text limit. Tool summaries have a 512-byte limit.
+The reader scans at most the latest 32 MiB from a transcript file.
+The protocol remains version 6. Old phone builds skip the new reply.
+Each request has pane, session, and request IDs. Replies echo the request identity.
+The phone rejects stale replies after an agent restart.
+
+History cards show prompts, replies, tool calls, results, and times.
+Use the find field to filter the loaded turns.
+Use the refresh button to request the newest turns again.
+Use **Load older** at the top for the prior page.
+Use **Jump to my last prompt** to return to your latest prompt.
+The pane title shows the first eight session ID characters.
+
+The phone keeps at most eight in-memory pane histories or 16 MiB.
+The Mac keeps at most 64 pane markers per device and connection.
+It keeps the viewed pane and trims its oldest turns when needed.
+It removes closed panes after 30 seconds. Its disk cache uses smaller per-pane and total limits.
+Disk history loads run after launch outside the main actor.
+The delayed load checks the current herd before it restores cached history.
+History errors stay on the affected pane and do not disconnect the bridge.
+
+The Mac keeps the last delivered turn for at most 64 panes per device.
+It uses least-recently-used removal and clears all cursors when a device is revoked.
+The first page after a reconnect can show a **While you were away** divider.
+The phone confirms each page before the Mac advances this device index.
+
+History currently supports local Claude panes only.
+Codex sessions need a safe cwd and time mapping before support can ship.
+Remote transcripts stay on the remote host, so the Mac cannot read them.
+
+The parser skips non-conversation records and unknown record types.
+The fixture includes mode, snapshot, and system records to test this rule.
+
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and
 Approve / Deny / Reply actions. A burst becomes one triage alert, such as
 `3 agents need you`, with the pane names in its body and no pane actions.
@@ -281,6 +321,14 @@ The first snapshot writes at once. Later snapshots use a three-second write limi
 The cache contains display data only. It omits resume IDs, full paths, and terminal frames.
 The cache file is excluded from device backups.
 The cache belongs to one pairing and never crosses to another Mac.
+
+The phone also saves the latest 50 transcript turns for each pane.
+This history cache belongs to one pairing and stays out of device backups.
+It also belongs to one selected herdr session.
+The phone restores only history that matches each live beacon session.
+It marks history without a live beacon as **From a previous session**.
+The first conflicting beacon removes that restored history.
+Forget Mac removes both caches.
 
 On cold launch, the saved herd appears before the socket connects.
 The pulse line shows `last seen HH:MM`, and cached rows use a muted style.

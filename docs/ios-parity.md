@@ -17,6 +17,7 @@ Audited 2026-09-03 against `main` (bridge protocol v6).
 | Connection diagnosis | Mac connection state | cause, action, raw details, sync age | ✅ phone remote support |
 | Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar and status strip | ✅ parity |
 | Scrollback search | ⌘F find bar | find bar with match count | ✅ parity |
+| Transcript history | JSONL reader | cards, search, paging, away marker | ✅ phone remote support |
 | Send image to agent | paste screenshot | photo picker → temp file path | ✅ parity |
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
@@ -73,6 +74,34 @@ All additive, no version bump (old phones skip unknown message types):
   AskUserQuestion blocks use its labels and descriptions before grid text.
 - A beacon can include an optional `request_id` for one prompt instance.
 - The beacon field is additive within protocol v6. It does not require another bump.
+
+## Transcript history LANDED (2026-09-03)
+
+- The Mac reads local Claude JSONL transcripts through a bounded parser.
+- `history` and `historyPage` add paging without a protocol version change.
+- `historyReceived` confirms delivery before the Mac advances the device cursor.
+- History requests and replies carry pane, agent session, and request identity.
+- The phone drops stale replies and resets history after an agent session change.
+- History requests and replies include the herd session name when available.
+- Bridge snapshots include the herd session name when available.
+- Each page has at most 50 turns. Each turn text has an 8 KiB limit.
+- The first page after a device reconnect can include its last delivered index.
+- The phone shows an away divider after that index.
+- The phone caches the latest 50 turns for each pane and pairing.
+- History requires the hook beacon's transcript path and session ID.
+- Rai never scans by cwd or selects an unkeyed transcript.
+- A missing beacon points the phone user to Settings → Integrations.
+- History errors remain local to one pane. They do not change bridge status.
+- Any plain or coded error reply completes pending history requests.
+- Memory and disk history caches have pane and byte limits.
+- The Mac caps delivery cursors and connection markers at 64 panes.
+- Restored history must match a live beacon session before it becomes current.
+- History without a live beacon stays marked as a previous session.
+- The memory limit protects the viewed pane and trims its oldest turns.
+- Disk restore requires the cached and live herd identities to match.
+- Device revocation clears its delivery cursors.
+- Old phones skip `historyPage`. Old Macs return one message error for `history`.
+- Codex and remote-host transcript history are not supported.
 
 ## Decision hooks LANDED (2026-09-03)
 
