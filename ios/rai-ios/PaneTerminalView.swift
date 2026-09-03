@@ -85,6 +85,9 @@ struct PaneTerminalView: View {
                     .background(.bar)
                 }
 
+                let currentPane = connection.snapshot?.panes.first {
+                    $0.paneID == pane.paneID
+                }
                 if let prompt = promptController.prompt,
                    ClaudePromptGate.allows(agent: pane.agent) {
                     let decisionBeacon = pane.beacon?.awaitsDecision == true
@@ -180,7 +183,14 @@ struct PaneTerminalView: View {
                         },
                         dismiss: { promptController.dismiss(renderedPrompt: prompt) }
                     )
-                } else if let beacon = pane.beacon,
+                } else if FallbackDecisionBarGate.allows(
+                              renderedPaneID: pane.paneID,
+                              renderedAgent: pane.agent,
+                              renderedBeacon: pane.beacon,
+                              currentPaneID: currentPane?.paneID,
+                              currentBeacon: currentPane?.beacon
+                          ),
+                          let beacon = pane.beacon,
                           beacon.awaitsDecision,
                           let requestID = beacon.requestID {
                     HeldDecisionBar(
@@ -827,6 +837,28 @@ final class GridReadableTerminalView: TerminalView {
 enum ClaudePromptGate {
     static func allows(agent: String?) -> Bool {
         agent?.caseInsensitiveCompare("claude") == .orderedSame
+    }
+}
+
+enum FallbackDecisionBarGate {
+    static func allows(
+        renderedPaneID: String,
+        renderedAgent: String?,
+        renderedBeacon: AgentBeacon?,
+        currentPaneID: String?,
+        currentBeacon: AgentBeacon?
+    ) -> Bool {
+        guard ClaudePromptGate.allows(agent: renderedAgent),
+              renderedBeacon?.awaitsDecision == true,
+              let requestID = renderedBeacon?.requestID
+        else { return false }
+
+        return PermissionDecisionTapGuard.isCurrent(
+            capturedPaneID: renderedPaneID,
+            capturedRequestID: requestID,
+            currentPaneID: currentPaneID,
+            currentBeacon: currentBeacon
+        )
     }
 }
 
