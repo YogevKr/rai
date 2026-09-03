@@ -28,6 +28,63 @@ enum HeldPushDecision: Equatable {
     }
 }
 
+enum PushPreferenceDecision: Equatable {
+    case allow
+    case kindDisabled
+    case snoozed
+    case doNotDisturb
+}
+
+enum PushPreferenceGate {
+    static func suppressesHeldEvent(
+        status: AgentStatus,
+        occurredAt: Date,
+        preferences: PushPreferences,
+        calendar: Calendar = .current
+    ) -> Bool {
+        var quietPreferences = preferences
+        quietPreferences.kinds = .init()
+        let decision = evaluate(
+            status: status,
+            occurredAt: occurredAt,
+            preferences: quietPreferences,
+            now: occurredAt,
+            calendar: calendar
+        )
+        return decision == .snoozed || decision == .doNotDisturb
+    }
+
+    static func evaluate(
+        status: AgentStatus,
+        occurredAt: Date,
+        preferences: PushPreferences,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> PushPreferenceDecision {
+        switch status {
+        case .blocked where !preferences.kinds.needsYou:
+            return .kindDisabled
+        case .done where !preferences.kinds.finished:
+            return .kindDisabled
+        case .blocked, .done:
+            break
+        default:
+            return .kindDisabled
+        }
+
+        if let snoozeUntil = preferences.snoozeUntil,
+           occurredAt < snoozeUntil || now < snoozeUntil {
+            return .snoozed
+        }
+        if let dnd = preferences.dnd,
+           dnd.contains(occurredAt, calendar: calendar)
+            || dnd.contains(now, calendar: calendar) {
+            return .doNotDisturb
+        }
+        return .allow
+    }
+}
+
 struct PhonePushEvent: Equatable, Sendable {
     let paneID: String
     let paneName: String
@@ -37,6 +94,7 @@ struct PhonePushEvent: Equatable, Sendable {
     let notificationBody: String?
     let allowsRemoteActions: Bool?
     let occurredAt: Date
+    let suppressedDeviceIDs: Set<String>
 
     init(
         paneID: String,
@@ -46,7 +104,8 @@ struct PhonePushEvent: Equatable, Sendable {
         status: AgentStatus,
         notificationBody: String? = nil,
         allowsRemoteActions: Bool? = nil,
-        occurredAt: Date
+        occurredAt: Date,
+        suppressedDeviceIDs: Set<String> = []
     ) {
         self.paneID = paneID
         self.paneName = paneName
@@ -56,6 +115,7 @@ struct PhonePushEvent: Equatable, Sendable {
         self.notificationBody = notificationBody
         self.allowsRemoteActions = allowsRemoteActions
         self.occurredAt = occurredAt
+        self.suppressedDeviceIDs = suppressedDeviceIDs
     }
 }
 

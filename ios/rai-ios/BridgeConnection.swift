@@ -246,6 +246,8 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
+    @Published private(set) var pushPreferences: PushPreferences = .default
+    @Published private(set) var supportsPushPreferences = false
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
@@ -356,6 +358,20 @@ final class BridgeConnection: ObservableObject {
 
     func clearActionError() {
         actionError = nil
+    }
+
+    func setPushPreferences(_ preferences: PushPreferences) {
+        guard supportsPushPreferences else {
+            actionError = "Update Rai on the Mac to change notification settings."
+            return
+        }
+        Task {
+            do {
+                try await send(.pushPrefs(preferences))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
@@ -667,6 +683,7 @@ final class BridgeConnection: ObservableObject {
         }
 
         reconnectTask?.cancel()
+        supportsPushPreferences = false
         if status.diagnosis == nil {
             status = .connecting
         }
@@ -752,7 +769,7 @@ final class BridgeConnection: ObservableObject {
 
     private func handle(_ message: BridgeMessage) {
         switch message {
-        case let .paired(token, protocolVersion, sessionName):
+        case let .paired(token, protocolVersion, _):
             guard protocolVersion == bridgeProtocolVersion else {
                 stopWithFailure(.protocolMismatch(protocolVersion))
                 return
@@ -789,7 +806,7 @@ final class BridgeConnection: ObservableObject {
                 return
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
-        case let .authFailed(reason):
+        case let .authFailed(reason, _, _):
             stopWithFailure(.helloRejected(reason: reason))
         case let .snapshot(snapshot):
             replaceWithLiveSnapshot(snapshot)
@@ -800,6 +817,9 @@ final class BridgeConnection: ObservableObject {
             }
         case let .backgroundWork(work):
             didReceiveBackgroundWork?(work)
+        case let .pushPrefsState(preferences):
+            pushPreferences = preferences
+            supportsPushPreferences = true
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -833,7 +853,7 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data)
             }
-        case let .error(message):
+        case let .error(message, _, _):
             if Self.isPairingProtocolRejection(
                 message,
                 pairingInProgress: invitation != nil
@@ -857,7 +877,7 @@ final class BridgeConnection: ObservableObject {
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
              .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
-             .listSessions, .selectSession:
+             .listSessions, .selectSession, .pushPrefs:
             break
         }
     }
@@ -1019,6 +1039,7 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .disconnected
+        supportsPushPreferences = false
         if clearSnapshot {
             snapshot = nil
             lastSnapshotAt = nil

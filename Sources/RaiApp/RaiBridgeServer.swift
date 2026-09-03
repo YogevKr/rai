@@ -417,11 +417,43 @@ final class RaiBridgeServer: ObservableObject {
         broadcast(.backgroundWork(work), onlyToSubscribers: true)
     }
 
-    func sendPush(_ burst: PhonePushBurst) {
+    func sendPush(
+        _ burst: PhonePushBurst,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
         guard !registrations.isEmpty else {
             recordNoDelivery("Push not sent: no registered devices.")
+            return
+        }
+        let preferencesByDevice = Dictionary(
+            uniqueKeysWithValues: pairedDevices.map { ($0.id, $0.pushPreferences) }
+        )
+        let plans = registrations.compactMap {
+            registration -> (PushRegistration, PhonePushBurst)? in
+            let preferences = registration.deviceID.flatMap { preferencesByDevice[$0] } ?? .default
+            let allowedEvents = burst.events.filter {
+                if let deviceID = registration.deviceID,
+                   $0.suppressedDeviceIDs.contains(deviceID) {
+                    return false
+                }
+                return PushPreferenceGate.evaluate(
+                    status: $0.status,
+                    occurredAt: $0.occurredAt,
+                    preferences: preferences,
+                    now: now,
+                    calendar: calendar
+                ) == .allow
+            }
+            guard !allowedEvents.isEmpty else { return nil }
+            return (registration, PhonePushBurst(events: allowedEvents))
+        }
+
+        guard !plans.isEmpty else {
+            lastPushSucceeded = true
+            lastPushResult = "Push dropped by device notification preferences."
             return
         }
         guard configuration.isConfigured else {
@@ -432,8 +464,7 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Push not sent: APNs configuration is incomplete.")
             return
         }
-        let stableIDs = Set(burst.notificationIDs)
-        let deliveries = registrations.map { registration in
+        let deliveries = plans.map { registration, effectiveBurst in
             let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
             return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
                 guard let self else {
@@ -447,8 +478,8 @@ final class RaiBridgeServer: ObservableObject {
                 return await self.deliverAlert(
                     configuration: configuration,
                     registration: registration,
-                    burst: burst,
-                    stableIDs: stableIDs
+                    burst: effectiveBurst,
+                    stableIDs: Set(effectiveBurst.notificationIDs)
                 )
             }
         }
@@ -461,6 +492,21 @@ final class RaiBridgeServer: ObservableObject {
             }
             self.recordDelivery(reports.sorted { $0.id < $1.id })
         }
+    }
+
+    func deviceIDsSuppressingHeldEvent(
+        status: AgentStatus,
+        occurredAt: Date,
+        calendar: Calendar = .current
+    ) -> Set<String> {
+        Set(pairedDevices.compactMap { device in
+            PushPreferenceGate.suppressesHeldEvent(
+                status: status,
+                occurredAt: occurredAt,
+                preferences: device.pushPreferences,
+                calendar: calendar
+            ) ? device.id : nil
+        })
     }
 
     func retractPushNotifications(identifiers: [String]) {
@@ -812,8 +858,13 @@ final class RaiBridgeServer: ObservableObject {
                     ),
                     to: client
                 )
+                send(.pushPrefsState(device.pushPreferences.effective(at: Date())), to: client)
             default:
-                reject(client, reason: "Pair or hello must be the first message")
+                reject(
+                    client,
+                    reason: "Pair or hello must be the first message",
+                    code: .repairRequired
+                )
             }
             return
         }
@@ -895,15 +946,38 @@ final class RaiBridgeServer: ObservableObject {
             send(.sessions(model.bridgeSessionList()), to: client)
         case let .selectSession(name):
             model.selectSessionFromBridge(named: name)
+        case let .pushPrefs(preferences):
+            guard let deviceID = client.deviceID,
+                  let device = credentialStore.updatePushPreferences(
+                    preferences.effective(at: Date()),
+                    deviceID: deviceID
+                  ) else {
+                send(.error(
+                    message: "Re-pair required.",
+                    code: .repairRequired,
+                    detail: "The paired device record is missing."
+                ), to: client)
+                return
+            }
+            syncCredentialState()
+            send(.pushPrefsState(device.pushPreferences), to: client)
         case let .selectPane(paneID):
             guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
-                send(.error(message: "Unknown pane \(paneID)."), to: client)
+                send(.error(
+                    message: "Unknown pane \(paneID).",
+                    code: .paneGone,
+                    detail: paneID
+                ), to: client)
                 return
             }
             model.select(paneID: paneID, focusInHerdr: true)
         case let .resizePane(paneID, cols, rows):
             guard cols > 0, rows > 0 else {
-                send(.error(message: "Pane dimensions must be positive."), to: client)
+                send(.error(
+                    message: "Pane dimensions must be positive.",
+                    code: .invalidRequest,
+                    detail: "Columns and rows must exceed zero."
+                ), to: client)
                 return
             }
             let clientID = ObjectIdentifier(client.connection)
@@ -1016,10 +1090,18 @@ final class RaiBridgeServer: ObservableObject {
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .pair, .hello:
-            send(.error(message: "Connection is already authenticated."), to: client)
+            send(.error(
+                message: "Connection is already authenticated.",
+                code: .invalidRequest,
+                detail: "Pair and hello are handshake messages."
+            ), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
-             .backgroundWork, .sessions:
-            send(.error(message: "Server-to-client message received from client."), to: client)
+             .backgroundWork, .sessions, .pushPrefsState:
+            send(.error(
+                message: "Server-to-client message received from client.",
+                code: .unknownMessage,
+                detail: "The message direction is invalid."
+            ), to: client)
         }
     }
 
@@ -1281,12 +1363,36 @@ final class RaiBridgeServer: ObservableObject {
         do {
             try await operation()
         } catch {
-            send(.error(message: error.localizedDescription), to: client)
+            let code = Self.errorCode(for: error)
+            send(.error(
+                message: error.localizedDescription,
+                code: code,
+                detail: String(reflecting: error)
+            ), to: client)
         }
     }
 
-    private func reject(_ client: BridgeClient, reason: String) {
-        send(.authFailed(reason: reason), to: client) {
+    private static func errorCode(for error: Error) -> BridgeErrorCode {
+        guard case let HerdrClientError.remote(code, _) = error else {
+            return .operationFailed
+        }
+        if code.localizedCaseInsensitiveContains("busy") {
+            return .paneBusy
+        }
+        if code.localizedCaseInsensitiveContains("pane"),
+           code.localizedCaseInsensitiveContains("not") {
+            return .paneGone
+        }
+        return .operationFailed
+    }
+
+    private func reject(
+        _ client: BridgeClient,
+        reason: String,
+        code: BridgeErrorCode = .repairRequired,
+        detail: String? = nil
+    ) {
+        send(.authFailed(reason: reason, code: code, detail: detail ?? reason), to: client) {
             client.connection.cancel()
         }
     }

@@ -411,6 +411,7 @@ extension AppDelegate: RaiSnapshotObserver {
         notificationBodies[pane.paneID] = body
         NotifiedPaneStore.save(notifiedPaneStatuses)
         postNotification(for: transition, pane: pane, in: snapshot, body: body)
+        let occurredAt = Date()
         pendingPhonePushes[pane.paneID] = PhonePushEvent(
             paneID: pane.paneID,
             paneName: title,
@@ -419,7 +420,11 @@ extension AppDelegate: RaiSnapshotObserver {
             status: transition.newStatus,
             notificationBody: body,
             allowsRemoteActions: allowsRemoteActions,
-            occurredAt: Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                status: transition.newStatus,
+                occurredAt: occurredAt
+            )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)
@@ -518,6 +523,7 @@ extension AppDelegate: RaiSnapshotObserver {
         )
 
         let prior = pendingPhonePushes[paneID]
+        let occurredAt = prior?.occurredAt ?? Date()
         pendingPhonePushes[paneID] = PhonePushEvent(
             paneID: paneID,
             paneName: snapshot.displayName(for: pane),
@@ -526,7 +532,12 @@ extension AppDelegate: RaiSnapshotObserver {
             status: pane.agentStatus,
             notificationBody: body,
             allowsRemoteActions: false,
-            occurredAt: prior?.occurredAt ?? Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: prior?.suppressedDeviceIDs
+                ?? model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                    status: pane.agentStatus,
+                    occurredAt: occurredAt
+                )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)

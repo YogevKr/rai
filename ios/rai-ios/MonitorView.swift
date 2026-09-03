@@ -35,6 +35,7 @@ struct MonitorView: View {
     @State private var path: [String] = []
     @State private var didAutoOpen = false
     @State private var showingAgentLauncher = false
+    @State private var showingNotificationPreferences = false
     @State private var renameTarget: RenameTarget?
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
@@ -136,6 +137,17 @@ struct MonitorView: View {
                                 if !enabled { filter = nil }
                             }
                         ))
+                        Button("Notifications") {
+                            showingNotificationPreferences = true
+                        }
+                        .disabled(
+                            !connection.status.isConnected
+                                || !connection.supportsPushPreferences
+                        )
+                        if connection.status.isConnected,
+                           !connection.supportsPushPreferences {
+                            Text("Update Mac for notification controls")
+                        }
                         Divider()
                         if connection.requiresRepair {
                             Button("Pair Again", action: forgetPairing)
@@ -165,6 +177,9 @@ struct MonitorView: View {
             ) { workspaceID, agent, cwd in
                 connection.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd)
             }
+        }
+        .sheet(isPresented: $showingNotificationPreferences) {
+            NotificationPreferencesSheet(connection: connection)
         }
         .sheet(item: $backgroundWorkTarget) { target in
             BackgroundWorkSheet(target: target)
