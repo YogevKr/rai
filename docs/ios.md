@@ -84,6 +84,7 @@ AskUserQuestion beacon data for question, header, option, and description text.
 The terminal grid still identifies the active step and confirms each key.
 An optional `request_id` identifies one prompt instance. Older beacons use a
 per-pane counter that changes after a prompt disappears or changes.
+Every full terminal reload invalidates all prompt instances for that pane.
 
 ## Structured Claude prompts
 
@@ -97,7 +98,8 @@ Rai refuses the tap when the live prompt differs. It never binds a tap to a newe
 Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
 The sequence stops after four seconds or any unexpected change. Rai never sends
 an automatic Enter without visible proof of the selected row.
-Next sends Tab, and Previous sends Left. These navigation buttons never send Enter.
+Next sends Tab, and Previous sends Left. Previous appears on every later question.
+These navigation buttons never send Enter.
 An unconfirmed checkbox key stays pending until a newer terminal frame arrives.
 
 Controls only appear for Claude panes or panes with a beacon. Dialog footers must

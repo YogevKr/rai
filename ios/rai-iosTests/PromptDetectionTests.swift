@@ -448,6 +448,26 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertTrue(keys.isEmpty)
     }
 
+    @MainActor
+    func testFullFrameInvalidatesAnIdenticalFallbackPrompt() throws {
+        let controller = TerminalPromptController()
+        controller.readGrid = { Self.permissionGrid }
+        controller.refresh()
+        let beforeReconnect = try XCTUnwrap(controller.prompt)
+
+        controller.invalidateForFullFrame()
+        controller.refresh(frameArrived: true)
+        let afterReconnect = try XCTUnwrap(controller.prompt)
+
+        XCTAssertNotEqual(beforeReconnect.instanceKey, afterReconnect.instanceKey)
+        var keys: [String] = []
+        controller.sendLegacy(
+            renderedPrompt: beforeReconnect,
+            option: beforeReconnect.options[0]
+        ) { keys.append(String(decoding: $0, as: UTF8.self)) }
+        XCTAssertTrue(keys.isEmpty)
+    }
+
     func testBeaconRequestIDIsThePromptInstance() throws {
         let beacon = AgentBeacon(
             event: "PermissionRequest",
@@ -461,7 +481,10 @@ final class PromptDetectionTests: XCTestCase {
 
         let prompt = try XCTUnwrap(PromptDetector.detect(in: Self.permissionGrid, beacon: beacon))
 
-        XCTAssertEqual(prompt.instanceKey, .request("request-42"))
+        XCTAssertEqual(
+            prompt.instanceKey,
+            .request("request-42", streamGeneration: 0)
+        )
         let replacement = AgentBeacon(
             event: "PermissionRequest",
             sessionID: "session-1",
@@ -784,6 +807,19 @@ final class PromptDetectionTests: XCTestCase {
             PromptDetector.detect(in: try fixture("ask-user-question-q1.txt"))
         )
         XCTAssertEqual(previous.next(prompt: first, now: 44), .complete)
+    }
+
+    func testLaterSingleSelectQuestionShowsPrevious() throws {
+        let grid = try fixture("ask-user-question-q1.txt")
+            .replacingOccurrences(
+                of: "←  ☐ Color  ☐ Toppings  ✔ Submit  →",
+                with: "←  ✔ Color  ❯ Checks  ✔ Submit  →"
+            )
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid))
+
+        XCTAssertFalse(prompt.multiSelect)
+        XCTAssertEqual(prompt.currentQuestionIndex, 1)
+        XCTAssertTrue(prompt.showsPreviousAction)
     }
 
     func testFreeTextChoreographyVerifiesEntryModeBeforeCompletion() throws {

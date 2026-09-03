@@ -81,7 +81,9 @@ All additive, no version bump (old phones skip unknown message types):
 - Each structured action stops after four seconds or an unexpected grid change.
 - Each tap stays bound to its rendered signature, prompt instance, beacon request, and question.
 - Older beacons use a per-pane prompt instance counter.
-- Next sends Tab. Previous sends Left. Enter only confirms an option or Submit.
+- Full terminal reloads invalidate all prompt instances for that pane.
+- Next sends Tab. Previous appears on every later question and sends Left.
+- Enter only confirms an option or Submit.
 - Checkbox retries wait for a newer grid frame and confirm the wanted state.
 - Controls require a Claude pane or a beacon.
 - Quoted dialogs above a live composer do not create controls.

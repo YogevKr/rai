@@ -497,6 +497,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             // first so stale cells/styles from the previous stream don't bleed
             // through; scrollback above is preserved.
             if full {
+                context.coordinator.prompts.invalidateForFullFrame()
                 terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
@@ -716,6 +717,7 @@ final class TerminalPromptController: ObservableObject {
     private var dismissedIdentity: PromptActionIdentity?
     private var observedDialogSignature: String?
     private var promptInstanceCounter: UInt64 = 0
+    private var streamGeneration: UInt64 = 0
     private var gridFrameRevision: UInt64 = 0
     private var choreography: PromptChoreography?
     private var choreographyGeneration = 0
@@ -742,6 +744,15 @@ final class TerminalPromptController: ObservableObject {
             dismissedIdentity = nil
         }
         prompt = detected?.actionIdentity == dismissedIdentity ? nil : detected
+    }
+
+    func invalidateForFullFrame() {
+        streamGeneration &+= 1
+        observedDialogSignature = nil
+        dismissedIdentity = nil
+        prompt = nil
+        cancelChoreography()
+        unconfirmedToggle = nil
     }
 
     func dismiss(renderedPrompt: PromptModel) {
@@ -932,7 +943,11 @@ final class TerminalPromptController: ObservableObject {
         }
         let isSameDialog = observedDialogSignature == detected.dialogSignature
         observedDialogSignature = detected.dialogSignature
-        if case .request = detected.instanceKey { return detected }
+        if case let .request(requestID, _) = detected.instanceKey {
+            return detected.withInstanceKey(
+                .request(requestID, streamGeneration: streamGeneration)
+            )
+        }
         if !isSameDialog { promptInstanceCounter &+= 1 }
         return detected.withInstanceKey(.observed(promptInstanceCounter))
     }
@@ -1085,10 +1100,12 @@ private struct PromptBar: View {
                 submitControls
             }
             HStack {
-                if prompt.multiSelect, !prompt.isFreeTextEntryActive {
+                if prompt.showsPreviousAction {
                     Button("Previous", action: retreat)
                         .buttonStyle(.bordered)
-                        .disabled(isBusy || (prompt.currentQuestionIndex ?? 0) == 0)
+                        .disabled(isBusy)
+                }
+                if prompt.multiSelect, !prompt.isFreeTextEntryActive {
                     Button("Next", action: advance)
                         .buttonStyle(.borderedProminent)
                         .disabled(

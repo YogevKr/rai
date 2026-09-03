@@ -81,6 +81,10 @@ struct PromptModel: Equatable {
         kind == .askUserQuestion && submitState == .none && !showsSelectionFooter
     }
 
+    var showsPreviousAction: Bool {
+        kind == .askUserQuestion && (currentQuestionIndex ?? 0) > 0
+    }
+
     var actionIdentity: PromptActionIdentity {
         PromptActionIdentity(
             signature: signature,
@@ -110,7 +114,7 @@ struct PromptModel: Equatable {
 enum PromptInstanceKey: Equatable {
     case untracked
     case observed(UInt64)
-    case request(String)
+    case request(String, streamGeneration: UInt64)
 }
 
 struct PromptActionIdentity: Equatable {
@@ -137,7 +141,7 @@ enum PromptDetector {
         guard let detected else { return nil }
         let resolved = resolve(detected, from: beacon)
         guard let requestID = beacon?.requestID, !requestID.isEmpty else { return resolved }
-        return resolved.withInstanceKey(.request(requestID))
+        return resolved.withInstanceKey(.request(requestID, streamGeneration: 0))
     }
 
     private static func detectAskUserQuestion(_ lines: [String]) -> PromptModel? {
