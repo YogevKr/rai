@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 
 /// Mosh-style predictive local echo for local and remote herds.
@@ -26,10 +27,12 @@ import Foundation
 /// (recent tail latency above `displayLatencyThreshold`) AND the current
 /// input burst has at least one server-confirmed echo. Every Enter/control
 /// key starts a new burst with no confidence. Confidence also expires 300 ms
-/// after the last confirmed echo. This limits silent echo-off transitions,
-/// but cannot detect one within that window. The app therefore disables local
-/// prediction by default. If echo stops mid-burst, the unconfirmed queue is
-/// retracted after `max(2 × smoothed latency, retractionFloor)`.
+/// after the last confirmed echo. After a pause longer than 300 ms, the next
+/// key waits for its echo, local and remote. This limits silent echo-off
+/// transitions, but cannot detect one within that window. The app therefore
+/// disables local prediction by default. If echo stops mid-burst, the
+/// unconfirmed queue is retracted after
+/// `max(2 × smoothed latency, retractionFloor)`.
 public final class PredictiveEchoEngine {
     /// Public terminal state which separates a shell prompt from an agent TUI.
     public struct TerminalMode: Equatable, Sendable {
@@ -112,22 +115,28 @@ public final class PredictiveEchoEngine {
     private let displayLatencyThreshold: TimeInterval
     private let retractionFloor: TimeInterval
     private let maxPending: Int
+    private let monotonicNow: () -> UInt64
     private var recentConfirmLatencies: [TimeInterval] = []
-    private var lastConfirmedEchoAt: Date?
+    private var lastConfirmedEchoUptimeNanoseconds: UInt64?
     private static let confirmLatencyWindowSize = 20
     /// Maximum idle time before the next key must prove that echo remains on.
     public static let confidenceCarryWindow: TimeInterval = 0.300
+    private static let confidenceCarryWindowNanoseconds: UInt64 = 300_000_000
 
     public init(
         ttl: TimeInterval = 5.0,
         displayLatencyThreshold: TimeInterval = 0.06,
         retractionFloor: TimeInterval = 0.5,
-        maxPending: Int = 32
+        maxPending: Int = 32,
+        monotonicNow: @escaping () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        }
     ) {
         self.ttl = ttl
         self.displayLatencyThreshold = displayLatencyThreshold
         self.retractionFloor = retractionFloor
         self.maxPending = maxPending
+        self.monotonicNow = monotonicNow
     }
 
     public convenience init(herdLocation: HerdLocation) {
@@ -150,10 +159,7 @@ public final class PredictiveEchoEngine {
         }
         switch key {
         case .printable(let character):
-            if let lastConfirmedEchoAt,
-               now.timeIntervalSince(lastConfirmedEchoAt) > Self.confidenceCarryWindow {
-                echoConfirmedThisBurst = false
-            }
+            expireConfidenceIfNeeded(at: monotonicNow())
             let column = pending.last.map { $0.column + 1 } ?? cursor.x
             let row = pending.first?.row ?? cursor.y
             // A prediction that would wrap the line is unpredictable (the
@@ -198,6 +204,7 @@ public final class PredictiveEchoEngine {
         readCell: (_ column: Int, _ row: Int) -> Character?,
         now: Date = Date()
     ) {
+        let reconcileUptimeNanoseconds = monotonicNow()
         let outputByteCount = outputBytes?.count ?? 0
         let outputMatchesQueue = outputBytes.map(outputMatchesPendingPrefix) ?? true
         var confirmedPredictionCount = 0
@@ -237,7 +244,7 @@ public final class PredictiveEchoEngine {
             if cell == first.character, cursor.x > first.column {
                 recordConfirmLatency(
                     now.timeIntervalSince(first.madeAt),
-                    confirmedAt: now
+                    confirmedAtUptimeNanoseconds: reconcileUptimeNanoseconds
                 )
                 confirmedPredictionCount += 1
                 pending.removeFirst()
@@ -266,16 +273,26 @@ public final class PredictiveEchoEngine {
         return true
     }
 
-    /// The glyphs the overlay should draw right now, offset in cells from the
-    /// terminal's caret. Empty until the link has demonstrated slowness AND
-    /// this burst has a confirmed echo — never gated on elapsed time alone,
-    /// which would paint hidden input (passwords) that no echo will confirm.
-    public func displayGlyphs(now: Date = Date()) -> [Character] {
+    /// The glyphs the overlay should draw now, offset from the terminal caret.
+    /// An expired confidence window retracts all unconfirmed glyphs.
+    public func displayGlyphs() -> [Character] {
+        expireConfidenceIfNeeded(at: monotonicNow())
         guard !pending.isEmpty,
               echoConfirmedThisBurst,
               recentTailConfirmLatency > displayLatencyThreshold
         else { return [] }
         return pending.map(\.character)
+    }
+
+    /// The monotonic deadline when a visible overlay must redraw and retract.
+    public var displayExpiryDeadlineUptimeNanoseconds: UInt64? {
+        guard !pending.isEmpty,
+              echoConfirmedThisBurst,
+              recentTailConfirmLatency > displayLatencyThreshold,
+              let lastConfirmedEchoUptimeNanoseconds else { return nil }
+        let (deadline, overflow) = lastConfirmedEchoUptimeNanoseconds
+            .addingReportingOverflow(Self.confidenceCarryWindowNanoseconds)
+        return overflow ? UInt64.max : deadline
     }
 
     public func clear() {
@@ -289,12 +306,25 @@ public final class PredictiveEchoEngine {
         smoothedConfirmLatency = 0
         recentTailConfirmLatency = 0
         recentConfirmLatencies.removeAll(keepingCapacity: true)
-        lastConfirmedEchoAt = nil
+        lastConfirmedEchoUptimeNanoseconds = nil
     }
 
-    private func recordConfirmLatency(_ latency: TimeInterval, confirmedAt: Date) {
+    private func expireConfidenceIfNeeded(at uptimeNanoseconds: UInt64) {
+        guard echoConfirmedThisBurst,
+              let lastConfirmedEchoUptimeNanoseconds,
+              uptimeNanoseconds >= lastConfirmedEchoUptimeNanoseconds,
+              uptimeNanoseconds - lastConfirmedEchoUptimeNanoseconds
+                >= Self.confidenceCarryWindowNanoseconds else { return }
+        pending.removeAll()
+        echoConfirmedThisBurst = false
+    }
+
+    private func recordConfirmLatency(
+        _ latency: TimeInterval,
+        confirmedAtUptimeNanoseconds: UInt64
+    ) {
         echoConfirmedThisBurst = true
-        lastConfirmedEchoAt = confirmedAt
+        lastConfirmedEchoUptimeNanoseconds = confirmedAtUptimeNanoseconds
         smoothedConfirmLatency = smoothedConfirmLatency == 0
             ? latency
             : smoothedConfirmLatency * 0.7 + latency * 0.3

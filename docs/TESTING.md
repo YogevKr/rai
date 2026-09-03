@@ -115,7 +115,8 @@ Local prediction is off by default. The measured local echo was about 4 ms
 median and 22 ms p90 in the fast-median run. A silent `read -s` transition
 cannot revoke confidence through output because it emits no bytes. Enable
 **Predict local typing** under Settings → Appearance only after accepting this
-risk. The harness commands above measure the opt-in rendering paths.
+risk. After a pause longer than 300 ms, the next key waits for its echo, local
+and remote. The harness commands above measure the opt-in rendering paths.
 
 The four-pane CPU guard used 200,000 bytes per second for 20 seconds.
 CoreGraphics used 88.6% CPU in the earlier baseline and 67.3% now. The feeds

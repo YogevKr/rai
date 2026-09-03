@@ -296,11 +296,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     // MARK: predictive echo
 
-    /// Enabled for every pane. The engine uses an 8 ms local threshold and a
-    /// 60 ms remote threshold, then requires a confirmed echo in each burst.
+    /// Remote panes enable this automatically. Local panes require opt-in.
+    /// Both locations require a confirmed echo in each burst.
     private var predictiveEcho: PredictiveEchoEngine?
     private var predictionOverlay: PredictionOverlayView?
     private var predictionReconcileTimer: Timer?
+    private var predictionExpiryRedraw: DispatchWorkItem?
+    private var predictionExpiryDeadline: UInt64?
     private var feedRepaintState = TerminalFeedRepaintState()
     private var userInputEventPending = false
     private var externalInputDepth = 0
@@ -340,6 +342,16 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     var pendingPredictionCountForTesting: Int {
         predictiveEcho?.pending.count ?? 0
+    }
+
+    var predictionExpiryDeadlineForTesting: UInt64? {
+        predictionExpiryDeadline
+    }
+
+    func showPredictiveEchoForTesting(_ engine: PredictiveEchoEngine) {
+        resetPredictions()
+        predictiveEcho = engine
+        updatePredictionOverlay()
     }
 
     private var predictiveTerminalMode: PredictiveEchoEngine.TerminalMode {
@@ -439,16 +451,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         guard PredictiveEchoViewPolicy.canPresent(
             hasDeferredTerminalBytes: predictionDecisionsDeferred
         ) else {
+            cancelPredictionExpiryRedraw()
             predictionOverlay?.isHidden = true
             return
         }
         guard let engine = predictiveEcho,
               let first = engine.pending.first else {
+            cancelPredictionExpiryRedraw()
             predictionOverlay?.isHidden = true
             return
         }
         let glyphs = engine.displayGlyphs()
         guard !glyphs.isEmpty else {
+            cancelPredictionExpiryRedraw()
             predictionOverlay?.isHidden = true
             return
         }
@@ -484,6 +499,36 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         overlay.isHidden = false
         overlay.needsDisplay = true
         overlay.displayIfNeeded()
+        schedulePredictionExpiryRedraw(
+            at: engine.displayExpiryDeadlineUptimeNanoseconds
+        )
+    }
+
+    private func schedulePredictionExpiryRedraw(at deadline: UInt64?) {
+        guard let deadline else {
+            cancelPredictionExpiryRedraw()
+            return
+        }
+        guard predictionExpiryDeadline != deadline else { return }
+        cancelPredictionExpiryRedraw()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.predictionExpiryRedraw = nil
+            self.predictionExpiryDeadline = nil
+            self.updatePredictionOverlay()
+        }
+        predictionExpiryRedraw = workItem
+        predictionExpiryDeadline = deadline
+        DispatchQueue.main.asyncAfter(
+            deadline: DispatchTime(uptimeNanoseconds: deadline),
+            execute: workItem
+        )
+    }
+
+    private func cancelPredictionExpiryRedraw() {
+        predictionExpiryRedraw?.cancel()
+        predictionExpiryRedraw = nil
+        predictionExpiryDeadline = nil
     }
 
     private func installFocusObserversIfNeeded() {
@@ -548,6 +593,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     func resetPredictions() {
         predictiveEcho?.clear()
+        cancelPredictionExpiryRedraw()
         predictionOverlay?.isHidden = true
         predictionOverlayUpdatePending = false
         predictionReconcileTimer?.invalidate()
@@ -556,6 +602,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     func resetPredictionsForReattach() {
         predictiveEcho?.reset()
+        cancelPredictionExpiryRedraw()
         predictionOverlay?.isHidden = true
         predictionOverlayUpdatePending = false
         predictionReconcileTimer?.invalidate()

@@ -2,9 +2,14 @@ import AppKit
 import XCTest
 
 @testable import RaiApp
+@testable import RaiCore
 
 @MainActor
 final class TerminalPredictionLifecycleTests: XCTestCase {
+    private final class TestUptime {
+        var nanoseconds: UInt64 = 1_000_000_000
+    }
+
     private func makeKeyEvent(for window: NSWindow) throws -> NSEvent {
         try XCTUnwrap(
             NSEvent.keyEvent(
@@ -76,5 +81,52 @@ final class TerminalPredictionLifecycleTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(textField))
         XCTAssertTrue(window.firstResponder !== view)
         XCTAssertEqual(view.pendingPredictionCountForTesting, 0)
+    }
+
+    func testVisiblePredictionSchedulesMonotonicExpiryRedraw() {
+        _ = NSApplication.shared
+        let uptime = TestUptime()
+        let engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.local
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        engine.noteKey(
+            .printable("a"),
+            cursor: (x: 0, y: 0),
+            columns: 80,
+            terminalMode: .plain,
+            now: start
+        )
+        uptime.nanoseconds += 20_000_000
+        engine.reconcile(
+            cursor: (x: 1, y: 0),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        uptime.nanoseconds += 1_000_000
+        engine.noteKey(
+            .printable("b"),
+            cursor: (x: 0, y: 0),
+            columns: 80,
+            terminalMode: .plain,
+            now: start.addingTimeInterval(0.021)
+        )
+        let view = FocusAwareTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 200)
+        )
+        let expectedDeadline = engine.displayExpiryDeadlineUptimeNanoseconds
+        XCTAssertNotNil(expectedDeadline)
+
+        view.showPredictiveEchoForTesting(engine)
+
+        XCTAssertEqual(
+            view.predictionExpiryDeadlineForTesting,
+            expectedDeadline
+        )
+        view.resetPredictions()
     }
 }
