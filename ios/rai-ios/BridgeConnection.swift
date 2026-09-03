@@ -15,6 +15,30 @@ enum ConnectionRecoveryAction: Equatable {
     }
 }
 
+enum BridgeErrorDestination: Equatable {
+    case reconnect
+    case pairAgain
+    case actionError
+    case ignore
+}
+
+enum BridgeErrorPolicy {
+    static let destinations: [BridgeErrorCode: BridgeErrorDestination] = [
+        .herdMissing: .reconnect,
+        .paneGone: .actionError,
+        .paneBusy: .actionError,
+        .auditUnavailable: .actionError,
+        .repairRequired: .pairAgain,
+        .pairingCodeInvalid: .pairAgain,
+        .protocolMismatch: .reconnect,
+        .unknownMessage: .actionError,
+        .invalidRequest: .actionError,
+        .operationFailed: .actionError,
+        .streamUnavailable: .actionError,
+        .scrollbackUnavailable: .ignore,
+    ]
+}
+
 struct ConnectionDiagnosis: Equatable {
     let message: String
     let rawDetails: String
@@ -78,6 +102,63 @@ struct ConnectionDiagnosis: Equatable {
             rawDetails: reason,
             action: .pairAgain
         )
+    }
+
+    static func authFailure(
+        code: BridgeErrorCode?,
+        reason: String,
+        detail: String?
+    ) -> ConnectionDiagnosis {
+        let rawDetails = detail ?? reason
+        switch code {
+        case .pairingCodeInvalid:
+            return ConnectionDiagnosis(
+                message: "The pairing code is invalid or expired",
+                rawDetails: rawDetails,
+                action: .pairAgain
+            )
+        case .protocolMismatch:
+            return ConnectionDiagnosis(
+                message: "Rai versions don't match — update Rai on the Mac or iPhone",
+                rawDetails: rawDetails,
+                action: .reconnect
+            )
+        case .repairRequired:
+            return helloRejected(reason: rawDetails)
+        case let code?:
+            return coded(code, message: reason, detail: detail, host: "Mac")
+        case nil:
+            return helloRejected(reason: reason)
+        }
+    }
+
+    static func coded(
+        _ code: BridgeErrorCode,
+        message: String,
+        detail: String?,
+        host: String
+    ) -> ConnectionDiagnosis {
+        let rawDetails = detail ?? message
+        switch code {
+        case .herdMissing:
+            return herdMissing(rawDetails: rawDetails)
+        case .repairRequired, .pairingCodeInvalid:
+            return ConnectionDiagnosis(
+                message: code == .pairingCodeInvalid
+                    ? "The pairing code is invalid or expired"
+                    : "Pairing was rejected by the Mac",
+                rawDetails: rawDetails,
+                action: .pairAgain
+            )
+        case .protocolMismatch:
+            return ConnectionDiagnosis(
+                message: "Rai versions don't match — update Rai on the Mac or iPhone",
+                rawDetails: rawDetails,
+                action: .reconnect
+            )
+        default:
+            return serverError(message, host: host)
+        }
     }
 
     static func invalidPairingReply() -> ConnectionDiagnosis {
@@ -806,8 +887,12 @@ final class BridgeConnection: ObservableObject {
                 return
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
-        case let .authFailed(reason, _, _):
-            stopWithFailure(.helloRejected(reason: reason))
+        case let .authFailed(reason, code, detail):
+            stopWithFailure(ConnectionDiagnosis.authFailure(
+                code: code,
+                reason: reason,
+                detail: detail
+            ))
         case let .snapshot(snapshot):
             replaceWithLiveSnapshot(snapshot)
         case let .sessions(list):
@@ -853,7 +938,11 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data)
             }
-        case let .error(message, _, _):
+        case let .error(message, code, detail):
+            if let code {
+                handleCodedError(code, message: message, detail: detail)
+                return
+            }
             if Self.isPairingProtocolRejection(
                 message,
                 pairingInProgress: invitation != nil
@@ -961,6 +1050,21 @@ final class BridgeConnection: ObservableObject {
             || message.hasPrefix("Could not launch ")
             || message.hasPrefix("Could not rename ")
             || message.hasPrefix("Could not close ")
+    }
+
+    private func handleCodedError(
+        _ code: BridgeErrorCode,
+        message: String,
+        detail: String?
+    ) {
+        switch BridgeErrorPolicy.destinations[code] ?? .actionError {
+        case .actionError:
+            actionError = message
+        case .reconnect, .pairAgain:
+            status = .failed(.coded(code, message: message, detail: detail, host: host))
+        case .ignore:
+            NSLog("rai-ios: optional bridge feature unavailable: %@", detail ?? message)
+        }
     }
 
     private func send(_ message: BridgeMessage) async throws {
