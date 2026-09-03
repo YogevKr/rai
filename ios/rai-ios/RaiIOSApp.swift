@@ -15,6 +15,15 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             if let deviceToken {
                 Task { @MainActor in appModel?.setPushDeviceToken(deviceToken) }
             }
+            if let pendingComposedDraft {
+                Task { @MainActor in
+                    appModel?.connection.keepPendingComposedDraft(
+                        pendingComposedDraft.text,
+                        for: pendingComposedDraft.paneID
+                    )
+                    self.pendingComposedDraft = nil
+                }
+            }
             if let pendingPaneID {
                 Task { @MainActor in
                     appModel?.pendingOpenPaneID = pendingPaneID
@@ -38,6 +47,7 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     private var deviceToken: String?
     private var pendingPaneID: String?
+    private var pendingComposedDraft: (paneID: String, text: String)?
     private var pendingTriage = false
     private var pendingActionError: String?
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
@@ -164,7 +174,15 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                         bytes, to: paneID, pairing: pairing
                     )
                     if !delivered {
-                        let message = await MainActor.run { connection.actionError }
+                        let (message, draft) = await MainActor.run {
+                            (
+                                connection.actionError,
+                                connection.takePendingComposedDraft(for: paneID)
+                            )
+                        }
+                        if let draft {
+                            await keepPendingComposedDraft(draft, for: paneID)
+                        }
                         if let message { await showActionError(message) }
                     }
                 } else {
@@ -185,6 +203,16 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         await MainActor.run {
             appModel?.pendingOpenPaneID = paneID
             if appModel != nil { pendingPaneID = nil }
+        }
+    }
+
+    private func keepPendingComposedDraft(_ text: String, for paneID: String) async {
+        await MainActor.run {
+            if let appModel {
+                appModel.connection.keepPendingComposedDraft(text, for: paneID)
+            } else {
+                pendingComposedDraft = (paneID, text)
+            }
         }
     }
 

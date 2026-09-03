@@ -236,6 +236,7 @@ struct PaneTerminalView: View {
             }
         }
         .onAppear {
+            restorePendingDraft()
             connection.openPane(paneID: pane.paneID)
             // Testing/automation affordance mirroring RAI_OPEN_PANE: put the
             // keyboard in the compose field so an end-to-end run can screenshot
@@ -268,6 +269,9 @@ struct PaneTerminalView: View {
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await sendPhoto(item) }
+        }
+        .onChange(of: connection.pendingComposedDrafts[pane.paneID]) { _, _ in
+            restorePendingDraft()
         }
         .sheet(isPresented: $showingCommandPalette) {
             CommandPaletteSheet(
@@ -313,6 +317,14 @@ struct PaneTerminalView: View {
                 ? connection.actionError ?? PasswordPromptGuard.refusal
                 : nil
         }
+    }
+
+    private func restorePendingDraft() {
+        guard composedLine.isEmpty,
+              let draft = connection.takePendingComposedDraft(for: pane.paneID) else {
+            return
+        }
+        composedLine = draft
     }
 
     private func sendLine(_ text: String) {

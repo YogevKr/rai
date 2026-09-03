@@ -384,6 +384,7 @@ final class BridgeConnection: ObservableObject {
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
+    @Published private(set) var pendingComposedDrafts: [String: String] = [:]
     var didConnect: (() -> Void)?
     var didPair: ((Pairing) -> Void)?
     var didReceiveSnapshot: ((SessionSnapshot, Date) -> Void)?
@@ -421,6 +422,8 @@ final class BridgeConnection: ObservableObject {
     private let currentTimeZone: () -> TimeZone
     private let userDefaults: UserDefaults
     private let messageSender: ((BridgeMessage) async throws -> Void)?
+    private let now: () -> Date
+    private let replyFrameWaitIterations: Int
     private var timeZoneObserver: AnyCancellable?
     private static let pendingPushPreferencesKey = "bridge.pendingPushPreferences"
 
@@ -428,11 +431,15 @@ final class BridgeConnection: ObservableObject {
         notificationCenter: NotificationCenter = .default,
         currentTimeZone: @escaping () -> TimeZone = { .current },
         userDefaults: UserDefaults = .standard,
-        messageSender: ((BridgeMessage) async throws -> Void)? = nil
+        messageSender: ((BridgeMessage) async throws -> Void)? = nil,
+        now: @escaping () -> Date = Date.init,
+        replyFrameWaitIterations: Int = 50
     ) {
         self.currentTimeZone = currentTimeZone
         self.userDefaults = userDefaults
         self.messageSender = messageSender
+        self.now = now
+        self.replyFrameWaitIterations = replyFrameWaitIterations
         if let data = userDefaults.data(forKey: Self.pendingPushPreferencesKey),
            let stored = try? JSONDecoder().decode(
                StoredPendingPushPreferences.self,
@@ -765,12 +772,20 @@ final class BridgeConnection: ObservableObject {
         if outbox.count >= Self.outboxLimit {
             outbox.removeFirst(outbox.count - Self.outboxLimit + 1)
         }
-        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: Date()))
+        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: now()))
         if !status.isConnected { retryNow() }
     }
 
     func discardOutbox() {
         outbox.removeAll()
+    }
+
+    func takePendingComposedDraft(for paneID: String) -> String? {
+        pendingComposedDrafts.removeValue(forKey: paneID)
+    }
+
+    func keepPendingComposedDraft(_ text: String, for paneID: String) {
+        pendingComposedDrafts[paneID] = text
     }
 
     func updateVisibleGrid(_ grid: String, for paneID: String) {
@@ -788,50 +803,50 @@ final class BridgeConnection: ObservableObject {
     /// they were typed for has moved on, and a late line is worse than none.
     private func flushOutbox() {
         guard status.isConnected, !outbox.isEmpty else { return }
-        var hasUnknownGrid = false
+
+        let currentTime = now()
+        let expired = outbox.count(where: {
+            currentTime.timeIntervalSince($0.queuedAt) > Self.outboxStaleness
+        })
+        outbox.removeAll(where: {
+            currentTime.timeIntervalSince($0.queuedAt) > Self.outboxStaleness
+        })
+        if expired > 0 {
+            actionError = "\(expired) queued line\(expired == 1 ? "" : "s") expired unsent"
+        }
+        guard !outbox.isEmpty else { return }
+
         for paneID in Set(outbox.map(\.paneID)) {
-            switch passwordPromptState(for: paneID) {
-            case .unknown:
-                hasUnknownGrid = true
-            case .prompt:
+            if passwordPromptState(for: paneID) == .prompt {
                 refusePasswordPromptSend(to: paneID)
-            case .clear:
-                break
             }
         }
         guard !outbox.isEmpty else { return }
-        guard !hasUnknownGrid else {
-            if actionError?.hasPrefix(PasswordPromptGuard.refusal) != true {
+
+        guard let index = outbox.firstIndex(where: {
+            passwordPromptState(for: $0.paneID) == .clear
+        }) else {
+            if expired == 0, actionError?.hasPrefix(PasswordPromptGuard.refusal) != true {
                 actionError = PasswordPromptGuard.waiting
             }
             return
         }
+        let line = outbox.remove(at: index)
+        consumeFreshGrid(for: line.paneID)
         if actionError == PasswordPromptGuard.waiting {
             actionError = nil
         }
-        let now = Date()
-        let due = outbox.filter { now.timeIntervalSince($0.queuedAt) <= Self.outboxStaleness }
-        let dropped = outbox.count - due.count
-        outbox.removeAll()
-        if dropped > 0 {
-            actionError = "\(dropped) queued line\(dropped == 1 ? "" : "s") expired unsent"
-        }
         Task {
-            for line in due {
-                do {
-                    try await send(
-                        .input(
-                            paneID: line.paneID,
-                            bytesBase64: Data(line.bytes).base64EncodedString()
-                        )
+            do {
+                try await send(
+                    .input(
+                        paneID: line.paneID,
+                        bytesBase64: Data(line.bytes).base64EncodedString()
                     )
-                } catch {
-                    // Put the rest back, in order, and let the next welcome try.
-                    let index = due.firstIndex { $0.id == line.id } ?? 0
-                    outbox.insert(contentsOf: due[index...], at: 0)
-                    handleSocketFailure(error)
-                    return
-                }
+                )
+            } catch {
+                outbox.insert(line, at: min(index, outbox.endIndex))
+                handleSocketFailure(error)
             }
         }
     }
@@ -864,6 +879,10 @@ final class BridgeConnection: ObservableObject {
             return .unknown
         }
         return PasswordPromptGuard.isPasswordPrompt(evidence.grid) ? .prompt : .clear
+    }
+
+    private func consumeFreshGrid(for paneID: String) {
+        latestGridByPaneID.removeValue(forKey: paneID)
     }
 
     func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
@@ -937,18 +956,25 @@ final class BridgeConnection: ObservableObject {
             }
         }
         actionError = PasswordPromptGuard.waiting
-        for _ in 0..<80 where passwordPromptState(for: paneID) == .unknown {
+        for _ in 0..<replyFrameWaitIterations where passwordPromptState(for: paneID) == .unknown {
             guard status.isConnected else { return false }
             try? await Task.sleep(for: .milliseconds(100))
             if Task.isCancelled { return false }
         }
         guard passwordPromptState(for: paneID) != .unknown else {
+            actionError = PasswordPromptGuard.verificationFailure
+            keepPendingComposedDraft(Self.composedDraft(from: bytes), for: paneID)
             if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
             return false
         }
         let result = await sendComposedLine(bytes, to: paneID)
         if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
         return result == .accepted
+    }
+
+    private static func composedDraft(from bytes: [UInt8]) -> String {
+        let content = bytes.last == 0x0D ? bytes.dropLast() : bytes[...]
+        return String(decoding: content, as: UTF8.self)
     }
 
     func registerPush(deviceToken: String, environment: String) {

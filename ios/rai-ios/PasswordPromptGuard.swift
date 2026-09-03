@@ -9,6 +9,7 @@ enum PasswordPromptGuard {
     }
 
     static let waiting = "Waiting for the screen"
+    static let verificationFailure = "Could not verify the screen — check the pane"
     static let refusal = "This is a password prompt — it shows nothing as you type, "
         + "so nothing sent from here can be verified. Use the keyboard (Type) to answer it yourself."
 
@@ -58,7 +59,11 @@ final class PasswordPromptGridReader {
         guard let text = String(data: terminal.getBufferAsData(), encoding: .utf8) else {
             return nil
         }
-        return text.components(separatedBy: "\n").suffix(terminal.rows).joined(separator: "\n")
+        var rows = text.components(separatedBy: "\n")
+        if rows.last?.isEmpty == true {
+            rows.removeLast()
+        }
+        return rows.suffix(terminal.rows).joined(separator: "\n")
     }
 
     func remove(_ paneID: String) {

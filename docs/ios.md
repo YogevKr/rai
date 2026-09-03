@@ -188,10 +188,13 @@ and notification replies. Rai drops queued lines for that pane and reports the c
 The message explains that hidden input cannot be checked from these actions.
 Use Type mode to send direct keyboard input when you choose to answer the prompt.
 
-Notification replies wait for one pane frame when no live grid exists.
-Rai sends nothing when that frame is unavailable.
+Notification replies wait up to five seconds when no live grid exists.
+On timeout, Rai opens the pane, keeps the reply draft, and reports that verification failed.
 The guard accepts only grids received after the current connection welcome.
 Outbox lines stay queued until their pane receives a current grid.
+Each fresh clear frame permits at most one queued line.
+The next queued line waits for a frame received after Rai dispatches the prior line.
+Held lines still expire after 15 minutes when a later frame starts another flush.
 
 The match is anchored to the last non-empty row.
 Quoted password text does not match when an agent composer row appears below it.
