@@ -109,6 +109,41 @@ final class PermissionDecisionTests: XCTestCase {
         ))
     }
 
+    func testFallbackDecisionBarRequiresCurrentClaudeRequest() {
+        let request = AgentBeacon(
+            event: "PermissionRequest",
+            paneID: "pane-1",
+            sessionID: "session",
+            cwd: "/repo",
+            transcriptPath: "/tmp/a",
+            requestID: "request-a",
+            timestamp: 1,
+            awaitsDecision: true
+        )
+
+        XCTAssertFalse(FallbackDecisionBarGate.allows(
+            renderedPaneID: "pane-1",
+            renderedAgent: "codex",
+            renderedBeacon: request,
+            currentPaneID: "pane-1",
+            currentBeacon: request
+        ))
+        XCTAssertTrue(FallbackDecisionBarGate.allows(
+            renderedPaneID: "pane-1",
+            renderedAgent: "claude",
+            renderedBeacon: request,
+            currentPaneID: "pane-1",
+            currentBeacon: request
+        ))
+        XCTAssertFalse(FallbackDecisionBarGate.allows(
+            renderedPaneID: "pane-1",
+            renderedAgent: "claude",
+            renderedBeacon: request,
+            currentPaneID: "pane-1",
+            currentBeacon: request.withDecisionRequestForTesting("request-b")
+        ))
+    }
+
     func testDeniedNotificationsAdvertiseOnlyWhileForeground() {
         let foreground = PermissionDecisionAvailability(
             notificationAuthorized: false,
