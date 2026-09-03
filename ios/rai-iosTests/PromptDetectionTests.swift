@@ -425,6 +425,184 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertEqual(machine.next(prompt: moved, now: 20), .sendKey("Enter"))
     }
 
+    @MainActor
+    func testIdenticalPromptReappearanceGetsANewInstance() throws {
+        var liveGrid = Self.permissionGrid
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let first = try XCTUnwrap(controller.prompt)
+
+        liveGrid = "Build complete"
+        controller.refresh()
+        XCTAssertNil(controller.prompt)
+        liveGrid = Self.permissionGrid
+        controller.refresh()
+        let second = try XCTUnwrap(controller.prompt)
+        XCTAssertNotEqual(first.instanceKey, second.instanceKey)
+
+        var keys: [String] = []
+        controller.sendLegacy(renderedPrompt: first, option: first.options[0]) {
+            keys.append(String(decoding: $0, as: UTF8.self))
+        }
+        XCTAssertTrue(keys.isEmpty)
+    }
+
+    func testBeaconRequestIDIsThePromptInstance() throws {
+        let beacon = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            requestID: "request-42",
+            timestamp: 1
+        )
+
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: Self.permissionGrid, beacon: beacon))
+
+        XCTAssertEqual(prompt.instanceKey, .request("request-42"))
+        let replacement = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            requestID: "request-43",
+            timestamp: 1
+        )
+        XCTAssertFalse(
+            PromptDetector.signatureMatches(
+                prompt,
+                currentGridText: Self.permissionGrid,
+                beacon: replacement
+            )
+        )
+    }
+
+    func testTrustDetectionAllowsBlankRowsBelowFooter() throws {
+        var rows = try fixture("trust-dialog.txt").split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map(String.init)
+        if rows.last == "" { rows.removeLast() }
+        rows.append(contentsOf: repeatElement("", count: 24 - rows.count))
+        let grid = rows.joined(separator: "\n")
+
+        XCTAssertEqual(rows.count, 24)
+        XCTAssertEqual(PromptDetector.detect(in: grid)?.kind, .unnumberedConfirm)
+    }
+
+    func testQuotedAskUserQuestionAboveComposerStaysInert() throws {
+        XCTAssertNil(
+            PromptDetector.detect(in: try fixture("quoted-ask-user-question.txt"))
+        )
+    }
+
+    @MainActor
+    func testShellPaneDoesNotExposeClaudeControls() {
+        let controller = TerminalPromptController()
+        controller.allowsPrompts = ClaudePromptGate.allows(agent: nil, beacon: nil)
+        controller.readGrid = { Self.permissionGrid }
+
+        controller.refresh()
+
+        XCTAssertNil(controller.prompt)
+        XCTAssertFalse(ClaudePromptGate.allows(agent: "codex", beacon: nil))
+    }
+
+    @MainActor
+    func testTimedOutCheckboxRetryDoesNotToggleAnAppliedChoiceAgain() throws {
+        var clock: TimeInterval = 0
+        var liveGrid = try fixture("ask-user-question-q2-multiselect.txt")
+        let controller = TerminalPromptController()
+        controller.now = { clock }
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+        var keys: [String] = []
+
+        controller.select(
+            renderedPrompt: rendered,
+            option: rendered.options[0],
+            through: { keys.append($0) }
+        )
+        XCTAssertEqual(keys, ["Space"])
+
+        clock = 5
+        controller.refresh()
+        XCTAssertFalse(controller.isBusy)
+        controller.select(
+            renderedPrompt: rendered,
+            option: rendered.options[0],
+            through: { keys.append($0) }
+        )
+        XCTAssertEqual(keys, ["Space"])
+
+        liveGrid = liveGrid.replacingOccurrences(of: "[ ] Cheese", with: "[x] Cheese")
+        controller.refresh(frameArrived: true)
+        controller.select(
+            renderedPrompt: rendered,
+            option: rendered.options[0],
+            through: { keys.append($0) }
+        )
+
+        XCTAssertEqual(keys, ["Space"])
+        XCTAssertEqual(controller.prompt?.options[0].isChecked, true)
+    }
+
+    @MainActor
+    func testDismissedIdenticalPromptReappearsAfterAnEmptyFrame() throws {
+        var liveGrid = Self.permissionGrid
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let first = try XCTUnwrap(controller.prompt)
+
+        controller.dismiss(renderedPrompt: first)
+        XCTAssertNil(controller.prompt)
+        liveGrid = ""
+        controller.refresh()
+        liveGrid = Self.permissionGrid
+        controller.refresh()
+
+        let second = try XCTUnwrap(controller.prompt)
+        XCTAssertNotEqual(first.instanceKey, second.instanceKey)
+    }
+
+    func testHeaderMarkerSelectsLaterStepWithoutQuestionTextMatch() throws {
+        let grid = try fixture("ask-user-question-q2-multiselect.txt")
+            .replacingOccurrences(
+                of: "←  ☐ Color  ☐ Toppings  ✔ Submit  →",
+                with: "←  ☐ Color  ❯ Checks  ✔ Submit  →"
+            )
+            .replacingOccurrences(
+                of: "Which toppings do you want?",
+                with: "Which items do you want?"
+            )
+
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid))
+
+        XCTAssertEqual(prompt.currentQuestionIndex, 1)
+        XCTAssertEqual(prompt.steps.map(\.state), [.done, .current, .pending])
+    }
+
+    func testUnknownHooklessStepDisablesNavigation() throws {
+        let grid = try fixture("ask-user-question-q2-multiselect.txt")
+            .replacingOccurrences(
+                of: "Which toppings do you want?",
+                with: "Which items do you want?"
+            )
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid))
+        XCTAssertNil(prompt.currentQuestionIndex)
+        XCTAssertEqual(prompt.steps.map(\.state), [.pending, .pending, .pending])
+
+        var next = PromptChoreography(action: .advance, prompt: prompt, now: 21)
+        var previous = PromptChoreography(action: .retreat, prompt: prompt, now: 21)
+        XCTAssertEqual(next.next(prompt: prompt, now: 21), .refused)
+        XCTAssertEqual(previous.next(prompt: prompt, now: 21), .refused)
+    }
+
     func testSingleChoiceChoreographyVerifiesMarkerThenTabAdvance() throws {
         let firstGrid = try fixture("ask-user-question-q1.txt")
         let first = try XCTUnwrap(PromptDetector.detect(in: firstGrid))
@@ -587,11 +765,25 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertEqual(toggle.next(prompt: checked, now: 41), .complete)
 
         var advance = PromptChoreography(action: .advance, prompt: checked, now: 42)
-        XCTAssertEqual(advance.next(prompt: checked, now: 42), .sendKey("Enter"))
+        XCTAssertEqual(advance.next(prompt: checked, now: 42), .sendKey("Tab"))
         let submit = try XCTUnwrap(
             PromptDetector.detect(in: try fixture("ask-user-question-submit.txt"))
         )
         XCTAssertEqual(advance.next(prompt: submit, now: 43), .complete)
+    }
+
+    func testPreviousQuestionUsesLeftAndVerifiesTheStepChange() throws {
+        let second = try XCTUnwrap(
+            PromptDetector.detect(in: try fixture("ask-user-question-q2-multiselect.txt"))
+        )
+        var previous = PromptChoreography(action: .retreat, prompt: second, now: 43)
+
+        XCTAssertEqual(previous.next(prompt: second, now: 43), .sendKey("Left"))
+
+        let first = try XCTUnwrap(
+            PromptDetector.detect(in: try fixture("ask-user-question-q1.txt"))
+        )
+        XCTAssertEqual(previous.next(prompt: first, now: 44), .complete)
     }
 
     func testFreeTextChoreographyVerifiesEntryModeBeforeCompletion() throws {

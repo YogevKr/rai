@@ -16,6 +16,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
     public let transcriptPath: String
     public let toolName: String?
     public let toolInput: JSONValue?
+    public let requestID: String?
     public let notificationType: String?
     public let message: String?
     public let lastAssistantMessage: String?
@@ -31,6 +32,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         transcriptPath: String,
         toolName: String? = nil,
         toolInput: JSONValue? = nil,
+        requestID: String? = nil,
         notificationType: String? = nil,
         message: String? = nil,
         lastAssistantMessage: String? = nil,
@@ -45,6 +47,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         self.transcriptPath = transcriptPath
         self.toolName = toolName
         self.toolInput = Self.bounded(toolInput)
+        self.requestID = requestID
         self.notificationType = notificationType
         self.message = Self.boundedPrefix(message)
         self.lastAssistantMessage = Self.boundedSuffix(lastAssistantMessage)
@@ -61,6 +64,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         case transcriptPath = "transcript_path"
         case toolName = "tool_name"
         case toolInput = "tool_input"
+        case requestID = "request_id"
         case notificationType = "notification_type"
         case message
         case lastAssistantMessage = "last_assistant_message"
@@ -83,6 +87,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         toolInput = Self.bounded(
             try container.decodeIfPresent(JSONValue.self, forKey: .toolInput)
         )
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
         notificationType = try container.decodeIfPresent(
             String.self,
             forKey: .notificationType
@@ -116,6 +121,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
             transcriptPath: transcriptPath,
             toolName: previous.toolName,
             toolInput: previous.toolInput,
+            requestID: requestID ?? previous.requestID,
             notificationType: notificationType,
             message: message,
             lastAssistantMessage: lastAssistantMessage,

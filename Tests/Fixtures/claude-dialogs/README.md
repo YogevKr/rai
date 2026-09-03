@@ -13,6 +13,7 @@ twins keep the styling for renderer work.
 | `trust-dialog.txt` | 2.1.258 | Folder trust dialog: unnumbered rows, `❯` marks the selection, footer `Enter to confirm · Esc to cancel`. Transcribed from a live read, not byte-captured |
 | `trust-dialog-wrapped.txt` | synthetic | Trust shape with one wrapped option label for parser regression coverage |
 | `quoted-trust-dialog.txt` | synthetic | Inert quoted trust text above Claude's live composer and status line |
+| `quoted-ask-user-question.txt` | synthetic | Inert quoted AskUserQuestion text above Claude's live composer and status line |
 
 The numbered tool-permission dialog (`❯ 1. Yes … 4. No`, footer
 `Esc to cancel · Tab to amend`) is inline in

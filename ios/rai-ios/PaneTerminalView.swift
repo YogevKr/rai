@@ -25,6 +25,7 @@ struct PaneTerminalView: View {
             connection: connection,
             search: terminalSearch,
             prompts: promptController,
+            agent: pane.agent,
             beacon: pane.beacon,
             send: { connection.sendInput($0, to: pane.paneID) }
         )
@@ -78,7 +79,8 @@ struct PaneTerminalView: View {
                     .background(.bar)
                 }
 
-                if let prompt = promptController.prompt {
+                if let prompt = promptController.prompt,
+                   ClaudePromptGate.allows(agent: pane.agent, beacon: pane.beacon) {
                     PromptBar(
                         prompt: prompt,
                         isBusy: promptController.isBusy,
@@ -104,6 +106,11 @@ struct PaneTerminalView: View {
                         },
                         advance: {
                             promptController.advance(renderedPrompt: prompt) {
+                                connection.sendKeys([$0], to: pane.paneID)
+                            }
+                        },
+                        retreat: {
+                            promptController.retreat(renderedPrompt: prompt) {
                                 connection.sendKeys([$0], to: pane.paneID)
                             }
                         },
@@ -410,6 +417,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let connection: BridgeConnection
     let search: TerminalSearchController
     let prompts: TerminalPromptController
+    let agent: String?
     let beacon: AgentBeacon?
     let send: ([UInt8]) -> Void
 
@@ -457,6 +465,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             terminal?.liveGridText() ?? ""
         }
         prompts.beacon = beacon
+        prompts.allowsPrompts = ClaudePromptGate.allows(agent: agent, beacon: beacon)
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
@@ -491,7 +500,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
-            context.coordinator.prompts.refresh()
+            context.coordinator.prompts.refresh(frameArrived: true)
             if full {
                 // A stream (re)start means "show me the live screen": follow
                 // the cursor region (NOT the geometric bottom — a pinned grid
@@ -551,8 +560,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
-        if prompts.beacon != beacon {
+        let allowsPrompts = ClaudePromptGate.allows(agent: agent, beacon: beacon)
+        if prompts.beacon != beacon || prompts.allowsPrompts != allowsPrompts {
             prompts.beacon = beacon
+            prompts.allowsPrompts = allowsPrompts
             DispatchQueue.main.async { [prompts] in prompts.refresh() }
         }
     }
@@ -682,33 +693,55 @@ final class GridReadableTerminalView: TerminalView {
     }
 }
 
+enum ClaudePromptGate {
+    static func allows(agent: String?, beacon: AgentBeacon?) -> Bool {
+        agent?.caseInsensitiveCompare("claude") == .orderedSame || beacon != nil
+    }
+}
+
 @MainActor
 final class TerminalPromptController: ObservableObject {
+    private struct UnconfirmedToggle {
+        let toggle: PromptPendingToggle
+        let sentFrameRevision: UInt64
+    }
+
     @Published private(set) var prompt: PromptModel?
     @Published private(set) var isBusy = false
     @Published private(set) var focusComposerRequest = 0
     var readGrid: (() -> String)?
     var beacon: AgentBeacon?
-    private var dismissedSignature: String?
+    var allowsPrompts = true
+    var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private var dismissedIdentity: PromptActionIdentity?
+    private var observedDialogSignature: String?
+    private var promptInstanceCounter: UInt64 = 0
+    private var gridFrameRevision: UInt64 = 0
     private var choreography: PromptChoreography?
     private var choreographyGeneration = 0
     private var pendingSendKey: ((String) -> Void)?
     private var focusComposerAfterCompletion = false
+    private var activeToggleSentFrameRevision: UInt64?
+    private var unconfirmedToggle: UnconfirmedToggle?
 
-    func refresh() {
-        guard let grid = readGrid?() else {
+    func refresh(frameArrived: Bool = false) {
+        if frameArrived { gridFrameRevision &+= 1 }
+        guard allowsPrompts, let grid = readGrid?() else {
+            observedDialogSignature = nil
             prompt = nil
             cancelChoreography()
+            unconfirmedToggle = nil
             return
         }
-        let detected = PromptDetector.detect(in: grid, beacon: beacon)
+        let detected = trackedPrompt(in: grid)
         if choreography != nil {
             drive(with: detected)
         }
-        if detected?.signature != dismissedSignature {
-            dismissedSignature = nil
+        reconcileUnconfirmedToggle(with: detected)
+        if detected?.actionIdentity != dismissedIdentity {
+            dismissedIdentity = nil
         }
-        prompt = detected?.signature == dismissedSignature ? nil : detected
+        prompt = detected?.actionIdentity == dismissedIdentity ? nil : detected
     }
 
     func dismiss(renderedPrompt: PromptModel) {
@@ -716,9 +749,10 @@ final class TerminalPromptController: ObservableObject {
             refresh()
             return
         }
-        dismissedSignature = renderedPrompt.signature
+        dismissedIdentity = renderedPrompt.actionIdentity
         prompt = nil
         cancelChoreography()
+        unconfirmedToggle = nil
     }
 
     /// Keep the original numbered permission path as one guarded digit key.
@@ -728,13 +762,14 @@ final class TerminalPromptController: ObservableObject {
         through send: ([UInt8]) -> Void
     ) {
         guard renderedPrompt.kind == .numberedPermission,
+              unconfirmedToggle == nil,
               let digit = option.digit,
               renderedPrompt.options.contains(where: {
                   $0.digit == digit && $0.label == option.label
               }),
               prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
-              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              let current = trackedPrompt(in: grid),
               current.actionIdentity == renderedPrompt.actionIdentity,
               current.options.contains(where: {
                   $0.digit == digit && $0.label == option.label
@@ -756,6 +791,10 @@ final class TerminalPromptController: ObservableObject {
             && !option.isFreeText && !option.isChat
             ? .toggle(optionID: option.id)
             : .choose(optionID: option.id)
+        if case .toggle = action,
+           handleToggleRetry(renderedPrompt: renderedPrompt, option: option) {
+            return
+        }
         begin(
             action,
             renderedPrompt: renderedPrompt,
@@ -771,6 +810,13 @@ final class TerminalPromptController: ObservableObject {
         begin(.advance, renderedPrompt: renderedPrompt, through: sendKey)
     }
 
+    func retreat(
+        renderedPrompt: PromptModel,
+        through sendKey: @escaping (String) -> Void
+    ) {
+        begin(.retreat, renderedPrompt: renderedPrompt, through: sendKey)
+    }
+
     func submit(
         renderedPrompt: PromptModel,
         through sendKey: @escaping (String) -> Void
@@ -779,9 +825,10 @@ final class TerminalPromptController: ObservableObject {
     }
 
     func sendEscape(renderedPrompt: PromptModel, through send: ([UInt8]) -> Void) {
-        guard prompt?.actionIdentity == renderedPrompt.actionIdentity,
+        guard unconfirmedToggle == nil,
+              prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
-              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              let current = trackedPrompt(in: grid),
               current.actionIdentity == renderedPrompt.actionIdentity
         else {
             refresh()
@@ -798,9 +845,10 @@ final class TerminalPromptController: ObservableObject {
         through sendKey: @escaping (String) -> Void
     ) {
         guard choreography == nil,
+              unconfirmedToggle == nil,
               prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
-              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              let current = trackedPrompt(in: grid),
               current.actionIdentity == renderedPrompt.actionIdentity
         else {
             refresh()
@@ -809,8 +857,9 @@ final class TerminalPromptController: ObservableObject {
         choreography = PromptChoreography(
             action: action,
             prompt: current,
-            now: ProcessInfo.processInfo.systemUptime
+            now: now()
         )
+        activeToggleSentFrameRevision = nil
         choreographyGeneration += 1
         let generation = choreographyGeneration
         pendingSendKey = sendKey
@@ -826,7 +875,7 @@ final class TerminalPromptController: ObservableObject {
             else { return }
             let current: PromptModel?
             if let grid = self.readGrid?() {
-                current = PromptDetector.detect(in: grid, beacon: self.beacon)
+                current = self.trackedPrompt(in: grid)
             } else {
                 current = nil
             }
@@ -836,21 +885,34 @@ final class TerminalPromptController: ObservableObject {
 
     private func drive(with current: PromptModel?) {
         guard var choreography else { return }
+        let currentTime = now()
+        let pendingToggle = choreography.pendingToggle
+        let didExpire = choreography.isExpired(at: currentTime)
         let result = choreography.next(
             prompt: current,
-            now: ProcessInfo.processInfo.systemUptime
+            now: currentTime
         )
         self.choreography = choreography
         switch result {
         case let .sendKey(key):
+            if key == "Space", choreography.pendingToggle != nil {
+                activeToggleSentFrameRevision = gridFrameRevision
+            }
             pendingSendKey?(key)
         case .wait:
             break
         case .complete:
+            unconfirmedToggle = nil
             let shouldFocus = focusComposerAfterCompletion
             cancelChoreography()
             if shouldFocus { focusComposerRequest += 1 }
         case .refused:
+            if didExpire, let pendingToggle {
+                unconfirmedToggle = UnconfirmedToggle(
+                    toggle: pendingToggle,
+                    sentFrameRevision: activeToggleSentFrameRevision ?? gridFrameRevision
+                )
+            }
             cancelChoreography()
         }
     }
@@ -859,7 +921,67 @@ final class TerminalPromptController: ObservableObject {
         choreography = nil
         pendingSendKey = nil
         focusComposerAfterCompletion = false
+        activeToggleSentFrameRevision = nil
         isBusy = false
+    }
+
+    private func trackedPrompt(in grid: String) -> PromptModel? {
+        guard let detected = PromptDetector.detect(in: grid, beacon: beacon) else {
+            observedDialogSignature = nil
+            return nil
+        }
+        let isSameDialog = observedDialogSignature == detected.dialogSignature
+        observedDialogSignature = detected.dialogSignature
+        if case .request = detected.instanceKey { return detected }
+        if !isSameDialog { promptInstanceCounter &+= 1 }
+        return detected.withInstanceKey(.observed(promptInstanceCounter))
+    }
+
+    private func reconcileUnconfirmedToggle(with current: PromptModel?) {
+        guard let pending = unconfirmedToggle?.toggle else { return }
+        guard let current,
+              current.dialogSignature == pending.dialogSignature,
+              current.instanceKey == pending.instanceKey,
+              current.currentQuestionIndex == pending.questionIndex,
+              let option = current.options.first(where: { $0.id == pending.optionID })
+        else {
+            unconfirmedToggle = nil
+            return
+        }
+        if option.isChecked == pending.wanted { unconfirmedToggle = nil }
+    }
+
+    private func handleToggleRetry(
+        renderedPrompt: PromptModel,
+        option: PromptOption
+    ) -> Bool {
+        guard let pendingState = unconfirmedToggle else { return false }
+        let pending = pendingState.toggle
+        guard pending.optionID == option.id,
+              pending.dialogSignature == renderedPrompt.dialogSignature,
+              pending.instanceKey == renderedPrompt.instanceKey,
+              pending.questionIndex == renderedPrompt.currentQuestionIndex,
+              let grid = readGrid?(),
+              let current = trackedPrompt(in: grid),
+              let liveOption = current.options.first(where: { $0.id == pending.optionID })
+        else {
+            refresh()
+            return true
+        }
+        if liveOption.isChecked == pending.wanted {
+            unconfirmedToggle = nil
+            prompt = current
+            return true
+        }
+        guard gridFrameRevision > pendingState.sentFrameRevision else {
+            return true
+        }
+        guard current.actionIdentity == renderedPrompt.actionIdentity else {
+            refresh()
+            return true
+        }
+        unconfirmedToggle = nil
+        return false
     }
 }
 
@@ -868,6 +990,7 @@ private struct PromptBar: View {
     let isBusy: Bool
     let select: (PromptOption) -> Void
     let advance: () -> Void
+    let retreat: () -> Void
     let submit: () -> Void
     let escape: () -> Void
     let dismiss: () -> Void
@@ -963,10 +1086,15 @@ private struct PromptBar: View {
             }
             HStack {
                 if prompt.multiSelect, !prompt.isFreeTextEntryActive {
+                    Button("Previous", action: retreat)
+                        .buttonStyle(.bordered)
+                        .disabled(isBusy || (prompt.currentQuestionIndex ?? 0) == 0)
                     Button("Next", action: advance)
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            isBusy || !prompt.options.contains(where: { $0.isChecked == true })
+                            isBusy
+                                || prompt.currentQuestionIndex == nil
+                                || !prompt.options.contains(where: { $0.isChecked == true })
                         )
                 }
                 Spacer()

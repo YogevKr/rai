@@ -13,6 +13,7 @@ final class AgentBeaconTests: XCTestCase {
             "transcript_path": "/tmp/session.jsonl",
             "tool_name": "Write",
             "tool_input": ["file_path": "/repo/a.swift", "content": content],
+            "request_id": "request-17",
             "last_assistant_message": content + "\nfinal line",
             "ts": 1_780_000_000,
             "parent_pid": 4321,
@@ -25,6 +26,7 @@ final class AgentBeaconTests: XCTestCase {
         XCTAssertEqual(beacon.herdrSocketPath, "/tmp/herdr.sock")
         XCTAssertEqual(beacon.sessionID, "session-1")
         XCTAssertEqual(beacon.parentPID, 4321)
+        XCTAssertEqual(beacon.requestID, "request-17")
         XCTAssertEqual(beacon.pendingSummary, "Write: /repo/a.swift")
         XCTAssertEqual(beacon.completionSummary, nil)
         XCTAssertLessThanOrEqual(

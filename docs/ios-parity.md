@@ -69,6 +69,7 @@ All additive, no version bump (old phones skip unknown message types):
 - APNs work uses one queue per device. A stalled device does not delay another device.
 - Snapshot pane objects include an optional Claude hook `beacon` value.
   AskUserQuestion blocks use its labels and descriptions before grid text.
+- A beacon can include an optional `request_id` for one prompt instance.
 - The beacon field is additive within protocol v6. It does not require another bump.
 
 ## Structured prompt controls LANDED (2026-09-03)
@@ -78,11 +79,16 @@ All additive, no version bump (old phones skip unknown message types):
 - Unnumbered trust and confirm dialogs use verified arrow movement before Enter.
 - Numbered permission dialogs keep their prior digit-only action.
 - Each structured action stops after four seconds or an unexpected grid change.
-- Each tap stays bound to its rendered grid signature, beacon request, and question index.
+- Each tap stays bound to its rendered signature, prompt instance, beacon request, and question.
+- Older beacons use a per-pane prompt instance counter.
+- Next sends Tab. Previous sends Left. Enter only confirms an option or Submit.
+- Checkbox retries wait for a newer grid frame and confirm the wanted state.
+- Controls require a Claude pane or a beacon.
 - Quoted dialogs above a live composer do not create controls.
+- Unknown hookless wizard steps disable step navigation.
 - The raw terminal remains available for unknown dialog forms.
 - Plan approval follows its documented shape. No real plan capture verified this grammar.
-- This work adds no bridge message and keeps protocol version 6.
+- The optional beacon `request_id` is additive and keeps protocol version 6.
 
 ## Backlog (value order)
 

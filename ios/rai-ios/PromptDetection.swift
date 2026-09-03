@@ -71,6 +71,7 @@ struct PromptModel: Equatable {
     let signature: String
     /// Stable while a marker moves or an AskUserQuestion wizard advances.
     let dialogSignature: String
+    let instanceKey: PromptInstanceKey
 
     var selectedOptionIndex: Int? {
         options.firstIndex(where: \.isSelected)
@@ -84,15 +85,38 @@ struct PromptModel: Equatable {
         PromptActionIdentity(
             signature: signature,
             dialogSignature: dialogSignature,
+            instanceKey: instanceKey,
             questionIndex: currentQuestionIndex
+        )
+    }
+
+    func withInstanceKey(_ key: PromptInstanceKey) -> PromptModel {
+        PromptModel(
+            kind: kind,
+            question: question,
+            steps: steps,
+            currentQuestionIndex: currentQuestionIndex,
+            options: options,
+            multiSelect: multiSelect,
+            submitState: submitState,
+            showsSelectionFooter: showsSelectionFooter,
+            signature: signature,
+            dialogSignature: dialogSignature,
+            instanceKey: key
         )
     }
 }
 
+enum PromptInstanceKey: Equatable {
+    case untracked
+    case observed(UInt64)
+    case request(String)
+}
+
 struct PromptActionIdentity: Equatable {
     let signature: String
-    /// Includes the beacon session and timestamp when a hook request supplied labels.
     let dialogSignature: String
+    let instanceKey: PromptInstanceKey
     let questionIndex: Int?
 }
 
@@ -101,7 +125,7 @@ enum PromptDetector {
         pattern: #"^\s*([❯>›])?\s*([1-9][0-9]*)[\.\)]\s+(?:\[([ xX✓✔])\]\s*)?(.+?)\s*$"#
     )
     private static let stepExpression = try! NSRegularExpression(
-        pattern: #"[☐□✔✓]\s+(.+?)(?=\s{2,}[☐□✔✓]|\s+→|$)"#
+        pattern: #"([☐□✔✓❯›])\s+(.+?)(?=\s{2,}[☐□✔✓❯›]|\s+→|$)"#
     )
 
     /// Input is rendered terminal-grid text, never an ANSI byte stream.
@@ -111,12 +135,15 @@ enum PromptDetector {
             ?? detectUnnumberedConfirm(lines)
             ?? detectNumberedPrompt(lines)
         guard let detected else { return nil }
-        return resolve(detected, from: beacon)
+        let resolved = resolve(detected, from: beacon)
+        guard let requestID = beacon?.requestID, !requestID.isEmpty else { return resolved }
+        return resolved.withInstanceKey(.request(requestID))
     }
 
     private static func detectAskUserQuestion(_ lines: [String]) -> PromptModel? {
         guard let headerIndex = lines.lastIndex(where: isQuestionHeader) else { return nil }
-        let stepLabels = parseStepLabels(lines[headerIndex])
+        let parsedSteps = parseSteps(lines[headerIndex])
+        let stepLabels = parsedSteps.map(\.label)
         guard stepLabels.count >= 2,
               stepLabels.last?.localizedCaseInsensitiveContains("submit") == true
         else { return nil }
@@ -125,6 +152,10 @@ enum PromptDetector {
             $0.localizedCaseInsensitiveContains("Enter to select")
                 && $0.localizedCaseInsensitiveContains("Tab/Arrow keys")
                 && $0.localizedCaseInsensitiveContains("Esc")
+        }
+        if let footerIndex,
+           !lines[(footerIndex + 1)..<lines.endIndex].allSatisfy({ trimmed($0).isEmpty }) {
+            return nil
         }
         let endIndex = footerIndex ?? lines.endIndex
         let optionRows = parseAskOptionCluster(
@@ -145,7 +176,10 @@ enum PromptDetector {
         } || question?.localizedCaseInsensitiveContains("submit your answers") == true
         let currentIndex: Int? = isSubmit
             ? nil
-            : inferQuestionIndex(question: question, headers: Array(stepLabels.dropLast()))
+            : inferQuestionIndex(
+                question: question,
+                steps: Array(parsedSteps.dropLast())
+            )
         let submitState: PromptSubmitState = isSubmit
             ? (lines[headerIndex..<endIndex].contains {
                 $0.localizedCaseInsensitiveContains("not answered all questions")
@@ -175,7 +209,8 @@ enum PromptDetector {
             submitState: submitState,
             showsSelectionFooter: footerIndex != nil,
             signature: signature(for: region),
-            dialogSignature: "ask:" + stepLabels.joined(separator: "|")
+            dialogSignature: "ask:" + stepLabels.joined(separator: "|"),
+            instanceKey: .untracked
         )
     }
 
@@ -187,8 +222,7 @@ enum PromptDetector {
 
         // A real modal owns the bottom of the live grid. Quoted modal text has
         // Claude's composer or status rows below it and must stay inert.
-        guard lines.distance(from: footerIndex, to: lines.endIndex) <= 5,
-              lines[(footerIndex + 1)..<lines.endIndex].allSatisfy({ trimmed($0).isEmpty })
+        guard lines[(footerIndex + 1)..<lines.endIndex].allSatisfy({ trimmed($0).isEmpty })
         else { return nil }
 
         var optionEnd = footerIndex
@@ -235,7 +269,8 @@ enum PromptDetector {
             submitState: .none,
             showsSelectionFooter: false,
             signature: signature(for: context),
-            dialogSignature: dialogSignature(kind: kind, question: question, options: options)
+            dialogSignature: dialogSignature(kind: kind, question: question, options: options),
+            instanceKey: .untracked
         )
     }
 
@@ -292,7 +327,8 @@ enum PromptDetector {
                 submitState: .none,
                 showsSelectionFooter: context.contains("enter to select"),
                 signature: signature(for: region),
-                dialogSignature: dialogSignature(kind: kind, question: question, options: options)
+                dialogSignature: dialogSignature(kind: kind, question: question, options: options),
+                instanceKey: .untracked
             )
         }
         return nil
@@ -306,6 +342,7 @@ enum PromptDetector {
         guard let current = detect(in: currentGridText, beacon: beacon) else { return false }
         return current.signature == expected.signature
             && current.dialogSignature == expected.dialogSignature
+            && current.instanceKey == expected.instanceKey
     }
 
     private static func resolve(_ grid: PromptModel, from beacon: AgentBeacon?) -> PromptModel {
@@ -376,7 +413,8 @@ enum PromptDetector {
             showsSelectionFooter: grid.showsSelectionFooter,
             signature: grid.signature,
             dialogSignature: "ask:\(beacon?.sessionID ?? ""):\(beacon?.timestamp ?? 0):"
-                + stepLabels.joined(separator: "|")
+                + stepLabels.joined(separator: "|"),
+            instanceKey: grid.instanceKey
         )
     }
 
@@ -578,24 +616,36 @@ enum PromptDetector {
             || label.localizedCaseInsensitiveContains("keep planning")
     }
 
-    private static func parseStepLabels(_ line: String) -> [String] {
+    private struct ParsedStep {
+        let label: String
+        let isCurrent: Bool
+    }
+
+    private static func parseSteps(_ line: String) -> [ParsedStep] {
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         return stepExpression.matches(in: line, range: range).compactMap { match in
-            guard let labelRange = Range(match.range(at: 1), in: line) else { return nil }
-            return trimmed(String(line[labelRange]))
+            guard let markerRange = Range(match.range(at: 1), in: line),
+                  let labelRange = Range(match.range(at: 2), in: line)
+            else { return nil }
+            let marker = String(line[markerRange])
+            return ParsedStep(
+                label: trimmed(String(line[labelRange])),
+                isCurrent: marker == "❯" || marker == "›"
+            )
         }
     }
 
-    private static func inferQuestionIndex(question: String?, headers: [String]) -> Int? {
-        guard let question else { return headers.isEmpty ? nil : 0 }
+    private static func inferQuestionIndex(question: String?, steps: [ParsedStep]) -> Int? {
+        if let marked = steps.firstIndex(where: \.isCurrent) { return marked }
+        guard let question else { return nil }
         let normalizedQuestion = normalized(question)
-        if let match = headers.firstIndex(where: {
-            let header = normalized($0)
+        if let match = steps.firstIndex(where: {
+            let header = normalized($0.label)
             return !header.isEmpty && normalizedQuestion.contains(header)
         }) {
             return match
         }
-        return headers.isEmpty ? nil : 0
+        return nil
     }
 
     private static func beaconStepsMatchGrid(
@@ -701,11 +751,20 @@ enum PromptChoreographyResult: Equatable {
     case refused
 }
 
+struct PromptPendingToggle: Equatable {
+    let dialogSignature: String
+    let instanceKey: PromptInstanceKey
+    let questionIndex: Int?
+    let optionID: String
+    let wanted: Bool
+}
+
 struct PromptChoreography {
     enum Action: Equatable {
         case choose(optionID: String)
         case toggle(optionID: String)
         case advance
+        case retreat
         case submit
     }
 
@@ -719,6 +778,7 @@ struct PromptChoreography {
             frame: String
         )
         case awaitingToggle(expected: Bool, option: Int, frame: String)
+        case awaitingNavigation(from: Int, direction: Int, frame: String)
         case awaitingCompletion(question: Int?, allowsSameQuestion: Bool, frame: String)
         case finished
     }
@@ -735,6 +795,23 @@ struct PromptChoreography {
     let selectionOptionIDs: [String]
     private var phase: Phase = .ready
     private(set) var keyCount = 0
+
+    var pendingToggle: PromptPendingToggle? {
+        guard case let .awaitingToggle(expected, option, _) = phase,
+              selectionOptionIDs.indices.contains(option)
+        else { return nil }
+        return PromptPendingToggle(
+            dialogSignature: dialogSignature,
+            instanceKey: renderedIdentity.instanceKey,
+            questionIndex: renderedIdentity.questionIndex,
+            optionID: selectionOptionIDs[option],
+            wanted: expected
+        )
+    }
+
+    func isExpired(at now: TimeInterval) -> Bool {
+        now > expiresAt
+    }
 
     init(action: Action, prompt: PromptModel, now: TimeInterval) {
         self.action = action
@@ -761,7 +838,8 @@ struct PromptChoreography {
         }
         guard let prompt else { return .refused }
 
-        if prompt.dialogSignature != dialogSignature {
+        if prompt.dialogSignature != dialogSignature
+            || prompt.instanceKey != renderedIdentity.instanceKey {
             phase = .finished
             return .refused
         }
@@ -774,7 +852,7 @@ struct PromptChoreography {
                 phase = .finished
                 return .refused
             }
-        case .awaitingCompletion, .finished:
+        case .awaitingNavigation, .awaitingCompletion, .finished:
             break
         }
 
@@ -808,6 +886,18 @@ struct PromptChoreography {
             }
             phase = .finished
             return .complete
+        case let .awaitingNavigation(from, direction, frame):
+            guard prompt.signature != frame else { return .wait }
+            let reachedQuestion = prompt.currentQuestionIndex == from + direction
+            let reachedSubmit = direction > 0
+                && prompt.currentQuestionIndex == nil
+                && prompt.submitState != .none
+            guard reachedQuestion || reachedSubmit else {
+                phase = .finished
+                return .refused
+            }
+            phase = .finished
+            return .complete
         case let .awaitingCompletion(question, allowsSameQuestion, frame):
             guard prompt.signature != frame else { return .wait }
             if kind == .askUserQuestion,
@@ -835,13 +925,25 @@ struct PromptChoreography {
         case .advance:
             guard prompt.kind == .askUserQuestion,
                   prompt.submitState == .none,
-                  prompt.selectedOptionIndex != nil,
+                  let current = prompt.currentQuestionIndex,
                   !prompt.multiSelect || prompt.options.contains(where: { $0.isChecked == true })
             else {
                 phase = .finished
                 return .refused
             }
-            return sendEnter(for: prompt)
+            phase = .awaitingNavigation(from: current, direction: 1, frame: prompt.signature)
+            return send("Tab")
+        case .retreat:
+            guard prompt.kind == .askUserQuestion,
+                  prompt.submitState == .none,
+                  let current = prompt.currentQuestionIndex,
+                  current > 0
+            else {
+                phase = .finished
+                return .refused
+            }
+            phase = .awaitingNavigation(from: current, direction: -1, frame: prompt.signature)
+            return send("Left")
         case .submit:
             guard prompt.kind == .askUserQuestion,
                   prompt.submitState == .ready,
@@ -915,7 +1017,7 @@ struct PromptChoreography {
             return sendEnter(for: prompt)
         case .submit:
             return sendEnter(for: prompt)
-        case .advance:
+        case .advance, .retreat:
             phase = .finished
             return .refused
         }

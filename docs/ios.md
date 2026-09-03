@@ -82,6 +82,8 @@ Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
 The Mac adds an optional `beacon` to each bridge snapshot pane. The iPhone uses
 AskUserQuestion beacon data for question, header, option, and description text.
 The terminal grid still identifies the active step and confirms each key.
+An optional `request_id` identifies one prompt instance. Older beacons use a
+per-pane counter that changes after a prompt disappears or changes.
 
 ## Structured Claude prompts
 
@@ -89,15 +91,18 @@ Rai Remote renders Claude permission, trust, plan, and AskUserQuestion dialogs
 as native controls. AskUserQuestion shows step chips, option descriptions,
 multi-select checkboxes, free-text entry, and a final Submit action.
 
-Each tap keeps the exact prompt signature and beacon request shown with its controls.
+Each tap keeps its rendered signature, prompt instance, beacon request, and question.
 Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
 
 Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
 The sequence stops after four seconds or any unexpected change. Rai never sends
 an automatic Enter without visible proof of the selected row.
+Next sends Tab, and Previous sends Left. These navigation buttons never send Enter.
+An unconfirmed checkbox key stays pending until a newer terminal frame arrives.
 
-Unnumbered controls only appear for a modal at the grid bottom. Quoted dialogs
-above Claude's composer stay inert. Wrapped labels remain one logical option.
+Controls only appear for Claude panes or panes with a beacon. Dialog footers must
+own the grid bottom. Quoted dialogs above Claude's composer stay inert.
+Wrapped labels remain one logical option. Unknown wizard steps disable navigation.
 
 The detector uses Claude Code 2.1.258 and 2.1.259 captures. Plan approval uses
 the documented `Would you like to proceed?` shape, but lacks a real capture.
