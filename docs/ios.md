@@ -86,8 +86,10 @@ The pane toolbar has a clock button for Claude conversation history.
 The Mac reads the hook's transcript path first.
 Without a beacon, it checks the pane directory for a recent Claude transcript.
 It verifies the exact standardized `cwd` inside the JSONL file.
+It resolves path aliases and rechecks the JSONL cwd for each lookup.
 It rejects project directories and files that resolve outside Claude's projects root.
-It only uses this fallback for one matching pane and one live transcript.
+It requires one matching pane. A known session selects its file.
+Without a session ID, the fallback also requires one live transcript.
 Other cases show **History needs the hook beacon for this pane**.
 The lab mapped `/private/tmp/rai.transcript_history fixture` to
 `-private-tmp-rai-transcript-history-fixture`.
@@ -107,8 +109,10 @@ Use **Jump to my last prompt** to return to your latest prompt.
 The pane title shows the first eight session ID characters.
 
 The phone keeps at most eight in-memory pane histories or 16 MiB.
+It keeps the viewed pane and trims its oldest turns when needed.
 It removes closed panes after 30 seconds. Its disk cache uses smaller per-pane and total limits.
 Disk history loads run after launch outside the main actor.
+The delayed load checks the current herd before it restores cached history.
 History errors stay on the affected pane and do not disconnect the bridge.
 
 The Mac keeps the last delivered turn for each device, pane, and session.

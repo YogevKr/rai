@@ -356,19 +356,18 @@ public enum ClaudeTranscriptLocator {
         let expectedCWD = standardizedPath(cwd)
         let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
             .resolvingSymlinksInPath().standardizedFileURL
-        let directory = root.appendingPathComponent(
-            projectDirectoryName(for: expectedCWD),
-            isDirectory: true
-        )
-        let resolvedDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
-        guard isContained(resolvedDirectory, in: root) else { return [] }
-        let candidates = (try? fileManager.contentsOfDirectory(
-            at: resolvedDirectory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        return candidates.compactMap { url -> (URL, Date)? in
-            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+        let candidates = projectDirectoryNames(for: cwd).flatMap { name -> [URL] in
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+                .resolvingSymlinksInPath().standardizedFileURL
+            guard isContained(directory, in: root) else { return [] }
+            return (try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        }
+        return Set(candidates.map { $0.resolvingSymlinksInPath().standardizedFileURL })
+            .compactMap { resolved -> (URL, Date)? in
             guard resolved.pathExtension == "jsonl",
                   isContained(resolved, in: root),
                   sessionID.map({ resolved.deletingPathExtension().lastPathComponent == $0 }) ?? true,
@@ -389,7 +388,27 @@ public enum ClaudeTranscriptLocator {
     }
 
     public static func standardizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+        let result = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        return result.count > 1 && result.hasSuffix("/")
+            ? String(result.dropLast())
+            : result
+    }
+
+    static func projectDirectoryNames(for cwd: String) -> [String] {
+        let raw = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let resolved = standardizedPath(cwd)
+        var paths = Set([raw, resolved])
+        let aliases = paths.compactMap { path -> String? in
+            if path == "/tmp" || path.hasPrefix("/tmp/") {
+                return "/private" + path
+            } else if path == "/private/tmp" || path.hasPrefix("/private/tmp/") {
+                return String(path.dropFirst("/private".count))
+            }
+            return nil
+        }
+        paths.formUnion(aliases)
+        return paths.map(projectDirectoryName).sorted()
     }
 
     private static func transcriptCWD(at url: URL) -> String? {
@@ -460,15 +479,23 @@ public enum TranscriptLookupResult: Sendable {
 
 /// Keeps blocking directory and transcript reads off the main actor.
 public actor ClaudeTranscriptIndex {
-    private struct CachedMetadata {
+    private struct FileFingerprint: Equatable {
+        let inode: UInt64
+        let size: UInt64
+        let modifiedSeconds: Int64
+        let modifiedNanoseconds: Int64
+        let firstRecordHash: UInt64
+    }
+
+    private struct FileMetadata {
         let modified: Date
-        let size: Int
+        let fingerprint: FileFingerprint
         let cwd: String?
     }
 
     private let claudeDirectory: URL
-    private var metadataCache: [URL: CachedMetadata] = [:]
-    private var paneCache: [String: (identity: String, url: URL, cwd: String?)] = [:]
+    private var metadataCache: [URL: FileFingerprint] = [:]
+    private var paneCache: [String: (beaconPath: String, url: URL)] = [:]
     private var transcriptOwners: [URL: String] = [:]
     private var metadataParseCount = 0
 
@@ -484,38 +511,38 @@ public actor ClaudeTranscriptIndex {
         fallbackPaneCount: Int,
         now: Date = Date()
     ) -> TranscriptLookupResult {
-        let verifiedIdentity = beaconPath ?? sessionID
-        if let verifiedIdentity,
-           let cached = paneCache[paneID], cached.identity == verifiedIdentity {
-            return claim(
-                read(url: cached.url, expectedCWD: cached.cwd),
-                for: paneID
-            )
+        if let beaconPath,
+           let cached = paneCache[paneID], cached.beaconPath == beaconPath {
+            return claim(read(url: cached.url), for: paneID)
         }
         if let beaconPath,
            let url = ClaudeTranscriptLocator.beaconTranscript(
                path: beaconPath,
                claudeDirectory: claudeDirectory
            ) {
-            paneCache[paneID] = (beaconPath, url, nil)
+            paneCache[paneID] = (beaconPath, url)
             return claim(read(url: url), for: paneID)
         }
 
+        guard fallbackPaneCount == 1 else { return .ambiguous }
+        // A known session is authoritative. Without one, count every live cwd
+        // match before selecting fallback.
+        if let sessionID, !sessionID.isEmpty {
+            guard let url = matchingTranscripts(
+                cwd: cwd,
+                sessionID: sessionID,
+                now: now
+            ).first else { return .notFound }
+            return claim(read(url: url, expectedCWD: cwd), for: paneID)
+        }
         let candidates = matchingTranscripts(
             cwd: cwd,
-            sessionID: sessionID,
+            sessionID: nil,
             now: now
         )
-        if fallbackPaneCount != 1 || candidates.count > 1 {
-            return .ambiguous
-        }
+        guard candidates.count <= 1 else { return .ambiguous }
         guard let url = candidates.first else { return .notFound }
-        if let verifiedIdentity {
-            paneCache[paneID] = (
-                verifiedIdentity, url, ClaudeTranscriptLocator.standardizedPath(cwd)
-            )
-        }
-        return claim(read(url: url), for: paneID)
+        return claim(read(url: url, expectedCWD: cwd), for: paneID)
     }
 
     public func metadataParseCountForTesting() -> Int {
@@ -540,39 +567,34 @@ public actor ClaudeTranscriptIndex {
         let expectedCWD = ClaudeTranscriptLocator.standardizedPath(cwd)
         let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
             .resolvingSymlinksInPath().standardizedFileURL
-        let directory = root.appendingPathComponent(
-            ClaudeTranscriptLocator.projectDirectoryName(for: expectedCWD),
-            isDirectory: true
-        ).resolvingSymlinksInPath().standardizedFileURL
-        guard directory.path.hasPrefix(root.path + "/") else { return [] }
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [
-                .contentModificationDateKey, .fileSizeKey, .isRegularFileKey,
-            ],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        return urls.compactMap { raw -> (URL, Date)? in
-            let url = raw.resolvingSymlinksInPath().standardizedFileURL
+        let urls = ClaudeTranscriptLocator.projectDirectoryNames(for: cwd).flatMap {
+            name -> [URL] in
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+                .resolvingSymlinksInPath().standardizedFileURL
+            guard directory.path.hasPrefix(root.path + "/") else { return [] }
+            return (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        }
+        return Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL })
+            .compactMap { url -> (URL, Date)? in
             guard url.path.hasPrefix(root.path + "/"), url.pathExtension == "jsonl",
                   sessionID.map({ url.deletingPathExtension().lastPathComponent == $0 }) ?? true,
-                  let values = try? url.resourceValues(forKeys: [
-                    .contentModificationDateKey, .fileSizeKey, .isRegularFileKey,
-                  ]), values.isRegularFile == true,
-                  let modified = values.contentModificationDate,
-                  let size = values.fileSize,
-                  sessionID != nil || now.timeIntervalSince(modified) <= ClaudeTranscriptLocator.defaultMaximumAge,
-                  now.timeIntervalSince(modified) >= 0 else { return nil }
-            let cached = metadataCache[url]
-            let cwd: String?
-            if cached?.modified == modified, cached?.size == size {
-                cwd = cached?.cwd
-            } else {
-                cwd = Self.readCWD(url)
-                metadataCache[url] = CachedMetadata(modified: modified, size: size, cwd: cwd)
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let metadata = fileMetadata(url),
+                  sessionID != nil
+                    || now.timeIntervalSince(metadata.modified)
+                        <= ClaudeTranscriptLocator.defaultMaximumAge,
+                  now.timeIntervalSince(metadata.modified) >= 0 else { return nil }
+            if metadataCache[url] != metadata.fingerprint {
+                metadataCache[url] = metadata.fingerprint
                 metadataParseCount += 1
             }
-            return cwd == expectedCWD ? (url, modified) : nil
+            // Always trust this read, never the cached fingerprint's prior cwd.
+            return metadata.cwd == expectedCWD ? (url, metadata.modified) : nil
         }.sorted { $0.1 > $1.1 }.map(\.0)
     }
 
@@ -581,7 +603,9 @@ public actor ClaudeTranscriptIndex {
             .resolvingSymlinksInPath().standardizedFileURL
         let resolved = url.resolvingSymlinksInPath().standardizedFileURL
         guard resolved.path.hasPrefix(root.path + "/"),
-              expectedCWD.map({ Self.readCWD(resolved) == $0 }) ?? true,
+              let metadata = fileMetadata(resolved),
+              expectedCWD.map({ metadata.cwd == ClaudeTranscriptLocator.standardizedPath($0) })
+                ?? true,
               let document = try? TranscriptReader.read(url: resolved) else {
             return .notFound
         }
@@ -599,17 +623,47 @@ public actor ClaudeTranscriptIndex {
         return .found(url: url, document: document)
     }
 
-    private static func readCWD(_ url: URL) -> String? {
+    private static func readHeader(_ url: URL) -> (cwd: String?, firstRecordHash: UInt64)? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 256 * 1_024) else { return nil }
+        let firstLine = data.split(
+            separator: 0x0A, maxSplits: 1, omittingEmptySubsequences: false
+        ).first ?? Data.SubSequence()
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in firstLine {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
         for line in data.split(separator: 0x0A).prefix(32) {
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
                   let record = object as? [String: Any],
                   let cwd = record["cwd"] as? String else { continue }
-            return ClaudeTranscriptLocator.standardizedPath(cwd)
+            return (ClaudeTranscriptLocator.standardizedPath(cwd), hash)
         }
-        return nil
+        return (nil, hash)
+    }
+
+    private func fileMetadata(_ url: URL) -> FileMetadata? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modified = attributes[.modificationDate] as? Date,
+              let header = Self.readHeader(url) else { return nil }
+        let interval = modified.timeIntervalSince1970
+        let seconds = Int64(interval.rounded(.down))
+        let nanoseconds = Int64(((interval - Double(seconds)) * 1_000_000_000).rounded())
+        return FileMetadata(
+            modified: modified,
+            fingerprint: FileFingerprint(
+                inode: inode,
+                size: size,
+                modifiedSeconds: seconds,
+                modifiedNanoseconds: nanoseconds,
+                firstRecordHash: header.firstRecordHash
+            ),
+            cwd: header.cwd
+        )
     }
 }
 

@@ -111,6 +111,16 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertNil(other)
     }
 
+    func testOfflineCacheRejectsAnotherLiveHerd() {
+        let cached = CachedTranscriptHistories(
+            pages: [:], pairingID: "pairing", sessionName: "herd-a"
+        )
+
+        XCTAssertTrue(cached.belongs(to: "pairing", currentSessionName: nil))
+        XCTAssertTrue(cached.belongs(to: "pairing", currentSessionName: "herd-a"))
+        XCTAssertFalse(cached.belongs(to: "pairing", currentSessionName: "herd-b"))
+    }
+
     func testStaleHistoryReplyTripleIsRejectedAfterSessionChange() {
         let request = PendingHistoryRequest(
             generation: 1,
@@ -186,6 +196,35 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             closedPaneGrace: 30
         )
         XCTAssertEqual(pages.count - byteEvictions.count, 2)
+    }
+
+    func testHistoryRetentionTrimsButNeverEvictsActivePane() {
+        let active = TranscriptHistoryPage(
+            paneID: "active",
+            sessionID: "session",
+            turns: (0..<4).map { turn($0, .assistant, String(repeating: "x", count: 200)) },
+            hasMore: false
+        )
+        let trimmed = TranscriptHistoryRetentionPolicy.trimmingOldestTurns(
+            active,
+            maximumBytes: 500
+        )
+        let other = page(turns: [turn(0, .assistant, "other")], hasMore: false)
+        let evictions = TranscriptHistoryRetentionPolicy.evictions(
+            pages: ["active": trimmed, "other": other],
+            lastAccess: ["other": .distantFuture],
+            missingSince: [:],
+            now: Date(),
+            protectedPaneID: "active",
+            maximumPanes: 2,
+            maximumBytes: TranscriptHistoryRetentionPolicy.estimatedBytes(trimmed)
+        )
+
+        XCTAssertLessThan(trimmed.turns.count, active.turns.count)
+        XCTAssertEqual(trimmed.turns.last?.index, active.turns.last?.index)
+        XCTAssertTrue(trimmed.hasMore)
+        XCTAssertFalse(evictions.contains("active"))
+        XCTAssertTrue(evictions.contains("other"))
     }
 
     func testOfflineCacheDropsUnreadableAndOverCapFiles() async throws {
@@ -265,6 +304,27 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertEqual(routed?.message, "This pane is closed.")
         XCTAssertNil(pending["p1"])
         XCTAssertNotNil(pending["p2"])
+    }
+
+    func testDowngradedUnsupportedHistoryErrorCompletesPendingRequests() {
+        var pending = [
+            "p1": PendingHistoryRequest(
+                generation: 1, replacesPage: true, sessionName: "herd",
+                paneID: "p1", sessionID: "s1", requestID: "r1"
+            ),
+            "p2": PendingHistoryRequest(
+                generation: 1, replacesPage: true, sessionName: "herd",
+                paneID: "p2", sessionID: "s2", requestID: "r2"
+            ),
+        ]
+
+        let errors = TranscriptHistoryErrorRouter.consumeDowngraded(
+            pending: &pending,
+            message: "Unsupported"
+        )
+
+        XCTAssertEqual(Set(errors?.keys.map { $0 } ?? []), Set(["p1", "p2"]))
+        XCTAssertTrue(pending.isEmpty)
     }
 
     private func page(

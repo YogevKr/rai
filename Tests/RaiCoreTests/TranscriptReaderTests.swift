@@ -199,10 +199,15 @@ final class TranscriptReaderTests: XCTestCase {
         ) {} else { XCTFail("Multiple live transcripts must be ambiguous") }
 
         let ownershipIndex = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
-        if case .ambiguous = await ownershipIndex.read(
+        if case let .found(url, _) = await ownershipIndex.read(
             paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
-            sessionID: "one", fallbackPaneCount: 2
-        ) {} else { XCTFail("A session filename does not make shared cwd fallback safe") }
+            sessionID: "one", fallbackPaneCount: 1
+        ) {
+            XCTAssertEqual(
+                canonicalPath(url),
+                canonicalPath(setup.project.appendingPathComponent("one.jsonl"))
+            )
+        } else { XCTFail("A known session should select its transcript") }
         let beaconPath = setup.project.appendingPathComponent("one.jsonl").path
         if case .found = await ownershipIndex.read(
             paneID: "p1", beaconPath: beaconPath, cwd: "/tmp/shared",
@@ -212,6 +217,24 @@ final class TranscriptReaderTests: XCTestCase {
             paneID: "p2", beaconPath: beaconPath, cwd: "/tmp/shared",
             sessionID: "one", fallbackPaneCount: 2
         ) {} else { XCTFail("One transcript must not bind to two panes") }
+    }
+
+    func testCachedFallbackRechecksSharedPaneCount() async throws {
+        let setup = try transcriptDirectory(cwd: "/tmp/cached-shared")
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        try transcript(cwd: "/tmp/cached-shared", sessionID: "one").write(
+            to: setup.project.appendingPathComponent("one.jsonl")
+        )
+        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+
+        if case .found = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/cached-shared",
+            sessionID: "one", fallbackPaneCount: 1
+        ) {} else { XCTFail("The unique fallback should resolve") }
+        if case .ambiguous = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/cached-shared",
+            sessionID: "one", fallbackPaneCount: 2
+        ) {} else { XCTFail("Every fallback resolution must recheck pane count") }
     }
 
     func testProjectPrefilterUsesExactTranscriptCWDToAvoidPunctuationCollision() throws {
@@ -252,6 +275,26 @@ final class TranscriptReaderTests: XCTestCase {
         ))
     }
 
+    func testCWDComparisonResolvesTmpAliasAndTrailingSlash() throws {
+        let canonicalCWD = "/private/tmp/rai-transcript-alias-" + UUID().uuidString
+        try FileManager.default.createDirectory(
+            atPath: canonicalCWD, withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: canonicalCWD) }
+        let setup = try transcriptDirectory(cwd: canonicalCWD)
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        let file = setup.project.appendingPathComponent("alias.jsonl")
+        try transcript(cwd: canonicalCWD, sessionID: "alias").write(to: file)
+        let aliasCWD = canonicalCWD.replacingOccurrences(of: "/private/tmp/", with: "/tmp/")
+
+        XCTAssertEqual(
+            canonicalPath(ClaudeTranscriptLocator.newestTranscript(
+                cwd: aliasCWD + "/", claudeDirectory: setup.claude
+            )),
+            canonicalPath(file)
+        )
+    }
+
     func testTranscriptIndexCachesMetadataUntilFileChanges() async throws {
         let setup = try transcriptDirectory(cwd: "/tmp/indexed")
         addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
@@ -270,14 +313,25 @@ final class TranscriptReaderTests: XCTestCase {
         let initialCount = await index.metadataParseCountForTesting()
         XCTAssertEqual(initialCount, 1)
 
-        let handle = try FileHandle(forWritingTo: file)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data("\n".utf8))
-        try handle.close()
-        _ = await index.read(
+        let originalDate = try XCTUnwrap(
+            file.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+        )
+        let replacement = transcript(cwd: "/tmp/changed", sessionID: "session")
+        XCTAssertEqual(replacement.count, transcript(
+            cwd: "/tmp/indexed", sessionID: "session"
+        ).count)
+        try replacement.write(to: file)
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalDate], ofItemAtPath: file.path
+        )
+        let rewritten = await index.read(
             paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
             sessionID: nil, fallbackPaneCount: 1
         )
+        if case .notFound = rewritten {} else {
+            XCTFail("A same-size rewrite with preserved mtime must revalidate cwd")
+        }
         let changedCount = await index.metadataParseCountForTesting()
         XCTAssertEqual(changedCount, 2)
     }

@@ -294,6 +294,7 @@ final class BridgeConnection: ObservableObject {
     private var historyLastAccess: [String: Date] = [:]
     private var historyMissingSince: [String: Date] = [:]
     private var historyPruneTask: Task<Void, Never>?
+    private var activePaneID: String?
     // Panes whose scrollback seed actually arrived. Tracked separately from
     // desiredStreams so a seed lost to a dropped connection (opening a pane
     // while reconnecting is routine on a phone) is retried on the next
@@ -434,6 +435,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
+        activePaneID = paneID
         let needsSeed = !seededPanes.contains(paneID)
         if desiredStreams[paneID] == nil {
             desiredStreams[paneID] = (cols, rows)
@@ -470,6 +472,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     func detachPane(paneID: String) {
+        if activePaneID == paneID { activePaneID = nil }
         desiredStreams.removeValue(forKey: paneID)
         // Re-opening the pane later should seed fresh history again.
         seededPanes.remove(paneID)
@@ -959,20 +962,17 @@ final class BridgeConnection: ObservableObject {
                 pairingInProgress: invitation != nil
             ) {
                 stopWithFailure(.macPredatesPairing())
+            } else if let paneErrors = TranscriptHistoryErrorRouter.consumeDowngraded(
+                pending: &pendingHistoryRequests,
+                message: message
+            ) {
+                historyErrors.merge(paneErrors) { _, latest in latest }
             } else if message.hasPrefix("Invalid bridge message")
                 || message.hasPrefix("Could not read scrollback") {
                 // Old Mac that predates readScrollback, or a transient history
                 // read failure. Scrollback is progressive enhancement; don't
                 // drop or flag a healthy connection over it.
                 NSLog("rai-ios: scrollback unavailable: %@", message)
-            } else if message.hasPrefix("History is not ready") {
-                pendingHistoryRequests.removeAll()
-                NSLog("rai-ios: conversation history is not ready: %@", message)
-            } else if message.hasPrefix("Unknown pane ")
-                || message.hasPrefix("Could not read history") {
-                // Old Macs cannot identify the request. Keep the live bridge
-                // healthy and let a later refresh replace the empty state.
-                NSLog("rai-ios: conversation history unavailable: %@", message)
             } else if Self.isActionError(message) {
                 actionError = message
             } else {
@@ -1054,13 +1054,28 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func pruneHistory(now: Date = Date()) {
+        var changed = false
+        if let activePaneID, let page = historyPages[activePaneID] {
+            let trimmed = TranscriptHistoryRetentionPolicy.trimmingOldestTurns(
+                page,
+                maximumBytes: TranscriptHistoryRetentionPolicy.maximumBytes
+            )
+            if trimmed != page {
+                historyPages[activePaneID] = trimmed
+                changed = true
+            }
+        }
         let evictions = TranscriptHistoryRetentionPolicy.evictions(
             pages: historyPages,
             lastAccess: historyLastAccess,
             missingSince: historyMissingSince,
-            now: now
+            now: now,
+            protectedPaneID: activePaneID
         )
-        guard !evictions.isEmpty else { return }
+        guard !evictions.isEmpty else {
+            if changed { didReceiveHistoryPages?(historyPages) }
+            return
+        }
         for paneID in evictions {
             historyPages.removeValue(forKey: paneID)
             historyErrors.removeValue(forKey: paneID)
@@ -1273,6 +1288,7 @@ final class BridgeConnection: ObservableObject {
             historyMissingSince = [:]
             historyPruneTask?.cancel()
             historyPruneTask = nil
+            activePaneID = nil
             historyGeneration &+= 1
             pendingHistoryRequests.removeAll()
             historySessionName = nil
@@ -1340,32 +1356,67 @@ struct TranscriptHistoryRetentionPolicy {
         lastAccess: [String: Date],
         missingSince: [String: Date],
         now: Date,
+        protectedPaneID: String? = nil,
         maximumPanes: Int = maximumPanes,
         maximumBytes: Int = maximumBytes,
         closedPaneGrace: TimeInterval = closedPaneGrace
     ) -> Set<String> {
         var evicted = Set(missingSince.compactMap { paneID, missingAt in
-            now.timeIntervalSince(missingAt) >= closedPaneGrace ? paneID : nil
+            paneID != protectedPaneID
+                && now.timeIntervalSince(missingAt) >= closedPaneGrace ? paneID : nil
         })
-        let retained = pages.keys.filter { !evicted.contains($0) }.sorted {
+        let retained = pages.keys.filter {
+            !evicted.contains($0) && $0 != protectedPaneID
+        }.sorted {
             (lastAccess[$0] ?? .distantPast) > (lastAccess[$1] ?? .distantPast)
         }
-        var bytes = 0
-        for (position, paneID) in retained.enumerated() {
+        var bytes = protectedPaneID.flatMap { estimatedBytes(pages[$0]) } ?? 0
+        var count = protectedPaneID.flatMap { pages[$0] } == nil ? 0 : 1
+        for paneID in retained {
             let pageBytes = estimatedBytes(pages[paneID])
-            if position >= maximumPanes || bytes + pageBytes > maximumBytes {
+            if count >= maximumPanes || bytes + pageBytes > maximumBytes {
                 evicted.insert(paneID)
             } else {
                 bytes += pageBytes
+                count += 1
             }
         }
         return evicted
     }
 
+    static func trimmingOldestTurns(
+        _ page: TranscriptHistoryPage,
+        maximumBytes: Int
+    ) -> TranscriptHistoryPage {
+        var turns = page.turns
+        while !turns.isEmpty, estimatedBytes(page, turns: turns) > maximumBytes {
+            turns.removeFirst()
+        }
+        guard turns.count != page.turns.count else { return page }
+        return TranscriptHistoryPage(
+            paneID: page.paneID,
+            sessionID: page.sessionID,
+            resolvedSessionID: page.resolvedSessionID,
+            requestID: page.requestID,
+            herdSessionName: page.herdSessionName,
+            turns: turns,
+            hasMore: true,
+            sinceLastSeen: page.sinceLastSeen,
+            state: page.state
+        )
+    }
+
     static func estimatedBytes(_ page: TranscriptHistoryPage?) -> Int {
         guard let page else { return 0 }
+        return estimatedBytes(page, turns: page.turns)
+    }
+
+    private static func estimatedBytes(
+        _ page: TranscriptHistoryPage,
+        turns: [TranscriptTurn]
+    ) -> Int {
         let identityBytes = page.paneID.utf8.count + page.sessionID.utf8.count
-        let turnBytes = page.turns.reduce(0) { total, turn in
+        let turnBytes = turns.reduce(0) { total, turn in
             let toolNameBytes = turn.tool?.name.utf8.count ?? 0
             let toolSummaryBytes = turn.tool?.summary.utf8.count ?? 0
             return total + turn.text.utf8.count + toolNameBytes + toolSummaryBytes + 64
@@ -1387,5 +1438,24 @@ struct TranscriptHistoryErrorRouter {
         ) else { return nil }
         pending.removeValue(forKey: paneID)
         return (paneID, message)
+    }
+
+    static func consumeDowngraded(
+        pending: inout [String: PendingHistoryRequest],
+        message: String
+    ) -> [String: String]? {
+        let lower = message.lowercased()
+        let affected: [String]
+        if lower.contains("history") || lower.contains("unsupported") {
+            affected = Array(pending.keys)
+        } else if message.hasPrefix("Unknown pane "),
+                  let paneID = pending.keys.first(where: { message.contains($0) }) {
+            affected = [paneID]
+        } else {
+            return nil
+        }
+        guard !affected.isEmpty else { return nil }
+        for paneID in affected { pending.removeValue(forKey: paneID) }
+        return Dictionary(uniqueKeysWithValues: affected.map { ($0, message) })
     }
 }

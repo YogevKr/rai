@@ -134,6 +134,11 @@ struct CachedTranscriptHistories: Codable {
     let pages: [String: TranscriptHistoryPage]
     let pairingID: String
     let sessionName: String
+
+    func belongs(to pairingID: String, currentSessionName: String?) -> Bool {
+        self.pairingID == pairingID
+            && (currentSessionName == nil || sessionName == currentSessionName)
+    }
 }
 
 actor TranscriptHistoryCacheStore {
@@ -402,7 +407,11 @@ final class AppModel: ObservableObject {
         pendingHistoryCachePairingID = nil
         guard let cached = await transcriptHistoryCacheStore.load(pairingID: pairingID),
               let pairing,
-              CachedHerdSnapshot.pairingID(for: pairing) == pairingID else { return }
+              CachedHerdSnapshot.pairingID(for: pairing) == pairingID,
+              cached.belongs(
+                  to: pairingID,
+                  currentSessionName: connection.sessionName
+              ) else { return }
         connection.restoreCachedHistory(cached.pages, sessionName: cached.sessionName)
     }
 
