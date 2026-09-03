@@ -90,6 +90,9 @@ crook for the herd:
   workspace or a fresh one at a chosen directory.
 - **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
   workspaces group, handled alerts retract, and single alerts keep actions.
+- **Phone notification controls** set blocked and finished alerts per paired device.
+  The phone also sets snooze periods and a daily do-not-disturb window.
+- **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through
