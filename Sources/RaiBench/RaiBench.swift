@@ -42,6 +42,7 @@ struct Options {
     var rendererSpecified = false
     var metalPresentsWithTransaction = false
     var metalDisplaySync = true
+    var latencyFastPath = true
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -66,6 +67,7 @@ struct Options {
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
             case "--latency": o.latency = true
             case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
+            case "--no-fast-path": o.latencyFastPath = false
             case "--metal-presents-with-transaction": o.metalPresentsWithTransaction = true
             case "--metal-display-sync": o.metalDisplaySync = (value() ?? "on") != "off"
             case "--help", "-h":
@@ -83,6 +85,7 @@ struct Options {
                   --cols / --rows  per-pane grid size (default 100x32)
                   --latency        measure byte feed and predictive overlay latency
                   --samples N      samples per latency path (default 200)
+                  --no-fast-path   keep terminal echoes on SwiftTerm's path
                   --metal-presents-with-transaction
                                    present Metal frames with Core Animation transactions
                   --metal-display-sync on|off
@@ -120,11 +123,12 @@ private func metalView(in view: NSView) -> MTKView? {
 @MainActor
 private final class LatencyTerminalDelegate: NSObject, @preconcurrency TerminalViewDelegate {
     var onRangeChanged: (() -> Void)?
+    var onSend: ((ArraySlice<UInt8>) -> Void)?
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    func send(source: TerminalView, data: ArraySlice<UInt8>) {}
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { onSend?(data) }
     func scrolled(source: TerminalView, position: Double) {}
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         onRangeChanged?()
@@ -170,6 +174,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
     private var currentByte: UInt8 = 0x61
     private var terminalSamples: [Double] = []
     private var predictionSamples: [Double] = []
+    private var terminalRepaintState = TerminalFeedRepaintState()
 
     nonisolated init(options: Options) {
         self.options = options
@@ -180,13 +185,17 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         print(
             "latency-config renderer=\(options.useMetal ? "metal" : "coregraphics") "
                 + "presentsWithTransaction=\(options.metalPresentsWithTransaction) "
-                + "displaySync=\(options.metalDisplaySync)"
+                + "displaySync=\(options.metalDisplaySync) "
+                + "fastPath=\(options.latencyFastPath)"
         )
         terminalDelegate.onRangeChanged = { [weak self] in
             self?.terminalDisplayDidUpdate()
         }
+        terminalDelegate.onSend = { [weak self] data in
+            self?.terminalDidSend(data)
+        }
         overlay.onDraw = { [weak self] in
-            self?.displayProbeDidDraw()
+            self?.predictionOverlayDidDraw()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.startTerminalSamples()
@@ -216,6 +225,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(overlay)
 
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(terminalView)
         NSApp.activate(ignoringOtherApps: true)
         configureMetalIfNeeded()
     }
@@ -246,41 +256,44 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
 
     private func runNextTerminalSample() {
         guard terminalSamples.count < max(1, options.latencySamples) else {
-            report("terminal-feed-update", samples: terminalSamples)
+            report("terminal-key-to-display-update", samples: terminalSamples)
             primePrediction()
             return
         }
         currentByte = 0x61 + UInt8(terminalSamples.count % 26)
         sampleStart = DispatchTime.now().uptimeNanoseconds
-        terminalView.feed(byteArray: [currentByte][...])
-        TerminalFeedRepaintPolicy.repaintIfNeeded(
-            byteCount: 1,
+        terminalView.keyDown(with: syntheticKeyEvent(byte: currentByte))
+    }
+
+    private func terminalDidSend(_ data: ArraySlice<UInt8>) {
+        guard phase == .terminal, sampleStart != nil else { return }
+        guard options.latencyFastPath else {
+            terminalView.feed(byteArray: data)
+            return
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        terminalRepaintState.noteUserInput(at: now)
+        let disposition = terminalRepaintState.disposition(
+            byteCount: data.count,
             isFocused: true,
             isVisible: true,
-            hasRecentUnpaintedUserInput: true,
-            synchronizedOutputActive: false
-        ) { [self] in
-            drawTerminalAndProbe()
+            synchronizedOutputActive: false,
+            at: now
+        )
+        terminalView.feed(byteArray: data)
+        if disposition == .feedNowAndRepaint {
+            terminalView.needsDisplay = true
+            terminalView.displayIfNeeded()
         }
     }
 
     private func terminalDisplayDidUpdate() {
-        guard phase == .terminal, sampleStart != nil else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.phase == .terminal, self.sampleStart != nil else { return }
-            self.drawTerminalAndProbe()
+        guard phase == .terminal, let start = sampleStart else { return }
+        sampleStart = nil
+        terminalSamples.append(milliseconds(since: start))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            self?.runNextTerminalSample()
         }
-    }
-
-    private func drawTerminalAndProbe() {
-        if terminalView.isUsingMetalRenderer, let metal = metalView(in: terminalView) {
-            metal.draw()
-        } else {
-            terminalView.needsDisplay = true
-        }
-        overlay.isHidden = false
-        overlay.needsDisplay = true
-        window.contentView?.displayIfNeeded()
     }
 
     private func primePrediction() {
@@ -291,7 +304,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
             .printable("p"),
             cursor: cursor,
             columns: terminalView.getTerminal().cols,
-            alternateBufferActive: false,
+            terminalMode: .plain,
             now: now
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
@@ -311,13 +324,20 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
             return
         }
         currentByte = 0x61 + UInt8(predictionSamples.count % 26)
-        let character = Character(UnicodeScalar(currentByte))
+        let event = syntheticKeyEvent(byte: currentByte)
+        sampleStart = DispatchTime.now().uptimeNanoseconds
+        handlePredictionKey(event)
+        terminalView.keyDown(with: event)
+    }
+
+    private func handlePredictionKey(_ event: NSEvent) {
+        guard let character = event.characters?.first else { return }
         let terminal = terminalView.getTerminal()
         prediction.noteKey(
             .printable(character),
             cursor: terminal.getCursorLocation(),
             columns: terminal.cols,
-            alternateBufferActive: terminal.isCurrentBufferAlternate
+            terminalMode: terminalMode
         )
         guard prediction.displayGlyphs() == [character] else {
             FileHandle.standardError.write(
@@ -333,25 +353,12 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         }
         overlay.character = character
         overlay.isHidden = false
-        sampleStart = DispatchTime.now().uptimeNanoseconds
         overlay.needsDisplay = true
         overlay.displayIfNeeded()
     }
 
-    private func displayProbeDidDraw() {
-        guard let start = sampleStart else { return }
-        if phase == .terminal {
-            sampleStart = nil
-            terminalSamples.append(milliseconds(since: start))
-            overlay.isHidden = true
-            // SwiftTerm's queued update still fires after the direct draw.
-            // Start the next sample only after that callback drains.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
-                self?.runNextTerminalSample()
-            }
-            return
-        }
-        guard phase == .prediction else { return }
+    private func predictionOverlayDidDraw() {
+        guard phase == .prediction, let start = sampleStart else { return }
         sampleStart = nil
         predictionSamples.append(milliseconds(since: start))
         overlay.isHidden = true
@@ -373,7 +380,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         let terminal = terminalView.getTerminal()
         prediction.reconcile(
             cursor: terminal.getCursorLocation(),
-            alternateBufferActive: terminal.isCurrentBufferAlternate,
+            terminalMode: terminalMode,
             readCell: { column, row in
                 guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
                 let character = cell.getCharacter()
@@ -381,6 +388,35 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
             },
             now: now
         )
+    }
+
+    private var terminalMode: PredictiveEchoEngine.TerminalMode {
+        let terminal = terminalView.getTerminal()
+        return .init(
+            alternateScreen: terminal.isCurrentBufferAlternate,
+            bracketedPaste: terminal.bracketedPasteMode,
+            applicationCursorKeys: terminal.applicationCursor,
+            mouseTracking: terminal.mouseMode != .off
+        )
+    }
+
+    private func syntheticKeyEvent(byte: UInt8) -> NSEvent {
+        let character = String(Character(UnicodeScalar(byte)))
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: character,
+            charactersIgnoringModifiers: character,
+            isARepeat: false,
+            keyCode: 0
+        ) else {
+            fatalError("rai-bench: could not create key event")
+        }
+        return event
     }
 
     private func milliseconds(since start: UInt64) -> Double {

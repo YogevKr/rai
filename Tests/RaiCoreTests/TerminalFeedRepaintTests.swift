@@ -86,7 +86,7 @@ final class TerminalFeedRepaintTests: XCTestCase {
         XCTAssertEqual(repaintCount, 0)
     }
 
-    func testOnlyOneRepaintRunsForEachInputEvent() {
+    func testImmediateRepaintRunsAtMostOncePerFrame() {
         var state = TerminalFeedRepaintState()
         var repaintCount = 0
         let inputTime: UInt64 = 1_000_000_000
@@ -105,17 +105,78 @@ final class TerminalFeedRepaintTests: XCTestCase {
         }
         XCTAssertEqual(repaintCount, 1)
 
-        state.noteUserInput(at: inputTime + 10_000_000)
+        state.noteUserInput(at: inputTime + 17_000_000)
         state.repaintIfNeeded(
             byteCount: 1,
             isFocused: true,
             isVisible: true,
             synchronizedOutputActive: false,
-            at: inputTime + 11_000_000
+            at: inputTime + 18_000_000
         ) {
             repaintCount += 1
         }
         XCTAssertEqual(repaintCount, 2)
+    }
+
+    func testSmallFeedInsideFrameIsDeferredBeforeFeed() {
+        var state = TerminalFeedRepaintState()
+        let inputTime: UInt64 = 1_000_000_000
+        state.noteUserInput(at: inputTime)
+        XCTAssertEqual(
+            state.disposition(
+                byteCount: 1,
+                isFocused: true,
+                isVisible: true,
+                synchronizedOutputActive: false,
+                at: inputTime + 1_000_000
+            ),
+            .feedNowAndRepaint
+        )
+
+        state.noteUserInput(at: inputTime + 2_000_000)
+        XCTAssertEqual(
+            state.disposition(
+                byteCount: 1,
+                isFocused: true,
+                isVisible: true,
+                synchronizedOutputActive: false,
+                at: inputTime + 3_000_000
+            ),
+            .deferToFrame(deadlineUptimeNanoseconds: inputTime + 17_700_000)
+        )
+    }
+
+    func testLargeFeedIsDeferredBeforeSwiftTermCanRepaintIt() {
+        var state = TerminalFeedRepaintState()
+        let inputTime: UInt64 = 1_000_000_000
+        state.noteUserInput(at: inputTime)
+
+        XCTAssertEqual(
+            state.disposition(
+                byteCount: 128 * 1024,
+                isFocused: true,
+                isVisible: true,
+                synchronizedOutputActive: false,
+                at: inputTime + 1_000_000
+            ),
+            .deferToFrame(
+                deadlineUptimeNanoseconds: inputTime + 17_700_000
+            )
+        )
+
+        state.noteDeferredFramePaint(at: inputTime + 17_700_000)
+        XCTAssertEqual(
+            state.disposition(
+                byteCount: 128 * 1024,
+                isFocused: true,
+                isVisible: true,
+                synchronizedOutputActive: false,
+                at: inputTime + 18_000_000
+            ),
+            .deferToFrame(
+                deadlineUptimeNanoseconds: inputTime + 34_400_000
+            )
+        )
     }
 
     func testInputOlderThanWindowKeepsThrottle() {

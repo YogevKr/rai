@@ -41,8 +41,12 @@ Metal toolchain can compile).
 ## Typing latency benchmark
 
 `rai-bench --latency` hosts one terminal view. It runs 200 samples for each
-path. One path measures a byte feed through the terminal draw callback. The
-other path measures a keystroke through the prediction overlay draw callback.
+path. The terminal path sends an `NSEvent` through `TerminalView.keyDown`.
+The delegate feeds the sent byte back as its echo. The timer stops in
+SwiftTerm's `rangeChanged` display-update callback.
+
+The prediction path starts its timer before the same synthetic key dispatch.
+It stops in the real prediction overlay's `draw` callback.
 
 Use the app's default CoreGraphics renderer:
 
@@ -51,8 +55,17 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift run --scratch-path .build-tests rai-bench --latency --renderer cg
 ```
 
-Use `--samples N` to change the sample count. Use `--renderer metal` to test
-the opt-in Metal renderer.
+Run the baseline without rai's small-feed decision:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift run --scratch-path .build-tests rai-bench --latency --renderer cg \
+  --no-fast-path
+```
+
+`--no-fast-path` does not bypass `TerminalView` input handling. SwiftTerm still
+uses its own recent-input fast path. This matches production before rai's
+size guard. Use `--samples N` to change the sample count.
 
 The isolated lab measures the separate herdr attach cost:
 
@@ -67,33 +80,46 @@ scripts/herdr-lab.sh stop
 
 Results from 2026-09-03 used a debug build on the same Mac:
 
-| Path | Samples | Baseline median / p90 | Final median / p90 |
+| Path | Samples | Baseline median / p90 | Guarded median / p90 |
 | --- | ---: | ---: | ---: |
-| herdr attach echo | 100 | 20.1 / 25.1 ms | unchanged |
-| terminal byte feed to draw | 200 | 17.730 / 17.898 ms | 3.463 / 7.206 ms |
-| keystroke to prediction draw | 200 | 0.173 / 0.217 ms | 0.162 / 0.201 ms |
+| terminal key to display update | 200 | 0.239 / 0.407 ms | 0.281 / 0.403 ms |
+| key to prediction overlay draw | 200 | 0.157 / 0.218 ms | 0.169 / 0.231 ms |
+| herdr attach echo | 100 | 3.1 / 4.5 ms | not applicable |
 
-The attach sample ranged from 0.1 ms to 98.4 ms. The final terminal sample
-ranged from 0.239 ms to 9.787 ms. The baseline stopped at SwiftTerm's update
-callback. The final sample stopped after the direct draw callback.
+The baseline command used `--no-fast-path`. The guarded command omitted it.
+The prediction flag does not change the prediction path. Its difference is
+run noise.
+
+The terminal fast path did not improve the median. It was 0.042 ms slower.
+Its p90 was 0.004 ms faster. SwiftTerm already updates immediately after a
+key event. Rai's guard now limits that behavior by feed size and frame rate.
+
+The baseline terminal range was 0.146–0.642 ms. The guarded range was
+0.156–0.480 ms. The attach range was 0.0–27.5 ms.
+
+The current isolated-lab attach result is below the 8 ms local prediction
+threshold. Therefore local prediction stays hidden on this run. The earlier
+20 ms daemon tick would cross that threshold.
 
 The four-pane CPU guard used 200,000 bytes per second for 20 seconds.
-CoreGraphics used 88.6% CPU before and 88.0% after. The feeds were 3.3 MB and
-3.5 MB. That feed difference prevents a strict CPU comparison. The unit policy
-test confirms that 512-byte and larger feeds retain the throttled path.
+CoreGraphics used 88.6% CPU in the earlier baseline and 67.3% now. The feeds
+were 3.3 MB and 3.8 MB. That feed difference prevents a strict CPU comparison.
+The current run used 13.47 CPU seconds over 20.01 wall seconds. Unit tests
+confirm that 512-byte and larger feeds retain the frame-limited path.
 
-Metal remains off by default. The harness used the app's aggregated buffering
-mode and measured these small-feed results:
+Metal remains off by default. The harness used aggregated buffering and 200
+samples. These results stop at SwiftTerm's display-update callback:
 
 | Metal settings | Median | p90 |
 | --- | ---: | ---: |
-| transaction off, display sync on | 3.108 ms | 12.225 ms |
-| transaction on, display sync on | 4.404 ms | 5.452 ms |
-| transaction off, display sync off | 4.502 ms | 5.064 ms |
+| transaction off, display sync on | 0.253 ms | 0.460 ms |
+| transaction on, display sync on | 0.219 ms | 0.373 ms |
+| transaction off, display sync off | 0.228 ms | 0.366 ms |
 
-This callback ends after draw submission, not panel scanout. Transaction-based
-presentation can defer scanout beyond the callback. Rai keeps SwiftTerm's
-defaults. It also keeps display sync on because disabled sync can tear.
+Run these variants with `--metal-presents-with-transaction` and
+`--metal-display-sync off`. The callback precedes GPU presentation. Therefore
+these small differences do not prove a scanout change. Rai keeps SwiftTerm's
+defaults. It keeps display sync on because disabled sync can tear.
 
 ## Screenshot the running app
 

@@ -28,21 +28,64 @@ public enum TerminalFeedRepaintPolicy {
     }
 }
 
-/// Allows at most one direct repaint for each user input event.
+/// Decides how a feed enters SwiftTerm before SwiftTerm can select its own path.
 public struct TerminalFeedRepaintState {
-    public static let recentInputWindowNanoseconds: UInt64 = 150_000_000
+    public enum Disposition: Equatable {
+        case feedNowAndRepaint
+        case deferToFrame(deadlineUptimeNanoseconds: UInt64)
+        case feedNormally
+    }
 
-    private var inputGeneration: UInt64 = 0
-    private var repaintedGeneration: UInt64 = 0
+    public static let recentInputWindowNanoseconds: UInt64 = 150_000_000
+    public static let frameIntervalNanoseconds: UInt64 = 16_700_000
+
     private var lastInputUptimeNanoseconds: UInt64 = 0
+    private var lastImmediateRepaintUptimeNanoseconds: UInt64?
 
     public init() {}
 
     public mutating func noteUserInput(
         at uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
-        inputGeneration &+= 1
         lastInputUptimeNanoseconds = uptimeNanoseconds
+    }
+
+    public mutating func disposition(
+        byteCount: Int,
+        isFocused: Bool,
+        isVisible: Bool,
+        synchronizedOutputActive: Bool,
+        at uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> Disposition {
+        guard hasRecentInput(at: uptimeNanoseconds),
+              isFocused,
+              isVisible,
+              !synchronizedOutputActive else {
+            return .feedNormally
+        }
+
+        if byteCount >= TerminalFeedRepaintPolicy.immediateByteLimit {
+            return .deferToFrame(
+                deadlineUptimeNanoseconds: nextFrameDeadline(from: uptimeNanoseconds)
+            )
+        }
+
+        if let lastImmediateRepaintUptimeNanoseconds {
+            let deadline = lastImmediateRepaintUptimeNanoseconds
+                &+ Self.frameIntervalNanoseconds
+            if uptimeNanoseconds < deadline {
+                return .deferToFrame(deadlineUptimeNanoseconds: deadline)
+            }
+        }
+
+        lastImmediateRepaintUptimeNanoseconds = uptimeNanoseconds
+        return .feedNowAndRepaint
+    }
+
+    public mutating func noteDeferredFramePaint(
+        at uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        lastImmediateRepaintUptimeNanoseconds = uptimeNanoseconds
     }
 
     @discardableResult
@@ -54,22 +97,33 @@ public struct TerminalFeedRepaintState {
         at uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds,
         repaint: () -> Void
     ) -> Bool {
-        let hasRecentInput = lastInputUptimeNanoseconds > 0
-            && uptimeNanoseconds >= lastInputUptimeNanoseconds
-            && uptimeNanoseconds - lastInputUptimeNanoseconds
-                <= Self.recentInputWindowNanoseconds
-        let repainted = TerminalFeedRepaintPolicy.repaintIfNeeded(
+        guard disposition(
             byteCount: byteCount,
             isFocused: isFocused,
             isVisible: isVisible,
-            hasRecentUnpaintedUserInput: hasRecentInput
-                && inputGeneration != repaintedGeneration,
             synchronizedOutputActive: synchronizedOutputActive,
-            repaint: repaint
-        )
-        if repainted {
-            repaintedGeneration = inputGeneration
+            at: uptimeNanoseconds
+        ) == .feedNowAndRepaint else {
+            return false
         }
-        return repainted
+        repaint()
+        return true
+    }
+
+    private func hasRecentInput(at uptimeNanoseconds: UInt64) -> Bool {
+        lastInputUptimeNanoseconds > 0
+            && uptimeNanoseconds >= lastInputUptimeNanoseconds
+            && uptimeNanoseconds - lastInputUptimeNanoseconds
+                <= Self.recentInputWindowNanoseconds
+    }
+
+    private func nextFrameDeadline(from uptimeNanoseconds: UInt64) -> UInt64 {
+        guard let lastImmediateRepaintUptimeNanoseconds else {
+            return uptimeNanoseconds &+ Self.frameIntervalNanoseconds
+        }
+        return max(
+            uptimeNanoseconds,
+            lastImmediateRepaintUptimeNanoseconds &+ Self.frameIntervalNanoseconds
+        )
     }
 }

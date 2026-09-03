@@ -9,9 +9,9 @@ import Foundation
 /// removing each one the moment the authoritative frame confirms it.
 ///
 /// The engine is deliberately conservative — authority always wins:
-/// - Only plain printable ASCII at the primary screen buffer is predicted.
-///   Alternate-screen programs (TUIs) repaint their own UI and are
-///   unpredictable, so any key while the alternate buffer is active clears.
+/// - Only plain printable ASCII in a shell-like terminal mode is predicted.
+///   Alternate-screen, bracketed-paste, application-cursor, and mouse-tracking
+///   modes are TUI evidence. Any key in those modes clears the current burst.
 /// - Any non-printable key (Enter, arrows, control chords, escape) clears all
 ///   pending predictions; the next frame repaints the truth.
 /// - A cell that comes back from the server with *different* visible content
@@ -29,6 +29,37 @@ import Foundation
 /// flips echo off without a boundary key), the unconfirmed queue is retracted
 /// after `max(2 × smoothed latency, retractionFloor)` and confidence drops.
 public final class PredictiveEchoEngine {
+    /// Public terminal state which separates a shell prompt from an agent TUI.
+    public struct TerminalMode: Equatable, Sendable {
+        public let alternateScreen: Bool
+        public let bracketedPaste: Bool
+        public let applicationCursorKeys: Bool
+        public let mouseTracking: Bool
+
+        public init(
+            alternateScreen: Bool,
+            bracketedPaste: Bool,
+            applicationCursorKeys: Bool,
+            mouseTracking: Bool
+        ) {
+            self.alternateScreen = alternateScreen
+            self.bracketedPaste = bracketedPaste
+            self.applicationCursorKeys = applicationCursorKeys
+            self.mouseTracking = mouseTracking
+        }
+
+        public static let plain = TerminalMode(
+            alternateScreen: false,
+            bracketedPaste: false,
+            applicationCursorKeys: false,
+            mouseTracking: false
+        )
+
+        public var permitsPrediction: Bool {
+            !alternateScreen && !bracketedPaste && !applicationCursorKeys && !mouseTracking
+        }
+    }
+
     public enum HerdLocation {
         case local
         case remote
@@ -97,10 +128,10 @@ public final class PredictiveEchoEngine {
         _ key: KeyClass,
         cursor: (x: Int, y: Int),
         columns: Int,
-        alternateBufferActive: Bool,
+        terminalMode: TerminalMode,
         now: Date = Date()
     ) {
-        if alternateBufferActive {
+        if !terminalMode.permitsPrediction {
             pending.removeAll()
             echoConfirmedThisBurst = false
             return
@@ -144,16 +175,16 @@ public final class PredictiveEchoEngine {
     /// the visible character at (column, row) or nil for blank/unknown.
     public func reconcile(
         cursor: (x: Int, y: Int),
-        alternateBufferActive: Bool,
+        terminalMode: TerminalMode,
         readCell: (_ column: Int, _ row: Int) -> Character?,
         now: Date = Date()
     ) {
-        guard !pending.isEmpty else { return }
-        if alternateBufferActive {
+        if !terminalMode.permitsPrediction {
             pending.removeAll()
             echoConfirmedThisBurst = false
             return
         }
+        guard !pending.isEmpty else { return }
         // No echo inside the retraction window means the program has stopped
         // echoing (echo turned off mid-burst): retract everything on screen
         // and drop confidence so nothing further displays.
@@ -210,5 +241,57 @@ public final class PredictiveEchoEngine {
         smoothedConfirmLatency = smoothedConfirmLatency == 0
             ? latency
             : smoothedConfirmLatency * 0.7 + latency * 0.3
+    }
+}
+
+/// Pure presentation decisions used by the AppKit terminal view.
+public enum PredictiveEchoViewPolicy {
+    public enum Invalidation: Equatable {
+        case resize
+        case enterCopyMode
+        case scroll(offsetFromBottom: Int)
+    }
+
+    public enum OverlayPlacement: Equatable {
+        case draw
+        case retract
+    }
+
+    public enum CoordinatedDraw: Equatable {
+        case updateOverlay
+        case drawTogether
+        case waitForTerminalDisplay
+    }
+
+    public static func shouldClear(for event: Invalidation) -> Bool {
+        switch event {
+        case .resize, .enterCopyMode:
+            return true
+        case .scroll(let offsetFromBottom):
+            return offsetFromBottom != 0
+        }
+    }
+
+    public static func overlayPlacement(
+        prediction: (column: Int, row: Int),
+        cursor: (x: Int, y: Int),
+        isAtLiveBottom: Bool
+    ) -> OverlayPlacement {
+        guard isAtLiveBottom,
+              prediction.column == cursor.x,
+              prediction.row == cursor.y else {
+            return .retract
+        }
+        return .draw
+    }
+
+    public static func coordinatedDraw(
+        needsCoordination: Bool,
+        terminalPaintedDuringFeed: Bool,
+        immediateRepaintAllowed: Bool
+    ) -> CoordinatedDraw {
+        guard needsCoordination else { return .updateOverlay }
+        if terminalPaintedDuringFeed { return .updateOverlay }
+        return immediateRepaintAllowed ? .drawTogether : .waitForTerminalDisplay
     }
 }
