@@ -136,29 +136,38 @@ struct CachedTranscriptHistories: Codable {
     let sessionName: String
 }
 
-final class TranscriptHistoryCacheStore {
+actor TranscriptHistoryCacheStore {
+    static let maximumPaneBytes = 512 * 1_024
+    static let maximumTotalBytes = 4 * 1_024 * 1_024
+    static let maximumPanes = 8
     private let fileURL: URL
-    private let queue: DispatchQueue
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     init(
-        fileURL: URL = TranscriptHistoryCacheStore.defaultURL(),
-        queue: DispatchQueue = DispatchQueue(label: "rai.transcript-history-cache")
+        fileURL: URL = TranscriptHistoryCacheStore.defaultURL()
     ) {
         self.fileURL = fileURL
-        self.queue = queue
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
     }
 
     func load(pairingID: String) -> CachedTranscriptHistories? {
-        queue.sync {
-            guard let data = try? Data(contentsOf: fileURL),
-                  let cached = try? decoder.decode(CachedTranscriptHistories.self, from: data),
-                  cached.pairingID == pairingID else { return nil }
-            return cached
+        guard let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= Self.maximumTotalBytes,
+              let data = try? Data(contentsOf: fileURL),
+              let cached = try? decoder.decode(CachedTranscriptHistories.self, from: data)
+        else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return nil
         }
+        guard cached.pairingID == pairingID else { return nil }
+        let bounded = Self.boundedPages(cached.pages)
+        guard bounded == cached.pages else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return nil
+        }
+        return cached
     }
 
     func save(
@@ -166,47 +175,92 @@ final class TranscriptHistoryCacheStore {
         pairingID: String,
         sessionName: String
     ) {
-        let latest = pages.mapValues { page in
+        var latest = Self.boundedPages(pages.mapValues { page in
             let turns = Array(page.turns.suffix(TranscriptPagination.maximumLimit))
             return TranscriptHistoryPage(
                 paneID: page.paneID,
                 sessionID: page.sessionID,
+                resolvedSessionID: page.resolvedSessionID,
+                requestID: page.requestID,
                 herdSessionName: page.herdSessionName,
                 turns: turns,
                 hasMore: page.hasMore || page.turns.count > turns.count,
-                sinceLastSeen: page.sinceLastSeen
+                sinceLastSeen: page.sinceLastSeen,
+                state: page.state
             )
-        }
-        queue.async { [self] in
-            do {
-                try FileManager.default.createDirectory(
-                    at: fileURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try encoder.encode(CachedTranscriptHistories(
+        })
+        do {
+            var cached = CachedTranscriptHistories(
+                pages: latest,
+                pairingID: pairingID,
+                sessionName: sessionName
+            )
+            var data = try encoder.encode(cached)
+            while data.count > Self.maximumTotalBytes, let key = latest.keys.sorted().first {
+                latest.removeValue(forKey: key)
+                cached = CachedTranscriptHistories(
                     pages: latest,
                     pairingID: pairingID,
                     sessionName: sessionName
-                )).write(to: fileURL, options: .atomic)
-                var values = URLResourceValues()
-                values.isExcludedFromBackup = true
-                var savedURL = fileURL
-                do {
-                    try savedURL.setResourceValues(values)
-                } catch {
-                    try? FileManager.default.removeItem(at: fileURL)
-                    throw error
-                }
-            } catch {
-                NSLog("rai-ios: Could not persist transcript cache: %@", error.localizedDescription)
+                )
+                data = try encoder.encode(cached)
             }
+            guard data.count <= Self.maximumTotalBytes else { return }
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: fileURL, options: .atomic)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var savedURL = fileURL
+            do {
+                try savedURL.setResourceValues(values)
+            } catch {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw error
+            }
+        } catch {
+            NSLog("rai-ios: Could not persist transcript cache: %@", error.localizedDescription)
         }
     }
 
     func clear() {
-        queue.async { [fileURL] in
-            try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    nonisolated static func boundedPages(
+        _ pages: [String: TranscriptHistoryPage]
+    ) -> [String: TranscriptHistoryPage] {
+        let encoder = JSONEncoder()
+        var result: [String: TranscriptHistoryPage] = [:]
+        var total = 0
+        for key in pages.keys.sorted().prefix(maximumPanes) {
+            guard var page = pages[key] else { continue }
+            var turns = page.turns
+            while true {
+                page = TranscriptHistoryPage(
+                    paneID: page.paneID,
+                    sessionID: page.sessionID,
+                    resolvedSessionID: page.resolvedSessionID,
+                    requestID: page.requestID,
+                    herdSessionName: page.herdSessionName,
+                    turns: turns,
+                    hasMore: page.hasMore || turns.count < page.turns.count,
+                    sinceLastSeen: page.sinceLastSeen,
+                    state: page.state
+                )
+                guard let size = try? encoder.encode(page).count else { break }
+                if size <= maximumPaneBytes, total + size <= maximumTotalBytes {
+                    result[key] = page
+                    total += size
+                    break
+                }
+                guard !turns.isEmpty else { break }
+                turns.removeFirst()
+            }
         }
+        return result
     }
 
     private static func defaultURL() -> URL {
@@ -237,6 +291,7 @@ final class AppModel: ObservableObject {
     private var cacheWriteTask: Task<Void, Never>?
     private var cacheWriteInProgress = false
     private var cacheWriteGeneration: UInt = 0
+    private var pendingHistoryCachePairingID: String?
 
     init(
         pairingStore: any PairingStoring = PairingStore(),
@@ -268,11 +323,13 @@ final class AppModel: ObservableObject {
         connection.didReceiveHistoryPages = { [weak self] pages in
             guard let self, let pairing = self.pairing,
                   let sessionName = self.connection.sessionName else { return }
-            self.transcriptHistoryCacheStore.save(
-                pages: pages,
-                pairingID: CachedHerdSnapshot.pairingID(for: pairing),
-                sessionName: sessionName
-            )
+            Task {
+                await self.transcriptHistoryCacheStore.save(
+                    pages: pages,
+                    pairingID: CachedHerdSnapshot.pairingID(for: pairing),
+                    sessionName: sessionName
+                )
+            }
         }
         // Testing/automation affordance: pair straight from a launch env var,
         // e.g. `simctl launch --setenv RAI_PAIR_URL "rai://pair?..."`. Harmless
@@ -292,7 +349,7 @@ final class AppModel: ObservableObject {
     }
 
     func pair(_ invitation: PairingInvitation) {
-        transcriptHistoryCacheStore.clear()
+        Task { await transcriptHistoryCacheStore.clear() }
         // A code for a different Mac means the cached herd is someone else's.
         if let current = pairing,
            current.host != invitation.host || current.port != invitation.port {
@@ -327,14 +384,8 @@ final class AppModel: ObservableObject {
                     snapshotCacheStore.clear()
                 }
             }
-            let pairingID = CachedHerdSnapshot.pairingID(for: pairing)
-            if let cached = transcriptHistoryCacheStore.load(pairingID: pairingID) {
-                connection.restoreCachedHistory(
-                    cached.pages,
-                    sessionName: cached.sessionName
-                )
-            }
             connection.connect(to: pairing)
+            pendingHistoryCachePairingID = CachedHerdSnapshot.pairingID(for: pairing)
         }
         guard persist else { return }
         do {
@@ -344,6 +395,15 @@ final class AppModel: ObservableObject {
             // unsigned simulator builds may lack the required entitlement.
             NSLog("rai-ios: Could not persist pairing: \(error.localizedDescription)")
         }
+    }
+
+    func restoreTranscriptHistoryAfterFirstRender() async {
+        guard let pairingID = pendingHistoryCachePairingID else { return }
+        pendingHistoryCachePairingID = nil
+        guard let cached = await transcriptHistoryCacheStore.load(pairingID: pairingID),
+              let pairing,
+              CachedHerdSnapshot.pairingID(for: pairing) == pairingID else { return }
+        connection.restoreCachedHistory(cached.pages, sessionName: cached.sessionName)
     }
 
     func forgetPairing() {
@@ -442,7 +502,7 @@ final class AppModel: ObservableObject {
         cacheWriteInProgress = false
         pendingCache = nil
         snapshotCacheStore.clear()
-        transcriptHistoryCacheStore.clear()
+        Task { await transcriptHistoryCacheStore.clear() }
     }
 
     /// The APNs token's environment is fixed by the signed `aps-environment`

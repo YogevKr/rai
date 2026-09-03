@@ -247,6 +247,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
     @Published private(set) var historyPages: [String: TranscriptHistoryPage] = [:]
+    @Published private(set) var historyErrors: [String: String] = [:]
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
@@ -288,7 +289,11 @@ final class BridgeConnection: ObservableObject {
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
     private var historyGeneration: UInt = 0
     private var historySessionName: String?
-    private var pendingHistoryRequests: [String: [PendingHistoryRequest]] = [:]
+    private var pendingHistoryRequests: [String: PendingHistoryRequest] = [:]
+    private var knownHistorySessions: [String: String] = [:]
+    private var historyLastAccess: [String: Date] = [:]
+    private var historyMissingSince: [String: Date] = [:]
+    private var historyPruneTask: Task<Void, Never>?
     // Panes whose scrollback seed actually arrived. Tracked separately from
     // desiredStreams so a seed lost to a dropped connection (opening a pane
     // while reconnecting is routine on a phone) is retried on the next
@@ -307,6 +312,10 @@ final class BridgeConnection: ObservableObject {
 
     func pair(using invitation: PairingInvitation) {
         historyPages = [:]
+        historyErrors = [:]
+        knownHistorySessions = [:]
+        historyLastAccess = [:]
+        historyMissingSince = [:]
         historyGeneration &+= 1
         pendingHistoryRequests.removeAll()
         historySessionName = nil
@@ -344,6 +353,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     func replaceWithLiveSnapshot(_ snapshot: SessionSnapshot, receivedAt: Date = Date()) {
+        updateHistoryPaneSet(snapshot.panes, now: receivedAt)
         self.snapshot = snapshot
         lastSnapshotAt = receivedAt
         isShowingCachedSnapshot = false
@@ -357,6 +367,14 @@ final class BridgeConnection: ObservableObject {
     ) {
         guard historyPages.isEmpty else { return }
         historyPages = pages
+        let now = Date()
+        for (paneID, page) in pages {
+            historyLastAccess[paneID] = now
+            if !page.agentSessionID.isEmpty {
+                knownHistorySessions[paneID] = page.agentSessionID
+            }
+        }
+        pruneHistory(now: now)
         historySessionName = sessionName
     }
 
@@ -378,20 +396,37 @@ final class BridgeConnection: ObservableObject {
 
     func requestHistory(
         paneID: String,
+        sessionID: String = "",
         beforeTurnIndex: Int? = nil,
         limit: Int = TranscriptPagination.maximumLimit
     ) {
         // Keep one request per pane in flight. sendAction uses independent
         // tasks, so FIFO reply metadata is safe only without overlap.
-        guard status.isConnected,
-              pendingHistoryRequests[paneID]?.isEmpty != false else { return }
-        pendingHistoryRequests[paneID, default: []].append(PendingHistoryRequest(
+        guard status.isConnected, pendingHistoryRequests[paneID] == nil else { return }
+        let effectiveSessionID = sessionID.isEmpty
+            ? knownHistorySessions[paneID] ?? ""
+            : sessionID
+        if PendingHistoryRequest.sessionChanged(
+            previous: knownHistorySessions[paneID], current: effectiveSessionID
+        ) {
+            resetHistory(paneID: paneID, sessionID: effectiveSessionID)
+        }
+        knownHistorySessions[paneID] = effectiveSessionID
+        let requestID = UUID().uuidString
+        pendingHistoryRequests[paneID] = PendingHistoryRequest(
             generation: historyGeneration,
             replacesPage: beforeTurnIndex == nil,
-            sessionName: sessionName
-        ))
+            sessionName: sessionName,
+            paneID: paneID,
+            sessionID: effectiveSessionID,
+            requestID: requestID
+        )
+        historyLastAccess[paneID] = Date()
+        historyErrors.removeValue(forKey: paneID)
         sendAction(.history(
             paneID: paneID,
+            sessionID: effectiveSessionID,
+            requestID: requestID,
             beforeTurnIndex: beforeTurnIndex,
             limit: limit,
             herdSessionName: sessionName
@@ -836,6 +871,8 @@ final class BridgeConnection: ObservableObject {
                 historyGeneration &+= 1
                 pendingHistoryRequests.removeAll()
                 historyPages = [:]
+                historyErrors = [:]
+                knownHistorySessions = [:]
                 historySessionName = snapshotSessionName
                 sessionName = snapshotSessionName
                 didReceiveHistoryPages?(historyPages)
@@ -847,6 +884,8 @@ final class BridgeConnection: ObservableObject {
                 if let sessionName, sessionName != current.name {
                     historyGeneration &+= 1
                     historyPages = [:]
+                    historyErrors = [:]
+                    knownHistorySessions = [:]
                     historySessionName = current.name
                     didReceiveHistoryPages?(historyPages)
                 }
@@ -855,10 +894,9 @@ final class BridgeConnection: ObservableObject {
         case let .backgroundWork(work):
             didReceiveBackgroundWork?(work)
         case let .historyPage(page):
-            guard var requests = pendingHistoryRequests[page.paneID],
-                  !requests.isEmpty else { return }
-            let request = requests.removeFirst()
-            pendingHistoryRequests[page.paneID] = requests.isEmpty ? nil : requests
+            guard let request = pendingHistoryRequests[page.paneID],
+                  request.matches(page) else { return }
+            pendingHistoryRequests.removeValue(forKey: page.paneID)
             guard request.generation == historyGeneration,
                   page.herdSessionName == nil || page.herdSessionName == request.sessionName
             else { return }
@@ -868,10 +906,20 @@ final class BridgeConnection: ObservableObject {
             )
             sendAction(.historyReceived(
                 paneID: page.paneID,
-                sessionID: page.sessionID,
+                sessionID: page.agentSessionID,
+                requestID: page.requestID,
                 herdSessionName: page.herdSessionName,
                 throughTurnIndex: page.turns.last?.index
             ))
+        case let .historyError(paneID, sessionID, requestID, message):
+            guard let paneError = TranscriptHistoryErrorRouter.consume(
+                pending: &pendingHistoryRequests,
+                paneID: paneID,
+                sessionID: sessionID,
+                requestID: requestID,
+                message: message
+            ) else { return }
+            historyErrors[paneError.paneID] = paneError.message
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -920,6 +968,11 @@ final class BridgeConnection: ObservableObject {
             } else if message.hasPrefix("History is not ready") {
                 pendingHistoryRequests.removeAll()
                 NSLog("rai-ios: conversation history is not ready: %@", message)
+            } else if message.hasPrefix("Unknown pane ")
+                || message.hasPrefix("Could not read history") {
+                // Old Macs cannot identify the request. Keep the live bridge
+                // healthy and let a later refresh replace the empty state.
+                NSLog("rai-ios: conversation history unavailable: %@", message)
             } else if Self.isActionError(message) {
                 actionError = message
             } else {
@@ -939,7 +992,8 @@ final class BridgeConnection: ObservableObject {
 
     private func mergeHistoryPage(_ page: TranscriptHistoryPage, replacing: Bool) {
         let existing = historyPages[page.paneID]
-        let continuesSession = !replacing && existing?.sessionID == page.sessionID
+        let continuesSession = !replacing
+            && existing?.agentSessionID == page.agentSessionID
         var byIndex = Dictionary(
             uniqueKeysWithValues: (continuesSession ? existing?.turns ?? [] : []).map {
                 ($0.index, $0)
@@ -950,14 +1004,90 @@ final class BridgeConnection: ObservableObject {
         historyPages[page.paneID] = TranscriptHistoryPage(
             paneID: page.paneID,
             sessionID: page.sessionID,
+            resolvedSessionID: page.resolvedSessionID,
+            requestID: page.requestID,
             herdSessionName: page.herdSessionName,
             turns: turns,
             hasMore: page.hasMore,
             sinceLastSeen: continuesSession
                 ? existing?.sinceLastSeen ?? page.sinceLastSeen
-                : page.sinceLastSeen
+                : page.sinceLastSeen,
+            state: page.state
         )
+        historyLastAccess[page.paneID] = Date()
+        if !page.agentSessionID.isEmpty {
+            knownHistorySessions[page.paneID] = page.agentSessionID
+        }
+        historyErrors.removeValue(forKey: page.paneID)
+        pruneHistory()
         didReceiveHistoryPages?(historyPages)
+    }
+
+    private func updateHistoryPaneSet(_ panes: [Pane], now: Date) {
+        let livePaneIDs = Set(panes.map(\.paneID))
+        for pane in panes {
+            let sessionID = pane.beacon?.sessionID
+                ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
+                ?? ""
+            if PendingHistoryRequest.sessionChanged(
+                previous: knownHistorySessions[pane.paneID], current: sessionID
+            ) {
+                resetHistory(paneID: pane.paneID, sessionID: sessionID)
+            }
+            if !sessionID.isEmpty { knownHistorySessions[pane.paneID] = sessionID }
+            historyMissingSince.removeValue(forKey: pane.paneID)
+        }
+        for paneID in historyPages.keys where !livePaneIDs.contains(paneID) {
+            historyMissingSince[paneID] = historyMissingSince[paneID] ?? now
+        }
+        pruneHistory(now: now)
+        scheduleHistoryPruneIfNeeded()
+    }
+
+    private func resetHistory(paneID: String, sessionID: String) {
+        pendingHistoryRequests.removeValue(forKey: paneID)
+        historyPages.removeValue(forKey: paneID)
+        historyErrors.removeValue(forKey: paneID)
+        historyLastAccess.removeValue(forKey: paneID)
+        knownHistorySessions[paneID] = sessionID
+        didReceiveHistoryPages?(historyPages)
+    }
+
+    private func pruneHistory(now: Date = Date()) {
+        let evictions = TranscriptHistoryRetentionPolicy.evictions(
+            pages: historyPages,
+            lastAccess: historyLastAccess,
+            missingSince: historyMissingSince,
+            now: now
+        )
+        guard !evictions.isEmpty else { return }
+        for paneID in evictions {
+            historyPages.removeValue(forKey: paneID)
+            historyErrors.removeValue(forKey: paneID)
+            pendingHistoryRequests.removeValue(forKey: paneID)
+            knownHistorySessions.removeValue(forKey: paneID)
+            historyLastAccess.removeValue(forKey: paneID)
+            historyMissingSince.removeValue(forKey: paneID)
+        }
+        didReceiveHistoryPages?(historyPages)
+    }
+
+    private func scheduleHistoryPruneIfNeeded() {
+        guard !historyMissingSince.isEmpty else {
+            historyPruneTask?.cancel()
+            historyPruneTask = nil
+            return
+        }
+        guard historyPruneTask == nil else { return }
+        historyPruneTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(
+                TranscriptHistoryRetentionPolicy.closedPaneGrace
+            ))
+            guard let self, !Task.isCancelled else { return }
+            self.historyPruneTask = nil
+            self.pruneHistory()
+            self.scheduleHistoryPruneIfNeeded()
+        }
     }
 
     static func exchangedPairing(token: String, invitation: PairingInvitation) throws -> Pairing {
@@ -1033,6 +1163,8 @@ final class BridgeConnection: ObservableObject {
         guard name != sessionName else { return }
         historyGeneration &+= 1
         historyPages = [:]
+        historyErrors = [:]
+        knownHistorySessions = [:]
         historySessionName = name
         sessionName = name
         didReceiveHistoryPages?(historyPages)
@@ -1135,6 +1267,12 @@ final class BridgeConnection: ObservableObject {
             lastSnapshotAt = nil
             isShowingCachedSnapshot = false
             historyPages = [:]
+            historyErrors = [:]
+            knownHistorySessions = [:]
+            historyLastAccess = [:]
+            historyMissingSince = [:]
+            historyPruneTask?.cancel()
+            historyPruneTask = nil
             historyGeneration &+= 1
             pendingHistoryRequests.removeAll()
             historySessionName = nil
@@ -1164,8 +1302,90 @@ final class BridgeConnection: ObservableObject {
 
 }
 
-private struct PendingHistoryRequest {
+struct PendingHistoryRequest {
     let generation: UInt
     let replacesPage: Bool
     let sessionName: String?
+    let paneID: String
+    let sessionID: String
+    let requestID: String
+
+    func matches(_ page: TranscriptHistoryPage) -> Bool {
+        matches(
+            paneID: page.paneID,
+            sessionID: page.sessionID,
+            requestID: page.requestID
+        )
+    }
+
+    func matches(paneID: String, sessionID: String, requestID: String) -> Bool {
+        self.paneID == paneID
+            && self.sessionID == sessionID
+            && self.requestID == requestID
+    }
+
+    static func sessionChanged(previous: String?, current: String) -> Bool {
+        guard let previous, !current.isEmpty else { return false }
+        return previous != current
+    }
+}
+
+struct TranscriptHistoryRetentionPolicy {
+    static let maximumPanes = 8
+    static let maximumBytes = 16 * 1_024 * 1_024
+    static let closedPaneGrace: TimeInterval = 30
+
+    static func evictions(
+        pages: [String: TranscriptHistoryPage],
+        lastAccess: [String: Date],
+        missingSince: [String: Date],
+        now: Date,
+        maximumPanes: Int = maximumPanes,
+        maximumBytes: Int = maximumBytes,
+        closedPaneGrace: TimeInterval = closedPaneGrace
+    ) -> Set<String> {
+        var evicted = Set(missingSince.compactMap { paneID, missingAt in
+            now.timeIntervalSince(missingAt) >= closedPaneGrace ? paneID : nil
+        })
+        let retained = pages.keys.filter { !evicted.contains($0) }.sorted {
+            (lastAccess[$0] ?? .distantPast) > (lastAccess[$1] ?? .distantPast)
+        }
+        var bytes = 0
+        for (position, paneID) in retained.enumerated() {
+            let pageBytes = estimatedBytes(pages[paneID])
+            if position >= maximumPanes || bytes + pageBytes > maximumBytes {
+                evicted.insert(paneID)
+            } else {
+                bytes += pageBytes
+            }
+        }
+        return evicted
+    }
+
+    static func estimatedBytes(_ page: TranscriptHistoryPage?) -> Int {
+        guard let page else { return 0 }
+        let identityBytes = page.paneID.utf8.count + page.sessionID.utf8.count
+        let turnBytes = page.turns.reduce(0) { total, turn in
+            let toolNameBytes = turn.tool?.name.utf8.count ?? 0
+            let toolSummaryBytes = turn.tool?.summary.utf8.count ?? 0
+            return total + turn.text.utf8.count + toolNameBytes + toolSummaryBytes + 64
+        }
+        return identityBytes + turnBytes
+    }
+}
+
+struct TranscriptHistoryErrorRouter {
+    static func consume(
+        pending: inout [String: PendingHistoryRequest],
+        paneID: String,
+        sessionID: String,
+        requestID: String,
+        message: String
+    ) -> (paneID: String, message: String)? {
+        guard let request = pending[paneID], request.matches(
+            paneID: paneID, sessionID: sessionID, requestID: requestID
+        ) else { return nil }
+        pending.removeValue(forKey: paneID)
+        return (paneID, message)
+    }
 }

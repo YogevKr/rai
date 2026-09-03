@@ -8,6 +8,7 @@ final class TranscriptHistoryViewModel: ObservableObject {
     @Published private(set) var sessionID = ""
     @Published private(set) var hasMore = false
     @Published private(set) var sinceLastSeen: Int?
+    @Published private(set) var state: TranscriptHistoryState = .notFound
 
     init(page: TranscriptHistoryPage? = nil) {
         if let page { apply(page) }
@@ -35,11 +36,12 @@ final class TranscriptHistoryViewModel: ObservableObject {
         let isOlderPage = page.turns.last.map { latest in
             turns.first.map { latest.index < $0.index } ?? false
         } ?? false
-        if !sessionID.isEmpty, sessionID != page.sessionID || !isOlderPage {
+        if !sessionID.isEmpty, sessionID != page.agentSessionID || !isOlderPage {
             turns = []
             sinceLastSeen = nil
         }
-        sessionID = page.sessionID
+        sessionID = page.agentSessionID
+        state = page.state
         var byIndex = Dictionary(uniqueKeysWithValues: turns.map { ($0.index, $0) })
         for turn in page.turns { byIndex[turn.index] = turn }
         turns = byIndex.values.sorted { $0.index < $1.index }
@@ -54,6 +56,7 @@ final class TranscriptHistoryViewModel: ObservableObject {
         sessionID = ""
         hasMore = false
         sinceLastSeen = nil
+        state = .notFound
     }
 }
 
@@ -83,6 +86,7 @@ struct TranscriptHistoryView: View {
                                 Button("Load older") {
                                     connection.requestHistory(
                                         paneID: pane.paneID,
+                                        sessionID: paneSessionID,
                                         beforeTurnIndex: before
                                     )
                                 }
@@ -130,7 +134,7 @@ struct TranscriptHistoryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    connection.requestHistory(paneID: pane.paneID)
+                    connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -140,7 +144,7 @@ struct TranscriptHistoryView: View {
         .searchable(text: $model.query, prompt: "Find in conversation")
         .onAppear {
             if let page = connection.historyPages[pane.paneID] { model.apply(page) }
-            connection.requestHistory(paneID: pane.paneID)
+            connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
         }
         .onReceive(connection.$historyPages) { pages in
             if let page = pages[pane.paneID] {
@@ -150,21 +154,39 @@ struct TranscriptHistoryView: View {
             }
         }
         .onChange(of: connection.status.isConnected) { _, connected in
-            if connected { connection.requestHistory(paneID: pane.paneID) }
+            if connected {
+                connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
+            }
         }
         .preferredColorScheme(.dark)
     }
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No transcript found", systemImage: "clock")
+            if connection.historyErrors[pane.paneID] != nil {
+                Label("History unavailable", systemImage: "exclamationmark.triangle")
+            } else if model.state == .ambiguous {
+                Label("History needs the hook beacon", systemImage: "link.badge.plus")
+            } else {
+                Label("No transcript found", systemImage: "clock")
+            }
         } description: {
-            if pane.agent == "claude" {
+            if let error = connection.historyErrors[pane.paneID] {
+                Text(error)
+            } else if model.state == .ambiguous {
+                Text("History needs the hook beacon for this pane")
+            } else if pane.agent == "claude" {
                 Text("Claude has not reported a transcript yet.")
             } else {
                 Text("History is available for local Claude panes.")
             }
         }
+    }
+
+    private var paneSessionID: String {
+        pane.beacon?.sessionID
+            ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
+            ?? model.sessionID
     }
 
     private func showsAwayDivider(before turn: TranscriptTurn, at position: Int) -> Bool {

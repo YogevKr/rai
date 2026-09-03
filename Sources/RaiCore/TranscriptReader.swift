@@ -333,23 +333,46 @@ public enum ClaudeTranscriptLocator {
         maximumAge: TimeInterval = defaultMaximumAge,
         fileManager: FileManager = .default
     ) -> URL? {
-        let rawURL = URL(fileURLWithPath: cwd).standardizedFileURL
-        let resolvedURL = rawURL.resolvingSymlinksInPath()
-        let paths = Array(Set([rawURL.path, resolvedURL.path]))
-        let candidates = paths.flatMap { path -> [URL] in
-            let directory = claudeDirectory
-                .appendingPathComponent("projects", isDirectory: true)
-                .appendingPathComponent(projectDirectoryName(for: path), isDirectory: true)
-            return (try? fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-        }
+        matchingTranscripts(
+            cwd: cwd,
+            claudeDirectory: claudeDirectory,
+            sessionID: sessionID,
+            now: now,
+            maximumAge: maximumAge,
+            fileManager: fileManager
+        ).first
+    }
+
+    /// Uses Claude's encoded project directory only as a prefilter. The JSONL
+    /// `cwd` field is the authority because the encoding is not one-to-one.
+    public static func matchingTranscripts(
+        cwd: String,
+        claudeDirectory: URL,
+        sessionID: String? = nil,
+        now: Date = Date(),
+        maximumAge: TimeInterval = defaultMaximumAge,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let expectedCWD = standardizedPath(cwd)
+        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let directory = root.appendingPathComponent(
+            projectDirectoryName(for: expectedCWD),
+            isDirectory: true
+        )
+        let resolvedDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
+        guard isContained(resolvedDirectory, in: root) else { return [] }
+        let candidates = (try? fileManager.contentsOfDirectory(
+            at: resolvedDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
         return candidates.compactMap { url -> (URL, Date)? in
-            guard url.pathExtension == "jsonl",
-                  sessionID.map({ url.deletingPathExtension().lastPathComponent == $0 }) ?? true,
-                  let values = try? url.resourceValues(
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+            guard resolved.pathExtension == "jsonl",
+                  isContained(resolved, in: root),
+                  sessionID.map({ resolved.deletingPathExtension().lastPathComponent == $0 }) ?? true,
+                  let values = try? resolved.resourceValues(
                     forKeys: [.contentModificationDateKey, .isRegularFileKey]
                   ),
                   values.isRegularFile == true,
@@ -357,10 +380,34 @@ public enum ClaudeTranscriptLocator {
                   sessionID != nil || (
                     now.timeIntervalSince(modified) >= 0
                         && now.timeIntervalSince(modified) <= maximumAge
-                  ) else { return nil }
-            return (url, modified)
+                  ),
+                  transcriptCWD(at: resolved) == expectedCWD else { return nil }
+            return (resolved, modified)
         }
-        .max { $0.1 < $1.1 }?.0
+        .sorted { $0.1 > $1.1 }
+        .map(\.0)
+    }
+
+    public static func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func transcriptCWD(at url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: 256 * 1_024)) ?? nil
+        guard let data else { return nil }
+        for line in data.split(separator: 0x0A).prefix(32) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
+                  let record = object as? [String: Any],
+                  let cwd = record["cwd"] as? String else { continue }
+            return standardizedPath(cwd)
+        }
+        return nil
+    }
+
+    private static func isContained(_ candidate: URL, in root: URL) -> Bool {
+        candidate.path == root.path || candidate.path.hasPrefix(root.path + "/")
     }
 
     public static func beaconTranscript(
@@ -372,7 +419,7 @@ public enum ClaudeTranscriptLocator {
             .resolvingSymlinksInPath().standardizedFileURL
         let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         guard candidate.pathExtension == "jsonl",
-              candidate.path.hasPrefix(root.path + "/"),
+              isContained(candidate, in: root),
               fileManager.fileExists(atPath: candidate.path) else { return nil }
         return candidate
     }
@@ -402,6 +449,167 @@ public enum ClaudeTranscriptLocator {
             maximumAge: maximumAge,
             fileManager: fileManager
         )
+    }
+}
+
+public enum TranscriptLookupResult: Sendable {
+    case found(url: URL, document: TranscriptDocument)
+    case notFound
+    case ambiguous
+}
+
+/// Keeps blocking directory and transcript reads off the main actor.
+public actor ClaudeTranscriptIndex {
+    private struct CachedMetadata {
+        let modified: Date
+        let size: Int
+        let cwd: String?
+    }
+
+    private let claudeDirectory: URL
+    private var metadataCache: [URL: CachedMetadata] = [:]
+    private var paneCache: [String: (identity: String, url: URL, cwd: String?)] = [:]
+    private var transcriptOwners: [URL: String] = [:]
+    private var metadataParseCount = 0
+
+    public init(claudeDirectory: URL) {
+        self.claudeDirectory = claudeDirectory
+    }
+
+    public func read(
+        paneID: String,
+        beaconPath: String?,
+        cwd: String,
+        sessionID: String?,
+        fallbackPaneCount: Int,
+        now: Date = Date()
+    ) -> TranscriptLookupResult {
+        let verifiedIdentity = beaconPath ?? sessionID
+        if let verifiedIdentity,
+           let cached = paneCache[paneID], cached.identity == verifiedIdentity {
+            return claim(
+                read(url: cached.url, expectedCWD: cached.cwd),
+                for: paneID
+            )
+        }
+        if let beaconPath,
+           let url = ClaudeTranscriptLocator.beaconTranscript(
+               path: beaconPath,
+               claudeDirectory: claudeDirectory
+           ) {
+            paneCache[paneID] = (beaconPath, url, nil)
+            return claim(read(url: url), for: paneID)
+        }
+
+        let candidates = matchingTranscripts(
+            cwd: cwd,
+            sessionID: sessionID,
+            now: now
+        )
+        if fallbackPaneCount != 1 || candidates.count > 1 {
+            return .ambiguous
+        }
+        guard let url = candidates.first else { return .notFound }
+        if let verifiedIdentity {
+            paneCache[paneID] = (
+                verifiedIdentity, url, ClaudeTranscriptLocator.standardizedPath(cwd)
+            )
+        }
+        return claim(read(url: url), for: paneID)
+    }
+
+    public func metadataParseCountForTesting() -> Int {
+        metadataParseCount
+    }
+
+    public func invalidate(paneID: String) {
+        paneCache.removeValue(forKey: paneID)
+        transcriptOwners = transcriptOwners.filter { $0.value != paneID }
+    }
+
+    public func retainPanes(_ paneIDs: Set<String>) {
+        paneCache = paneCache.filter { paneIDs.contains($0.key) }
+        transcriptOwners = transcriptOwners.filter { paneIDs.contains($0.value) }
+    }
+
+    private func matchingTranscripts(
+        cwd: String,
+        sessionID: String?,
+        now: Date
+    ) -> [URL] {
+        let expectedCWD = ClaudeTranscriptLocator.standardizedPath(cwd)
+        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let directory = root.appendingPathComponent(
+            ClaudeTranscriptLocator.projectDirectoryName(for: expectedCWD),
+            isDirectory: true
+        ).resolvingSymlinksInPath().standardizedFileURL
+        guard directory.path.hasPrefix(root.path + "/") else { return [] }
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [
+                .contentModificationDateKey, .fileSizeKey, .isRegularFileKey,
+            ],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return urls.compactMap { raw -> (URL, Date)? in
+            let url = raw.resolvingSymlinksInPath().standardizedFileURL
+            guard url.path.hasPrefix(root.path + "/"), url.pathExtension == "jsonl",
+                  sessionID.map({ url.deletingPathExtension().lastPathComponent == $0 }) ?? true,
+                  let values = try? url.resourceValues(forKeys: [
+                    .contentModificationDateKey, .fileSizeKey, .isRegularFileKey,
+                  ]), values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  let size = values.fileSize,
+                  sessionID != nil || now.timeIntervalSince(modified) <= ClaudeTranscriptLocator.defaultMaximumAge,
+                  now.timeIntervalSince(modified) >= 0 else { return nil }
+            let cached = metadataCache[url]
+            let cwd: String?
+            if cached?.modified == modified, cached?.size == size {
+                cwd = cached?.cwd
+            } else {
+                cwd = Self.readCWD(url)
+                metadataCache[url] = CachedMetadata(modified: modified, size: size, cwd: cwd)
+                metadataParseCount += 1
+            }
+            return cwd == expectedCWD ? (url, modified) : nil
+        }.sorted { $0.1 > $1.1 }.map(\.0)
+    }
+
+    private func read(url: URL, expectedCWD: String? = nil) -> TranscriptLookupResult {
+        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+        guard resolved.path.hasPrefix(root.path + "/"),
+              expectedCWD.map({ Self.readCWD(resolved) == $0 }) ?? true,
+              let document = try? TranscriptReader.read(url: resolved) else {
+            return .notFound
+        }
+        return .found(url: resolved, document: document)
+    }
+
+    private func claim(
+        _ result: TranscriptLookupResult,
+        for paneID: String
+    ) -> TranscriptLookupResult {
+        guard case let .found(url, document) = result else { return result }
+        if let owner = transcriptOwners[url], owner != paneID { return .ambiguous }
+        transcriptOwners = transcriptOwners.filter { $0.value != paneID }
+        transcriptOwners[url] = paneID
+        return .found(url: url, document: document)
+    }
+
+    private static func readCWD(_ url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 256 * 1_024) else { return nil }
+        for line in data.split(separator: 0x0A).prefix(32) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
+                  let record = object as? [String: Any],
+                  let cwd = record["cwd"] as? String else { continue }
+            return ClaudeTranscriptLocator.standardizedPath(cwd)
+        }
+        return nil
     }
 }
 
@@ -467,17 +675,20 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
 public struct HistoryPageReceipt: Hashable, Sendable {
     public let paneID: String
     public let sessionID: String
+    public let requestID: String
     public let herdSessionName: String?
     public let throughTurnIndex: Int?
 
     public init(
         paneID: String,
         sessionID: String,
+        requestID: String = "",
         herdSessionName: String? = nil,
         throughTurnIndex: Int?
     ) {
         self.paneID = paneID
         self.sessionID = sessionID
+        self.requestID = requestID
         self.herdSessionName = herdSessionName
         self.throughTurnIndex = throughTurnIndex
     }

@@ -82,8 +82,8 @@ final class TranscriptReaderTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 10_000)
         let old = project.appendingPathComponent("old.jsonl")
         let newest = project.appendingPathComponent("new.jsonl")
-        try Data().write(to: old)
-        try Data().write(to: newest)
+        try transcript(cwd: "/tmp/repo", sessionID: "old").write(to: old)
+        try transcript(cwd: "/tmp/repo", sessionID: "new").write(to: newest)
         try FileManager.default.setAttributes(
             [.modificationDate: now.addingTimeInterval(-100)],
             ofItemAtPath: old.path
@@ -113,8 +113,8 @@ final class TranscriptReaderTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let beacon = project.appendingPathComponent("beacon.jsonl")
         let newest = project.appendingPathComponent("newest.jsonl")
-        try Data().write(to: beacon)
-        try Data().write(to: newest)
+        try transcript(cwd: "/tmp/repo", sessionID: "beacon").write(to: beacon)
+        try transcript(cwd: "/tmp/repo", sessionID: "newest").write(to: newest)
         let now = Date()
         try FileManager.default.setAttributes(
             [.modificationDate: now.addingTimeInterval(-20)],
@@ -175,6 +175,111 @@ final class TranscriptReaderTests: XCTestCase {
         XCTAssertFalse(TranscriptPaneIdentity(
             agent: "claude", sessionID: "first", status: .done
         ).requiresTranscriptResolution(after: old))
+    }
+
+    func testFallbackIsAmbiguousForSharedCWDOrMultipleLiveTranscripts() async throws {
+        let setup = try transcriptDirectory(cwd: "/tmp/shared")
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        try transcript(cwd: "/tmp/shared", sessionID: "one").write(
+            to: setup.project.appendingPathComponent("one.jsonl")
+        )
+        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+
+        if case .ambiguous = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
+            sessionID: nil, fallbackPaneCount: 2
+        ) {} else { XCTFail("A shared cwd must be ambiguous") }
+
+        try transcript(cwd: "/tmp/shared", sessionID: "two").write(
+            to: setup.project.appendingPathComponent("two.jsonl")
+        )
+        if case .ambiguous = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
+            sessionID: nil, fallbackPaneCount: 1
+        ) {} else { XCTFail("Multiple live transcripts must be ambiguous") }
+
+        let ownershipIndex = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+        if case .ambiguous = await ownershipIndex.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
+            sessionID: "one", fallbackPaneCount: 2
+        ) {} else { XCTFail("A session filename does not make shared cwd fallback safe") }
+        let beaconPath = setup.project.appendingPathComponent("one.jsonl").path
+        if case .found = await ownershipIndex.read(
+            paneID: "p1", beaconPath: beaconPath, cwd: "/tmp/shared",
+            sessionID: "one", fallbackPaneCount: 2
+        ) {} else { XCTFail("The beacon path should resolve for its first pane") }
+        if case .ambiguous = await ownershipIndex.read(
+            paneID: "p2", beaconPath: beaconPath, cwd: "/tmp/shared",
+            sessionID: "one", fallbackPaneCount: 2
+        ) {} else { XCTFail("One transcript must not bind to two panes") }
+    }
+
+    func testProjectPrefilterUsesExactTranscriptCWDToAvoidPunctuationCollision() throws {
+        let setup = try transcriptDirectory(cwd: "/repo/a-b")
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        let dash = setup.project.appendingPathComponent("dash.jsonl")
+        let underscore = setup.project.appendingPathComponent("underscore.jsonl")
+        try transcript(cwd: "/repo/a-b", sessionID: "dash").write(to: dash)
+        try transcript(cwd: "/repo/a_b", sessionID: "underscore").write(to: underscore)
+
+        XCTAssertEqual(canonicalPath(ClaudeTranscriptLocator.newestTranscript(
+            cwd: "/repo/a-b", claudeDirectory: setup.claude
+        )), canonicalPath(dash))
+        XCTAssertEqual(canonicalPath(ClaudeTranscriptLocator.newestTranscript(
+            cwd: "/repo/a_b", claudeDirectory: setup.claude
+        )), canonicalPath(underscore))
+    }
+
+    func testProjectDirectorySymlinkCannotEscapeClaudeProjectsRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-transcript-symlink-\(UUID().uuidString)")
+        let claude = root.appendingPathComponent(".claude")
+        let projects = claude.appendingPathComponent("projects")
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        try transcript(cwd: "/tmp/escape", sessionID: "escaped").write(
+            to: outside.appendingPathComponent("escaped.jsonl")
+        )
+        try FileManager.default.createSymbolicLink(
+            at: projects.appendingPathComponent("-tmp-escape"),
+            withDestinationURL: outside
+        )
+
+        XCTAssertNil(ClaudeTranscriptLocator.newestTranscript(
+            cwd: "/tmp/escape", claudeDirectory: claude
+        ))
+    }
+
+    func testTranscriptIndexCachesMetadataUntilFileChanges() async throws {
+        let setup = try transcriptDirectory(cwd: "/tmp/indexed")
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        let file = setup.project.appendingPathComponent("session.jsonl")
+        try transcript(cwd: "/tmp/indexed", sessionID: "session").write(to: file)
+        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+
+        _ = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
+            sessionID: nil, fallbackPaneCount: 1
+        )
+        _ = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
+            sessionID: nil, fallbackPaneCount: 1
+        )
+        let initialCount = await index.metadataParseCountForTesting()
+        XCTAssertEqual(initialCount, 1)
+
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n".utf8))
+        try handle.close()
+        _ = await index.read(
+            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
+            sessionID: nil, fallbackPaneCount: 1
+        )
+        let changedCount = await index.metadataParseCountForTesting()
+        XCTAssertEqual(changedCount, 2)
     }
 
     func testPaginationClampsLimitAndBoundsText() {
@@ -292,5 +397,23 @@ final class TranscriptReaderTests: XCTestCase {
 
     private func canonicalPath(_ url: URL?) -> String? {
         url?.path.replacingOccurrences(of: "/private/var/", with: "/var/")
+    }
+
+    private func transcript(cwd: String, sessionID: String) -> Data {
+        Data("""
+        {"type":"user","cwd":"\(cwd)","sessionId":"\(sessionID)","message":{"role":"user","content":"hello"}}
+        """.utf8)
+    }
+
+    private func transcriptDirectory(
+        cwd: String
+    ) throws -> (root: URL, claude: URL, project: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-transcript-test-\(UUID().uuidString)")
+        let claude = root.appendingPathComponent(".claude")
+        let project = claude.appendingPathComponent("projects")
+            .appendingPathComponent(ClaudeTranscriptLocator.projectDirectoryName(for: cwd))
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        return (root, claude, project)
     }
 }

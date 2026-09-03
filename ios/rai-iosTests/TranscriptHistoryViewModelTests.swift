@@ -93,21 +93,178 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertEqual(model.sinceLastSeen, 4)
     }
 
-    func testOfflineCacheKeepsPairingAndHerdSession() {
+    func testOfflineCacheKeepsPairingAndHerdSession() async {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rai-history-cache-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: fileURL) }
         let store = TranscriptHistoryCacheStore(fileURL: fileURL)
-        store.save(
+        await store.save(
             pages: ["p1": page(turns: [turn(1, .user, "cached")], hasMore: false)],
             pairingID: "pairing-1",
             sessionName: "herd-1"
         )
 
-        let cached = store.load(pairingID: "pairing-1")
+        let cached = await store.load(pairingID: "pairing-1")
         XCTAssertEqual(cached?.sessionName, "herd-1")
         XCTAssertEqual(cached?.pages["p1"]?.turns.first?.text, "cached")
-        XCTAssertNil(store.load(pairingID: "pairing-2"))
+        let other = await store.load(pairingID: "pairing-2")
+        XCTAssertNil(other)
+    }
+
+    func testStaleHistoryReplyTripleIsRejectedAfterSessionChange() {
+        let request = PendingHistoryRequest(
+            generation: 1,
+            replacesPage: true,
+            sessionName: "herd",
+            paneID: "p1",
+            sessionID: "new-session",
+            requestID: "new-request"
+        )
+        let stale = TranscriptHistoryPage(
+            paneID: "p1",
+            sessionID: "old-session",
+            resolvedSessionID: "old-session",
+            requestID: "old-request",
+            turns: [],
+            hasMore: false
+        )
+
+        XCTAssertFalse(request.matches(stale))
+        XCTAssertTrue(PendingHistoryRequest.sessionChanged(
+            previous: "old-session", current: "new-session"
+        ))
+        XCTAssertTrue(PendingHistoryRequest.sessionChanged(
+            previous: "", current: "new-session"
+        ))
+    }
+
+    func testLiveSnapshotSessionReplacesCachedHistorySession() throws {
+        let connection = BridgeConnection()
+        connection.restoreCachedHistory(
+            ["p1": page(turns: [turn(1, .assistant, "old")], hasMore: false)],
+            sessionName: "herd"
+        )
+
+        connection.replaceWithLiveSnapshot(try snapshot(sessionID: "new-session"))
+
+        XCTAssertNil(connection.historyPages["p1"])
+    }
+
+    func testHistoryRetentionEvictsClosedAndLeastRecentlyUsedPanes() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let pages = Dictionary(uniqueKeysWithValues: (0..<10).map { index in
+            ("p\(index)", TranscriptHistoryPage(
+                paneID: "p\(index)",
+                sessionID: "s\(index)",
+                turns: [turn(index, .assistant, "turn")],
+                hasMore: false
+            ))
+        })
+        let access = Dictionary(uniqueKeysWithValues: (0..<10).map {
+            ("p\($0)", now.addingTimeInterval(TimeInterval($0)))
+        })
+        let evictions = TranscriptHistoryRetentionPolicy.evictions(
+            pages: pages,
+            lastAccess: access,
+            missingSince: ["p9": now.addingTimeInterval(-31)],
+            now: now
+        )
+
+        XCTAssertTrue(evictions.contains("p9"))
+        XCTAssertTrue(evictions.contains("p0"))
+        XCTAssertEqual(pages.count - evictions.count, 8)
+
+        let twoPageBudget = TranscriptHistoryRetentionPolicy.estimatedBytes(pages["p8"])
+            + TranscriptHistoryRetentionPolicy.estimatedBytes(pages["p7"])
+        let byteEvictions = TranscriptHistoryRetentionPolicy.evictions(
+            pages: pages,
+            lastAccess: access,
+            missingSince: [:],
+            now: now,
+            maximumPanes: 10,
+            maximumBytes: twoPageBudget,
+            closedPaneGrace: 30
+        )
+        XCTAssertEqual(pages.count - byteEvictions.count, 2)
+    }
+
+    func testOfflineCacheDropsUnreadableAndOverCapFiles() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-history-bad-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fileURL) }
+        let store = TranscriptHistoryCacheStore(fileURL: fileURL)
+
+        try Data("not json".utf8).write(to: fileURL)
+        let unreadable = await store.load(pairingID: "pairing")
+        XCTAssertNil(unreadable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        try Data(repeating: 0, count: TranscriptHistoryCacheStore.maximumTotalBytes + 65_000)
+            .write(to: fileURL)
+        let oversized = await store.load(pairingID: "pairing")
+        XCTAssertNil(oversized)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    func testOfflineCacheBoundsEachPaneAndTotalWriteSize() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-history-bounds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fileURL) }
+        let pages = Dictionary(uniqueKeysWithValues: (0..<9).map { index in
+            ("p\(index)", TranscriptHistoryPage(
+                paneID: "p\(index)",
+                sessionID: "session",
+                turns: [turn(index, .assistant, String(repeating: "x", count: 600_000))],
+                hasMore: false
+            ))
+        })
+        let bounded = TranscriptHistoryCacheStore.boundedPages(pages)
+
+        XCTAssertEqual(bounded.count, TranscriptHistoryCacheStore.maximumPanes)
+        for page in bounded.values {
+            XCTAssertLessThanOrEqual(
+                try JSONEncoder().encode(page).count,
+                TranscriptHistoryCacheStore.maximumPaneBytes
+            )
+        }
+        let store = TranscriptHistoryCacheStore(fileURL: fileURL)
+        await store.save(pages: pages, pairingID: "pairing", sessionName: "herd")
+        let size = try XCTUnwrap(
+            fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+        XCTAssertLessThanOrEqual(size, TranscriptHistoryCacheStore.maximumTotalBytes)
+    }
+
+    func testHistoryErrorMatchesOnlyItsPendingPaneRequest() {
+        let request = PendingHistoryRequest(
+            generation: 1,
+            replacesPage: true,
+            sessionName: "herd",
+            paneID: "p1",
+            sessionID: "session",
+            requestID: "request"
+        )
+        let other = PendingHistoryRequest(
+            generation: 1,
+            replacesPage: true,
+            sessionName: "herd",
+            paneID: "p2",
+            sessionID: "session-2",
+            requestID: "request-2"
+        )
+        var pending = ["p1": request, "p2": other]
+
+        let routed = TranscriptHistoryErrorRouter.consume(
+            pending: &pending,
+            paneID: "p1",
+            sessionID: "session",
+            requestID: "request",
+            message: "This pane is closed."
+        )
+        XCTAssertEqual(routed?.paneID, "p1")
+        XCTAssertEqual(routed?.message, "This pane is closed.")
+        XCTAssertNil(pending["p1"])
+        XCTAssertNotNil(pending["p2"])
     }
 
     private func page(
@@ -121,6 +278,25 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             hasMore: hasMore,
             sinceLastSeen: 3
         )
+    }
+
+    private func snapshot(sessionID: String) throws -> SessionSnapshot {
+        let json = """
+        {
+          "version":"0.7.5","protocol":16,
+          "focused_workspace_id":null,"focused_tab_id":null,"focused_pane_id":null,
+          "workspaces":[],"tabs":[],
+          "panes":[{
+            "pane_id":"p1","terminal_id":"term-1","workspace_id":"w1",
+            "tab_id":"t1","focused":true,"cwd":"/repo",
+            "agent":"claude","agent_status":"working","revision":1,
+            "agent_session":{"agent":"claude","kind":"id",
+              "source":"herdr:claude","value":"\(sessionID)"}
+          }],
+          "layouts":[]
+        }
+        """
+        return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
     }
 
     private func turn(

@@ -181,13 +181,14 @@ final class RaiBridgeServer: ObservableObject {
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
-    private var transcriptCache: [String: TranscriptCacheEntry] = [:]
     private var transcriptPaneStates: [String: TranscriptPaneIdentity] = [:]
     private var historyDelivery = HistoryDeliveryTracker<String, ObjectIdentifier>()
     private var historyReceipts = HistoryReceiptLedger<ObjectIdentifier>()
     private var transcriptSnapshotSessionName: String?
-    private let claudeDirectory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        .appendingPathComponent(".claude", isDirectory: true)
+    private let transcriptIndex = ClaudeTranscriptIndex(
+        claudeDirectory: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".claude", isDirectory: true)
+    )
 
     init(
         model: RaiModel,
@@ -1022,20 +1023,47 @@ final class RaiBridgeServer: ObservableObject {
                 .scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()),
                 to: client
             )
-        case let .history(paneID, beforeTurnIndex, limit, herdSessionName):
+        case let .history(
+            paneID, requestedSessionID, requestID, beforeTurnIndex, limit, herdSessionName
+        ):
             guard herdSessionName == nil
                     || (herdSessionName == model.currentSessionName
                         && herdSessionName == transcriptSnapshotSessionName)
             else {
-                send(.error(message: "History is not ready for the selected session."), to: client)
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "History is not ready for the selected session."
+                ), to: client)
                 return
             }
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
-                send(.error(message: "Unknown pane \(paneID)."), to: client)
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "This pane is closed."
+                ), to: client)
+                return
+            }
+            let currentSessionID = model.beacon(forPane: paneID)?.sessionID
+                ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
+                ?? ""
+            guard requestedSessionID.isEmpty || currentSessionID.isEmpty
+                    || requestedSessionID == currentSessionID else {
+                send(.historyError(
+                    paneID: paneID,
+                    sessionID: requestedSessionID,
+                    requestID: requestID,
+                    message: "The agent session changed. Refresh history."
+                ), to: client)
                 return
             }
             let page = await transcriptHistoryPage(
                 for: pane,
+                requestedSessionID: requestedSessionID,
+                requestID: requestID,
                 beforeTurnIndex: beforeTurnIndex,
                 limit: limit,
                 herdSessionName: transcriptSnapshotSessionName,
@@ -1044,18 +1072,22 @@ final class RaiBridgeServer: ObservableObject {
             historyReceipts.recordSent(
                 HistoryPageReceipt(
                     paneID: page.paneID,
-                    sessionID: page.sessionID,
+                    sessionID: page.agentSessionID,
+                    requestID: page.requestID,
                     herdSessionName: page.herdSessionName,
                     throughTurnIndex: page.turns.last?.index
                 ),
                 connection: ObjectIdentifier(client.connection)
             )
             send(.historyPage(page), to: client)
-        case let .historyReceived(paneID, sessionID, herdSessionName, throughTurnIndex):
+        case let .historyReceived(
+            paneID, sessionID, requestID, herdSessionName, throughTurnIndex
+        ):
             let connectionID = ObjectIdentifier(client.connection)
             let receipt = HistoryPageReceipt(
                 paneID: paneID,
                 sessionID: sessionID,
+                requestID: requestID,
                 herdSessionName: herdSessionName,
                 throughTurnIndex: throughTurnIndex
             )
@@ -1091,13 +1123,15 @@ final class RaiBridgeServer: ObservableObject {
         case .pair, .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
-             .backgroundWork, .sessions, .historyPage:
+             .backgroundWork, .sessions, .historyPage, .historyError:
             send(.error(message: "Server-to-client message received from client."), to: client)
         }
     }
 
     private func transcriptHistoryPage(
         for pane: Pane,
+        requestedSessionID: String,
+        requestID: String,
         beforeTurnIndex: Int?,
         limit: Int,
         herdSessionName: String?,
@@ -1107,13 +1141,41 @@ final class RaiBridgeServer: ObservableObject {
         let knownSessionID = beacon?.sessionID
             ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
             ?? ""
-        let source = transcriptURL(for: pane, beacon: beacon)
-        let readDocument: TranscriptDocument? = if let source {
-            await Task.detached {
-                try? TranscriptReader.read(url: source)
-            }.value
+        let cwd = pane.foregroundCWD ?? pane.cwd
+        let normalizedCWD = ClaudeTranscriptLocator.standardizedPath(cwd)
+        let fallbackPaneCount = model.snapshot?.panes.filter {
+            $0.agent == "claude"
+                && ClaudeTranscriptLocator.standardizedPath($0.foregroundCWD ?? $0.cwd)
+                    == normalizedCWD
+        }.count ?? 0
+        let lookup = if model.remoteTarget == nil, beacon != nil || pane.agent == "claude" {
+            await transcriptIndex.read(
+                paneID: pane.paneID,
+                beaconPath: beacon?.transcriptPath,
+                cwd: cwd,
+                sessionID: beacon?.sessionID
+                    ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil),
+                fallbackPaneCount: fallbackPaneCount
+            )
         } else {
-            nil
+            TranscriptLookupResult.notFound
+        }
+        let source: URL?
+        let readDocument: TranscriptDocument?
+        let historyState: TranscriptHistoryState
+        switch lookup {
+        case let .found(url, document):
+            source = url
+            readDocument = document
+            historyState = .available
+        case .notFound:
+            source = nil
+            readDocument = nil
+            historyState = .notFound
+        case .ambiguous:
+            source = nil
+            readDocument = nil
+            historyState = .ambiguous
         }
         let document: TranscriptDocument?
         if let readDocument,
@@ -1143,66 +1205,38 @@ final class RaiBridgeServer: ObservableObject {
         )
         return TranscriptHistoryPage(
             paneID: basePage.paneID,
-            sessionID: basePage.sessionID,
+            sessionID: requestedSessionID,
+            resolvedSessionID: basePage.sessionID,
+            requestID: requestID,
             herdSessionName: basePage.herdSessionName,
             turns: basePage.turns,
             hasMore: basePage.hasMore,
-            sinceLastSeen: sinceLastSeen
+            sinceLastSeen: sinceLastSeen,
+            state: historyState
         )
-    }
-
-    private func transcriptURL(for pane: Pane, beacon: AgentBeacon?) -> URL? {
-        guard model.remoteTarget == nil else { return nil }
-        let identity = beacon?.sessionID
-            ?? pane.agentSession?.value
-            ?? "\(pane.agent ?? "none"):\(pane.cwd)"
-        let scopedIdentity = "\(model.currentSessionName)\u{1F}\(identity)"
-        let hasVerifiedSession = beacon != nil || pane.agentSession?.kind == .id
-        if hasVerifiedSession,
-           let cached = transcriptCache[pane.paneID], cached.identity == scopedIdentity,
-           FileManager.default.fileExists(atPath: cached.url.path) {
-            return cached.url
-        }
-        let url: URL?
-        if beacon != nil || pane.agent == "claude" {
-            // Without a reported session ID, the build plan requires the
-            // newest recent transcript from this pane's foreground cwd.
-            url = ClaudeTranscriptLocator.resolve(
-                beaconPath: beacon?.transcriptPath,
-                cwd: pane.foregroundCWD ?? pane.cwd,
-                claudeDirectory: claudeDirectory,
-                sessionID: beacon?.sessionID
-                    ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-            )
-        } else {
-            url = nil
-        }
-        if let url {
-            transcriptCache[pane.paneID] = TranscriptCacheEntry(
-                identity: scopedIdentity,
-                url: url
-            )
-        } else {
-            transcriptCache.removeValue(forKey: pane.paneID)
-        }
-        return url
     }
 
     private func invalidateTranscriptCache(using snapshot: SessionSnapshot) {
         let livePaneIDs = Set(snapshot.panes.map(\.paneID))
-        transcriptCache = transcriptCache.filter { livePaneIDs.contains($0.key) }
         transcriptPaneStates = transcriptPaneStates.filter { livePaneIDs.contains($0.key) }
+        var invalidated: [String] = []
         for pane in snapshot.panes {
             let state = TranscriptPaneIdentity(
                 agent: pane.agent,
-                sessionID: pane.agentSession?.value,
+                sessionID: pane.beacon?.sessionID ?? pane.agentSession?.value,
                 status: pane.agentStatus
             )
             if let previous = transcriptPaneStates[pane.paneID],
                state.requiresTranscriptResolution(after: previous) {
-                transcriptCache.removeValue(forKey: pane.paneID)
+                invalidated.append(pane.paneID)
             }
             transcriptPaneStates[pane.paneID] = state
+        }
+        Task { [transcriptIndex] in
+            await transcriptIndex.retainPanes(livePaneIDs)
+            for paneID in invalidated {
+                await transcriptIndex.invalidate(paneID: paneID)
+            }
         }
     }
 
@@ -1584,11 +1618,6 @@ final class RaiBridgeServer: ObservableObject {
             self.syncCredentialState()
         }
     }
-}
-
-private struct TranscriptCacheEntry {
-    let identity: String
-    let url: URL
 }
 
 /// One APNs registration. Identity is the token + environment pair: the

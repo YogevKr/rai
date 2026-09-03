@@ -372,7 +372,8 @@ struct BridgeAuditEvent: Equatable {
         case .pair, .hello, .subscribe, .attachStream, .detachStream, .readScrollback,
              .history, .historyReceived,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
-             .paneFrame, .scrollback, .backgroundWork, .sessions, .historyPage, .error:
+             .paneFrame, .scrollback, .backgroundWork, .sessions, .historyPage,
+             .historyError, .error:
             return nil
         }
     }

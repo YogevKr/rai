@@ -49,13 +49,16 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
             .history(
-                paneID: "pane-1", beforeTurnIndex: 12, limit: 50,
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-1",
+                beforeTurnIndex: 12, limit: 50,
                 herdSessionName: "default"),
             .history(
-                paneID: "pane-1", beforeTurnIndex: nil, limit: 25,
+                paneID: "pane-1", sessionID: "", requestID: "request-2",
+                beforeTurnIndex: nil, limit: 25,
                 herdSessionName: nil),
             .historyReceived(
-                paneID: "pane-1", sessionID: "session-1", herdSessionName: "default",
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-1",
+                herdSessionName: "default",
                 throughTurnIndex: 12
             ),
             .paired(
@@ -81,6 +84,8 @@ final class BridgeProtocolTests: XCTestCase {
             .historyPage(TranscriptHistoryPage(
                 paneID: "pane-1",
                 sessionID: "session-1",
+                resolvedSessionID: "session-1",
+                requestID: "request-1",
                 herdSessionName: "default",
                 turns: [TranscriptTurn(
                     index: 7,
@@ -89,8 +94,13 @@ final class BridgeProtocolTests: XCTestCase {
                     timestamp: Date(timeIntervalSince1970: 1_000)
                 )],
                 hasMore: true,
-                sinceLastSeen: 4
+                sinceLastSeen: 4,
+                state: .available
             )),
+            .historyError(
+                paneID: "pane-1", sessionID: "session-1", requestID: "request-2",
+                message: "This pane is closed."
+            ),
             .error(message: "Herdr is unavailable"),
         ]
 
@@ -136,6 +146,27 @@ final class BridgeProtocolTests: XCTestCase {
         XCTAssertEqual(
             try JSONDecoder().decode(BridgeMessage.self, from: scrollback),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false)
+        )
+        let history = Data(
+            """
+            {"type":"history","paneID":"pane-1","limit":25}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: history),
+            .history(
+                paneID: "pane-1", sessionID: "", requestID: "",
+                beforeTurnIndex: nil, limit: 25, herdSessionName: nil
+            )
+        )
+        let page = Data(
+            """
+            {"type":"historyPage","paneID":"pane-1","sessionID":"session-1","turns":[],"hasMore":false}
+            """.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: page),
+            .historyPage(TranscriptHistoryPage(
+                paneID: "pane-1", sessionID: "session-1", turns: [], hasMore: false
+            ))
         )
     }
 

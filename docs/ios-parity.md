@@ -76,12 +76,18 @@ All additive, no version bump (old phones skip unknown message types):
 - The Mac reads local Claude JSONL transcripts through a bounded parser.
 - `history` and `historyPage` add paging without a protocol version change.
 - `historyReceived` confirms delivery before the Mac advances the device cursor.
+- History requests and replies carry pane, agent session, and request identity.
+- The phone drops stale replies and resets history after an agent session change.
 - History requests and replies include the herd session name when available.
 - Bridge snapshots include the herd session name when available.
 - Each page has at most 50 turns. Each turn text has an 8 KiB limit.
 - The first page after a device reconnect can include its last delivered index.
 - The phone shows an away divider after that index.
 - The phone caches the latest 50 turns for each pane and pairing.
+- Fallback lookup requires one pane, one transcript, exact JSONL `cwd`, and root containment.
+- Ambiguous lookup asks for the hook beacon instead of selecting a transcript.
+- History errors remain local to one pane. They do not change bridge status.
+- Memory and disk history caches have pane and byte limits.
 - Old phones skip `historyPage`. Old Macs return one message error for `history`.
 - Codex and remote-host transcript history are not supported.
 

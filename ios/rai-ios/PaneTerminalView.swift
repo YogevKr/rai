@@ -318,7 +318,7 @@ struct PaneTerminalView: View {
     private var shortSessionID: String? {
         let value = pane.beacon?.sessionID
             ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-            ?? connection.historyPages[pane.paneID]?.sessionID
+            ?? connection.historyPages[pane.paneID]?.agentSessionID
         guard let value, !value.isEmpty else { return nil }
         return String(value.prefix(8))
     }
