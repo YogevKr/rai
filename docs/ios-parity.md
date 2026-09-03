@@ -68,6 +68,7 @@ All additive, no version bump (old phones skip unknown message types):
   Badge recomputation excludes alerts seen during the last app activation.
 - Background retraction is additive. Old phones ignore the custom payload.
 - Settings → iPhone now has per-device test results and a read-only Doctor.
+- The APNs P-256 key uses an owner-only file, with one-time Keychain migration.
 - APNs work uses one queue per device. A stalled device does not delay another device.
 - Snapshot pane objects include an optional Claude hook `beacon` value.
   AskUserQuestion blocks use its labels and descriptions before grid text.
@@ -172,6 +173,21 @@ The table below describes codes during normal authenticated operations.
 `BridgeErrorCode` lives in RaiCore.
 The Mac can only send values from this shared set.
 An iOS drift test requires one phone policy for every shared code.
+
+## Attach hardening LANDED (2026-09-03)
+
+- Each phone attach gets one native-size visible frame before the observe stream.
+- The history seed still arrives first. Both live paints use full replacement frames.
+- This behavior changes no bridge message shape and needs no protocol version change.
+
+## Password prompt guard LANDED (2026-09-03)
+
+- The phone blocks composed lines when the last non-empty grid row is a password prompt.
+- The guard covers quick replies, slash commands, outbox flush, and notification replies.
+- Notification replies wait up to five seconds for a current pane frame.
+- Each fresh clear frame permits at most one queued line for that pane.
+- Type mode stays available for direct keyboard input.
+- The guard does not change the bridge protocol.
 
 ## Structured prompt controls LANDED (2026-09-03)
 

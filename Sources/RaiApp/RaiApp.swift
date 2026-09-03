@@ -15,6 +15,7 @@ struct RaiApp: App {
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
+                    model.bridgeServer.apnsSettings.migrateLegacyKeyIfNeeded()
                     model.start()
                 }
         }

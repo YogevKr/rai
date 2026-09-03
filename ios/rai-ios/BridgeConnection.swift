@@ -332,6 +332,17 @@ struct PaneGridSize: Equatable {
     let rows: Int
 }
 
+enum ComposedLineSendResult: Equatable {
+    case accepted
+    case queued
+    case refused
+}
+
+private struct PasswordPromptGridEvidence {
+    let generation: UInt64
+    let grid: String
+}
+
 enum DecisionWaiterRouting {
     static func requestIDs(
         waiterSocketIDs: [String: ObjectIdentifier],
@@ -358,7 +369,6 @@ enum PushRegistrationPlan {
         ]
     }
 }
-
 @MainActor
 final class BridgeConnection: ObservableObject {
     private struct DecisionWaiter {
@@ -407,6 +417,7 @@ final class BridgeConnection: ObservableObject {
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
+    @Published private(set) var pendingComposedDrafts: [String: String] = [:]
     var didConnect: (() -> Void)?
     var didPair: ((Pairing) -> Void)?
     var didReceiveSnapshot: ((SessionSnapshot, Date) -> Void)?
@@ -445,6 +456,8 @@ final class BridgeConnection: ObservableObject {
     private let currentTimeZone: () -> TimeZone
     private let userDefaults: UserDefaults
     private let messageSender: ((BridgeMessage) async throws -> Void)?
+    private let now: () -> Date
+    private let replyFrameWaitIterations: Int
     private var timeZoneObserver: AnyCancellable?
     private static let pendingPushPreferencesKey = "bridge.pendingPushPreferences"
 
@@ -452,11 +465,15 @@ final class BridgeConnection: ObservableObject {
         notificationCenter: NotificationCenter = .default,
         currentTimeZone: @escaping () -> TimeZone = { .current },
         userDefaults: UserDefaults = .standard,
-        messageSender: ((BridgeMessage) async throws -> Void)? = nil
+        messageSender: ((BridgeMessage) async throws -> Void)? = nil,
+        now: @escaping () -> Date = Date.init,
+        replyFrameWaitIterations: Int = 50
     ) {
         self.currentTimeZone = currentTimeZone
         self.userDefaults = userDefaults
         self.messageSender = messageSender
+        self.now = now
+        self.replyFrameWaitIterations = replyFrameWaitIterations
         if let data = userDefaults.data(forKey: Self.pendingPushPreferencesKey),
            let stored = try? JSONDecoder().decode(
                StoredPendingPushPreferences.self,
@@ -477,6 +494,8 @@ final class BridgeConnection: ObservableObject {
     private var connectionGenerationHandlers: [UUID: (UInt64) -> Void] = [:]
     private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
+    private var latestGridByPaneID: [String: PasswordPromptGridEvidence] = [:]
+    private let passwordPromptGridReader = PasswordPromptGridReader()
     // A seed can land before the terminal view has registered its handler
     // (openPane fires from onAppear, which can precede makeUIView). Hold the
     // payload and deliver it on registration instead of dropping it.
@@ -706,6 +725,10 @@ final class BridgeConnection: ObservableObject {
         ))
     }
 
+    func showActionError(_ message: String) {
+        actionError = message
+    }
+
     func setPushPreferences(_ preferences: PushPreferences) {
         let preferences = PushPreferencesTimeZoneSync.applyingCurrentZone(
             to: preferences,
@@ -762,6 +785,8 @@ final class BridgeConnection: ObservableObject {
     func detachPane(paneID: String) {
         if activePaneID == paneID { activePaneID = nil }
         desiredStreams.removeValue(forKey: paneID)
+        latestGridByPaneID.removeValue(forKey: paneID)
+        passwordPromptGridReader.remove(paneID)
         // Re-opening the pane later should seed fresh history again.
         seededPanes.remove(paneID)
         Task {
@@ -912,22 +937,35 @@ final class BridgeConnection: ObservableObject {
     /// against whatever prompt exists minutes later it answers a question
     /// nobody asked. Direct-mode keys keep the old fire-and-forget behavior.
     ///
-    /// Returns true when the line went out on a live socket; false when it was
-    /// queued instead, so the compose field can hold on to its text.
+    /// Returns whether Rai delivered, queued, or refused the line.
     @discardableResult
-    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> Bool {
+    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> ComposedLineSendResult {
+        switch passwordPromptState(for: paneID) {
+        case .prompt:
+            refusePasswordPromptSend(to: paneID)
+            return .refused
+        case .unknown:
+            actionError = PasswordPromptGuard.waiting
+            enqueue(bytes, to: paneID)
+            return .queued
+        case .clear:
+            if actionError == PasswordPromptGuard.waiting {
+                actionError = nil
+            }
+            break
+        }
         if status.isConnected {
             do {
                 try await send(
                     .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
                 )
-                return true
+                return .accepted
             } catch {
                 handleSocketFailure(error)
             }
         }
         enqueue(bytes, to: paneID)
-        return false
+        return .queued
     }
 
     private func enqueue(_ bytes: [UInt8], to paneID: String) {
@@ -936,7 +974,7 @@ final class BridgeConnection: ObservableObject {
         if outbox.count >= Self.outboxLimit {
             outbox.removeFirst(outbox.count - Self.outboxLimit + 1)
         }
-        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: Date()))
+        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: now()))
         if !status.isConnected { retryNow() }
     }
 
@@ -944,34 +982,73 @@ final class BridgeConnection: ObservableObject {
         outbox.removeAll()
     }
 
+    func takePendingComposedDraft(for paneID: String) -> String? {
+        pendingComposedDrafts.removeValue(forKey: paneID)
+    }
+
+    func keepPendingComposedDraft(_ text: String, for paneID: String) {
+        pendingComposedDrafts[paneID] = text
+    }
+
+    func updateVisibleGrid(_ grid: String, for paneID: String) {
+        latestGridByPaneID[paneID] = PasswordPromptGridEvidence(
+            generation: connectionGeneration,
+            grid: grid
+        )
+        if !outbox.isEmpty {
+            flushOutbox()
+        }
+    }
+
     /// Delivered oldest-first on the next authenticated welcome. Lines older
     /// than the staleness window are dropped rather than replayed: the pane
     /// they were typed for has moved on, and a late line is worse than none.
     private func flushOutbox() {
         guard status.isConnected, !outbox.isEmpty else { return }
-        let now = Date()
-        let due = outbox.filter { now.timeIntervalSince($0.queuedAt) <= Self.outboxStaleness }
-        let dropped = outbox.count - due.count
-        outbox.removeAll()
-        if dropped > 0 {
-            actionError = "\(dropped) queued line\(dropped == 1 ? "" : "s") expired unsent"
+
+        let currentTime = now()
+        let expired = outbox.count(where: {
+            currentTime.timeIntervalSince($0.queuedAt) > Self.outboxStaleness
+        })
+        outbox.removeAll(where: {
+            currentTime.timeIntervalSince($0.queuedAt) > Self.outboxStaleness
+        })
+        if expired > 0 {
+            actionError = "\(expired) queued line\(expired == 1 ? "" : "s") expired unsent"
+        }
+        guard !outbox.isEmpty else { return }
+
+        for paneID in Set(outbox.map(\.paneID)) {
+            if passwordPromptState(for: paneID) == .prompt {
+                refusePasswordPromptSend(to: paneID)
+            }
+        }
+        guard !outbox.isEmpty else { return }
+
+        guard let index = outbox.firstIndex(where: {
+            passwordPromptState(for: $0.paneID) == .clear
+        }) else {
+            if expired == 0, actionError?.hasPrefix(PasswordPromptGuard.refusal) != true {
+                actionError = PasswordPromptGuard.waiting
+            }
+            return
+        }
+        let line = outbox.remove(at: index)
+        consumeFreshGrid(for: line.paneID)
+        if actionError == PasswordPromptGuard.waiting {
+            actionError = nil
         }
         Task {
-            for line in due {
-                do {
-                    try await send(
-                        .input(
-                            paneID: line.paneID,
-                            bytesBase64: Data(line.bytes).base64EncodedString()
-                        )
+            do {
+                try await send(
+                    .input(
+                        paneID: line.paneID,
+                        bytesBase64: Data(line.bytes).base64EncodedString()
                     )
-                } catch {
-                    // Put the rest back, in order, and let the next welcome try.
-                    let index = due.firstIndex { $0.id == line.id } ?? 0
-                    outbox.insert(contentsOf: due[index...], at: 0)
-                    handleSocketFailure(error)
-                    return
-                }
+                )
+            } catch {
+                outbox.insert(line, at: min(index, outbox.endIndex))
+                handleSocketFailure(error)
             }
         }
     }
@@ -986,6 +1063,29 @@ final class BridgeConnection: ObservableObject {
 
     private static let outboxLimit = 20
     private static let outboxStaleness: TimeInterval = 15 * 60
+
+    @discardableResult
+    private func refusePasswordPromptSend(to paneID: String) -> Bool {
+        guard passwordPromptState(for: paneID) == .prompt else {
+            return false
+        }
+        let dropped = outbox.count(where: { $0.paneID == paneID })
+        outbox.removeAll(where: { $0.paneID == paneID })
+        actionError = PasswordPromptGuard.refusalMessage(droppedQueuedLines: dropped)
+        return true
+    }
+
+    private func passwordPromptState(for paneID: String) -> PasswordPromptGuard.State {
+        guard let evidence = latestGridByPaneID[paneID],
+              evidence.generation == connectionGeneration else {
+            return .unknown
+        }
+        return PasswordPromptGuard.isPasswordPrompt(evidence.grid) ? .prompt : .clear
+    }
+
+    private func consumeFreshGrid(for paneID: String) {
+        latestGridByPaneID.removeValue(forKey: paneID)
+    }
 
     func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
         try await send(
@@ -1027,6 +1127,56 @@ final class BridgeConnection: ObservableObject {
             handleSocketFailure(error)
             return false
         }
+    }
+
+    /// Notification replies are complete lines and use the same prompt guard.
+    func connectAndSendComposedLine(
+        _ bytes: [UInt8],
+        to paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        var attachedTemporaryStream = false
+        if passwordPromptState(for: paneID) == .unknown, desiredStreams[paneID] == nil {
+            do {
+                try await send(
+                    .attachStream(paneID: paneID, cols: 80, rows: 24, fullGrid: true)
+                )
+                attachedTemporaryStream = true
+            } catch {
+                handleSocketFailure(error)
+                return false
+            }
+        }
+        actionError = PasswordPromptGuard.waiting
+        for _ in 0..<replyFrameWaitIterations where passwordPromptState(for: paneID) == .unknown {
+            guard status.isConnected else { return false }
+            try? await Task.sleep(for: .milliseconds(100))
+            if Task.isCancelled { return false }
+        }
+        guard passwordPromptState(for: paneID) != .unknown else {
+            actionError = PasswordPromptGuard.verificationFailure
+            keepPendingComposedDraft(Self.composedDraft(from: bytes), for: paneID)
+            if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
+            return false
+        }
+        let result = await sendComposedLine(bytes, to: paneID)
+        if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
+        return result == .accepted
+    }
+
+    private static func composedDraft(from bytes: [UInt8]) -> String {
+        let content = bytes.last == 0x0D ? bytes.dropLast() : bytes[...]
+        return String(decoding: content, as: UTF8.self)
     }
 
     func connectAndDecide(
@@ -1314,7 +1464,6 @@ final class BridgeConnection: ObservableObject {
             }
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
-            guard let handlers = paneFrameHandlers[paneID]?.values else { return }
             // Older Macs omit the frame's grid dimensions; clients then fall
             // back to sizing the emulator from the view.
             let grid: PaneGridSize? = if let cols, let rows, cols > 0, rows > 0 {
@@ -1322,6 +1471,15 @@ final class BridgeConnection: ObservableObject {
             } else {
                 nil
             }
+            if let text = passwordPromptGridReader.apply(
+                data: data,
+                full: full,
+                size: grid,
+                paneID: paneID
+            ) {
+                updateVisibleGrid(text, for: paneID)
+            }
+            guard let handlers = paneFrameHandlers[paneID]?.values else { return }
             for handler in handlers {
                 handler(data, full, grid)
             }
@@ -1572,6 +1730,9 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure(.protocolMismatch(protocolVersion))
             return
         }
+        // A welcome starts a new authenticated screen generation. This also
+        // invalidates prompt controls and any password grid from the old socket.
+        advanceConnectionGeneration()
         historyGeneration &+= 1
         pendingHistoryRequests.removeAll()
         self.sessionName = sessionName
@@ -1919,6 +2080,8 @@ final class BridgeConnection: ObservableObject {
 
     private func advanceConnectionGeneration() {
         connectionGeneration &+= 1
+        latestGridByPaneID.removeAll()
+        passwordPromptGridReader.removeAll()
         for handler in connectionGenerationHandlers.values {
             handler(connectionGeneration)
         }

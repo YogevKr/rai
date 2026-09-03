@@ -1006,6 +1006,21 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
+            // The recent-history seed can be empty for an alt-screen agent.
+            // Paint one current grid before observe starts, so a slow first
+            // observe frame does not leave the phone blank. Both this frame
+            // and observe's first frame are full paints, so each replaces the
+            // visible grid without adding another copy at the history seam.
+            if fullGrid,
+               let size = nativeGridSize(paneID: paneID, fallbackCols: cols, fallbackRows: rows),
+               let frame = await PaneFirstFrameCapture.capture(
+                   paneID: paneID,
+                   cols: size.cols,
+                   rows: size.rows,
+                   run: Self.runHerdrCapture
+               ) {
+                send(frame.message(paneID: paneID), to: client)
+            }
             startObserveStream(
                 paneID: paneID, cols: cols, rows: rows, fullGrid: fullGrid, for: client)
         case let .detachStream(paneID):
@@ -1506,6 +1521,25 @@ final class RaiBridgeServer: ObservableObject {
         return process.terminationStatus == 0 ? data : nil
     }
 
+    private func nativeGridSize(
+        paneID: String,
+        fallbackCols: Int,
+        fallbackRows: Int
+    ) -> (cols: Int, rows: Int)? {
+        guard let snapshot = model.snapshot,
+              let pane = snapshot.panes.first(where: { $0.paneID == paneID }) else {
+            return nil
+        }
+        let rect = snapshot.layouts.lazy
+            .flatMap(\.panes)
+            .first(where: { $0.paneID == paneID })?
+            .rect
+        let cols = rect?.width ?? fallbackCols
+        let rows = pane.scroll?.viewportRows ?? rect?.height ?? fallbackRows
+        guard cols > 0, rows > 0 else { return nil }
+        return (cols, rows)
+    }
+
     private func writeTemporaryImage(_ data: Data, filename: String) throws -> URL {
         let stem = URL(fileURLWithPath: filename)
             .deletingPathExtension().lastPathComponent
@@ -1945,6 +1979,52 @@ private struct PushRegistration: Codable, Hashable, Sendable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(deviceToken)
         hasher.combine(environment)
+    }
+}
+
+struct PaneFirstFrame: Equatable, Sendable {
+    let bytes: Data
+    let cols: Int
+    let rows: Int
+
+    func message(paneID: String) -> BridgeMessage {
+        .paneFrame(
+            paneID: paneID,
+            bytesBase64: bytes.base64EncodedString(),
+            full: true,
+            seq: 0,
+            cols: cols,
+            rows: rows
+        )
+    }
+}
+
+enum PaneFirstFrameCapture {
+    typealias Runner = ([String]) async -> Data?
+
+    static func capture(
+        paneID: String,
+        cols: Int,
+        rows: Int,
+        run: Runner
+    ) async -> PaneFirstFrame? {
+        guard cols > 0, rows > 0,
+              let data = await run([
+                  "pane", "read", paneID,
+                  "--source", "visible", "--format", "ansi",
+              ]),
+              var text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        text = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        while text.last == "\n" {
+            text.removeLast()
+        }
+        let paint = "\u{1B}[H" + text.replacingOccurrences(of: "\n", with: "\r\n")
+            + "\u{1B}[0m"
+        return PaneFirstFrame(bytes: Data(paint.utf8), cols: cols, rows: rows)
     }
 }
 

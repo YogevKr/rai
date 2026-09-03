@@ -79,7 +79,8 @@ crook for the herd:
   pairing, and missing-herdr failures. Raw connection details remain available.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
-  while you were away.
+  while you were away. A visible-grid frame paints the pane before streaming
+  starts.
 - **Conversation history** — read Claude prompts, replies, tool calls, and
   results as cards. Search, refresh, load older turns, or jump to your last prompt.
   History uses the Claude hook's transcript path and session ID. Rai never guesses
@@ -93,7 +94,8 @@ crook for the herd:
   screen. Background decisions track notification permission and later grants.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
-  rides herdr's key semantics, so Enter submits and Backspace erases.
+  rides herdr's key semantics, so Enter submits and Backspace erases. Line
+  actions stop at password prompts. Direct keyboard input remains available.
 - **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
   workspace or a fresh one at a chosen directory.
 - **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
@@ -102,6 +104,7 @@ crook for the herd:
   The phone also sets snooze periods and a daily do-not-disturb window.
   Changes remain pending during reconnects and sync after the next welcome.
 - **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
+- The Mac validates its P-256 APNs key and stores it in an owner-only file.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through
