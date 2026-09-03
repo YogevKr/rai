@@ -307,6 +307,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var predictionOverlayUpdatePending = false
     private var deferredFeedBytes: [UInt8] = []
     private var deferredFeedWorkItem: DispatchWorkItem?
+    private var predictionDecisionsDeferred = false
     private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
     private struct PredictionReconcileResult {
@@ -420,6 +421,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     }
 
     private func updatePredictionOverlay() {
+        guard PredictiveEchoViewPolicy.canPresent(
+            hasDeferredTerminalBytes: predictionDecisionsDeferred
+        ) else {
+            predictionOverlay?.isHidden = true
+            return
+        }
         guard let engine = predictiveEcho,
               let first = engine.pending.first else {
             predictionOverlay?.isHidden = true
@@ -466,6 +473,14 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     func resetPredictions() {
         predictiveEcho?.clear()
+        predictionOverlay?.isHidden = true
+        predictionOverlayUpdatePending = false
+        predictionReconcileTimer?.invalidate()
+        predictionReconcileTimer = nil
+    }
+
+    func resetPredictionsForReattach() {
+        predictiveEcho?.reset()
         predictionOverlay?.isHidden = true
         predictionOverlayUpdatePending = false
         predictionReconcileTimer?.invalidate()
@@ -699,7 +714,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         super.rangeChanged(source: source, startY: startY, endY: endY)
         terminalDisplayGeneration &+= 1
-        if predictionOverlayUpdatePending {
+        if predictionOverlayUpdatePending && !predictionDecisionsDeferred {
             predictionOverlayUpdatePending = false
             updatePredictionOverlay()
         }
@@ -716,6 +731,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         }
         if deferredFeedWorkItem != nil {
             deferredFeedBytes.append(contentsOf: slice)
+            deferPredictionDecisionsUntilFeedDrains()
             return
         }
         let disposition = feedRepaintState.disposition(
@@ -728,12 +744,18 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         switch disposition {
         case .deferToFrame(let deadline):
             deferredFeedBytes.append(contentsOf: slice)
+            deferPredictionDecisionsUntilFeedDrains()
             scheduleDeferredFeed(deadlineUptimeNanoseconds: deadline)
         case .feedNowAndRepaint:
             processReceived(slice: slice, immediateRepaintAllowed: true)
         case .feedNormally:
             processReceived(slice: slice, immediateRepaintAllowed: false)
         }
+    }
+
+    private func deferPredictionDecisionsUntilFeedDrains() {
+        predictionDecisionsDeferred = true
+        predictionOverlay?.isHidden = true
     }
 
     private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64) {
@@ -753,15 +775,23 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         let bytes = deferredFeedBytes
         deferredFeedBytes.removeAll(keepingCapacity: true)
         feedRepaintState.noteDeferredFramePaint()
-        processReceived(slice: bytes[...], immediateRepaintAllowed: false)
+        processReceived(
+            slice: bytes[...],
+            immediateRepaintAllowed: false,
+            drainsDeferredBytes: true
+        )
     }
 
     private func processReceived(
         slice: ArraySlice<UInt8>,
-        immediateRepaintAllowed: Bool
+        immediateRepaintAllowed: Bool,
+        drainsDeferredBytes: Bool = false
     ) {
         let displayGenerationBeforeFeed = terminalDisplayGeneration
         super.dataReceived(slice: slice)
+        if drainsDeferredBytes {
+            predictionDecisionsDeferred = false
+        }
         let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
         let reconciliation = reconcilePredictions(updateOverlay: false)
         let drawDecision = PredictiveEchoViewPolicy.coordinatedDraw(
@@ -1006,6 +1036,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         // (CAMetalLayer does not survive reparenting), so it must run before
         // the first-time enable below.
         super.viewDidMoveToWindow()
+        if window == nil {
+            if PredictiveEchoViewPolicy.shouldClear(for: .removedFromWindow) {
+                resetPredictions()
+            }
+            return
+        }
         enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true
@@ -1016,6 +1052,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         updateScrolledPill()
         if copyModeStatus != nil {
             showCopyModeStatus(copyModeStatus)
+        }
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        if PredictiveEchoViewPolicy.shouldClear(for: .hidden) {
+            resetPredictions()
         }
     }
 
@@ -1293,7 +1336,9 @@ struct TerminalPaneView: NSViewRepresentable {
                 guard let container, let view, view.superview === container else { return }
                 view.window?.makeFirstResponder(view)
             }
-        } else if !isFocused, view.window?.firstResponder === view {
+        } else if !isFocused {
+            view.resetPredictions()
+            guard view.window?.firstResponder === view else { return }
             // Give up first responder (e.g. while the command palette is open) so a
             // SwiftUI TextField can take keyboard focus instead of the terminal.
             DispatchQueue.main.async { [weak view] in
@@ -1369,6 +1414,7 @@ final class TerminalContainerView: NSView {
 
     func detach() {
         guard let terminalView else { return }
+        terminalView.resetPredictions()
         if terminalView.superview === self {
             terminalView.removeFromSuperview()
         }

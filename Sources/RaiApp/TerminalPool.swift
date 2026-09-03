@@ -181,7 +181,7 @@ final class TerminalPool {
         guard let entry = entries.removeValue(forKey: terminalID) else { return }
         recency.remove(terminalID)
         // Stops the pane's scroll-event stream and hides its pill.
-        (entry.view as? FocusAwareTerminalView)?.paneID = nil
+        entry.view.paneID = nil
         entry.view.removeFromSuperview()
         entry.coordinator.stop(entry.view)
     }
@@ -192,7 +192,7 @@ private final class TerminalProcessCoordinator:
     NSObject,
     @preconcurrency LocalProcessTerminalViewDelegate
 {
-    private weak var view: LocalProcessTerminalView?
+    private weak var view: FocusAwareTerminalView?
     private let terminalID: String
     private let socketPath: String
     private var started = false
@@ -207,7 +207,7 @@ private final class TerminalProcessCoordinator:
         self.socketPath = socketPath
     }
 
-    func attach(_ view: LocalProcessTerminalView) {
+    func attach(_ view: FocusAwareTerminalView) {
         guard !started else { return }
         started = true
         self.view = view
@@ -244,6 +244,9 @@ private final class TerminalProcessCoordinator:
 
     private func launch() {
         guard let view else { return }
+        if PredictiveEchoViewPolicy.shouldClear(for: .reattach) {
+            view.resetPredictionsForReattach()
+        }
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         let path = env["PATH"] ?? ""
@@ -264,7 +267,9 @@ private final class TerminalProcessCoordinator:
     // Unexpected attach exits retry exactly as before. Pool eviction calls
     // stop() first, so intentional termination can never schedule a relaunch.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        guard !intentionalStop, retries < maxRetries else { return }
+        guard !intentionalStop else { return }
+        view?.resetPredictionsForReattach()
+        guard retries < maxRetries else { return }
         retries += 1
         let delay = 0.4 * Double(retries)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

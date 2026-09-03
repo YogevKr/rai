@@ -51,6 +51,33 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.displayGlyphs(), ["b"])
     }
 
+    func testLocalTailGateDetectsBimodalDaemonLatency() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        let latencies = Array(repeating: 0.003, count: 9)
+            + [0.022]
+            + Array(repeating: 0.003, count: 10)
+        var keyTime = start
+        var cursorX = 0
+
+        for latency in latencies {
+            type("x", cursorX: cursorX, at: keyTime)
+            let confirmedColumn = cursorX
+            engine.reconcile(
+                cursor: (x: cursorX + 1, y: 5),
+                terminalMode: .plain,
+                readCell: { column, _ in column == confirmedColumn ? "x" : nil },
+                now: keyTime.addingTimeInterval(latency)
+            )
+            keyTime = keyTime.addingTimeInterval(latency + 0.001)
+            cursorX += 1
+        }
+
+        XCTAssertLessThan(engine.smoothedConfirmLatency, 0.008)
+        XCTAssertEqual(engine.recentTailConfirmLatency, 0.022, accuracy: 0.000_001)
+        type("z", cursorX: cursorX, at: keyTime)
+        XCTAssertEqual(engine.displayGlyphs(now: keyTime), ["z"])
+    }
+
     func testRemoteThresholdDoesNotDisplayAfterLocalDaemonTick() {
         engine = PredictiveEchoEngine(herdLocation: .remote)
         type("a", cursorX: 0)
@@ -405,6 +432,43 @@ final class PredictiveEchoTests: XCTestCase {
 
     func testResizeInvalidatesPresentation() {
         XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .resize))
+    }
+
+    func testFocusLossInvalidatesPresentation() {
+        XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .focusLost))
+    }
+
+    func testWindowRemovalAndHideInvalidatePresentation() {
+        XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .removedFromWindow))
+        XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .hidden))
+    }
+
+    func testReattachResetsPendingAndLearnedPredictionState() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5), terminalMode: .plain,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+
+        XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .reattach))
+        engine.reset()
+
+        XCTAssertTrue(engine.pending.isEmpty)
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+        XCTAssertEqual(engine.smoothedConfirmLatency, 0)
+        XCTAssertEqual(engine.recentTailConfirmLatency, 0)
+    }
+
+    func testDeferredTerminalBytesBlockPredictionPresentation() {
+        XCTAssertFalse(
+            PredictiveEchoViewPolicy.canPresent(hasDeferredTerminalBytes: true)
+        )
+        XCTAssertTrue(
+            PredictiveEchoViewPolicy.canPresent(hasDeferredTerminalBytes: false)
+        )
     }
 
     func testCopyModeEntryInvalidatesPresentation() {

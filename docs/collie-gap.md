@@ -152,6 +152,7 @@ bridge error codes on the Mac side; statusline strip; LAN TLS.
 
 Wave 2 Mac typing latency landed on 2026-09-03. Local panes now use safe
 predictive echo after burst confirmation. TUI mode evidence disables prediction.
-Resize, copy mode, and scrollback also clear it. Small focused-pane feeds draw
-without SwiftTerm's frame delay. Large and repeated feeds remain frame-limited.
-The bridge protocol and iOS path did not change.
+Resize, copy mode, focus loss, hiding, reconnect, and scrollback also clear it.
+A 20-confirm tail window detects herdr's bimodal delay. Small focused-pane
+feeds draw without SwiftTerm's frame delay. Large and repeated feeds remain
+frame-limited. The bridge protocol and iOS path did not change.

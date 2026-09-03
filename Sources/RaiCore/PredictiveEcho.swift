@@ -21,7 +21,7 @@ import Foundation
 ///
 /// Display is gated adaptively, also like mosh, and *conservatively for
 /// secrets*: glyphs are shown only when the link has demonstrated slowness
-/// (smoothed confirm latency above `displayLatencyThreshold`) AND the current
+/// (recent tail latency above `displayLatencyThreshold`) AND the current
 /// input burst has at least one server-confirmed echo. Every Enter/control
 /// key starts a new burst with no confidence, so typing at a hidden-input
 /// prompt (`sudo`, `ssh`, `read -s`) — always preceded by Enter — never
@@ -64,10 +64,11 @@ public final class PredictiveEchoEngine {
         case local
         case remote
 
-        /// Local herdr flushes input on a measured ~20 ms tick. Eight
-        /// milliseconds stays below that tick while keeping sub-frame echoes
-        /// on the authoritative rendering path. Remote links retain the prior
-        /// 60 ms threshold to avoid prediction on fast network connections.
+        /// Local herdr echo is bimodal. Three 60-sample runs measured
+        /// median/p90 values of 20.3/22.2, 20.1/25.1, and 4.4/22.3 ms.
+        /// The combined range was 0.6–30.5 ms. An eight-millisecond threshold
+        /// catches the periodic daemon tick through the recent-tail signal.
+        /// Remote links retain 60 ms to avoid prediction on fast connections.
         public var displayLatencyThreshold: TimeInterval {
             switch self {
             case .local: 0.008
@@ -93,9 +94,13 @@ public final class PredictiveEchoEngine {
 
     public private(set) var pending: [Prediction] = []
 
-    /// Smoothed observed echo latency, seconds. Starts at zero so a fast herd
-    /// never shows an overlay. Only confirmed echoes ever move it.
+    /// Smoothed observed echo latency, in seconds, used for the retraction window.
+    /// Only confirmed echoes move it.
     public private(set) var smoothedConfirmLatency: TimeInterval = 0
+
+    /// Maximum confirm latency among the last 20 authoritative echoes.
+    /// A center-weighted signal misses herdr's one-in-ten 20–30 ms tick.
+    public private(set) var recentTailConfirmLatency: TimeInterval = 0
 
     /// True once the current input burst has a server-confirmed echo — the
     /// evidence that the program at the other end is echoing what we type.
@@ -105,6 +110,8 @@ public final class PredictiveEchoEngine {
     private let displayLatencyThreshold: TimeInterval
     private let retractionFloor: TimeInterval
     private let maxPending: Int
+    private var recentConfirmLatencies: [TimeInterval] = []
+    private static let confirmLatencyWindowSize = 20
 
     public init(
         ttl: TimeInterval = 5.0,
@@ -226,7 +233,7 @@ public final class PredictiveEchoEngine {
     public func displayGlyphs(now: Date = Date()) -> [Character] {
         guard !pending.isEmpty,
               echoConfirmedThisBurst,
-              smoothedConfirmLatency > displayLatencyThreshold
+              recentTailConfirmLatency > displayLatencyThreshold
         else { return [] }
         return pending.map(\.character)
     }
@@ -236,11 +243,26 @@ public final class PredictiveEchoEngine {
         echoConfirmedThisBurst = false
     }
 
+    /// Clears pending input and learned latency for a new terminal attachment.
+    public func reset() {
+        clear()
+        smoothedConfirmLatency = 0
+        recentTailConfirmLatency = 0
+        recentConfirmLatencies.removeAll(keepingCapacity: true)
+    }
+
     private func recordConfirmLatency(_ latency: TimeInterval) {
         echoConfirmedThisBurst = true
         smoothedConfirmLatency = smoothedConfirmLatency == 0
             ? latency
             : smoothedConfirmLatency * 0.7 + latency * 0.3
+        recentConfirmLatencies.append(latency)
+        if recentConfirmLatencies.count > Self.confirmLatencyWindowSize {
+            recentConfirmLatencies.removeFirst(
+                recentConfirmLatencies.count - Self.confirmLatencyWindowSize
+            )
+        }
+        recentTailConfirmLatency = recentConfirmLatencies.max() ?? 0
     }
 }
 
@@ -250,6 +272,10 @@ public enum PredictiveEchoViewPolicy {
         case resize
         case enterCopyMode
         case scroll(offsetFromBottom: Int)
+        case focusLost
+        case removedFromWindow
+        case hidden
+        case reattach
     }
 
     public enum OverlayPlacement: Equatable {
@@ -265,11 +291,15 @@ public enum PredictiveEchoViewPolicy {
 
     public static func shouldClear(for event: Invalidation) -> Bool {
         switch event {
-        case .resize, .enterCopyMode:
+        case .resize, .enterCopyMode, .focusLost, .removedFromWindow, .hidden, .reattach:
             return true
         case .scroll(let offsetFromBottom):
             return offsetFromBottom != 0
         }
+    }
+
+    public static func canPresent(hasDeferredTerminalBytes: Bool) -> Bool {
+        !hasDeferredTerminalBytes
     }
 
     public static func overlayPlacement(

@@ -74,7 +74,7 @@ scripts/herdr-lab.sh start
 RAI_LAB_SOCKET=$(scripts/herdr-lab.sh socket)
 RAI_LAB_TERMINAL=$(HERDR_SOCKET_PATH="$RAI_LAB_SOCKET" herdr api snapshot \
   | jq -r '.result.snapshot.panes[0].terminal_id')
-scripts/attach-latency.py "$RAI_LAB_SOCKET" "$RAI_LAB_TERMINAL" 100
+scripts/attach-latency.py "$RAI_LAB_SOCKET" "$RAI_LAB_TERMINAL" 60
 scripts/herdr-lab.sh stop
 ```
 
@@ -84,7 +84,6 @@ Results from 2026-09-03 used a debug build on the same Mac:
 | --- | ---: | ---: | ---: |
 | terminal key to display update | 200 | 0.239 / 0.407 ms | 0.281 / 0.403 ms |
 | key to prediction overlay draw | 200 | 0.157 / 0.218 ms | 0.169 / 0.231 ms |
-| herdr attach echo | 100 | 3.1 / 4.5 ms | not applicable |
 
 The baseline command used `--no-fast-path`. The guarded command omitted it.
 The prediction flag does not change the prediction path. Its difference is
@@ -95,11 +94,23 @@ Its p90 was 0.004 ms faster. SwiftTerm already updates immediately after a
 key event. Rai's guard now limits that behavior by feed size and frame rate.
 
 The baseline terminal range was 0.146–0.642 ms. The guarded range was
-0.156–0.480 ms. The attach range was 0.0–27.5 ms.
+0.156–0.480 ms.
 
-The current isolated-lab attach result is below the 8 ms local prediction
-threshold. Therefore local prediction stays hidden on this run. The earlier
-20 ms daemon tick would cross that threshold.
+Three fresh isolated-lab runs used 60 samples each:
+
+| Run | Median | p90 |
+| --- | ---: | ---: |
+| 1 | 20.3 ms | 22.2 ms |
+| 2 | 20.1 ms | 25.1 ms |
+| 3 | 4.4 ms | 22.3 ms |
+
+The combined range was 0.6–30.5 ms. Most echoes complete below 5 ms.
+About one in ten waits for a 20–30 ms daemon tick. A smoothed center can
+remain below 8 ms and miss this tail.
+
+Local prediction now uses the maximum of the last 20 confirmed echoes.
+The 8 ms threshold detects a recent daemon-tick delay. Display still requires
+a confirmed echo in the current burst.
 
 The four-pane CPU guard used 200,000 bytes per second for 20 seconds.
 CoreGraphics used 88.6% CPU in the earlier baseline and 67.3% now. The feeds
