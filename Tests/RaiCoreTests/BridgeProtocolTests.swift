@@ -20,7 +20,10 @@ final class BridgeProtocolTests: XCTestCase {
             name: "Yogev’s iPhone",
             platform: "iOS",
             model: "iPhone",
-            capabilities: [BridgeCapability.permissionDecisions]
+            capabilities: [
+                BridgeCapability.permissionDecisions,
+                BridgeCapability.permissionDecisionPush,
+            ]
         )
         let messages: [BridgeMessage] = [
             .pair(
@@ -50,6 +53,7 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
             .decide(paneID: "pane-1", requestID: "request-1", decision: .allow),
+            .decisionAvailability(available: false, pushAuthorized: false),
             .paired(
                 token: "device-token",
                 protocolVersion: bridgeProtocolVersion,

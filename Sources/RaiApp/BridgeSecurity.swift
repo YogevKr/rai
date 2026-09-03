@@ -376,6 +376,7 @@ struct BridgeAuditEvent: Equatable {
         case let .selectSession(name):
             self.init(action: "selectSession", targets: ["session": name])
         case .pair, .hello, .subscribe, .attachStream, .detachStream, .readScrollback,
+             .decisionAvailability,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
              .paneFrame, .scrollback, .backgroundWork, .sessions, .error, .paneError,
              .decisionResult:

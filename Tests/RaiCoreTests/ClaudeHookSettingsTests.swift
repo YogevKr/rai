@@ -99,6 +99,37 @@ final class ClaudeHookSettingsTests: XCTestCase {
         )
     }
 
+    func testPermissionTimeoutOrderingLeavesTwoProcessingMargins() throws {
+        let hold = 37
+        let hookRead = ClaudeHookSettings.hookReadTimeout(forHoldSeconds: hold)
+        let claude = ClaudeHookSettings.claudeTimeout(forHoldSeconds: hold)
+        let merged = try ClaudeHookSettings.merged(
+            settings: nil,
+            scriptPath: scriptPath,
+            decisionHoldSeconds: hold
+        )
+        let hooks = try XCTUnwrap(try object(merged)["hooks"] as? [String: Any])
+        let groups = try XCTUnwrap(hooks["PermissionRequest"] as? [[String: Any]])
+        let handler = try XCTUnwrap(
+            groups.compactMap { $0["hooks"] as? [[String: Any]] }.flatMap { $0 }.first
+        )
+
+        XCTAssertEqual(hookRead, 47)
+        XCTAssertEqual(claude, 52)
+        XCTAssertLessThan(hold, hookRead)
+        XCTAssertLessThan(hookRead, claude)
+        XCTAssertEqual(handler["timeout"] as? Int, claude)
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = try String(
+            contentsOf: root.appendingPathComponent("Resources/rai-hook.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(script.contains("float(sys.argv[2]) + 10.0"))
+    }
+
     private func fixture(named name: String) throws -> Data {
         let url = try XCTUnwrap(
             Bundle.module.url(

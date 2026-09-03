@@ -438,82 +438,16 @@ public enum AgentNotificationBody {
         default:
             status == .working ? "Working" : "Idle"
         }
-        return redactingSecrets(in: body, isCompletion: status == .done)
+        return PushTextRedactor.standard(body, isCompletion: status == .done)
     }
 
     public static func composeDecision(beacon: AgentBeacon) -> String {
-        redactingSecrets(
-            in: beacon.permissionDecisionSummary ?? "Needs you",
-            isCompletion: false
+        PushTextRedactor.permission(
+            beacon.permissionDecisionSummary ?? "Needs you",
+            agent: "Claude"
         )
     }
 
-    private static func redactingSecrets(
-        in value: String,
-        isCompletion: Bool
-    ) -> String {
-        if value.range(
-            of: #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#,
-            options: .regularExpression
-        ) != nil {
-            return "Sensitive request details redacted"
-        }
-        let patterns = [
-            #"(?i)(\b(?:proxy-)?authorization\s*:\s*(?:basic|bearer)\s+)[A-Za-z0-9._~+/=-]{4,}"#,
-            #"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}"#,
-            #"(?i)(\b(?:sk-(?:proj-)?|gh[pousr]_))[A-Za-z0-9_-]{8,}"#,
-            #"([?&][^=&#\s]+\s*=\s*)[^&#\s]+"#,
-            #"(?i)(https?://[^\s#]+#)[^\s]+"#,
-            #"(?i)(://)[^/@\s]+:[^/@\s]+@"#,
-            #"(?i)(\b(?:cookie|set-cookie)\s*:\s*)[^'"\s]+"#,
-            #"(?i)(\b[A-Z0-9_]*(?:token|secret|password|passwd|session|cookie|api[_-]?key|private[_-]?key|credential)[A-Z0-9_]*\b\s*[:=]\s*)[^\s,;&]+"#,
-            #"(?i)(\s(?:-H|--header)\s+['"]?[^:'"\s]+:\s*)[^'"\s]+"#,
-            #"(?i)(--?(?:password|token|secret|api[_-]?key)\s+)[^\s]+"#,
-            #"(?i)(\s(?:-u|--user)\s+)[^\s]+"#,
-            #"(?i)(\s(?:-b|--cookie)\s+)[^\s]+"#,
-            #"(?i)(\s(?:-d|--data(?:-raw|-binary|-urlencode)?)\s+)[^\s]+"#,
-            #"((?:^|\s)[A-Za-z_][A-Za-z0-9_]*=)[^\s]+"#,
-            #"(?i)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#,
-            #"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b"#,
-            #"\bAIza[A-Za-z0-9_-]{20,}\b"#,
-            #"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"#,
-            #"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b"#,
-        ]
-        let redacted = patterns.reduce(value) { result, pattern in
-            guard let expression = try? NSRegularExpression(pattern: pattern) else {
-                return result
-            }
-            let range = NSRange(result.startIndex..<result.endIndex, in: result)
-            return expression.stringByReplacingMatches(
-                in: result,
-                range: range,
-                withTemplate: pattern.hasPrefix(#"(?i)\beyJ"#)
-                    || pattern.hasPrefix(#"\b(?:AKIA"#)
-                    || pattern.hasPrefix(#"\bAIza"#)
-                    || pattern.hasPrefix(#"\bxox"#)
-                    || pattern.hasPrefix(#"\b(?:sk|rk)"#)
-                    ? "<redacted>"
-                    : "$1<redacted>"
-            )
-        }
-        guard isCompletion else { return redacted }
-
-        let sensitivePhrase = try? NSRegularExpression(
-            pattern: #"(?i)\b(?:password|passwd|passcode|credential|cookie|secret|private[ _-]?key|api[ _-]?key|access[ _-]?key|auth(?:entication)?[ _-]?(?:key|token)|session[ _-]?(?:key|token))\b"#
-        )
-        let redactedRange = NSRange(redacted.startIndex..<redacted.endIndex, in: redacted)
-        if sensitivePhrase?.firstMatch(in: redacted, range: redactedRange) != nil {
-            return "Sensitive completion details redacted"
-        }
-
-        let opaqueCredential = try? NSRegularExpression(
-            pattern: #"(?=[A-Za-z0-9_+/=-]{24,}\b)(?=[A-Za-z0-9_+/=-]*[A-Za-z])(?=[A-Za-z0-9_+/=-]*[0-9])[A-Za-z0-9_+/=-]{24,}"#
-        )
-        if opaqueCredential?.firstMatch(in: redacted, range: redactedRange) != nil {
-            return "Sensitive completion details redacted"
-        }
-        return redacted
-    }
 }
 
 public struct BeaconPaneCandidate: Equatable, Sendable {

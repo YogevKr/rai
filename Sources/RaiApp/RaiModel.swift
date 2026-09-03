@@ -390,6 +390,9 @@ final class RaiModel: ObservableObject {
                 notificationsMuted,
                 forKey: Self.notificationsMutedDefaultsKey
             )
+            if notificationsMuted {
+                reevaluatePendingDecisions()
+            }
         }
     }
     // Sidebar agents panel: how it sorts, whether it is collapsed, and how much
@@ -663,7 +666,7 @@ final class RaiModel: ObservableObject {
                     max(
                         incoming.decisionHoldSeconds
                             ?? ClaudeHookSettings.defaultDecisionHoldSeconds,
-                        1
+                        ClaudeHookSettings.minimumDecisionHoldSeconds
                     ),
                     ClaudeHookSettings.maximumDecisionHoldSeconds
                 )
@@ -768,11 +771,23 @@ final class RaiModel: ObservableObject {
     private func scheduleDecisionDeadline(_ pending: PendingDecision) {
         decisionDeadlineTasks[pending.requestID]?.cancel()
         decisionDeadlineTasks[pending.requestID] = Task { [weak self] in
-            let duration = max(0, pending.deadline.timeIntervalSinceNow)
-            try? await Task.sleep(for: .seconds(duration))
-            guard !Task.isCancelled else { return }
-            self?.finishDecision(requestID: pending.requestID, decision: nil)
+            while !Task.isCancelled {
+                guard let self,
+                      self.pendingDecisions[pending.requestID] != nil
+                else { return }
+                if !self.shouldHoldDecision() || pending.deadline <= Date() {
+                    self.finishDecision(requestID: pending.requestID, decision: nil)
+                    return
+                }
+                let duration = min(1, max(0, pending.deadline.timeIntervalSinceNow))
+                try? await Task.sleep(for: .seconds(duration))
+            }
         }
+    }
+
+    func reevaluatePendingDecisions() {
+        guard !pendingDecisions.isEmpty, !shouldHoldDecision() else { return }
+        finishAllPendingDecisions()
     }
 
     @discardableResult

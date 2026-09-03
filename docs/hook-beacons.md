@@ -265,7 +265,11 @@ The `PermissionRequest` handler runs in synchronous mode.
 
 Its timeout equals the selected hold time plus 15 seconds.
 
-The hold time defaults to 45 seconds and has a 60-second limit.
+The hold time defaults to 45 seconds and accepts values from 5 through 60 seconds.
+
+The script read timeout equals the hold time plus 10 seconds.
+
+This order gives Rai five seconds to start and Claude five seconds to finish.
 
 All other handlers use Claude Code asynchronous hook mode.
 
@@ -278,6 +282,8 @@ The script always exits zero.
 Non-decision events write no hook output.
 
 The permission handler waits for one JSON response line.
+
+Rai accepts that request line within two seconds and limits it to 64 KiB.
 
 `none`, socket errors, and timeouts write no output.
 
@@ -304,6 +310,12 @@ Mac notifications and APNs pushes use the same body builder.
 Held permission pushes include Approve and Deny actions.
 
 They include the request ID and an actionable tool question.
+
+A conservative filter protects decision text before it reaches the lock screen.
+
+Credential labels, authorization headers, long digit values, and opaque values use generic text.
+
+URL query values never reach the lock screen.
 
 Direct file commands show their command and path.
 
@@ -349,6 +361,10 @@ Old phone decoders ignore unknown object fields.
 
 Phones announce decision support during bridge authentication.
 
+The phone also sends `decisionAvailability` when notification or foreground state changes.
+
+Notification permission enables background decisions. A foreground bridge connection also enables decisions.
+
 Rai never holds for an old phone without this capability.
 
 The phone shows Approve, Deny, and the remaining hold time.
@@ -362,6 +378,10 @@ The hook keeps its socket open while the Mac holds the request.
 The beacon carries the installed hold time to set the same deadline.
 
 Rai holds only when the phone is reachable and the user is away.
+
+Rai checks these conditions each second while it holds a request.
+
+Rai ends the hold when the user returns or all capable phones disconnect.
 
 The feature toggle is on by default in Settings → Integrations.
 
@@ -388,5 +408,11 @@ A denied response includes a message:
 These shapes match the Claude hooks reference and the interactive check.
 
 Always-allow and auto-mode choices stay on the Mac.
+
+The phone maps only exact `Yes` and `No` labels to hook decisions.
+
+It hides all other choices and shows `answer on the Mac`.
+
+The countdown uses elapsed phone time from beacon receipt. It does not compare Mac and phone wall clocks.
 
 Older Macs and beacons without request IDs keep the key-based phone path.

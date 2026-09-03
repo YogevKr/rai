@@ -121,7 +121,7 @@ final class SettingsStore: ObservableObject {
     }
 
     static func clampedDecisionHoldSeconds(_ value: Int) -> Int {
-        min(max(value, 1), ClaudeHookSettings.maximumDecisionHoldSeconds)
+        ClaudeHookSettings.clampedDecisionHoldSeconds(value)
     }
 
     var activeThemeVariant: ThemeVariant {
@@ -1820,13 +1820,13 @@ private struct IntegrationsSettingsView: View {
                         Stepper(
                             "\(settings.answerFromPhoneHoldSeconds) seconds",
                             value: $settings.answerFromPhoneHoldSeconds,
-                            in: 1...ClaudeHookSettings.maximumDecisionHoldSeconds
+                            in: ClaudeHookSettings.minimumDecisionHoldSeconds...ClaudeHookSettings.maximumDecisionHoldSeconds
                         )
                     }
                     .disabled(!settings.answerFromPhone)
 
                     Text(
-                        "Reinstall hooks after changing the hold. The preview shows a \(settings.answerFromPhoneHoldSeconds + 15)-second Claude timeout."
+                        "Reinstall hooks after changing the hold. The preview shows a \(ClaudeHookSettings.claudeTimeout(forHoldSeconds: settings.answerFromPhoneHoldSeconds))-second Claude timeout."
                     )
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.textTertiary)

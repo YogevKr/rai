@@ -83,7 +83,8 @@ crook for the herd:
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
   answer the wrong prompt. Permission hooks send data decisions, with keys
-  as the fallback for older Macs.
+  as the fallback for older Macs. Sensitive permission text stays off the
+  lock screen. Background decisions require notification permission.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
   rides herdr's key semantics, so Enter submits and Backspace erases.

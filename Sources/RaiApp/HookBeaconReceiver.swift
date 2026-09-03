@@ -104,7 +104,8 @@ final class HookBeaconReceiver: @unchecked Sendable {
             .appendingPathComponent("hooks.sock")
     }
 
-    private static let maximumLineBytes = 256 * 1_024
+    private static let maximumLineBytes = 64 * 1_024
+    private static let lineReadDeadlineNanoseconds: UInt64 = 2_000_000_000
 
     private let socketURL: URL
     private let onBeacon: @Sendable (AgentBeacon, HookDecisionReply?) -> Void
@@ -214,23 +215,31 @@ final class HookBeaconReceiver: @unchecked Sendable {
 
     /// Returns true when a decision reply owns the client descriptor.
     private func receiveOneLine(from descriptor: Int32) -> Bool {
-        var timeout = timeval(tv_sec: 1, tv_usec: 0)
-        _ = setsockopt(
-            descriptor,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            &timeout,
-            socklen_t(MemoryLayout<timeval>.size)
-        )
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + Self.lineReadDeadlineNanoseconds
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 8_192)
         while data.count <= Self.maximumLineBytes {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return false }
+            let remainingMicroseconds = max(1, (deadline - now) / 1_000)
+            var timeout = timeval(
+                tv_sec: Int(remainingMicroseconds / 1_000_000),
+                tv_usec: Int32(remainingMicroseconds % 1_000_000)
+            )
+            _ = setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                &timeout,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             guard count > 0 else { return false }
             if let newline = buffer[..<count].firstIndex(of: 0x0A) {
+                guard data.count + newline <= Self.maximumLineBytes else { return false }
                 data.append(contentsOf: buffer[..<newline])
-                guard data.count <= Self.maximumLineBytes,
-                      let beacon = try? JSONDecoder().decode(AgentBeacon.self, from: data)
+                guard let beacon = try? JSONDecoder().decode(AgentBeacon.self, from: data)
                 else { return false }
                 if beacon.event == "PermissionRequest",
                    beacon.awaitsDecision,
@@ -242,6 +251,7 @@ final class HookBeaconReceiver: @unchecked Sendable {
                 onBeacon(beacon, nil)
                 return false
             }
+            guard data.count + count <= Self.maximumLineBytes else { return false }
             data.append(contentsOf: buffer[..<count])
         }
         return false

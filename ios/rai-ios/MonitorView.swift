@@ -404,6 +404,9 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
                             approve: canAnswer(item.pane)
                                 ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
@@ -433,6 +436,9 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
                             approve: canAnswer(item.pane)
                                 ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
@@ -557,6 +563,9 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
                             approve: canAnswer(item.pane)
                                 ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
@@ -954,6 +963,7 @@ private struct NightSectionHeader: View {
 private struct NightAgentRow: View {
     let item: NeedsYouAgent
     let backgroundWork: [String]
+    let decisionReceivedAt: Date?
     var approve: (() -> Void)?
     var deny: (() -> Void)?
 
@@ -984,12 +994,14 @@ private struct NightAgentRow: View {
                             .lineLimit(1)
                     }
                     if let beacon = item.pane.beacon,
-                       beacon.awaitsDecision,
-                       let deadline = beacon.deadline {
+                       beacon.awaitsDecision {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text(
-                                "held for you · \(max(0, Int(ceil(deadline.timeIntervalSince(context.date))))) s"
+                            let seconds = HeldDecisionCountdown.remainingSeconds(
+                                beacon: beacon,
+                                receivedAt: decisionReceivedAt ?? context.date,
+                                now: context.date
                             )
+                            Text("held for you · \(seconds) s")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(Night.amber)
                         }

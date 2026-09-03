@@ -229,6 +229,37 @@ final class HookBeaconReceiverTests: XCTestCase {
         XCTAssertEqual(object["decision"], "allow")
     }
 
+    func testReceiverDropsByteDripAtAbsoluteDeadline() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let received = expectation(description: "second client accepted")
+        let receiver = HookBeaconReceiver(socketURL: fixture.socketURL) { _ in
+            received.fulfill()
+        }
+        try receiver.start()
+        defer { receiver.stop() }
+
+        let dripDescriptor = try rawSocket(path: fixture.socketURL.path)
+        let dripFinished = expectation(description: "drip stopped")
+        DispatchQueue.global().async {
+            defer {
+                Darwin.close(dripDescriptor)
+                dripFinished.fulfill()
+            }
+            var byte: UInt8 = 0x7B
+            for _ in 0..<24 {
+                let sent = Darwin.send(dripDescriptor, &byte, 1, MSG_NOSIGNAL)
+                if sent != 1 { return }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+        }
+
+        let valid = try UnixSocket(path: fixture.socketURL.path)
+        try valid.writeLine(Data(samplePayload(event: "Stop").utf8.dropLast()))
+        wait(for: [received], timeout: 3.5)
+        wait(for: [dripFinished], timeout: 1)
+    }
+
     func testDecisionReplyReportsAClosedPeer() throws {
         var descriptors = [Int32](repeating: -1, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
@@ -294,6 +325,13 @@ final class HookBeaconReceiverTests: XCTestCase {
         ))
     }
 
+    @MainActor
+    func testDecisionHoldUsesFiveSecondLowerBound() {
+        XCTAssertEqual(ClaudeHookSettings.clampedDecisionHoldSeconds(1), 5)
+        XCTAssertEqual(SettingsStore.clampedDecisionHoldSeconds(-10), 5)
+        XCTAssertEqual(SettingsStore.clampedDecisionHoldSeconds(90), 60)
+    }
+
     func testDecisionRoutingRejectsWrongPaneAndDeadline() {
         let now = Date()
         let pending = PendingDecision(
@@ -357,13 +395,13 @@ final class HookBeaconReceiverTests: XCTestCase {
                 timestamp: 1,
                 requestID: "request-1",
                 awaitsDecision: true,
-                decisionHoldSeconds: 1
+                decisionHoldSeconds: 5
             ),
             decisionReply: HookDecisionReply(descriptor: descriptors[0])
         )
         XCTAssertNotNil(model.pendingDecisions["request-1"])
 
-        try await Task.sleep(for: .milliseconds(1_200))
+        try await Task.sleep(for: .milliseconds(5_200))
         var buffer = [UInt8](repeating: 0, count: 128)
         let count = Darwin.read(descriptors[1], &buffer, buffer.count)
 
@@ -372,6 +410,89 @@ final class HookBeaconReceiverTests: XCTestCase {
         XCTAssertEqual(line, "{\"decision\":\"none\"}\n")
         XCTAssertNil(model.pendingDecisions["request-1"])
         XCTAssertFalse(model.agentBeacons["pane-1"]?.awaitsDecision == true)
+    }
+
+    @MainActor
+    func testHeldDecisionEndsWhenUserReturnsOrPhoneDrops() async throws {
+        _ = NSApplication.shared
+        let defaultsName = "rai-decision-presence-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let snapshot = try JSONDecoder().decode(
+            SessionSnapshot.self,
+            from: Data(Self.decisionSnapshotJSON.utf8)
+        )
+        let idle = LockedInterval(1_000)
+        let phone = LockedBool(true)
+        let model = RaiModel(
+            client: HerdrClient(socketPath: "/nonexistent/herdr.sock"),
+            userDefaults: defaults,
+            userIdleSeconds: { idle.value },
+            phoneReachable: { phone.value }
+        )
+        model.adoptSnapshotForTesting(snapshot)
+        var descriptors = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
+        defer { Darwin.close(descriptors[1]) }
+
+        await model.receiveAgentBeacon(
+            AgentBeacon(
+                event: "PermissionRequest",
+                paneID: "pane-1",
+                sessionID: "session-1",
+                cwd: "/repo",
+                transcriptPath: "/tmp/session.jsonl",
+                timestamp: 1,
+                requestID: "request-presence",
+                awaitsDecision: true,
+                decisionHoldSeconds: 30
+            ),
+            decisionReply: HookDecisionReply(descriptor: descriptors[0])
+        )
+        XCTAssertNotNil(model.pendingDecisions["request-presence"])
+
+        idle.value = 0
+        try await Task.sleep(for: .milliseconds(1_200))
+        var buffer = [UInt8](repeating: 0, count: 128)
+        let count = Darwin.read(descriptors[1], &buffer, buffer.count)
+
+        XCTAssertGreaterThan(count, 0)
+        XCTAssertEqual(
+            String(decoding: buffer.prefix(max(0, count)), as: UTF8.self),
+            "{\"decision\":\"none\"}\n"
+        )
+        XCTAssertNil(model.pendingDecisions["request-presence"])
+
+        idle.value = 1_000
+        var phoneDescriptors = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &phoneDescriptors), 0)
+        defer { Darwin.close(phoneDescriptors[1]) }
+        await model.receiveAgentBeacon(
+            AgentBeacon(
+                event: "PermissionRequest",
+                paneID: "pane-1",
+                sessionID: "session-1",
+                cwd: "/repo",
+                transcriptPath: "/tmp/session.jsonl",
+                timestamp: 2,
+                requestID: "request-phone",
+                awaitsDecision: true,
+                decisionHoldSeconds: 30
+            ),
+            decisionReply: HookDecisionReply(descriptor: phoneDescriptors[0])
+        )
+        XCTAssertNotNil(model.pendingDecisions["request-phone"])
+
+        phone.value = false
+        try await Task.sleep(for: .milliseconds(1_200))
+        let phoneCount = Darwin.read(phoneDescriptors[1], &buffer, buffer.count)
+
+        XCTAssertGreaterThan(phoneCount, 0)
+        XCTAssertEqual(
+            String(decoding: buffer.prefix(max(0, phoneCount)), as: UTF8.self),
+            "{\"decision\":\"none\"}\n"
+        )
+        XCTAssertNil(model.pendingDecisions["request-phone"])
     }
 
     func testHookScriptAddsEventAndPaneID() throws {
@@ -528,6 +649,33 @@ final class HookBeaconReceiverTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func rawSocket(path: String) throws -> Int32 {
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw UnixSocketError.systemCall("socket", errno) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(path.utf8)
+        withUnsafeMutableBytes(of: &address.sun_path) { bytes in
+            bytes.initializeMemory(as: UInt8.self, repeating: 0)
+            bytes.copyBytes(from: pathBytes)
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        guard result == 0 else {
+            let code = errno
+            Darwin.close(descriptor)
+            throw UnixSocketError.systemCall("connect", code)
+        }
+        return descriptor
+    }
+
     private final class Fixture {
         let directory: URL
         let socketURL: URL
@@ -561,6 +709,50 @@ final class HookBeaconReceiverTests: XCTestCase {
             lock.lock()
             beacon = value
             lock.unlock()
+        }
+    }
+
+    private final class LockedInterval: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: TimeInterval
+
+        init(_ value: TimeInterval) {
+            stored = value
+        }
+
+        var value: TimeInterval {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return stored
+            }
+            set {
+                lock.lock()
+                stored = newValue
+                lock.unlock()
+            }
+        }
+    }
+
+    private final class LockedBool: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Bool
+
+        init(_ value: Bool) {
+            stored = value
+        }
+
+        var value: Bool {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return stored
+            }
+            set {
+                lock.lock()
+                stored = newValue
+                lock.unlock()
+            }
         }
     }
 }

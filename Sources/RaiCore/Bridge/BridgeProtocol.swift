@@ -8,6 +8,7 @@ public let bridgeProtocolVersion = 6
 
 public enum BridgeCapability {
     public static let permissionDecisions = "permission_decisions"
+    public static let permissionDecisionPush = "permission_decision_push"
 }
 
 public struct ClientInfo: Codable, Equatable, Sendable {
@@ -33,6 +34,10 @@ public struct ClientInfo: Codable, Equatable, Sendable {
 
     public var supportsPermissionDecisions: Bool {
         capabilities?.contains(BridgeCapability.permissionDecisions) == true
+    }
+
+    public var supportsPermissionDecisionPush: Bool {
+        capabilities?.contains(BridgeCapability.permissionDecisionPush) == true
     }
 }
 
@@ -117,6 +122,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// act as keystrokes, not pasted text — e.g. answering a Claude dialog.
     case sendKeys(paneID: String, keys: [String])
     case decide(paneID: String, requestID: String, decision: RemotePermissionDecision)
+    case decisionAvailability(available: Bool, pushAuthorized: Bool)
     case renameWorkspace(workspaceID: String, label: String)
     case closeWorkspace(workspaceID: String)
     case broadcastInput(tabID: String, text: String)
@@ -151,7 +157,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case cols, rows
         case full, seq
         case protocolVersion, sessionName
-        case reason, snapshot, event, message, accepted
+        case reason, snapshot, event, message, accepted, available, pushAuthorized
         case deviceToken, environment
         case lines, keys
         case text, name, work, sessions, requestID, decision
@@ -162,7 +168,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
-        case readScrollback, scrollback, sendKeys, decide
+        case readScrollback, scrollback, sendKeys, decide, decisionAvailability
         case renameWorkspace, closeWorkspace, broadcastInput
         case listSessions, selectSession
         case backgroundWork, sessions
@@ -265,6 +271,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                     RemotePermissionDecision.self,
                     forKey: .decision
                 )
+            )
+        case .decisionAvailability:
+            self = .decisionAvailability(
+                available: try container.decode(Bool.self, forKey: .available),
+                pushAuthorized: try container.decode(Bool.self, forKey: .pushAuthorized)
             )
         case .scrollback:
             self = .scrollback(
@@ -424,6 +435,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(paneID, forKey: .paneID)
             try container.encode(requestID, forKey: .requestID)
             try container.encode(decision, forKey: .decision)
+        case let .decisionAvailability(available, pushAuthorized):
+            try container.encode(MessageType.decisionAvailability, forKey: .type)
+            try container.encode(available, forKey: .available)
+            try container.encode(pushAuthorized, forKey: .pushAuthorized)
         case let .scrollback(paneID, bytesBase64):
             try container.encode(MessageType.scrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)

@@ -19,8 +19,11 @@ public enum ClaudeHookSettingsError: LocalizedError {
 
 /// Adds and removes only Rai-owned handlers in Claude Code user settings.
 public enum ClaudeHookSettings {
+    public static let minimumDecisionHoldSeconds = 5
     public static let defaultDecisionHoldSeconds = 45
     public static let maximumDecisionHoldSeconds = 60
+    public static let hookReadGraceSeconds = 10
+    public static let claudeTimeoutGraceSeconds = 15
     public static let events = [
         "SessionStart",
         "UserPromptSubmit",
@@ -37,7 +40,7 @@ public enum ClaudeHookSettings {
     ) throws -> Data {
         var root = try rootObject(from: settings)
         var hooks = try hooksObject(from: root)
-        let holdSeconds = min(max(decisionHoldSeconds, 1), maximumDecisionHoldSeconds)
+        let holdSeconds = clampedDecisionHoldSeconds(decisionHoldSeconds)
 
         for event in events {
             var groups = try eventGroups(event, in: hooks)
@@ -54,7 +57,9 @@ public enum ClaudeHookSettings {
             var handler: [String: Any] = [
                 "type": "command",
                 "command": command,
-                "timeout": event == "PermissionRequest" ? holdSeconds + 15 : 2,
+                "timeout": event == "PermissionRequest"
+                    ? holdSeconds + claudeTimeoutGraceSeconds
+                    : 2,
             ]
             if event != "PermissionRequest" {
                 handler["async"] = true
@@ -107,8 +112,20 @@ public enum ClaudeHookSettings {
     ) -> String {
         let base = "\(shellQuote(scriptPath)) \(event)"
         return event == "PermissionRequest"
-            ? "\(base) \(min(max(decisionHoldSeconds, 1), maximumDecisionHoldSeconds))"
+            ? "\(base) \(clampedDecisionHoldSeconds(decisionHoldSeconds))"
             : base
+    }
+
+    public static func clampedDecisionHoldSeconds(_ value: Int) -> Int {
+        min(max(value, minimumDecisionHoldSeconds), maximumDecisionHoldSeconds)
+    }
+
+    public static func hookReadTimeout(forHoldSeconds value: Int) -> Int {
+        clampedDecisionHoldSeconds(value) + hookReadGraceSeconds
+    }
+
+    public static func claudeTimeout(forHoldSeconds value: Int) -> Int {
+        clampedDecisionHoldSeconds(value) + claudeTimeoutGraceSeconds
     }
 
     private static func rootObject(from data: Data?) throws -> [String: Any] {

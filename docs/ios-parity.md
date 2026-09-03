@@ -82,7 +82,13 @@ All additive, no version bump (old phones skip unknown message types):
 - The phone shows a countdown in the pane and herd row.
 - Notification actions keep key input for older Macs.
 - New phones announce the `permission_decisions` capability.
+- Phones send `decisionAvailability` when notification or foreground state changes.
+- Notification permission enables background decisions.
+- A foreground bridge connection also enables decisions without notification permission.
 - The Mac never holds a request for an old phone alone.
+- Held choices map only exact Yes and No labels.
+- The phone hides other held choices and directs users to the Mac.
+- Countdown math uses elapsed phone time and does not trust matching wall clocks.
 - These messages are additive within protocol v6.
 
 ## Backlog (value order)
@@ -112,7 +118,7 @@ new `pair` message sends a short code, protocol version, and device data. The
 `hello`. A lost reply can retry the code until expiry. Later connections also
 use `hello`.
 
-The `decide`, `decisionResult`, and `paneError` messages remain additive in protocol version 6.
+The `decide`, `decisionAvailability`, `decisionResult`, and `paneError` messages remain additive in protocol version 6.
 
 Old phones skip the waiting beacon fields and server error messages.
 

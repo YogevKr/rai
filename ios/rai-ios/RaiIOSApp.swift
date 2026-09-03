@@ -11,6 +11,12 @@ enum PhoneNotificationAction {
     static let reply = "Reply"
 }
 
+enum PhoneNotificationRegistrationPolicy {
+    static func shouldRegister(authorizationGranted: Bool) -> Bool {
+        authorizationGranted
+    }
+}
+
 enum PhoneNotificationResponsePlan: Equatable {
     case decide(RemotePermissionDecision, requestID: String)
     case input([UInt8])
@@ -40,6 +46,12 @@ enum PhoneNotificationResponsePlan: Equatable {
 final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     weak var appModel: AppModel? {
         didSet {
+            Task { @MainActor in
+                appModel?.updateDecisionAvailability(
+                    notificationAuthorized: notificationAuthorizationGranted,
+                    isForeground: appIsForeground
+                )
+            }
             if let deviceToken {
                 Task { @MainActor in appModel?.setPushDeviceToken(deviceToken) }
             }
@@ -61,6 +73,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     private var deviceToken: String?
     private var pendingPaneID: String?
     private var pendingTriage = false
+    private var notificationAuthorizationGranted = false
+    private var appIsForeground = false
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
         center: SystemPhoneNotificationCenter(),
         readStateStore: UserDefaultsPhoneNotificationReadStateStore()
@@ -68,6 +82,16 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     func markDeliveredNotificationsSeen() {
         Task { await retractionHandler.markDeliveredNotificationsSeen() }
+    }
+
+    func updateScenePhase(_ phase: ScenePhase) {
+        appIsForeground = phase == .active
+        Task { @MainActor in
+            appModel?.updateDecisionAvailability(
+                notificationAuthorized: notificationAuthorizationGranted,
+                isForeground: appIsForeground
+            )
+        }
     }
 
     func application(
@@ -118,12 +142,21 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                 intentIdentifiers: []
             ),
         ])
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, error in
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error {
                 NSLog("rai-ios: Notification authorization failed: \(error.localizedDescription)")
             }
             DispatchQueue.main.async {
-                application.registerForRemoteNotifications()
+                self.notificationAuthorizationGranted = granted
+                self.appModel?.updateDecisionAvailability(
+                    notificationAuthorized: granted,
+                    isForeground: self.appIsForeground
+                )
+                if PhoneNotificationRegistrationPolicy.shouldRegister(
+                    authorizationGranted: granted
+                ) {
+                    application.registerForRemoteNotifications()
+                }
             }
         }
         return true
@@ -182,8 +215,13 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
         switch plan {
         case let .decide(decision, requestID):
+            notificationAuthorizationGranted = true
             let delivered: Bool
             if let appModel {
+                appModel.updateDecisionAvailability(
+                    notificationAuthorized: true,
+                    isForeground: appIsForeground
+                )
                 delivered = await appModel.sendNotificationDecision(
                     decision,
                     requestID: requestID,
@@ -191,6 +229,10 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                 )
             } else if let pairing = PairingStore().load() {
                 let connection = await MainActor.run { BridgeConnection() }
+                await connection.updateDecisionAvailability(
+                    notificationAuthorized: true,
+                    isForeground: false
+                )
                 delivered = await connection.connectAndDecide(
                     decision,
                     requestID: requestID,
@@ -259,6 +301,7 @@ struct RaiIOSApp: App {
                 }
         }
         .onChange(of: scenePhase) { _, phase in
+            appDelegate.updateScenePhase(phase)
             // The badge counts pushes that arrived while away; opening the
             // app is "I looked" — clear it. This must hang off scenePhase:
             // SwiftUI apps run the scene lifecycle, so UIKit never calls the

@@ -94,7 +94,7 @@ final class RaiBridgeServer: ObservableObject {
     var hasDecisionCapablePhone: Bool {
         guard isRunning else { return false }
         let connected = clients.values.contains {
-            $0.isAuthenticated && $0.info?.supportsPermissionDecisions == true
+            $0.isAuthenticated && $0.decisionAvailable
         }
         // A registered phone can wake from the push, reconnect, and decide.
         let pushReady = apnsSettings.isConfigured
@@ -300,6 +300,7 @@ final class RaiBridgeServer: ObservableObject {
         liveConnections.removeAll()
         connectedDeviceCount = 0
         isRunning = false
+        model.reevaluatePendingDecisions()
     }
 
     func stopAndWait() async {
@@ -375,6 +376,7 @@ final class RaiBridgeServer: ObservableObject {
         }
         syncCredentialState()
         updateConnectedDeviceCount()
+        model.reevaluatePendingDecisions()
     }
 
     func relay(events: [HerdrEvent]) {
@@ -998,6 +1000,14 @@ final class RaiBridgeServer: ObservableObject {
                 ),
                 to: client
             )
+        case let .decisionAvailability(available, pushAuthorized):
+            client.decisionAvailable = available
+            client.decisionPushAuthorized = pushAuthorized
+            updatePushRegistrationCapability(
+                deviceID: client.deviceID,
+                supported: pushAuthorized
+            )
+            model.reevaluatePendingDecisions()
         case let .readScrollback(paneID, lines, rows, fullGrid):
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
                 send(.error(message: "Unknown pane \(paneID)."), to: client)
@@ -1040,7 +1050,7 @@ final class RaiBridgeServer: ObservableObject {
                 deviceToken: normalizedToken,
                 environment: environment,
                 deviceID: client.deviceID,
-                supportsPermissionDecisions: client.info?.supportsPermissionDecisions == true
+                supportsPermissionDecisions: client.decisionPushAuthorized
             )
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
@@ -1360,6 +1370,7 @@ final class RaiBridgeServer: ObservableObject {
         clients.removeValue(forKey: id)
         liveConnections.remove(id: id)
         updateConnectedDeviceCount()
+        model.reevaluatePendingDecisions()
     }
 
     private func updateConnectedDeviceCount() {
@@ -1394,6 +1405,24 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    private func updatePushRegistrationCapability(deviceID: String?, supported: Bool) {
+        guard let deviceID else { return }
+        var changed = false
+        pushRegistrations = Set(pushRegistrations.map { registration in
+            guard registration.deviceID == deviceID,
+                  registration.supportsPermissionDecisions != supported
+            else { return registration }
+            changed = true
+            return PushRegistration(
+                deviceToken: registration.deviceToken,
+                environment: registration.environment,
+                deviceID: registration.deviceID,
+                supportsPermissionDecisions: supported
+            )
+        })
+        if changed { persistPushRegistrations() }
+    }
+
     private func persistPushRegistrations() {
         if let data = try? JSONEncoder().encode(pushRegistrations) {
             userDefaults.set(data, forKey: Self.pushRegistrationsKey)
@@ -1410,6 +1439,12 @@ final class RaiBridgeServer: ObservableObject {
         client.info = info
         client.deviceID = device.id
         client.deviceLabel = device.label
+        client.decisionAvailable = info.supportsPermissionDecisions
+        client.decisionPushAuthorized = info.supportsPermissionDecisionPush
+        updatePushRegistrationCapability(
+            deviceID: device.id,
+            supported: client.decisionPushAuthorized
+        )
         pushBadgeLedger.removeAll()
         let id = ObjectIdentifier(client.connection)
         liveConnections.register(id: id, deviceID: device.id) { [weak self, weak client] in
@@ -1554,6 +1589,8 @@ private final class BridgeClient: @unchecked Sendable {
     var info: ClientInfo?
     var deviceID: String?
     var deviceLabel: String?
+    var decisionAvailable = false
+    var decisionPushAuthorized = false
 
     init(connection: NWConnection) {
         self.connection = connection

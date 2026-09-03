@@ -49,7 +49,7 @@ hold_seconds=${2-45}
 case "$hold_seconds" in
     ''|*[!0-9]*) hold_seconds=45 ;;
 esac
-if [ "$hold_seconds" -lt 1 ] || [ "$hold_seconds" -gt 60 ]; then
+if [ "$hold_seconds" -lt 5 ] || [ "$hold_seconds" -gt 60 ]; then
     hold_seconds=45
 fi
 
@@ -90,7 +90,7 @@ try:
     client.settimeout(1.0)
     client.connect(sys.argv[1])
     client.sendall(payload)
-    client.settimeout(float(sys.argv[2]) + 2.0)
+    client.settimeout(float(sys.argv[2]) + 10.0)
     response = client.makefile("rb").readline(65537)
     client.close()
     if len(response) > 65536:

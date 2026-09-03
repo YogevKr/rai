@@ -85,6 +85,8 @@ model decodes it. Waiting beacons include a request ID and deadline.
 
 The prompt bar and herd row show the remaining hold time.
 
+The countdown uses elapsed phone time, so Mac and phone clock differences do not change it.
+
 Approve and Deny send a structured `decide` message.
 
 The phone waits for the Mac's decision result after a notification action.
@@ -93,9 +95,17 @@ The Mac retracts the action push when the request closes.
 
 Always-allow and auto-mode choices remain available only on the Mac.
 
+The phone maps only exact Yes and No choices to data decisions.
+
+It hides other choices while the hook waits and shows `answer on the Mac`.
+
 Older Macs omit the request ID. The phone then keeps the key-based action path.
 
 New phones announce permission decision support during authentication.
+
+Notification permission enables decisions while the app runs in the background.
+
+A denied phone advertises decision support only during a foreground bridge connection.
 
 The Mac does not hold a hook for an old phone alone.
 

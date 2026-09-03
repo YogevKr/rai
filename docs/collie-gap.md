@@ -149,6 +149,8 @@ Wave 2 decision hooks landed on 2026-09-03.
 
 They add structured permission decisions, direct pushes, and phone countdowns.
 
+Review hardening adds stale-tap checks, text redaction, dynamic phone capability, and clock-safe countdowns.
+
 Wave 2 remains: structured prompt blocks fed by beacons
 (AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
 dialogs) on iOS; transcript history view; operator config files;

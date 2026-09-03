@@ -289,6 +289,42 @@ final class AgentBeaconTests: XCTestCase {
         XCTAssertFalse(body.contains("secret"))
     }
 
+    func testPermissionPushRedactorRejectsCredentialLikeText() {
+        let samples = [
+            "WebSearch: password hunter2",
+            "Bash: export TOKEN=abc123secret",
+            "Bash: curl -H Authorization:BearerSecret123 example.test",
+            "WebSearch: code 1234",
+            "WebSearch: abcdef0123456789",
+        ]
+
+        for sample in samples {
+            XCTAssertEqual(
+                PushTextRedactor.permission(sample, agent: "Claude"),
+                "Permission request from Claude"
+            )
+        }
+        let url = PushTextRedactor.permission(
+            "WebFetch: https://example.test/run?query=hunter2",
+            agent: "WebFetch"
+        )
+        XCTAssertEqual(url, "WebFetch: https://example.test/run?query=•••")
+
+        let beacon = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/transcript.jsonl",
+            toolName: "WebSearch",
+            toolInput: .object(["query": .string("password hunter2")]),
+            timestamp: 1
+        )
+        XCTAssertEqual(
+            AgentNotificationBody.composeDecision(beacon: beacon),
+            "Permission request from Claude"
+        )
+    }
+
     func testOrdinaryPreToolUseIsContextNotAPendingRequest() {
         let beacon = AgentBeacon(
             event: "PreToolUse",
