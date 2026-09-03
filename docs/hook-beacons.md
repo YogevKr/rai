@@ -271,11 +271,11 @@ They do not attach the phone's blind Approve, Deny, or Reply actions.
 
 Fallback pushes also stay tap-only while Rai-managed hooks are installed.
 
-Late beacons replace the stable Mac notification and the pending APNs push.
+Late beacons replace the stable Mac notification and update a pending APNs event.
 
-Replacement pushes use a per-connection pane collapse ID and keep the same badge count.
+A beacon that arrives after delivery enters the same presence and burst gate again.
 
-They retain sound because APNs can make a collapsed replacement the first alert.
+Per-device queues keep APNs order without making another device wait.
 
 Fallback bodies remain `Needs you` and `Finished`.
 
@@ -283,7 +283,7 @@ Blocked sidebar rows show the same pending summary.
 
 Bridge snapshot panes now have an optional `beacon` field.
 
-This change does not change bridge protocol version 5.
+This additive field does not change the merged bridge protocol version 6.
 
 Old phone decoders ignore unknown object fields.
 
