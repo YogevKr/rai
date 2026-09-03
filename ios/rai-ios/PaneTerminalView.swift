@@ -28,7 +28,6 @@ struct PaneTerminalView: View {
             search: terminalSearch,
             prompts: promptController,
             statusline: statuslineController,
-            agent: pane.agent,
             beacon: pane.beacon,
             send: { connection.sendInput($0, to: pane.paneID) }
         )
@@ -426,7 +425,6 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let search: TerminalSearchController
     let prompts: TerminalPromptController
     let statusline: TerminalStatuslineController
-    let agent: String?
     let beacon: AgentBeacon?
     let send: ([UInt8]) -> Void
 
