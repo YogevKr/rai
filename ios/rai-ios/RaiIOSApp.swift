@@ -15,6 +15,13 @@ enum PhoneNotificationRegistrationPolicy {
     static func shouldRegister(authorizationGranted: Bool) -> Bool {
         authorizationGranted
     }
+
+    static func shouldRegisterAfterRefresh(
+        wasGranted: Bool,
+        isGranted: Bool
+    ) -> Bool {
+        !wasGranted && isGranted
+    }
 }
 
 protocol PhoneNotificationAuthorizationReading: Sendable {
@@ -103,6 +110,7 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     private(set) var notificationAuthorizationGranted = false
     private var appIsForeground = false
     private let notificationAuthorizationReader: any PhoneNotificationAuthorizationReading
+    private let registerForRemoteNotifications: @Sendable () -> Void
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
         center: SystemPhoneNotificationCenter(),
         readStateStore: UserDefaultsPhoneNotificationReadStateStore()
@@ -110,11 +118,18 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     override init() {
         notificationAuthorizationReader = SystemPhoneNotificationAuthorizationReader()
+        registerForRemoteNotifications = {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
         super.init()
     }
 
-    init(notificationAuthorizationReader: any PhoneNotificationAuthorizationReading) {
+    init(
+        notificationAuthorizationReader: any PhoneNotificationAuthorizationReading,
+        registerForRemoteNotifications: @escaping @Sendable () -> Void = {}
+    ) {
         self.notificationAuthorizationReader = notificationAuthorizationReader
+        self.registerForRemoteNotifications = registerForRemoteNotifications
         super.init()
     }
 
@@ -138,8 +153,15 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     }
 
     private func applyNotificationAuthorization(_ granted: Bool) {
+        let wasGranted = notificationAuthorizationGranted
         notificationAuthorizationGranted = granted
         publishDecisionAvailability()
+        if PhoneNotificationRegistrationPolicy.shouldRegisterAfterRefresh(
+            wasGranted: wasGranted,
+            isGranted: granted
+        ) {
+            registerForRemoteNotifications()
+        }
     }
 
     private func publishDecisionAvailability() {
@@ -205,11 +227,6 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             }
             DispatchQueue.main.async {
                 self.applyNotificationAuthorization(granted)
-                if PhoneNotificationRegistrationPolicy.shouldRegister(
-                    authorizationGranted: granted
-                ) {
-                    application.registerForRemoteNotifications()
-                }
             }
         }
         return true

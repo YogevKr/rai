@@ -153,6 +153,8 @@ Review hardening adds stale-tap checks, text redaction, dynamic phone capability
 
 It also tolerates brief reconnects and refreshes notification permission after each foreground transition.
 
+Later notification grants restart APNs registration. Token redaction now handles punctuation and non-path slash values.
+
 Wave 2 remains: structured prompt blocks fed by beacons
 (AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
 dialogs) on iOS; transcript history view; operator config files;

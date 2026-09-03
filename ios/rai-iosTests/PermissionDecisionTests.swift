@@ -159,6 +159,44 @@ final class PermissionDecisionTests: XCTestCase {
         XCTAssertEqual(reader.readCount, 2)
     }
 
+    @MainActor
+    func testNewForegroundGrantStartsAPNsRegistrationOnce() async {
+        let reader = NotificationAuthorizationReaderSpy([
+            .denied,
+            .authorized,
+            .authorized,
+        ])
+        let registrations = LockedCounter()
+        let delegate = IOSAppDelegate(
+            notificationAuthorizationReader: reader,
+            registerForRemoteNotifications: { registrations.increment() }
+        )
+
+        for expectedCount in [0, 1, 1] {
+            delegate.updateScenePhase(.active)
+            let applied = expectation(description: "authorization applied")
+            DispatchQueue.main.async { applied.fulfill() }
+            await fulfillment(of: [applied], timeout: 1)
+            XCTAssertEqual(registrations.value, expectedCount)
+            delegate.updateScenePhase(.background)
+        }
+
+        XCTAssertEqual(
+            PushRegistrationPlan.messages(
+                deviceToken: "token",
+                environment: "sandbox",
+                availability: PermissionDecisionAvailability(
+                    notificationAuthorized: true,
+                    appIsForeground: false
+                )
+            ),
+            [
+                .registerPush(deviceToken: "token", environment: "sandbox"),
+                .decisionAvailability(available: true, pushAuthorized: true),
+            ]
+        )
+    }
+
     func testStaleSocketFailureKeepsNewSocketWaiter() {
         let oldSocket = NSObject()
         let newSocket = NSObject()
@@ -264,6 +302,23 @@ private final class NotificationAuthorizationReaderSpy:
         let status = statuses.removeFirst()
         lock.unlock()
         completion(status)
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }
 

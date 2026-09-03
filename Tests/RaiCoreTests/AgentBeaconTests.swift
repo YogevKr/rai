@@ -295,7 +295,6 @@ final class AgentBeaconTests: XCTestCase {
             "Bash: export TOKEN=abc123secret",
             "Bash: curl -H Authorization:BearerSecret123 example.test",
             "WebSearch: code 1234",
-            "WebSearch: abcdef0123456789",
         ]
 
         for sample in samples {
@@ -344,8 +343,36 @@ final class AgentBeaconTests: XCTestCase {
         )
         XCTAssertEqual(
             PushTextRedactor.permission("WebSearch: issue 123456", agent: "Claude"),
-            "Permission request from Claude"
+            "WebSearch: issue •••"
         )
+    }
+
+    func testPermissionPushRedactorClassifiesPunctuatedTokenCores() {
+        let fixtures = [
+            ("123456.", "•••."),
+            ("(123456)", "(•••)"),
+            ("'123456'", "'•••'"),
+            ("123456,", "•••,"),
+            ("2.1.259", "2.1.259"),
+            ("#1140", "#1140"),
+        ]
+
+        for (input, expected) in fixtures {
+            XCTAssertEqual(
+                PushTextRedactor.permission(input, agent: "Claude"),
+                expected
+            )
+        }
+    }
+
+    func testPermissionPushRedactorKeepsOnlyRealPathShapedSlashTokens() {
+        let base64 = "c2VjcmV0/2NyZWRlbnRpYWw="
+        let prefixedSecret = "sk-live/abcdefghijklmnopqrstuvwxyz"
+        let path = "/Users/x/repos/a-b/file.swift"
+
+        XCTAssertEqual(PushTextRedactor.permission(base64, agent: "Claude"), "•••")
+        XCTAssertEqual(PushTextRedactor.permission(prefixedSecret, agent: "Claude"), "•••")
+        XCTAssertEqual(PushTextRedactor.permission(path, agent: "Claude"), path)
     }
 
     func testOrdinaryPreToolUseIsContextNotAPendingRequest() {

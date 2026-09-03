@@ -315,9 +315,13 @@ They include the request ID and an actionable tool question.
 
 A conservative filter protects decision text before it reaches the lock screen.
 
-Credential labels, authorization headers, standalone six-digit values, and opaque values use generic text.
+Credential labels and authorization headers use generic text.
+
+Standalone six-digit and opaque values become `•••`. Surrounding punctuation stays in place.
 
 Four-digit values require a nearby credential label. Years, versions, and numeric path segments remain visible.
+
+Slash tokens stay visible only when they match a plain absolute or relative path shape.
 
 URL query values never reach the lock screen.
 

@@ -222,6 +222,22 @@ enum DecisionWaiterRouting {
     }
 }
 
+enum PushRegistrationPlan {
+    static func messages(
+        deviceToken: String,
+        environment: String,
+        availability: PermissionDecisionAvailability
+    ) -> [BridgeMessage] {
+        [
+            .registerPush(deviceToken: deviceToken, environment: environment),
+            .decisionAvailability(
+                available: availability.available,
+                pushAuthorized: availability.notificationAuthorized
+            ),
+        ]
+    }
+}
+
 @MainActor
 final class BridgeConnection: ObservableObject {
     private struct DecisionWaiter {
@@ -762,9 +778,14 @@ final class BridgeConnection: ObservableObject {
     func registerPush(deviceToken: String, environment: String) {
         Task {
             do {
-                try await send(
-                    .registerPush(deviceToken: deviceToken, environment: environment)
-                )
+                let availability = decisionAvailability
+                for message in PushRegistrationPlan.messages(
+                    deviceToken: deviceToken,
+                    environment: environment,
+                    availability: availability
+                ) {
+                    try await send(message)
+                }
             } catch {
                 handleSocketFailure(error)
             }

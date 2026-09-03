@@ -85,6 +85,7 @@ All additive, no version bump (old phones skip unknown message types):
 - Phones send `decisionAvailability` when notification or foreground state changes.
 - Notification permission enables background decisions.
 - Each foreground transition refreshes the system notification authorization state.
+- A new foreground grant starts APNs registration and refreshes capability after token registration.
 - A foreground bridge connection also enables decisions without notification permission.
 - The Mac never holds a request for an old phone alone.
 - A five-second reachability grace keeps brief phone reconnects from closing a held request.
