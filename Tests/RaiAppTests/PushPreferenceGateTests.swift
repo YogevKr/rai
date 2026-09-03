@@ -224,6 +224,12 @@ final class PushPreferenceGateTests: XCTestCase {
         let auditDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rai-push-gate-tests-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: auditDirectory) }
+        try FileManager.default.createDirectory(at: auditDirectory, withIntermediateDirectories: true)
+        try "test-key".write(
+            to: auditDirectory.appendingPathComponent("apns-key.p8"),
+            atomically: true,
+            encoding: .utf8
+        )
         let model = RaiModel(
             client: HerdrClient(socketPath: "/nonexistent/herdr.sock"),
             userDefaults: defaults
@@ -231,7 +237,11 @@ final class PushPreferenceGateTests: XCTestCase {
         let server = RaiBridgeServer(
             model: model,
             userDefaults: defaults,
-            apnsSettings: APNsSettings(defaults: defaults) { ("test-key", errSecSuccess) },
+            apnsSettings: APNsSettings(
+                defaults: defaults,
+                keyFileURL: auditDirectory.appendingPathComponent("apns-key.p8"),
+                keyReader: { ("test-key", errSecSuccess) }
+            ),
             auditLogURL: auditDirectory.appendingPathComponent("audit.jsonl"),
             pushDeliveryQueue: queue,
             now: { currentTime }
@@ -292,7 +302,11 @@ final class PushPreferenceGateTests: XCTestCase {
         let server = RaiBridgeServer(
             model: model,
             userDefaults: defaults,
-            apnsSettings: APNsSettings(defaults: defaults) { ("", errSecItemNotFound) },
+            apnsSettings: APNsSettings(
+                defaults: defaults,
+                keyFileURL: auditDirectory.appendingPathComponent("apns-key.p8"),
+                keyReader: { ("", errSecItemNotFound) }
+            ),
             auditLogURL: auditDirectory.appendingPathComponent("audit.jsonl")
         )
         XCTAssertEqual(server.registeredPushDeviceCount, 1)

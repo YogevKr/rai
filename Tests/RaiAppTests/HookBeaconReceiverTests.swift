@@ -702,9 +702,15 @@ final class HookBeaconReceiverTests: XCTestCase {
             if server.isRunning { server.terminate() }
             server.waitUntilExit()
         }
-        let limit = Date().addingTimeInterval(2)
+        // A cold CI runner can take several seconds to start python3 (Xcode's
+        // shim on first use); a short wait let the hook connect to nothing.
+        let limit = Date().addingTimeInterval(30)
         while !FileManager.default.fileExists(atPath: fixture.socketURL.path), Date() < limit {
-            Thread.sleep(forTimeInterval: 0.01)
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        guard FileManager.default.fileExists(atPath: fixture.socketURL.path) else {
+            XCTFail("fake decision server did not open \(fixture.socketURL.path) within 30 s")
+            return ""
         }
 
         let script = repositoryRoot.appendingPathComponent("Resources/rai-hook.sh")

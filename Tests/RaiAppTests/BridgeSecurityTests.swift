@@ -209,7 +209,11 @@ final class BridgeCredentialTests: XCTestCase {
         _ = RaiBridgeServer(
             model: model,
             userDefaults: defaults,
-            apnsSettings: APNsSettings(defaults: defaults),
+            apnsSettings: APNsSettings(
+                defaults: defaults,
+                keyFileURL: auditURL.deletingLastPathComponent().appendingPathComponent("apns-key.p8"),
+                keyReader: { ("", errSecItemNotFound) }
+            ),
             auditLogURL: auditURL
         )
 
