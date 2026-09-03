@@ -554,6 +554,42 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertTrue(keys.isEmpty)
     }
 
+    @MainActor
+    func testDisconnectInvalidatesControlsBeforeTheReplacementFrame() throws {
+        var liveGrid = Self.permissionGrid
+        let connection = BridgeConnection()
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        let handlerID = connection.addConnectionGenerationHandler {
+            controller.invalidateForConnectionGeneration($0)
+        }
+        defer { connection.removeConnectionGenerationHandler(handlerID) }
+
+        controller.invalidateForFullFrame()
+        controller.refresh(frameArrived: true)
+        let rendered = try XCTUnwrap(controller.prompt)
+
+        connection.disconnect()
+        liveGrid = Self.permissionGrid.replacingOccurrences(
+            of: "Do you want to allow this command?",
+            with: "Do you want to allow this replacement?"
+        )
+        XCTAssertNil(controller.prompt)
+        var keys: [String] = []
+        controller.sendLegacy(renderedPrompt: rendered, option: rendered.options[0]) {
+            keys.append(String(decoding: $0, as: UTF8.self))
+        }
+        XCTAssertTrue(keys.isEmpty)
+        controller.refresh()
+        XCTAssertNil(controller.prompt)
+
+        controller.invalidateForFullFrame()
+        controller.refresh(frameArrived: true)
+        let replacement = try XCTUnwrap(controller.prompt)
+        XCTAssertNotEqual(rendered.instanceKey, replacement.instanceKey)
+        XCTAssertEqual(replacement.question, "Do you want to allow this replacement?")
+    }
+
     func testBeaconRequestIDIsThePromptInstance() throws {
         let beacon = AgentBeacon(
             event: "PermissionRequest",

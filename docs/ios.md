@@ -94,6 +94,7 @@ multi-select checkboxes, free-text entry, and a final Submit action.
 
 Each tap keeps its rendered signature, prompt instance, beacon request, and question.
 Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
+Rai hides prompt controls when a connection generation ends. A new frame must arrive before controls return.
 
 Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
 The sequence stops after four seconds or any unexpected change. Rai never sends

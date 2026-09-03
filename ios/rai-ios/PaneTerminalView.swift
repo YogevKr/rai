@@ -466,6 +466,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
         prompts.beacon = beacon
         prompts.allowsPrompts = ClaudePromptGate.allows(agent: agent)
+        context.coordinator.connectionGenerationHandlerID =
+            connection.addConnectionGenerationHandler { [weak prompts] generation in
+                prompts?.invalidateForConnectionGeneration(generation)
+            }
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
@@ -579,6 +583,9 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 id: id
             )
         }
+        if let id = coordinator.connectionGenerationHandlerID {
+            coordinator.connection.removeConnectionGenerationHandler(id)
+        }
         coordinator.search.terminal = nil
         coordinator.prompts.readGrid = nil
     }
@@ -605,6 +612,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
         var scrollbackHandlerID: UUID?
+        var connectionGenerationHandlerID: UUID?
         weak var terminal: TerminalView?
         let search: TerminalSearchController
         let prompts: TerminalPromptController
@@ -718,6 +726,8 @@ final class TerminalPromptController: ObservableObject {
     private var observedDialogSignature: String?
     private var promptInstanceCounter: UInt64 = 0
     private var streamGeneration: UInt64 = 0
+    private var connectionGeneration: UInt64?
+    private var awaitsConnectionFrame = false
     private var gridFrameRevision: UInt64 = 0
     private var choreography: PromptChoreography?
     private var choreographyGeneration = 0
@@ -727,7 +737,16 @@ final class TerminalPromptController: ObservableObject {
     private var unconfirmedToggle: UnconfirmedToggle?
 
     func refresh(frameArrived: Bool = false) {
-        if frameArrived { gridFrameRevision &+= 1 }
+        if frameArrived {
+            gridFrameRevision &+= 1
+            awaitsConnectionFrame = false
+        }
+        guard !awaitsConnectionFrame else {
+            prompt = nil
+            cancelChoreography()
+            unconfirmedToggle = nil
+            return
+        }
         guard allowsPrompts, let grid = readGrid?() else {
             observedDialogSignature = nil
             prompt = nil
@@ -744,6 +763,19 @@ final class TerminalPromptController: ObservableObject {
             dismissedIdentity = nil
         }
         prompt = detected?.actionIdentity == dismissedIdentity ? nil : detected
+    }
+
+    func invalidateForConnectionGeneration(_ generation: UInt64) {
+        guard connectionGeneration != generation else { return }
+        connectionGeneration = generation
+        streamGeneration &+= 1
+        promptInstanceCounter &+= 1
+        awaitsConnectionFrame = true
+        observedDialogSignature = nil
+        dismissedIdentity = nil
+        prompt = nil
+        cancelChoreography()
+        unconfirmedToggle = nil
     }
 
     func invalidateForFullFrame() {

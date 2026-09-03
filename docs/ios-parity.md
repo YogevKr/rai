@@ -82,6 +82,7 @@ All additive, no version bump (old phones skip unknown message types):
 - Each tap stays bound to its rendered signature, prompt instance, beacon request, and question.
 - Older beacons use a per-pane prompt instance counter.
 - Full terminal reloads invalidate all prompt instances for that pane.
+- Disconnects hide prompt controls immediately. A frame from the new connection must arrive before controls return.
 - Next sends Tab. Previous appears on every later question and sends Left.
 - Enter only confirms an option or Submit.
 - Checkbox retries wait for a newer grid frame and confirm the wanted state.
