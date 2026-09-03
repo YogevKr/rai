@@ -57,7 +57,8 @@ final class APNsKeyReadTests: XCTestCase {
         let oneLine = try APNsKeyParser.privateKey(from: Self.pem.replacingOccurrences(of: "\n", with: ""))
         let bodyOnly = try APNsKeyParser.privateKey(from: Self.pem
             .components(separatedBy: "\n").filter { !$0.contains("-----") }.joined(separator: "\n"))
-        for key in [crlf, quoted, oneLine, bodyOnly] {
+        let hexEncoded = try APNsKeyParser.privateKey(from: Data(Self.pem.utf8).map { String(format: "%02x", $0) }.joined())
+        for key in [crlf, quoted, oneLine, bodyOnly, hexEncoded] {
             XCTAssertEqual(key.rawRepresentation, clean.rawRepresentation)
         }
         XCTAssertThrowsError(try APNsKeyParser.privateKey(from: "not a key"))

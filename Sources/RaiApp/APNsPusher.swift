@@ -64,6 +64,16 @@ enum APNsKeyParser {
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         guard !trimmed.isEmpty else { throw APNsKeyError.missing }
 
+        // A PEM stored as its hex encoding (one long [0-9a-f] line) is still
+        // the same key: decode it and start over.
+        if trimmed.count % 2 == 0,
+           trimmed.range(of: "^[0-9A-Fa-f]+$", options: .regularExpression) != nil,
+           let bytes = Data(hexString: trimmed),
+           let text = String(data: bytes, encoding: .utf8),
+           text.contains("PRIVATE KEY") {
+            return try privateKey(from: text)
+        }
+
         // Body = the text minus the BEGIN/END markers and all whitespace, so a
         // one-line paste works as well as a proper PEM.
         let body = trimmed
@@ -80,6 +90,20 @@ enum APNsKeyParser {
         } catch {
             throw APNsKeyError.invalid(String(describing: error))
         }
+    }
+}
+
+private extension Data {
+    init?(hexString: String) {
+        var data = Data(capacity: hexString.count / 2)
+        var index = hexString.startIndex
+        while index < hexString.endIndex {
+            let next = hexString.index(index, offsetBy: 2)
+            guard let byte = UInt8(hexString[index..<next], radix: 16) else { return nil }
+            data.append(byte)
+            index = next
+        }
+        self = data
     }
 }
 
