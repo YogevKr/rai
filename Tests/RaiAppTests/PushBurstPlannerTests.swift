@@ -47,6 +47,7 @@ final class PushBurstPlannerTests: XCTestCase {
         XCTAssertEqual(push.paneID, "p1")
         XCTAssertEqual(push.body, "Needs you")
         XCTAssertTrue(push.requiresAttention)
+        XCTAssertEqual(push.interruptionLevel, .timeSensitive)
         XCTAssertEqual(push.notificationIDs, ["agent-p1"])
     }
 
@@ -58,6 +59,7 @@ final class PushBurstPlannerTests: XCTestCase {
 
         XCTAssertEqual(push.body, "Finished")
         XCTAssertFalse(push.requiresAttention)
+        XCTAssertEqual(push.interruptionLevel, .active)
     }
 
     func testSingleBeaconEventUsesStructuredBodyWithoutRemoteActions() {
@@ -76,6 +78,20 @@ final class PushBurstPlannerTests: XCTestCase {
 
         XCTAssertEqual(push.body, "Bash: swift test")
         XCTAssertFalse(push.requiresAttention)
+        XCTAssertEqual(push.interruptionLevel, .timeSensitive)
+    }
+
+    func testCoalescedBlockedBurstIsTimeSensitive() {
+        let push = PushBurstPlanner.plan(
+            events: [
+                event("p1", "Build", status: .blocked, seconds: 0),
+                event("p2", "Tests", status: .blocked, seconds: 1),
+            ],
+            window: 15
+        )[0]
+
+        XCTAssertFalse(push.requiresAttention)
+        XCTAssertEqual(push.interruptionLevel, .timeSensitive)
     }
 
     func testDoneEventsUseTheRequiredTriageSummaryTitle() {

@@ -189,6 +189,9 @@ struct PhonePushBurst: Equatable, Sendable {
     }
 
     var paneID: String? { isSummary ? nil : events[0].paneID }
+    var interruptionLevel: APNsInterruptionLevel {
+        events.contains(where: { $0.status == .blocked }) ? .timeSensitive : .active
+    }
     var requiresAttention: Bool {
         !isSummary && (events[0].allowsRemoteActions ?? (events[0].status == .blocked))
     }

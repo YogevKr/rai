@@ -337,7 +337,7 @@ struct APNsRetractionBatch: Equatable, Sendable {
     let payload: Data
 }
 
-enum APNsInterruptionLevel: String, Encodable, Sendable {
+enum APNsInterruptionLevel: String, Encodable, Equatable, Sendable {
     case active
     case timeSensitive = "time-sensitive"
 }

@@ -142,6 +142,8 @@ The phone sends them after the next welcome and clears pending after confirmatio
 The Mac drops disabled kinds when events arrive or when a kind becomes disabled.
 The Mac drops events that occur during snooze or do-not-disturb.
 It does not send those events when the quiet period ends.
+Needs-you pushes stay Time Sensitive after action removal or burst grouping.
+Finished pushes stay Active.
 
 ## 4. Pair
 
