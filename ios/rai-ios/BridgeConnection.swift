@@ -332,8 +332,39 @@ struct PaneGridSize: Equatable {
     let rows: Int
 }
 
+enum DecisionWaiterRouting {
+    static func requestIDs(
+        waiterSocketIDs: [String: ObjectIdentifier],
+        failingSocketID: ObjectIdentifier
+    ) -> [String] {
+        waiterSocketIDs.compactMap { requestID, socketID in
+            socketID == failingSocketID ? requestID : nil
+        }
+    }
+}
+
+enum PushRegistrationPlan {
+    static func messages(
+        deviceToken: String,
+        environment: String,
+        availability: PermissionDecisionAvailability
+    ) -> [BridgeMessage] {
+        [
+            .registerPush(deviceToken: deviceToken, environment: environment),
+            .decisionAvailability(
+                available: availability.available,
+                pushAuthorized: availability.notificationAuthorized
+            ),
+        ]
+    }
+}
+
 @MainActor
 final class BridgeConnection: ObservableObject {
+    private struct DecisionWaiter {
+        let socket: URLSessionWebSocketTask
+        let continuation: CheckedContinuation<Bool, Never>
+    }
     enum Status: Equatable {
         case disconnected
         case connecting
@@ -452,6 +483,40 @@ final class BridgeConnection: ObservableObject {
     // while reconnecting is routine on a phone) is retried on the next
     // welcome instead of being skipped forever.
     private var seededPanes: Set<String> = []
+    private var decisionBeaconReceivedAt: [String: Date] = [:]
+    private var decisionWaiters: [String: DecisionWaiter] = [:]
+    private var notificationAuthorizationGranted = false
+    private var appIsForeground = false
+
+    func updateDecisionAvailability(
+        notificationAuthorized: Bool,
+        isForeground: Bool
+    ) {
+        let previous = decisionAvailability
+        notificationAuthorizationGranted = notificationAuthorized
+        appIsForeground = isForeground
+        let current = decisionAvailability
+        guard current != previous, status.isConnected else { return }
+        Task {
+            do {
+                try await send(
+                    .decisionAvailability(
+                        available: current.available,
+                        pushAuthorized: current.notificationAuthorized
+                    )
+                )
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    private var decisionAvailability: PermissionDecisionAvailability {
+        PermissionDecisionAvailability(
+            notificationAuthorized: notificationAuthorizationGranted,
+            appIsForeground: appIsForeground
+        )
+    }
 
     func connect(to pairing: Pairing) {
         let changesMac = self.pairing.map { $0 != pairing } ?? false
@@ -505,11 +570,27 @@ final class BridgeConnection: ObservableObject {
     }
 
     func replaceWithLiveSnapshot(_ snapshot: SessionSnapshot, receivedAt: Date = Date()) {
+        let activeRequestIDs: Set<String> = Set(snapshot.panes.compactMap { pane -> String? in
+            guard pane.beacon?.awaitsDecision == true else { return nil }
+            return pane.beacon?.requestID
+        })
+        decisionBeaconReceivedAt = decisionBeaconReceivedAt.filter {
+            activeRequestIDs.contains($0.key)
+        }
+        for requestID in activeRequestIDs where decisionBeaconReceivedAt[requestID] == nil {
+            decisionBeaconReceivedAt[requestID] = receivedAt
+        }
         self.snapshot = snapshot
         lastSnapshotAt = receivedAt
         isShowingCachedSnapshot = false
         status = .connected
         didReceiveSnapshot?(snapshot, receivedAt)
+    }
+
+    func receivedAt(for beacon: AgentBeacon) -> Date {
+        beacon.requestID.flatMap { decisionBeaconReceivedAt[$0] }
+            ?? lastSnapshotAt
+            ?? Date()
     }
 
     func refreshSnapshot() async {
@@ -701,6 +782,14 @@ final class BridgeConnection: ObservableObject {
         sendAction(.sendKeys(paneID: paneID, keys: keys))
     }
 
+    func decide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String
+    ) {
+        sendAction(.decide(paneID: paneID, requestID: requestID, decision: decision))
+    }
+
     func sendInput(_ bytes: [UInt8], to paneID: String) {
         Task {
             do {
@@ -841,12 +930,61 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func connectAndDecide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        guard let decisionSocket = task else { return false }
+        guard decisionWaiters[requestID] == nil else { return false }
+        return await withCheckedContinuation { continuation in
+            decisionWaiters[requestID] = DecisionWaiter(
+                socket: decisionSocket,
+                continuation: continuation
+            )
+            Task {
+                do {
+                    try await sendDecision(
+                        .decide(
+                            paneID: paneID,
+                            requestID: requestID,
+                            decision: decision
+                        ),
+                        over: decisionSocket
+                    )
+                } catch {
+                    resolveDecision(requestID: requestID, accepted: false)
+                    handleSocketFailure(error, from: decisionSocket)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(5))
+                resolveDecision(requestID: requestID, accepted: false)
+            }
+        }
+    }
+
     func registerPush(deviceToken: String, environment: String) {
         Task {
             do {
-                try await send(
-                    .registerPush(deviceToken: deviceToken, environment: environment)
-                )
+                let availability = decisionAvailability
+                for message in PushRegistrationPlan.messages(
+                    deviceToken: deviceToken,
+                    environment: environment,
+                    availability: availability
+                ) {
+                    try await send(message)
+                }
             } catch {
                 handleSocketFailure(error)
             }
@@ -917,7 +1055,8 @@ final class BridgeConnection: ObservableObject {
             deviceID: deviceID,
             name: UIDevice.current.name,
             platform: "iOS",
-            model: UIDevice.current.model
+            model: UIDevice.current.model,
+            capabilities: decisionAvailability.capabilities
         )
     }
 
@@ -1074,14 +1213,21 @@ final class BridgeConnection: ObservableObject {
             } else {
                 status = .failed(.bridgeError(message, host: host))
             }
+        case let .paneError(_, message):
+            actionError = message
+        case let .decisionResult(_, requestID, accepted, message):
+            if !accepted {
+                actionError = message ?? "That prompt already closed"
+            }
+            resolveDecision(requestID: requestID, accepted: accepted)
         case .event:
             break
         case .pair, .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
-             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
-             .listSessions, .selectSession, .pushPrefs:
+             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys, .decide,
+             .decisionAvailability, .listSessions, .selectSession, .pushPrefs:
             break
         }
     }
@@ -1297,14 +1443,34 @@ final class BridgeConnection: ObservableObject {
         try await task.send(.string(text))
     }
 
+    private func sendDecision(
+        _ message: BridgeMessage,
+        over socket: URLSessionWebSocketTask
+    ) async throws {
+        guard task === socket, status.isConnected else {
+            throw URLError(.notConnectedToInternet)
+        }
+        let data = try encoder.encode(message)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        try await socket.send(.string(text))
+    }
+
     private func handleSocketFailure(
         _ error: Error,
         from socket: URLSessionWebSocketTask? = nil
     ) {
-        guard shouldReconnect, !(error is CancellationError) else { return }
         if let socket, task !== socket {
+            resolveDecisions(for: socket, accepted: false)
             return
         }
+        if let socket = socket ?? task {
+            resolveDecisions(for: socket, accepted: false)
+        } else {
+            resolveAllDecisions(accepted: false)
+        }
+        guard shouldReconnect, !(error is CancellationError) else { return }
         scheduleReconnect(after: error)
     }
 
@@ -1341,10 +1507,12 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .failed(diagnosis)
+        resolveAllDecisions(accepted: false)
     }
 
     private func disconnect(clearPairing: Bool, clearSnapshot: Bool) {
         advanceConnectionGeneration()
+        resolveAllDecisions(accepted: false)
         shouldReconnect = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -1357,6 +1525,7 @@ final class BridgeConnection: ObservableObject {
         if clearSnapshot {
             snapshot = nil
             lastSnapshotAt = nil
+            decisionBeaconReceivedAt.removeAll()
             isShowingCachedSnapshot = false
         }
         sessionName = nil
@@ -1367,6 +1536,31 @@ final class BridgeConnection: ObservableObject {
             clearPendingPushPreferences()
             pairing = nil
             invitation = nil
+        }
+    }
+
+    private func resolveDecision(requestID: String, accepted: Bool) {
+        decisionWaiters.removeValue(forKey: requestID)?.continuation.resume(
+            returning: accepted
+        )
+    }
+
+    private func resolveDecisions(for socket: URLSessionWebSocketTask, accepted: Bool) {
+        let socketIDs = decisionWaiters.mapValues { ObjectIdentifier($0.socket) }
+        let requestIDs = DecisionWaiterRouting.requestIDs(
+            waiterSocketIDs: socketIDs,
+            failingSocketID: ObjectIdentifier(socket)
+        )
+        for requestID in requestIDs {
+            resolveDecision(requestID: requestID, accepted: accepted)
+        }
+    }
+
+    private func resolveAllDecisions(accepted: Bool) {
+        let waiters = Array(decisionWaiters.values.map(\.continuation))
+        decisionWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: accepted)
         }
     }
 

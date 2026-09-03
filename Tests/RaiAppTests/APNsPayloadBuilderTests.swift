@@ -9,6 +9,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
             subtitle: "rai",
             body: "Needs you",
             paneID: "pane-1",
+            requestID: "request-1",
             workspaceID: "workspace-1",
             workspace: "rai",
             category: "agent-attention",
@@ -31,6 +32,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
         XCTAssertEqual(root["notificationIDs"] as? [String], ["agent-pane-1"])
         XCTAssertEqual(root["notificationTimestamp"] as? Double, 100)
         XCTAssertEqual(root["paneID"] as? String, "pane-1")
+        XCTAssertEqual(root["request_id"] as? String, "request-1")
         XCTAssertEqual(aps["category"] as? String, "agent-attention")
         XCTAssertEqual(aps["interruption-level"] as? String, "time-sensitive")
     }

@@ -318,6 +318,14 @@ final class BridgeAuditTests: XCTestCase {
                 )
             )
         )
+        let decision = try XCTUnwrap(
+            BridgeAuditEvent(
+                .decide(paneID: "pane-1", requestID: "request-1", decision: .deny)
+            )
+        )
+        XCTAssertEqual(decision.action, "decide")
+        XCTAssertEqual(decision.targetIDs["request_id"], "request-1")
+        XCTAssertEqual(decision.content, .text("deny"))
         XCTAssertNil(
             BridgeAuditEvent(
                 .hello(

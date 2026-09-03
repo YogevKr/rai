@@ -87,14 +87,30 @@ struct PaneTerminalView: View {
 
                 if let prompt = promptController.prompt,
                    ClaudePromptGate.allows(agent: pane.agent) {
+                    let decisionBeacon = pane.beacon?.awaitsDecision == true
+                        ? pane.beacon
+                        : nil
+                    let capturedPaneID = pane.paneID
+                    let capturedRequestID = decisionBeacon?.requestID
                     PromptBar(
                         prompt: prompt,
+                        decisionBeacon: decisionBeacon,
+                        decisionReceivedAt: decisionBeacon.map {
+                            connection.receivedAt(for: $0)
+                        },
+                        legacyInputAllowed: PermissionPromptTransport.usesLegacyKeys(
+                            beacon: pane.beacon
+                        ),
+                        decisionEnabled: connection.status.isConnected,
                         isBusy: promptController.isBusy,
                         select: { option in
                             let sendKey: (String) -> Void = {
                                 connection.sendKeys([$0], to: pane.paneID)
                             }
                             if prompt.kind == .numberedPermission {
+                                guard PermissionPromptTransport.usesLegacyKeys(
+                                    beacon: pane.beacon
+                                ) else { return }
                                 promptController.sendLegacy(
                                     renderedPrompt: prompt,
                                     option: option,
@@ -125,13 +141,96 @@ struct PaneTerminalView: View {
                                 connection.sendKeys([$0], to: pane.paneID)
                             }
                         },
+                        decide: { option in
+                            guard connection.status.isConnected,
+                                  let requestID = capturedRequestID,
+                                  let currentPane = connection.snapshot?.panes.first(where: {
+                                      $0.paneID == capturedPaneID
+                                  }),
+                                  PermissionDecisionTapGuard.isCurrent(
+                                      capturedPaneID: capturedPaneID,
+                                      capturedRequestID: requestID,
+                                      currentPaneID: currentPane.paneID,
+                                      currentBeacon: currentPane.beacon
+                                  )
+                            else {
+                                promptController.refresh()
+                                return
+                            }
+                            promptController.sendDecision(
+                                renderedPrompt: prompt,
+                                option: option
+                            ) { decision in
+                                connection.decide(
+                                    decision,
+                                    requestID: requestID,
+                                    paneID: capturedPaneID
+                                )
+                            }
+                        },
                         escape: {
+                            guard PermissionPromptTransport.allowsEscape(
+                                promptKind: prompt.kind,
+                                beacon: pane.beacon
+                            ) else { return }
                             promptController.sendEscape(
                                 renderedPrompt: prompt,
                                 through: { connection.sendInput($0, to: pane.paneID) }
                             )
                         },
                         dismiss: { promptController.dismiss(renderedPrompt: prompt) }
+                    )
+                } else if let beacon = pane.beacon,
+                          beacon.awaitsDecision,
+                          let requestID = beacon.requestID {
+                    HeldDecisionBar(
+                        beacon: beacon,
+                        receivedAt: connection.receivedAt(for: beacon),
+                        decisionEnabled: connection.status.isConnected,
+                        approve: {
+                            guard connection.status.isConnected,
+                                  PermissionDecisionTapGuard.isCurrent(
+                                      capturedPaneID: pane.paneID,
+                                      capturedRequestID: requestID,
+                                      currentPaneID: connection.snapshot?.panes.first(where: {
+                                          $0.paneID == pane.paneID
+                                      })?.paneID,
+                                      currentBeacon: connection.snapshot?.panes.first(where: {
+                                          $0.paneID == pane.paneID
+                                      })?.beacon
+                                  )
+                            else {
+                                promptController.refresh()
+                                return
+                            }
+                            connection.decide(
+                                .allow,
+                                requestID: requestID,
+                                paneID: pane.paneID
+                            )
+                        },
+                        deny: {
+                            guard connection.status.isConnected,
+                                  PermissionDecisionTapGuard.isCurrent(
+                                      capturedPaneID: pane.paneID,
+                                      capturedRequestID: requestID,
+                                      currentPaneID: connection.snapshot?.panes.first(where: {
+                                          $0.paneID == pane.paneID
+                                      })?.paneID,
+                                      currentBeacon: connection.snapshot?.panes.first(where: {
+                                          $0.paneID == pane.paneID
+                                      })?.beacon
+                                  )
+                            else {
+                                promptController.refresh()
+                                return
+                            }
+                            connection.decide(
+                                .deny,
+                                requestID: requestID,
+                                paneID: pane.paneID
+                            )
+                        }
                     )
                 }
 
@@ -848,6 +947,28 @@ final class TerminalPromptController: ObservableObject {
         dismiss(renderedPrompt: renderedPrompt)
     }
 
+    func sendDecision(
+        renderedPrompt: PromptModel,
+        option: PromptOption,
+        through send: (RemotePermissionDecision) -> Void
+    ) {
+        guard renderedPrompt.kind == .numberedPermission,
+              unconfirmedToggle == nil,
+              let decision = PermissionPromptDecisionMap.decision(for: option),
+              renderedPrompt.options.contains(option),
+              prompt?.actionIdentity == renderedPrompt.actionIdentity,
+              let grid = readGrid?(),
+              let current = trackedPrompt(in: grid),
+              current.actionIdentity == renderedPrompt.actionIdentity,
+              current.options.contains(option)
+        else {
+            refresh()
+            return
+        }
+        send(decision)
+        dismiss(renderedPrompt: renderedPrompt)
+    }
+
     func select(
         renderedPrompt: PromptModel,
         option: PromptOption,
@@ -1108,11 +1229,16 @@ private struct StatuslineStrip: View {
 
 private struct PromptBar: View {
     let prompt: PromptModel
+    let decisionBeacon: AgentBeacon?
+    let decisionReceivedAt: Date?
+    let legacyInputAllowed: Bool
+    let decisionEnabled: Bool
     let isBusy: Bool
     let select: (PromptOption) -> Void
     let advance: () -> Void
     let retreat: () -> Void
     let submit: () -> Void
+    let decide: (PromptOption) -> Void
     let escape: () -> Void
     let dismiss: () -> Void
 
@@ -1128,9 +1254,18 @@ private struct PromptBar: View {
     private var legacyBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(prompt.options) { option in
+                ForEach(
+                    PermissionPromptPresentation.visibleOptions(
+                        prompt.options,
+                        awaitingDecision: decisionBeacon != nil
+                    )
+                ) { option in
                     Button {
-                        select(option)
+                        if decisionBeacon != nil {
+                            decide(option)
+                        } else if legacyInputAllowed {
+                            select(option)
+                        }
                     } label: {
                         HStack(spacing: 4) {
                             Text(option.digit.map(String.init) ?? "")
@@ -1144,21 +1279,60 @@ private struct PromptBar: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(
+                        isBusy || (decisionBeacon != nil
+                            ? !decisionEnabled
+                                || PermissionPromptDecisionMap.decision(for: option) == nil
+                            : !legacyInputAllowed)
+                    )
                 }
-                Button("Esc", action: escape)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                if let decisionBeacon {
+                    decisionCountdown(
+                        decisionBeacon,
+                        receivedAt: decisionReceivedAt ?? Date()
+                    )
+                    if PermissionPromptPresentation.showsMacHint(
+                        prompt.options,
+                        awaitingDecision: true
+                    ) {
+                        Text("answer on the Mac")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if legacyInputAllowed {
+                    Button("Esc", action: escape)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                } else {
+                    Text("answer on the Mac")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .disabled(isBusy)
                 .accessibilityLabel("Dismiss prompt controls")
             }
             .padding(.horizontal)
             .padding(.vertical, 6)
         }
         .background(.bar)
+    }
+    @ViewBuilder
+    private func decisionCountdown(_ beacon: AgentBeacon, receivedAt: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = HeldDecisionCountdown.remainingSeconds(
+                beacon: beacon,
+                receivedAt: receivedAt,
+                now: context.date
+            )
+            Text("held for you · \(seconds) s")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var structuredBar: some View {
@@ -1312,6 +1486,44 @@ private struct PromptBar: View {
         case .current: "circle.inset.filled"
         case .pending: "circle"
         }
+    }
+}
+
+private struct HeldDecisionBar: View {
+    let beacon: AgentBeacon
+    let receivedAt: Date
+    let decisionEnabled: Bool
+    let approve: () -> Void
+    let deny: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button("Approve", action: approve)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!decisionEnabled)
+            Button("Deny", action: deny)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!decisionEnabled)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let seconds = HeldDecisionCountdown.remainingSeconds(
+                    beacon: beacon,
+                    receivedAt: receivedAt,
+                    now: context.date
+                )
+                Text("held for you · \(seconds) s")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Text("answer on the Mac")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 }
 

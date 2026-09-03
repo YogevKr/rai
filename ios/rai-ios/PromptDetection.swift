@@ -124,6 +124,73 @@ struct PromptActionIdentity: Equatable {
     let questionIndex: Int?
 }
 
+enum PermissionPromptDecisionMap {
+    static func decision(for option: PromptOption) -> RemotePermissionDecision? {
+        switch option.label.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "Yes": .allow
+        case "No": .deny
+        default: nil
+        }
+    }
+}
+
+enum PermissionPromptPresentation {
+    static func visibleOptions(
+        _ options: [PromptOption],
+        awaitingDecision: Bool
+    ) -> [PromptOption] {
+        guard awaitingDecision else { return options }
+        return options.filter { PermissionPromptDecisionMap.decision(for: $0) != nil }
+    }
+
+    static func showsMacHint(_ options: [PromptOption], awaitingDecision: Bool) -> Bool {
+        awaitingDecision && visibleOptions(options, awaitingDecision: true).count < options.count
+    }
+}
+
+enum PermissionDecisionTapGuard {
+    static func isCurrent(
+        capturedPaneID: String,
+        capturedRequestID: String,
+        currentPaneID: String?,
+        currentBeacon: AgentBeacon?
+    ) -> Bool {
+        capturedPaneID == currentPaneID
+            && currentBeacon?.awaitsDecision == true
+            && currentBeacon?.requestID == capturedRequestID
+    }
+}
+
+enum HeldDecisionCountdown {
+    static func remainingSeconds(
+        beacon: AgentBeacon,
+        receivedAt: Date,
+        now: Date
+    ) -> Int {
+        guard let deadline = beacon.deadline else { return 0 }
+        let hold = ClaudeHookSettings.clampedDecisionHoldSeconds(
+            beacon.decisionHoldSeconds ?? ClaudeHookSettings.defaultDecisionHoldSeconds
+        )
+        let updatedAt = Date(timeIntervalSince1970: beacon.timestamp)
+        let initial = min(
+            TimeInterval(hold),
+            max(0, deadline.timeIntervalSince(updatedAt))
+        )
+        let elapsed = max(0, now.timeIntervalSince(receivedAt))
+        return min(hold, max(0, Int(ceil(initial - elapsed))))
+    }
+}
+
+enum PermissionPromptTransport {
+    static func usesLegacyKeys(beacon: AgentBeacon?) -> Bool {
+        beacon?.requestID == nil
+    }
+
+    static func allowsEscape(promptKind: PromptKind, beacon: AgentBeacon?) -> Bool {
+        promptKind != .numberedPermission || usesLegacyKeys(beacon: beacon)
+    }
+}
+
 enum PromptDetector {
     private static let optionExpression = try! NSRegularExpression(
         pattern: #"^\s*([❯>›])?\s*([1-9][0-9]*)[\.\)]\s+(?:\[([ xX✓✔])\]\s*)?(.+?)\s*$"#

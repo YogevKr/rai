@@ -625,6 +625,48 @@ final class PromptDetectionTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testDecisionRefusesAReplacedRenderedPromptInstance() throws {
+        let controller = TerminalPromptController()
+        controller.readGrid = { Self.permissionGrid }
+        controller.beacon = AgentBeacon(
+            event: "PermissionRequest",
+            paneID: "pane-1",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            requestID: "request-a",
+            timestamp: 1,
+            awaitsDecision: true
+        )
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+
+        controller.beacon = AgentBeacon(
+            event: "PermissionRequest",
+            paneID: "pane-1",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            requestID: "request-b",
+            timestamp: 2,
+            awaitsDecision: true
+        )
+        var sent: [RemotePermissionDecision] = []
+        controller.sendDecision(
+            renderedPrompt: rendered,
+            option: rendered.options[0]
+        ) { sent.append($0) }
+
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertEqual(
+            controller.prompt?.instanceKey,
+            .request("request-b", streamGeneration: 0)
+        )
+    }
+
     func testTrustDetectionAllowsBlankRowsBelowFooter() throws {
         var rows = try fixture("trust-dialog.txt").split(
             separator: "\n",

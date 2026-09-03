@@ -217,6 +217,166 @@ final class AgentBeaconTests: XCTestCase {
         XCTAssertFalse(body.contains("hunter2"))
     }
 
+    func testDecisionBodyShowsDirectFileCommand() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object(["command": .string("touch allow-created")]),
+            timestamp: 1
+        )
+
+        XCTAssertEqual(
+            AgentNotificationBody.composeDecision(beacon: permission),
+            "Bash: touch allow-created"
+        )
+    }
+
+    func testDecisionBodyHidesUnrecognizedCommandArguments() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object(["command": .string("redis-cli -a hunter2")]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "Bash: redis-cli …")
+        XCTAssertFalse(body.contains("hunter2"))
+    }
+
+    func testDecisionBodyHidesURLPathSecrets() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "WebFetch",
+            toolInput: .object([
+                "url": .string("https://hooks.slack.test/services/secret/value"),
+            ]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "WebFetch: https://hooks.slack.test/…")
+        XCTAssertFalse(body.contains("secret"))
+    }
+
+    func testDecisionBodyHidesURLInsideAFileCommand() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object([
+                "command": .string(
+                    "ln -s https://hooks.example/services/secret/value link"
+                ),
+            ]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "Bash: ln …")
+        XCTAssertFalse(body.contains("secret"))
+    }
+
+    func testPermissionPushRedactorRejectsCredentialLikeText() {
+        let samples = [
+            "WebSearch: password hunter2",
+            "Bash: export TOKEN=abc123secret",
+            "Bash: curl -H Authorization:BearerSecret123 example.test",
+            "WebSearch: code 1234",
+        ]
+
+        for sample in samples {
+            XCTAssertEqual(
+                PushTextRedactor.permission(sample, agent: "Claude"),
+                "Permission request from Claude"
+            )
+        }
+        let url = PushTextRedactor.permission(
+            "WebFetch: https://example.test/run?query=hunter2",
+            agent: "WebFetch"
+        )
+        XCTAssertEqual(url, "WebFetch: https://example.test/run?query=•••")
+
+        let beacon = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/transcript.jsonl",
+            toolName: "WebSearch",
+            toolInput: .object(["query": .string("password hunter2")]),
+            timestamp: 1
+        )
+        XCTAssertEqual(
+            AgentNotificationBody.composeDecision(beacon: beacon),
+            "Permission request from Claude"
+        )
+    }
+
+    func testPermissionPushRedactorKeepsOrdinaryFourDigitText() {
+        let samples = [
+            "WebSearch: WWDC 2026",
+            "Write: /tmp/1234/output",
+            "WebSearch: v2026 release notes",
+        ]
+
+        for sample in samples {
+            XCTAssertEqual(
+                PushTextRedactor.permission(sample, agent: "Claude"),
+                sample
+            )
+        }
+        XCTAssertEqual(
+            PushTextRedactor.permission("Bash: code is 1234", agent: "Claude"),
+            "Permission request from Claude"
+        )
+        XCTAssertEqual(
+            PushTextRedactor.permission("WebSearch: issue 123456", agent: "Claude"),
+            "WebSearch: issue •••"
+        )
+    }
+
+    func testPermissionPushRedactorClassifiesPunctuatedTokenCores() {
+        let fixtures = [
+            ("123456.", "•••."),
+            ("(123456)", "(•••)"),
+            ("'123456'", "'•••'"),
+            ("123456,", "•••,"),
+            ("2.1.259", "2.1.259"),
+            ("#1140", "#1140"),
+        ]
+
+        for (input, expected) in fixtures {
+            XCTAssertEqual(
+                PushTextRedactor.permission(input, agent: "Claude"),
+                expected
+            )
+        }
+    }
+
+    func testPermissionPushRedactorKeepsOnlyRealPathShapedSlashTokens() {
+        let base64 = "c2VjcmV0/2NyZWRlbnRpYWw="
+        let prefixedSecret = "sk-live/abcdefghijklmnopqrstuvwxyz"
+        let path = "/Users/x/repos/a-b/file.swift"
+
+        XCTAssertEqual(PushTextRedactor.permission(base64, agent: "Claude"), "•••")
+        XCTAssertEqual(PushTextRedactor.permission(prefixedSecret, agent: "Claude"), "•••")
+        XCTAssertEqual(PushTextRedactor.permission(path, agent: "Claude"), path)
+    }
+
     func testOrdinaryPreToolUseIsContextNotAPendingRequest() {
         let beacon = AgentBeacon(
             event: "PreToolUse",

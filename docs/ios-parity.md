@@ -23,6 +23,7 @@ Audited 2026-09-03 against `main` (bridge protocol v6).
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
 | Claude prompt controls | native terminal | permission, trust, plan, and AskUserQuestion blocks | ✅ phone support |
 | Notifications on blocked/done | native macOS + dock badge | APNs bursts, per-device controls, groups, actions, and retraction | ✅ parity (physical delivery not verified) |
+| Permission decisions | local Claude dialog | data decision, deadline, key fallback | ✅ parity (physical push action not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -71,6 +72,30 @@ All additive, no version bump (old phones skip unknown message types):
   AskUserQuestion blocks use its labels and descriptions before grid text.
 - A beacon can include an optional `request_id` for one prompt instance.
 - The beacon field is additive within protocol v6. It does not require another bump.
+
+## Decision hooks LANDED (2026-09-03)
+
+- Permission beacons include a request ID, wait flag, and deadline.
+- The phone sends `decide` for Approve and Deny.
+- Unknown and expired requests return a pane-scoped decision error.
+- Decision results let notification actions confirm Mac acceptance.
+- Rai retracts decision pushes when each request closes.
+- Waiting requests bypass push delay and never coalesce.
+- Waiting requests still honor each device's kind, snooze, and DND controls.
+- The phone shows a countdown in the pane and herd row.
+- Notification actions keep key input for older Macs.
+- New phones announce the `permission_decisions` capability.
+- Phones send `decisionAvailability` when notification or foreground state changes.
+- Notification permission enables background decisions.
+- Each foreground transition refreshes the system notification authorization state.
+- A new foreground grant starts APNs registration and refreshes capability after token registration.
+- A foreground bridge connection also enables decisions without notification permission.
+- The Mac never holds a request for an old phone alone.
+- A five-second reachability grace keeps brief phone reconnects from closing a held request.
+- Held choices map only exact Yes and No labels.
+- The phone hides other held choices and directs users to the Mac.
+- Countdown math uses elapsed phone time and does not trust matching wall clocks.
+- These messages are additive within protocol v6.
 
 ## Wave 2 quality of life LANDED (2026-09-03)
 
@@ -168,6 +193,12 @@ new `pair` message sends a short code, protocol version, and device data. The
 `paired` reply returns one device credential once. The phone confirms it with
 `hello`. A lost reply can retry the code until expiry. Later connections also
 use `hello`.
+
+The `decide`, `decisionAvailability`, `decisionResult`, and `paneError` messages remain additive in protocol version 6.
+
+Old phones skip the waiting beacon fields and server error messages.
+
+Old Macs reject `decide` per message. The phone uses keys without a request ID.
 
 This change is not compatible with protocol version 5. Old phones receive
 "Re-pair required" and must pair again.

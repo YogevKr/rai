@@ -4,6 +4,21 @@ import XCTest
 @testable import RaiApp
 
 final class PushBurstPlannerTests: XCTestCase {
+    func testHeldDecisionSkipsTheNormalStatusPushQueue() {
+        let beacon = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            requestID: "request-1",
+            timestamp: 1,
+            awaitsDecision: true
+        )
+
+        XCTAssertFalse(PhonePushQueuePolicy.queuesStatusPush(beacon: beacon))
+        XCTAssertTrue(PhonePushQueuePolicy.queuesStatusPush(beacon: nil))
+    }
+
     private let start = Date(timeIntervalSince1970: 1_800_000_000)
 
     func testEventsInsideWindowBecomeOneSummaryPush() {
@@ -92,6 +107,41 @@ final class PushBurstPlannerTests: XCTestCase {
 
         XCTAssertFalse(push.requiresAttention)
         XCTAssertEqual(push.interruptionLevel, .timeSensitive)
+    }
+
+    func testHeldDecisionRequestsNeverCoalesce() {
+        let first = PhonePushEvent(
+            paneID: "p1",
+            paneName: "Build",
+            workspaceID: "workspace-1",
+            workspaceName: "rai",
+            status: .blocked,
+            requestID: "request-1",
+            occurredAt: start
+        )
+        let second = PhonePushEvent(
+            paneID: "p2",
+            paneName: "Tests",
+            workspaceID: "workspace-1",
+            workspaceName: "rai",
+            status: .blocked,
+            requestID: "request-2",
+            occurredAt: start.addingTimeInterval(1)
+        )
+
+        let pushes = PushBurstPlanner.plan(events: [first, second], window: 15)
+
+        XCTAssertEqual(pushes.count, 2)
+        XCTAssertEqual(pushes.map(\.requestID), ["request-1", "request-2"])
+        XCTAssertTrue(pushes.allSatisfy(\.requiresAttention))
+        XCTAssertEqual(pushes.map(\.category), ["permission-decision", "permission-decision"])
+        XCTAssertEqual(
+            pushes.map(\.notificationIDs),
+            [
+                ["decision-p1-request-1"],
+                ["decision-p2-request-2"],
+            ]
+        )
     }
 
     func testDoneEventsUseTheRequiredTriageSummaryTitle() {

@@ -82,9 +82,45 @@ active. The app declares the required
 Rai can use Claude Code hooks for accurate notification and push text. Install
 them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
 Single-pane pushes use the current tool request, question, or completion line.
-Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
+Waiting permission pushes include Approve and Deny actions.
+The Mac keeps existing hook entries.
 
-The Mac adds an optional `beacon` to each bridge snapshot pane. The iPhone uses
+The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
+model decodes it. Waiting beacons include a request ID and deadline.
+
+The prompt bar and herd row show the remaining hold time.
+
+The countdown uses elapsed phone time, so Mac and phone clock differences do not change it.
+
+Approve and Deny send a structured `decide` message.
+
+The phone waits for the Mac's decision result after a notification action.
+
+The Mac retracts the action push when the request closes.
+
+Always-allow and auto-mode choices remain available only on the Mac.
+
+The phone maps only exact Yes and No choices to data decisions.
+
+It hides other choices while the hook waits and shows `answer on the Mac`.
+
+Older Macs omit the request ID. The phone then keeps the key-based action path.
+
+New phones announce permission decision support during authentication.
+
+Notification permission enables decisions while the app runs in the background.
+
+The phone reads the current system permission each time it enters the foreground.
+
+A newly granted permission starts APNs registration. Token registration then refreshes the decision capability.
+
+A denied phone advertises decision support only during a foreground bridge connection.
+
+The Mac does not hold a hook for an old phone alone.
+
+Held decision pushes bypass the presence delay. They still honor each device's kind, snooze, and do-not-disturb controls.
+
+The iPhone uses
 AskUserQuestion beacon data for question, header, option, and description text.
 The terminal grid still identifies the active step and confirms each key.
 An optional `request_id` identifies one prompt instance. Older beacons use a
@@ -273,6 +309,10 @@ com.whetstone.rai.ios payload.json` to test a single alert:
   "notificationTimestamp": 1788386300
 }
 ```
+
+A held permission alert also includes `"request_id": "<uuid>"`.
+
+Its Approve and Deny actions connect and send `decide` to the Mac.
 
 Use this payload to test phone-side retraction:
 

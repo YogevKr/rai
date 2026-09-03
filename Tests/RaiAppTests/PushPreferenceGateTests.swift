@@ -70,6 +70,27 @@ final class PushPreferenceGateTests: XCTestCase {
         )
     }
 
+    func testDecisionPushKeepsItsRequestWhenDevicePreferencesSuppressIt() throws {
+        let event = PhonePushEvent(
+            paneID: "pane-1",
+            paneName: "Agent",
+            workspaceID: "workspace-1",
+            workspaceName: "Work",
+            status: .blocked,
+            requestID: "request-1",
+            occurredAt: date(hour: 12)
+        ).suppressing(deviceID: "phone-1")
+
+        XCTAssertEqual(event.requestID, "request-1")
+        XCTAssertNil(PushPreferenceGate.allowedBurst(
+            PhonePushBurst(events: [event]),
+            deviceID: "phone-1",
+            preferences: .default,
+            now: date(hour: 12),
+            calendar: calendar
+        ))
+    }
+
     func testSnoozeDropsHeldEventsAfterSnoozeEnds() {
         let preferences = PushPreferences(snoozeUntil: date(hour: 13))
 
