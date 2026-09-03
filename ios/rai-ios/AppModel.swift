@@ -130,6 +130,96 @@ final class SnapshotCacheStore {
     }
 }
 
+struct CachedTranscriptHistories: Codable {
+    let pages: [String: TranscriptHistoryPage]
+    let pairingID: String
+    let sessionName: String
+}
+
+final class TranscriptHistoryCacheStore {
+    private let fileURL: URL
+    private let queue: DispatchQueue
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(
+        fileURL: URL = TranscriptHistoryCacheStore.defaultURL(),
+        queue: DispatchQueue = DispatchQueue(label: "rai.transcript-history-cache")
+    ) {
+        self.fileURL = fileURL
+        self.queue = queue
+        encoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
+    }
+
+    func load(pairingID: String) -> CachedTranscriptHistories? {
+        queue.sync {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let cached = try? decoder.decode(CachedTranscriptHistories.self, from: data),
+                  cached.pairingID == pairingID else { return nil }
+            return cached
+        }
+    }
+
+    func save(
+        pages: [String: TranscriptHistoryPage],
+        pairingID: String,
+        sessionName: String
+    ) {
+        let latest = pages.mapValues { page in
+            let turns = Array(page.turns.suffix(TranscriptPagination.maximumLimit))
+            return TranscriptHistoryPage(
+                paneID: page.paneID,
+                sessionID: page.sessionID,
+                herdSessionName: page.herdSessionName,
+                turns: turns,
+                hasMore: page.hasMore || page.turns.count > turns.count,
+                sinceLastSeen: page.sinceLastSeen
+            )
+        }
+        queue.async { [self] in
+            do {
+                try FileManager.default.createDirectory(
+                    at: fileURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try encoder.encode(CachedTranscriptHistories(
+                    pages: latest,
+                    pairingID: pairingID,
+                    sessionName: sessionName
+                )).write(to: fileURL, options: .atomic)
+                var values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                var savedURL = fileURL
+                do {
+                    try savedURL.setResourceValues(values)
+                } catch {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    throw error
+                }
+            } catch {
+                NSLog("rai-ios: Could not persist transcript cache: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    func clear() {
+        queue.async { [fileURL] in
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
+    private static func defaultURL() -> URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return support
+            .appendingPathComponent("com.whetstone.rai.ios", isDirectory: true)
+            .appendingPathComponent("transcript-history.json")
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
@@ -141,6 +231,7 @@ final class AppModel: ObservableObject {
 
     private let pairingStore: any PairingStoring
     private let snapshotCacheStore: SnapshotCacheStore
+    private let transcriptHistoryCacheStore: TranscriptHistoryCacheStore
     private var deviceToken: String?
     private var pendingCache: CachedHerdSnapshot?
     private var cacheWriteTask: Task<Void, Never>?
@@ -151,11 +242,13 @@ final class AppModel: ObservableObject {
         pairingStore: any PairingStoring = PairingStore(),
         connection: BridgeConnection? = nil,
         snapshotCacheStore: SnapshotCacheStore = SnapshotCacheStore(),
+        transcriptHistoryCacheStore: TranscriptHistoryCacheStore = TranscriptHistoryCacheStore(),
         launchPairURL: String? = ProcessInfo.processInfo.environment["RAI_PAIR_URL"]
     ) {
         self.pairingStore = pairingStore
         self.connection = connection ?? BridgeConnection()
         self.snapshotCacheStore = snapshotCacheStore
+        self.transcriptHistoryCacheStore = transcriptHistoryCacheStore
         let connection = self.connection
         connection.didConnect = { [weak self] in
             self?.registerPushIfPossible()
@@ -170,6 +263,15 @@ final class AppModel: ObservableObject {
             self?.backgroundWorkByPaneID = Dictionary(
                 work.map { ($0.paneID, $0.summaries) },
                 uniquingKeysWith: { _, latest in latest }
+            )
+        }
+        connection.didReceiveHistoryPages = { [weak self] pages in
+            guard let self, let pairing = self.pairing,
+                  let sessionName = self.connection.sessionName else { return }
+            self.transcriptHistoryCacheStore.save(
+                pages: pages,
+                pairingID: CachedHerdSnapshot.pairingID(for: pairing),
+                sessionName: sessionName
             )
         }
         // Testing/automation affordance: pair straight from a launch env var,
@@ -190,6 +292,7 @@ final class AppModel: ObservableObject {
     }
 
     func pair(_ invitation: PairingInvitation) {
+        transcriptHistoryCacheStore.clear()
         // A code for a different Mac means the cached herd is someone else's.
         if let current = pairing,
            current.host != invitation.host || current.port != invitation.port {
@@ -223,6 +326,13 @@ final class AppModel: ObservableObject {
                 } else {
                     snapshotCacheStore.clear()
                 }
+            }
+            let pairingID = CachedHerdSnapshot.pairingID(for: pairing)
+            if let cached = transcriptHistoryCacheStore.load(pairingID: pairingID) {
+                connection.restoreCachedHistory(
+                    cached.pages,
+                    sessionName: cached.sessionName
+                )
             }
             connection.connect(to: pairing)
         }
@@ -332,6 +442,7 @@ final class AppModel: ObservableObject {
         cacheWriteInProgress = false
         pendingCache = nil
         snapshotCacheStore.clear()
+        transcriptHistoryCacheStore.clear()
     }
 
     /// The APNs token's environment is fixed by the signed `aps-environment`

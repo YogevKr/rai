@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		001DCB95549A4D3F6F651127 /* BridgeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */; };
+		050E99B73C87B11874938879 /* TranscriptHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C90FF96CA4523AF5AB8C7B /* TranscriptHistoryView.swift */; };
 		05AD621F149C70D175777D4A /* NotificationRetractionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */; };
 		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
 		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
@@ -21,6 +22,7 @@
 		48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */; };
 		496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */; };
 		55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BE1878923A0D1203A33641D /* PairingTests.swift */; };
+		73B280EEC25AAE5AC151E7F2 /* TranscriptHistoryViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */; };
 		8485449A51E1C585A0439512 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28A9944E5B3DBD0E0B55C06 /* RootView.swift */; };
 		88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */; };
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
@@ -44,8 +46,10 @@
 /* Begin PBXFileReference section */
 		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
 		2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineResilienceTests.swift; sourceTree = "<group>"; };
+		2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptHistoryViewModelTests.swift; sourceTree = "<group>"; };
 		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
+		312ACBA61C1F0BD99B4BB488 /* rai-transcript-history-0903-105140-kafv */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-transcript-history-0903-105140-kafv"; path = ..; sourceTree = SOURCE_ROOT; };
 		3A18C263735F80641EEDBADC /* OutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxTests.swift; sourceTree = "<group>"; };
 		3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
@@ -55,10 +59,10 @@
 		48E9B4094B34953B946FDDDD /* Composer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composer.swift; sourceTree = "<group>"; };
 		4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTerminalView.swift; sourceTree = "<group>"; };
 		5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdListLayoutTests.swift; sourceTree = "<group>"; };
-		5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-hook-beacons-0902-230811-70z1"; path = ..; sourceTree = SOURCE_ROOT; };
 		7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetectionTests.swift; sourceTree = "<group>"; };
 		7BE1878923A0D1203A33641D /* PairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingTests.swift; sourceTree = "<group>"; };
 		9104D912B4487B9223AD236C /* PromptDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetection.swift; sourceTree = "<group>"; };
+		91C90FF96CA4523AF5AB8C7B /* TranscriptHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptHistoryView.swift; sourceTree = "<group>"; };
 		970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
 		9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandler.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -85,7 +89,7 @@
 		2DA318A8F4154999D3174BCB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */,
+				312ACBA61C1F0BD99B4BB488 /* rai-transcript-history-0903-105140-kafv */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -100,6 +104,7 @@
 				7BE1878923A0D1203A33641D /* PairingTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
+				2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */,
 			);
 			path = "rai-iosTests";
 			sourceTree = "<group>";
@@ -131,6 +136,7 @@
 				DD164C96454BB5CAE0E70FAD /* rai-ios.entitlements */,
 				3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */,
 				C28A9944E5B3DBD0E0B55C06 /* RootView.swift */,
+				91C90FF96CA4523AF5AB8C7B /* TranscriptHistoryView.swift */,
 			);
 			path = "rai-ios";
 			sourceTree = "<group>";
@@ -248,6 +254,7 @@
 				55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
+				73B280EEC25AAE5AC151E7F2 /* TranscriptHistoryViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -267,6 +274,7 @@
 				C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */,
 				48625AE99F02CA2113FFE638 /* RaiIOSApp.swift in Sources */,
 				8485449A51E1C585A0439512 /* RootView.swift in Sources */,
+				050E99B73C87B11874938879 /* TranscriptHistoryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

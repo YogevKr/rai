@@ -246,6 +246,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
+    @Published private(set) var historyPages: [String: TranscriptHistoryPage] = [:]
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
@@ -253,6 +254,7 @@ final class BridgeConnection: ObservableObject {
     var didPair: ((Pairing) -> Void)?
     var didReceiveSnapshot: ((SessionSnapshot, Date) -> Void)?
     var didReceiveBackgroundWork: (([PaneBackgroundWork]) -> Void)?
+    var didReceiveHistoryPages: (([String: TranscriptHistoryPage]) -> Void)?
 
     var requiresRepair: Bool {
         status.diagnosis?.action == .pairAgain
@@ -284,6 +286,9 @@ final class BridgeConnection: ObservableObject {
     // payload and deliver it on registration instead of dropping it.
     private var pendingScrollback: [String: Data] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
+    private var historyGeneration: UInt = 0
+    private var historySessionName: String?
+    private var pendingHistoryRequests: [String: [PendingHistoryRequest]] = [:]
     // Panes whose scrollback seed actually arrived. Tracked separately from
     // desiredStreams so a seed lost to a dropped connection (opening a pane
     // while reconnecting is routine on a phone) is retried on the next
@@ -301,6 +306,10 @@ final class BridgeConnection: ObservableObject {
     }
 
     func pair(using invitation: PairingInvitation) {
+        historyPages = [:]
+        historyGeneration &+= 1
+        pendingHistoryRequests.removeAll()
+        historySessionName = nil
         // A code for another Mac must not keep showing this Mac's herd.
         let changesMac = pairing.map {
             $0.host != invitation.host || $0.port != invitation.port
@@ -342,6 +351,15 @@ final class BridgeConnection: ObservableObject {
         didReceiveSnapshot?(snapshot, receivedAt)
     }
 
+    func restoreCachedHistory(
+        _ pages: [String: TranscriptHistoryPage],
+        sessionName: String
+    ) {
+        guard historyPages.isEmpty else { return }
+        historyPages = pages
+        historySessionName = sessionName
+    }
+
     func refreshSnapshot() async {
         guard status.isConnected else {
             retryNow()
@@ -356,6 +374,28 @@ final class BridgeConnection: ObservableObject {
 
     func clearActionError() {
         actionError = nil
+    }
+
+    func requestHistory(
+        paneID: String,
+        beforeTurnIndex: Int? = nil,
+        limit: Int = TranscriptPagination.maximumLimit
+    ) {
+        // Keep one request per pane in flight. sendAction uses independent
+        // tasks, so FIFO reply metadata is safe only without overlap.
+        guard status.isConnected,
+              pendingHistoryRequests[paneID]?.isEmpty != false else { return }
+        pendingHistoryRequests[paneID, default: []].append(PendingHistoryRequest(
+            generation: historyGeneration,
+            replacesPage: beforeTurnIndex == nil,
+            sessionName: sessionName
+        ))
+        sendAction(.history(
+            paneID: paneID,
+            beforeTurnIndex: beforeTurnIndex,
+            limit: limit,
+            herdSessionName: sessionName
+        ))
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
@@ -791,15 +831,47 @@ final class BridgeConnection: ObservableObject {
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
         case let .authFailed(reason):
             stopWithFailure(.helloRejected(reason: reason))
-        case let .snapshot(snapshot):
+        case let .snapshot(snapshot, snapshotSessionName):
+            if let snapshotSessionName, sessionName != snapshotSessionName {
+                historyGeneration &+= 1
+                pendingHistoryRequests.removeAll()
+                historyPages = [:]
+                historySessionName = snapshotSessionName
+                sessionName = snapshotSessionName
+                didReceiveHistoryPages?(historyPages)
+            }
             replaceWithLiveSnapshot(snapshot)
         case let .sessions(list):
             sessions = list
             if let current = list.first(where: { $0.isCurrent }) {
+                if let sessionName, sessionName != current.name {
+                    historyGeneration &+= 1
+                    historyPages = [:]
+                    historySessionName = current.name
+                    didReceiveHistoryPages?(historyPages)
+                }
                 sessionName = current.name
             }
         case let .backgroundWork(work):
             didReceiveBackgroundWork?(work)
+        case let .historyPage(page):
+            guard var requests = pendingHistoryRequests[page.paneID],
+                  !requests.isEmpty else { return }
+            let request = requests.removeFirst()
+            pendingHistoryRequests[page.paneID] = requests.isEmpty ? nil : requests
+            guard request.generation == historyGeneration,
+                  page.herdSessionName == nil || page.herdSessionName == request.sessionName
+            else { return }
+            mergeHistoryPage(
+                page,
+                replacing: request.replacesPage
+            )
+            sendAction(.historyReceived(
+                paneID: page.paneID,
+                sessionID: page.sessionID,
+                herdSessionName: page.herdSessionName,
+                throughTurnIndex: page.turns.last?.index
+            ))
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -845,6 +917,9 @@ final class BridgeConnection: ObservableObject {
                 // read failure. Scrollback is progressive enhancement; don't
                 // drop or flag a healthy connection over it.
                 NSLog("rai-ios: scrollback unavailable: %@", message)
+            } else if message.hasPrefix("History is not ready") {
+                pendingHistoryRequests.removeAll()
+                NSLog("rai-ios: conversation history is not ready: %@", message)
             } else if Self.isActionError(message) {
                 actionError = message
             } else {
@@ -857,9 +932,32 @@ final class BridgeConnection: ObservableObject {
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
              .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
-             .listSessions, .selectSession:
+             .listSessions, .selectSession, .history, .historyReceived:
             break
         }
+    }
+
+    private func mergeHistoryPage(_ page: TranscriptHistoryPage, replacing: Bool) {
+        let existing = historyPages[page.paneID]
+        let continuesSession = !replacing && existing?.sessionID == page.sessionID
+        var byIndex = Dictionary(
+            uniqueKeysWithValues: (continuesSession ? existing?.turns ?? [] : []).map {
+                ($0.index, $0)
+            }
+        )
+        for turn in page.turns { byIndex[turn.index] = turn }
+        let turns = byIndex.values.sorted { $0.index < $1.index }
+        historyPages[page.paneID] = TranscriptHistoryPage(
+            paneID: page.paneID,
+            sessionID: page.sessionID,
+            herdSessionName: page.herdSessionName,
+            turns: turns,
+            hasMore: page.hasMore,
+            sinceLastSeen: continuesSession
+                ? existing?.sinceLastSeen ?? page.sinceLastSeen
+                : page.sinceLastSeen
+        )
+        didReceiveHistoryPages?(historyPages)
     }
 
     static func exchangedPairing(token: String, invitation: PairingInvitation) throws -> Pairing {
@@ -878,9 +976,17 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure(.protocolMismatch(protocolVersion))
             return
         }
+        historyGeneration &+= 1
+        pendingHistoryRequests.removeAll()
+        self.sessionName = sessionName
+        if let historySessionName, let sessionName,
+           historySessionName != sessionName {
+            historyPages = [:]
+            didReceiveHistoryPages?(historyPages)
+        }
+        self.historySessionName = sessionName
         reconnectAttempt = 0
         status = .connected
-        self.sessionName = sessionName
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -925,6 +1031,11 @@ final class BridgeConnection: ObservableObject {
     /// Switches the herd the Mac — and therefore this phone — watches.
     func switchSession(named name: String) {
         guard name != sessionName else { return }
+        historyGeneration &+= 1
+        historyPages = [:]
+        historySessionName = name
+        sessionName = name
+        didReceiveHistoryPages?(historyPages)
         Task {
             try? await send(.selectSession(name: name))
             // The Mac pushes a fresh snapshot on switch; refresh the session
@@ -1023,6 +1134,10 @@ final class BridgeConnection: ObservableObject {
             snapshot = nil
             lastSnapshotAt = nil
             isShowingCachedSnapshot = false
+            historyPages = [:]
+            historyGeneration &+= 1
+            pendingHistoryRequests.removeAll()
+            historySessionName = nil
         }
         sessionName = nil
         didReceiveBackgroundWork?([])
@@ -1047,4 +1162,10 @@ final class BridgeConnection: ObservableObject {
         return components.url
     }
 
+}
+
+private struct PendingHistoryRequest {
+    let generation: UInt
+    let replacesPage: Bool
+    let sessionName: String?
 }

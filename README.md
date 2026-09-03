@@ -80,6 +80,8 @@ crook for the herd:
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away.
+- **Conversation history** — read Claude prompts, replies, tool calls, and
+  results as cards. Search, refresh, load older turns, or jump to your last prompt.
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
   answer the wrong prompt.
@@ -181,6 +183,7 @@ to reorder.
   rai (native macOS app)
    ├─ HerdrClient   session.snapshot + events.subscribe → an observable model
    ├─ Hook socket   Claude lifecycle JSON → correlated pane beacons
+   ├─ Transcripts   Claude JSONL → paged conversation history
    ├─ Sidebar/Tabs  SwiftUI/AppKit views bound to that model
    ├─ PaneView      terminal widget:
    │                  content   ← pane read / terminal frame stream

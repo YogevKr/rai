@@ -58,11 +58,12 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    Grid parsing stays as the fallback and as the race guard. The Mac receiver,
    notification bodies, bridge field, and sidebar text now ship. Structured
    phone prompt controls remain in wave 2.
-3. **History from the transcript, not the screen.** Claude runs on the
+3. ✅ **History from the transcript, not the screen.** Claude runs on the
    alternate screen, so the grid has no scrollback ring. Collie reads the
    agent's own JSONL transcript (`bridge/journal/`) and offers
-   find-in-history and jump-to-user-turn. rai seeds ~1000 lines of herdr
-   history; a transcript view would serve Mac and phone alike.
+   find-in-history and jump-to-user-turn. Rai now reads local Claude JSONL.
+   The phone shows paged cards, search, an away divider, and prompt jump.
+   Codex and remote-host transcript history remain out of scope.
 4. **Password prompt recognition changes copy, never keys** (ADR 0017).
    Collie matches `[sudo] password for`, `'s password:`, `Enter passphrase`
    and says "Collie will not type"; it also stops storing the draft. rai's
@@ -144,8 +145,8 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
+Wave 2: structured prompt blocks fed by beacons
 (AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
-dialogs) on iOS; transcript history view; operator config files;
+dialogs) on iOS; ✅ transcript history view; operator config files;
 phone-side notification prefs (per-kind, snooze) on top of protocol 6;
 bridge error codes on the Mac side; statusline strip; LAN TLS.

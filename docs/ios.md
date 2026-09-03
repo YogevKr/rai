@@ -82,6 +82,36 @@ Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
 The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
 model decodes it. A later iOS task will add structured prompt controls.
 
+The pane toolbar has a clock button for Claude conversation history.
+The Mac reads the hook's transcript path first.
+Without a beacon, it checks the pane directory for a recent Claude transcript.
+It does not reuse an unverified directory-only match from its path cache.
+The lab mapped `/private/tmp/rai.transcript_history fixture` to
+`-private-tmp-rai-transcript-history-fixture`.
+This result grounds the path encoding for slashes, dots, underscores, and spaces.
+It sends at most 50 turns per page through additive bridge messages.
+Each turn has an 8 KiB text limit. Tool summaries have a 512-byte limit.
+The reader scans at most the latest 32 MiB from a transcript file.
+The protocol remains version 6. Old phone builds skip the new reply.
+
+History cards show prompts, replies, tool calls, results, and times.
+Use the find field to filter the loaded turns.
+Use the refresh button to request the newest turns again.
+Use **Load older** at the top for the prior page.
+Use **Jump to my last prompt** to return to your latest prompt.
+The pane title shows the first eight session ID characters.
+
+The Mac keeps the last delivered turn for each device, pane, and session.
+The first page after a reconnect can show a **While you were away** divider.
+The phone confirms each page before the Mac advances this device index.
+
+History currently supports local Claude panes only.
+Codex sessions need a safe cwd and time mapping before support can ship.
+Remote transcripts stay on the remote host, so the Mac cannot read them.
+
+The parser skips non-conversation records and unknown record types.
+The fixture includes mode, snapshot, and system records to test this rule.
+
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and
 Approve / Deny / Reply actions. A burst becomes one triage alert, such as
 `3 agents need you`, with the pane names in its body and no pane actions.
@@ -155,6 +185,11 @@ The first snapshot writes at once. Later snapshots use a three-second write limi
 The cache contains display data only. It omits resume IDs, full paths, and terminal frames.
 The cache file is excluded from device backups.
 The cache belongs to one pairing and never crosses to another Mac.
+
+The phone also saves the latest 50 transcript turns for each pane.
+This history cache belongs to one pairing and stays out of device backups.
+It also belongs to one selected herdr session.
+Forget Mac removes both caches.
 
 On cold launch, the saved herd appears before the socket connects.
 The pulse line shows `last seen HH:MM`, and cached rows use a muted style.

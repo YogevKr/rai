@@ -6,7 +6,7 @@ bridge, and what *should* exist on the phone. The phone is deliberately a
 "everything you'd want while away from the Mac", not a 1:1 clone of a
 30-inch-display UI.
 
-Audited 2026-09-02 against `main` (bridge protocol v6).
+Audited 2026-09-03 against `main` (bridge protocol v6).
 
 ## Parity matrix
 
@@ -17,6 +17,7 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Connection diagnosis | Mac connection state | cause, action, raw details, sync age | ✅ phone remote support |
 | Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar | ✅ parity |
 | Scrollback search | ⌘F find bar | find bar with match count | ✅ parity |
+| Transcript history | JSONL reader | cards, search, paging, away marker | ✅ phone remote support |
 | Send image to agent | paste screenshot | photo picker → temp file path | ✅ parity |
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
@@ -69,6 +70,20 @@ All additive, no version bump (old phones skip unknown message types):
 - Snapshot pane objects include an optional Claude hook `beacon` value.
   The shared iOS model decodes it, but phone prompt controls remain in wave 2.
 - The beacon field is additive within protocol v6. It does not require another bump.
+
+## Transcript history LANDED (2026-09-03)
+
+- The Mac reads local Claude JSONL transcripts through a bounded parser.
+- `history` and `historyPage` add paging without a protocol version change.
+- `historyReceived` confirms delivery before the Mac advances the device cursor.
+- History requests and replies include the herd session name when available.
+- Bridge snapshots include the herd session name when available.
+- Each page has at most 50 turns. Each turn text has an 8 KiB limit.
+- The first page after a device reconnect can include its last delivered index.
+- The phone shows an away divider after that index.
+- The phone caches the latest 50 turns for each pane and pairing.
+- Old phones skip `historyPage`. Old Macs return one message error for `history`.
+- Codex and remote-host transcript history are not supported.
 
 ## Backlog (value order)
 

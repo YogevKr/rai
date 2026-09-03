@@ -191,6 +191,25 @@ struct PaneTerminalView: View {
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    Text(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
+                        .font(.headline)
+                    if let shortSessionID {
+                        Text("Session \(shortSessionID)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    TranscriptHistoryView(pane: pane, connection: connection)
+                } label: {
+                    Image(systemName: "clock")
+                }
+                .accessibilityLabel("Conversation history")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     terminalSearch.toggleKeyboard()
@@ -294,6 +313,14 @@ struct PaneTerminalView: View {
                 Array(text.utf8) + [0x0D], to: pane.paneID)
             if delivered { composedLine = "" }
         }
+    }
+
+    private var shortSessionID: String? {
+        let value = pane.beacon?.sessionID
+            ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
+            ?? connection.historyPages[pane.paneID]?.sessionID
+        guard let value, !value.isEmpty else { return nil }
+        return String(value.prefix(8))
     }
 
     private func sendLine(_ text: String) {

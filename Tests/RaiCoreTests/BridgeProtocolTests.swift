@@ -48,6 +48,16 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
+            .history(
+                paneID: "pane-1", beforeTurnIndex: 12, limit: 50,
+                herdSessionName: "default"),
+            .history(
+                paneID: "pane-1", beforeTurnIndex: nil, limit: 25,
+                herdSessionName: nil),
+            .historyReceived(
+                paneID: "pane-1", sessionID: "session-1", herdSessionName: "default",
+                throughTurnIndex: 12
+            ),
             .paired(
                 token: "device-token",
                 protocolVersion: bridgeProtocolVersion,
@@ -56,7 +66,7 @@ final class BridgeProtocolTests: XCTestCase {
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
             .authFailed(reason: "Invalid pairing token"),
-            .snapshot(snapshot),
+            .snapshot(snapshot, sessionName: "default"),
             .event(BridgeEvent(
                 name: "layout.updated",
                 payload: ["tab_id": .string("tab-1")]
@@ -68,6 +78,19 @@ final class BridgeProtocolTests: XCTestCase {
                 paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1,
                 cols: 80, rows: 29),
             .scrollback(paneID: "pane-1", bytesBase64: bytes),
+            .historyPage(TranscriptHistoryPage(
+                paneID: "pane-1",
+                sessionID: "session-1",
+                herdSessionName: "default",
+                turns: [TranscriptTurn(
+                    index: 7,
+                    role: .assistant,
+                    text: "Done",
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )],
+                hasMore: true,
+                sinceLastSeen: 4
+            )),
             .error(message: "Herdr is unavailable"),
         ]
 
@@ -147,13 +170,14 @@ final class BridgeProtocolTests: XCTestCase {
             """.utf8
         )
 
-        guard case let .snapshot(snapshot) = try JSONDecoder().decode(
+        guard case let .snapshot(snapshot, sessionName) = try JSONDecoder().decode(
             BridgeMessage.self,
             from: data
         ) else {
             return XCTFail("Expected snapshot")
         }
         XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
+        XCTAssertNil(sessionName)
     }
 
     // Additive-only messages (workspace ops, broadcast, sessions, background
