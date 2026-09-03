@@ -190,6 +190,7 @@ An iOS drift test requires one phone policy for every shared code.
 - Reconnect sends one guarded queued line per pane queue. Later reconnects do not reset that allowance.
 - Later lines need guarded `Send next` taps. A new queue gets one new automatic allowance.
 - Notification replies join an existing pane queue.
+- At a password prompt, a reply is refused and drops that pane queue.
 - Type mode stays available for direct keyboard input.
 - The guard does not change the bridge protocol.
 

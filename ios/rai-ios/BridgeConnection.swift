@@ -355,6 +355,31 @@ private struct PasswordPromptGridEvidence {
     let grid: String
 }
 
+private enum ReplyAttachmentResult: Sendable {
+    case attached
+    case failed
+    case timedOut
+}
+
+private actor ReplyAttachmentRace {
+    private var result: ReplyAttachmentResult?
+    private var waiter: CheckedContinuation<ReplyAttachmentResult, Never>?
+
+    func wait() async -> ReplyAttachmentResult {
+        if let result { return result }
+        return await withCheckedContinuation { waiter = $0 }
+    }
+
+    @discardableResult
+    func finish(with result: ReplyAttachmentResult) -> Bool {
+        guard self.result == nil else { return false }
+        self.result = result
+        waiter?.resume(returning: result)
+        waiter = nil
+        return true
+    }
+}
+
 enum DecisionWaiterRouting {
     static func requestIDs(
         waiterSocketIDs: [String: ObjectIdentifier],
@@ -1247,14 +1272,13 @@ final class BridgeConnection: ObservableObject {
             guard clock.now < deadline else {
                 return replyVerificationTimedOut(bytes, paneID: paneID)
             }
-            do {
-                try await send(
-                    .attachStream(paneID: paneID, cols: 80, rows: 24, fullGrid: true)
-                )
+            switch await attachReplyStream(to: paneID, clock: clock, deadline: deadline) {
+            case .attached:
                 attachedTemporaryStream = true
-            } catch {
-                handleSocketFailure(error)
+            case .failed:
                 return false
+            case .timedOut:
+                return replyVerificationTimedOut(bytes, paneID: paneID)
             }
         }
         guard clock.now < deadline else {
@@ -1305,8 +1329,62 @@ final class BridgeConnection: ObservableObject {
         paneID: String
     ) -> Bool {
         guard outbox.contains(where: { $0.paneID == paneID }) else { return false }
+        if passwordPromptState(for: paneID) == .prompt {
+            refusePasswordPromptSend(to: paneID)
+            return true
+        }
         enqueue(bytes, to: paneID)
         return true
+    }
+
+    private func attachReplyStream(
+        to paneID: String,
+        clock: ContinuousClock,
+        deadline: ContinuousClock.Instant
+    ) async -> ReplyAttachmentResult {
+        let race = ReplyAttachmentRace()
+        let generation = connectionGeneration
+        let attachTask = Task { @MainActor [weak self] in
+            guard let self else {
+                await race.finish(with: .failed)
+                return
+            }
+            do {
+                try await send(
+                    .attachStream(paneID: paneID, cols: 80, rows: 24, fullGrid: true)
+                )
+                let wonRace = await race.finish(with: .attached)
+                if !wonRace,
+                   connectionGeneration == generation,
+                   desiredStreams[paneID] == nil {
+                    try? await send(.detachStream(paneID: paneID))
+                }
+            } catch is CancellationError {
+                if connectionGeneration == generation,
+                   desiredStreams[paneID] == nil {
+                    try? await send(.detachStream(paneID: paneID))
+                }
+            } catch {
+                if await race.finish(with: .failed) {
+                    handleSocketFailure(error)
+                }
+            }
+        }
+        let timeoutTask = Task {
+            do {
+                try await clock.sleep(until: deadline)
+                await race.finish(with: .timedOut)
+            } catch {
+                // The attach completed before the deadline.
+            }
+        }
+
+        let result = await race.wait()
+        timeoutTask.cancel()
+        if case .timedOut = result {
+            attachTask.cancel()
+        }
+        return result
     }
 
     private static func composedDraft(from bytes: [UInt8]) -> String {
