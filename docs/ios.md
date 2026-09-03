@@ -74,6 +74,14 @@ The same `.p8` authentication key serves both APNs sandbox and production. The
 environment attached to each device token determines which APNs host the Mac
 uses. The private key is stored in the Mac's Keychain, not in preferences.
 
+Rai can use Claude Code hooks for accurate notification and push text. Install
+them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
+Single-pane pushes use the current tool request, question, or completion line.
+Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
+
+The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
+model decodes it. A later iOS task will add structured prompt controls.
+
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and
 Approve / Deny / Reply actions. A burst becomes one triage alert, such as
 `3 agents need you`, with the pane names in its body and no pane actions.
@@ -107,6 +115,8 @@ It does not wake an app that the user force-quit.
 Settings → iPhone includes **Send test push**. It sends `rai test · HH:MM` to
 every registered device and shows each APNs status and reason. The read-only
 Doctor checks the bridge, Bonjour, Tailscale, APNs, devices, gate, and last push.
+Each device has an independent delivery queue. One stalled device cannot delay
+alerts, retractions, or test pushes for another device.
 
 ## 4. Pair
 

@@ -53,6 +53,8 @@ terminal widget**.
 - **Broadcast input** — send one command to every pane in a tab.
 - **Drag to reorder** tabs and spaces; **double-click** to rename a tab or pane.
 - **Native notifications** + dock badge when an agent goes *blocked* or *done*.
+- **Claude hook beacons** put real tool requests or questions in notifications
+  and blocked sidebar rows, with no permission decisions.
 - **Command palette** (⌘K) for fuzzy navigation.
 - **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
@@ -178,6 +180,7 @@ to reorder.
         ▼
   rai (native macOS app)
    ├─ HerdrClient   session.snapshot + events.subscribe → an observable model
+   ├─ Hook socket   Claude lifecycle JSON → correlated pane beacons
    ├─ Sidebar/Tabs  SwiftUI/AppKit views bound to that model
    ├─ PaneView      terminal widget:
    │                  content   ← pane read / terminal frame stream

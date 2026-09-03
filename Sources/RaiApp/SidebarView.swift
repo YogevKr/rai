@@ -961,6 +961,10 @@ private struct AgentRow: View {
     @State private var dropTargeted = false
 
     private var subtitleContext: String {
+        if tab.agentStatus == .blocked,
+           let summary = model.pendingBeaconSummary(forTab: tab.tabID) {
+            return summary
+        }
         guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
             return ""
         }

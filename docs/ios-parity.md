@@ -65,7 +65,10 @@ All additive, no version bump (old phones skip unknown message types):
   Badge recomputation excludes alerts seen during the last app activation.
 - Background retraction is additive. Old phones ignore the custom payload.
 - Settings → iPhone now has per-device test results and a read-only Doctor.
-- The bridge protocol remains v5. No WebSocket message changed.
+- APNs work uses one queue per device. A stalled device does not delay another device.
+- Snapshot pane objects include an optional Claude hook `beacon` value.
+  The shared iOS model decodes it, but phone prompt controls remain in wave 2.
+- The beacon field is additive within protocol v6. It does not require another bump.
 
 ## Backlog (value order)
 

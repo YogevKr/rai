@@ -41,11 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var pendingPhonePushes: [String: PhonePushEvent] = [:]
     /// One worker owns both presence polling and burst timing.
     private var phonePushGateTask: Task<Void, Never>?
+    private var notificationBodies: [String: String] = [:]
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
+    private var hookBeaconReceiver: HookBeaconReceiver?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         connect(to: RaiApp.sharedModel)
+        startHookBeaconReceiver(model: RaiApp.sharedModel)
         installCloseRepeatGuard()
         installTerminalKeyMonitor()
         installTerminalScrollMonitor()
@@ -98,7 +101,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hookBeaconReceiver?.stop()
         microController?.stop()
+    }
+
+    private func startHookBeaconReceiver(model: RaiModel) {
+        let receiver = HookBeaconReceiver { [weak model] beacon in
+            Task { @MainActor in
+                await model?.receiveAgentBeacon(beacon)
+            }
+        }
+        do {
+            try receiver.start()
+            hookBeaconReceiver = receiver
+        } catch {
+            NSLog("rai: Claude hook receiver failed: %@", error.localizedDescription)
+        }
     }
 
     // macOS's window-restoration snapshotter re-captures the entire window
@@ -248,16 +266,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func postNotification(
         for transition: PaneStatusTransition,
         pane: Pane,
-        in snapshot: SessionSnapshot
+        in snapshot: SessionSnapshot,
+        body: String,
+        isUpdate: Bool = false
     ) {
         let content = UNMutableNotificationContent()
         content.title = snapshot.displayName(for: pane)
-        content.body = transition.newStatus == .blocked ? "Needs you" : "Finished"
+        content.body = body
         content.subtitle = snapshot.workspaceLabel(for: pane)
         let soundChoice = transition.newStatus == .blocked
             ? SettingsStore.shared.blockedNotificationSound
             : SettingsStore.shared.doneNotificationSound
-        content.sound = Self.notificationSound(for: soundChoice)
+        content.sound = isUpdate ? nil : Self.notificationSound(for: soundChoice)
         content.categoryIdentifier = transition.newStatus == .blocked
             ? Category.attention
             : Category.completion
@@ -318,6 +338,7 @@ extension AppDelegate: RaiSnapshotObserver {
         for paneID in notifiedPaneIDsToRemove {
             retractIDs.append(Self.notificationIdentifier(paneID: paneID))
             notifiedPaneStatuses.removeValue(forKey: paneID)
+            notificationBodies.removeValue(forKey: paneID)
         }
         if !notifiedPaneIDsToRemove.isEmpty {
             NotifiedPaneStore.save(notifiedPaneStatuses)
@@ -378,15 +399,26 @@ extension AppDelegate: RaiSnapshotObserver {
     ) {
         let title = snapshot.displayName(for: pane)
         let workspace = snapshot.workspaceLabel(for: pane)
+        let beacon = model.beacon(forPane: pane.paneID)
+        let body = AgentNotificationBody.compose(
+            status: transition.newStatus,
+            beacon: beacon
+        )
+        let allowsRemoteActions = transition.newStatus == .blocked
+            && beacon == nil
+            && !ClaudeHooksInstaller.hasManagedHooks()
         notifiedPaneStatuses[pane.paneID] = transition.newStatus
+        notificationBodies[pane.paneID] = body
         NotifiedPaneStore.save(notifiedPaneStatuses)
-        postNotification(for: transition, pane: pane, in: snapshot)
+        postNotification(for: transition, pane: pane, in: snapshot, body: body)
         pendingPhonePushes[pane.paneID] = PhonePushEvent(
             paneID: pane.paneID,
             paneName: title,
             workspaceID: pane.workspaceID,
             workspaceName: workspace,
             status: transition.newStatus,
+            notificationBody: body,
+            allowsRemoteActions: allowsRemoteActions,
             occurredAt: Date()
         )
         updatePresenceStatus()
@@ -460,5 +492,43 @@ extension AppDelegate: RaiSnapshotObserver {
             pendingCount: pendingPhonePushes.count,
             isAway: idleSeconds >= UserPresence.awayAfter
         )
+    }
+
+    func raiModel(
+        _ model: RaiModel,
+        didReceive beacon: AgentBeacon,
+        forPane paneID: String
+    ) {
+        guard !model.notificationsMuted,
+              paneID != model.selectedPaneID,
+              let snapshot = model.snapshot,
+              let pane = snapshot.panes.first(where: { $0.paneID == paneID }),
+              notifiedPaneStatuses[paneID] == pane.agentStatus,
+              pane.agentStatus != .done || beacon.completionSummary != nil else { return }
+        let body = AgentNotificationBody.compose(status: pane.agentStatus, beacon: beacon)
+        guard notificationBodies[paneID] != body else { return }
+
+        notificationBodies[paneID] = body
+        postNotification(
+            for: PaneStatusTransition(paneID: paneID, newStatus: pane.agentStatus),
+            pane: pane,
+            in: snapshot,
+            body: body,
+            isUpdate: true
+        )
+
+        let prior = pendingPhonePushes[paneID]
+        pendingPhonePushes[paneID] = PhonePushEvent(
+            paneID: paneID,
+            paneName: snapshot.displayName(for: pane),
+            workspaceID: pane.workspaceID,
+            workspaceName: snapshot.workspaceLabel(for: pane),
+            status: pane.agentStatus,
+            notificationBody: body,
+            allowsRemoteActions: false,
+            occurredAt: prior?.occurredAt ?? Date()
+        )
+        updatePresenceStatus()
+        startPhonePushGate(model: model)
     }
 }

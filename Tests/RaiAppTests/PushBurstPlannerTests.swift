@@ -60,6 +60,24 @@ final class PushBurstPlannerTests: XCTestCase {
         XCTAssertFalse(push.requiresAttention)
     }
 
+    func testSingleBeaconEventUsesStructuredBodyWithoutRemoteActions() {
+        let event = PhonePushEvent(
+            paneID: "p1",
+            paneName: "Build",
+            workspaceID: "workspace-1",
+            workspaceName: "rai",
+            status: .blocked,
+            notificationBody: "Bash: swift test",
+            allowsRemoteActions: false,
+            occurredAt: start
+        )
+
+        let push = PushBurstPlanner.plan(events: [event], window: 15)[0]
+
+        XCTAssertEqual(push.body, "Bash: swift test")
+        XCTAssertFalse(push.requiresAttention)
+    }
+
     func testDoneEventsUseTheRequiredTriageSummaryTitle() {
         let push = PushBurstPlanner.plan(
             events: [

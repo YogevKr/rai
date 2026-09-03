@@ -1,6 +1,41 @@
 import CryptoKit
 import Foundation
 
+/// Keeps APNs operations ordered for one device without coupling different devices.
+@MainActor
+final class APNsDeliveryQueue {
+    private struct Delivery {
+        let revision: UInt64
+        let task: Task<Void, Never>
+    }
+
+    private var nextRevision: UInt64 = 0
+    private var deliveries: [String: Delivery] = [:]
+
+    func enqueue<Value: Sendable>(
+        key: String,
+        operation: @escaping @Sendable () async -> Value
+    ) -> Task<Value, Never> {
+        nextRevision &+= 1
+        let revision = nextRevision
+        let previous = deliveries[key]?.task
+        let valueTask = Task {
+            await previous?.value
+            return await operation()
+        }
+        let tail = Task { _ = await valueTask.value }
+        deliveries[key] = Delivery(revision: revision, task: tail)
+
+        Task { [weak self] in
+            await tail.value
+            if self?.deliveries[key]?.revision == revision {
+                self?.deliveries[key] = nil
+            }
+        }
+        return valueTask
+    }
+}
+
 struct APNsProviderJWT {
     static func make(
         configuration: APNsConfiguration,

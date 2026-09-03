@@ -176,8 +176,8 @@ final class RaiBridgeServer: ObservableObject {
     /// Opening any client resets this optimistic state, as before.
     private var pushBadgeLedger = PushBadgeLedger<PushRegistration>()
     private let apnsPusher = APNsPusher()
-    /// Serializes alert, retraction, and test batches in their creation order.
-    private var pushOperationTail: Task<Void, Never>?
+    /// Serializes each device without making one device wait for another.
+    private let pushDeliveryQueue = APNsDeliveryQueue()
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
@@ -429,69 +429,35 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Push not sent: APNs configuration is incomplete.")
             return
         }
-        let pusher = apnsPusher
         let stableIDs = Set(burst.notificationIDs)
-
-        let previousOperation = pushOperationTail
-        let operation = Task { [weak self] in
-            await previousOperation?.value
-            guard let self else { return }
-            let badges = Dictionary(uniqueKeysWithValues: registrations.map {
-                ($0, self.pushBadgeLedger.proposedBadge(adding: stableIDs, for: $0))
-            })
-            let reports = await withTaskGroup(
-                of: PushDeliveryReport.self,
-                returning: [PushDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask {
-                        let result = await pusher.sendAlert(
-                            configuration: configuration,
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            title: burst.title,
-                            subtitle: burst.workspaceName,
-                            body: burst.body,
-                            paneID: burst.paneID,
-                            workspaceID: burst.workspaceID,
-                            workspace: burst.workspaceName,
-                            category: burst.requiresAttention ? "agent-attention" : nil,
-                            notificationIDs: burst.notificationIDs,
-                            threadID: burst.threadID,
-                            summaryArgument: burst.summaryArgument,
-                            summaryArgumentCount: burst.events.count,
-                            occurredAt: burst.occurredAt,
-                            badge: badges[registration]
-                        )
-                        return PushDeliveryReport(
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            status: result.status,
-                            reason: result.reason
-                        )
-                    }
-                }
-                var values: [PushDeliveryReport] = []
-                for await report in group {
-                    values.append(report)
-                }
-                return values.sorted { $0.id < $1.id }
-            }
-            for report in reports where report.succeeded {
-                self.pushBadgeLedger.commitAlert(
-                    identifiers: stableIDs,
-                    for: .init(
-                        deviceToken: report.deviceToken,
-                        environment: report.environment
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return PushDeliveryReport(
+                        deviceToken: registration.deviceToken,
+                        environment: registration.environment,
+                        status: nil,
+                        reason: "Bridge stopped"
                     )
+                }
+                return await self.deliverAlert(
+                    configuration: configuration,
+                    registration: registration,
+                    burst: burst,
+                    stableIDs: stableIDs
                 )
             }
-            self.recordDelivery(reports)
-            for report in reports where Self.isDeadToken(report) {
-                self.removePushRegistration(deviceToken: report.deviceToken)
-            }
         }
-        pushOperationTail = operation
+
+        Task { [weak self] in
+            guard let self else { return }
+            var reports: [PushDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
+            }
+            self.recordDelivery(reports.sorted { $0.id < $1.id })
+        }
     }
 
     func retractPushNotifications(identifiers: [String]) {
@@ -504,56 +470,38 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Retraction not sent: APNs configuration is incomplete.")
             return
         }
-        let pusher = apnsPusher
         let retractedBefore = Date()
-        let previousOperation = pushOperationTail
-        let operation = Task { [weak self] in
-            await previousOperation?.value
-            let reports = await withTaskGroup(
-                of: RetractionDeliveryReport.self,
-                returning: [RetractionDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask {
-                        let result = await pusher.sendRetraction(
-                            configuration: configuration,
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return RetractionDeliveryReport(
+                        pushReport: .init(
                             deviceToken: registration.deviceToken,
                             environment: registration.environment,
-                            notificationIDs: identifiers,
-                            retractedBefore: retractedBefore
-                        )
-                        return RetractionDeliveryReport(
-                            pushReport: .init(
-                                deviceToken: registration.deviceToken,
-                                environment: registration.environment,
-                                status: result.status,
-                                reason: result.reason
-                            ),
-                            acceptedNotificationIDs: result.acceptedNotificationIDs
-                        )
-                    }
-                }
-                var values: [RetractionDeliveryReport] = []
-                for await report in group { values.append(report) }
-                return values.sorted { $0.pushReport.id < $1.pushReport.id }
-            }
-            guard let self else { return }
-            for report in reports where !report.acceptedNotificationIDs.isEmpty {
-                self.pushBadgeLedger.commitRetraction(
-                    identifiers: report.acceptedNotificationIDs,
-                    for: .init(
-                        deviceToken: report.pushReport.deviceToken,
-                        environment: report.pushReport.environment
+                            status: nil,
+                            reason: "Bridge stopped"
+                        ),
+                        acceptedNotificationIDs: []
                     )
+                }
+                return await self.deliverRetraction(
+                    configuration: configuration,
+                    registration: registration,
+                    identifiers: identifiers,
+                    retractedBefore: retractedBefore
                 )
             }
-            let pushReports = reports.map(\.pushReport)
-            self.recordDelivery(pushReports, label: "Retraction")
-            for report in pushReports where Self.isDeadToken(report) {
-                self.removePushRegistration(deviceToken: report.deviceToken)
-            }
         }
-        pushOperationTail = operation
+        Task { [weak self] in
+            guard let self else { return }
+            var reports: [RetractionDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
+            }
+            let pushReports = reports.map(\.pushReport).sorted { $0.id < $1.id }
+            self.recordDelivery(pushReports, label: "Retraction")
+        }
     }
 
     func sendTestPush(now: Date = Date()) {
@@ -569,56 +517,146 @@ final class RaiBridgeServer: ObservableObject {
             return
         }
         isSendingTestPush = true
-        let pusher = apnsPusher
         let title = "rai test · \(Self.pushTime(now))"
-        let previousOperation = pushOperationTail
-        let operation = Task { [weak self] in
-            await previousOperation?.value
-            let reports = await withTaskGroup(
-                of: PushDeliveryReport.self,
-                returning: [PushDeliveryReport].self
-            ) { group in
-                for registration in registrations {
-                    group.addTask {
-                        let result = await pusher.sendAlert(
-                            configuration: configuration,
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            title: title,
-                            subtitle: nil,
-                            body: "Push delivery works.",
-                            paneID: nil,
-                            workspaceID: nil,
-                            workspace: nil,
-                            category: nil,
-                            notificationIDs: [],
-                            threadID: "rai-test",
-                            summaryArgument: "rai",
-                            summaryArgumentCount: 1,
-                            occurredAt: now,
-                            badge: nil
-                        )
-                        return PushDeliveryReport(
-                            deviceToken: registration.deviceToken,
-                            environment: registration.environment,
-                            status: result.status,
-                            reason: result.reason
-                        )
-                    }
+        let deliveries = registrations.map { registration in
+            let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
+            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
+                guard let self else {
+                    return PushDeliveryReport(
+                        deviceToken: registration.deviceToken,
+                        environment: registration.environment,
+                        status: nil,
+                        reason: "Bridge stopped"
+                    )
                 }
-                var values: [PushDeliveryReport] = []
-                for await report in group { values.append(report) }
-                return values.sorted { $0.id < $1.id }
-            }
-            guard let self else { return }
-            self.isSendingTestPush = false
-            self.testPushResults = reports
-            self.recordDelivery(reports, label: "Test push")
-            for report in reports where Self.isDeadToken(report) {
-                self.removePushRegistration(deviceToken: report.deviceToken)
+                return await self.deliverTestAlert(
+                    configuration: configuration,
+                    registration: registration,
+                    title: title,
+                    now: now
+                )
             }
         }
-        pushOperationTail = operation
+        Task { [weak self] in
+            guard let self else { return }
+            var reports: [PushDeliveryReport] = []
+            for delivery in deliveries {
+                reports.append(await delivery.value)
+            }
+            self.isSendingTestPush = false
+            self.testPushResults = reports.sorted { $0.id < $1.id }
+            self.recordDelivery(self.testPushResults, label: "Test push")
+        }
+    }
+
+    private func deliverAlert(
+        configuration: APNsConfiguration,
+        registration: PushRegistration,
+        burst: PhonePushBurst,
+        stableIDs: Set<String>
+    ) async -> PushDeliveryReport {
+        let badge = pushBadgeLedger.proposedBadge(adding: stableIDs, for: registration)
+        let result = await apnsPusher.sendAlert(
+            configuration: configuration,
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            title: burst.title,
+            subtitle: burst.workspaceName,
+            body: burst.body,
+            paneID: burst.paneID,
+            workspaceID: burst.workspaceID,
+            workspace: burst.workspaceName,
+            category: burst.requiresAttention ? "agent-attention" : nil,
+            notificationIDs: burst.notificationIDs,
+            threadID: burst.threadID,
+            summaryArgument: burst.summaryArgument,
+            summaryArgumentCount: burst.events.count,
+            occurredAt: burst.occurredAt,
+            badge: badge
+        )
+        let report = PushDeliveryReport(
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            status: result.status,
+            reason: result.reason
+        )
+        if report.succeeded {
+            pushBadgeLedger.commitAlert(identifiers: stableIDs, for: registration)
+        }
+        removeDeadRegistration(for: report)
+        return report
+    }
+
+    private func deliverRetraction(
+        configuration: APNsConfiguration,
+        registration: PushRegistration,
+        identifiers: [String],
+        retractedBefore: Date
+    ) async -> RetractionDeliveryReport {
+        let result = await apnsPusher.sendRetraction(
+            configuration: configuration,
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            notificationIDs: identifiers,
+            retractedBefore: retractedBefore
+        )
+        if !result.acceptedNotificationIDs.isEmpty {
+            pushBadgeLedger.commitRetraction(
+                identifiers: result.acceptedNotificationIDs,
+                for: registration
+            )
+        }
+        let report = PushDeliveryReport(
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            status: result.status,
+            reason: result.reason
+        )
+        removeDeadRegistration(for: report)
+        return RetractionDeliveryReport(
+            pushReport: report,
+            acceptedNotificationIDs: result.acceptedNotificationIDs
+        )
+    }
+
+    private func deliverTestAlert(
+        configuration: APNsConfiguration,
+        registration: PushRegistration,
+        title: String,
+        now: Date
+    ) async -> PushDeliveryReport {
+        let result = await apnsPusher.sendAlert(
+            configuration: configuration,
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            title: title,
+            subtitle: nil,
+            body: "Push delivery works.",
+            paneID: nil,
+            workspaceID: nil,
+            workspace: nil,
+            category: nil,
+            notificationIDs: [],
+            threadID: "rai-test",
+            summaryArgument: "rai",
+            summaryArgumentCount: 1,
+            occurredAt: now,
+            badge: nil
+        )
+        let report = PushDeliveryReport(
+            deviceToken: registration.deviceToken,
+            environment: registration.environment,
+            status: result.status,
+            reason: result.reason
+        )
+        removeDeadRegistration(for: report)
+        return report
+    }
+
+    private func removeDeadRegistration(for report: PushDeliveryReport) {
+        if Self.isDeadToken(report) {
+            removePushRegistration(deviceToken: report.deviceToken)
+        }
     }
 
     private static func pushTime(_ date: Date) -> String {
@@ -798,7 +836,7 @@ final class RaiBridgeServer: ObservableObject {
         case .subscribe:
             client.isSubscribed = true
             if let snapshot = model.snapshot {
-                send(.snapshot(snapshot), to: client)
+                send(.snapshot(snapshot.addingBeacons(model.beaconsForBridge)), to: client)
             } else {
                 send(.error(message: "Herdr is not connected."), to: client)
             }

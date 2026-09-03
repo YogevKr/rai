@@ -1760,6 +1760,8 @@ private struct IntegrationsSettingsView: View {
     @ObservedObject var model: RaiModel
 
     @State private var activeIntegration: String?
+    @State private var hooksPreview: ClaudeHooksPreview?
+    @State private var claudeSettingsPath = ClaudeHooksInstaller.defaultSettingsURL.path
     @State private var status = "No integration command run yet."
 
     private let integrations = [
@@ -1773,6 +1775,34 @@ private struct IntegrationsSettingsView: View {
             Text("Install and uninstall are idempotent; Herdr does not report integration state.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
+
+            SettingsSection(title: "Claude Code Hooks") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(
+                        "Rai copies its hook to Application Support, then merges owner-only user settings."
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+
+                    HStack(spacing: 8) {
+                        TextField("Claude settings.json path", text: $claudeSettingsPath)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose…") { chooseClaudeSettingsDirectory() }
+                            .buttonStyle(.bordered)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button("Install Claude Code hooks") {
+                            prepareHooksPreview(.install)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Remove", role: .destructive) {
+                            prepareHooksPreview(.remove)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
 
             SettingsSection(title: "Agent Integrations") {
                 ScrollView {
@@ -1822,6 +1852,53 @@ private struct IntegrationsSettingsView: View {
                 .textSelection(.enabled)
         }
         .settingsTabBackground()
+        .sheet(item: $hooksPreview) { preview in
+            ClaudeHooksPreviewSheet(
+                preview: preview,
+                onCancel: { hooksPreview = nil },
+                onConfirm: { applyHooksPreview(preview) }
+            )
+        }
+    }
+
+    private func prepareHooksPreview(_ action: ClaudeHooksAction) {
+        do {
+            let path = NSString(string: claudeSettingsPath).expandingTildeInPath
+            hooksPreview = try ClaudeHooksInstaller.makePreview(
+                action: action,
+                settingsURL: URL(fileURLWithPath: path)
+            )
+            status = "Review the settings preview before you confirm."
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func chooseClaudeSettingsDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Claude Code settings directory"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        let current = URL(fileURLWithPath: NSString(
+            string: claudeSettingsPath
+        ).expandingTildeInPath)
+        panel.directoryURL = current.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        claudeSettingsPath = directory.appendingPathComponent("settings.json").path
+    }
+
+    private func applyHooksPreview(_ preview: ClaudeHooksPreview) {
+        do {
+            try ClaudeHooksInstaller.apply(preview)
+            status = preview.action == .install
+                ? "Claude Code hooks installed. Rai backs up an existing settings file."
+                : "Claude Code hook entries removed. Rai keeps the shared hook script."
+            hooksPreview = nil
+        } catch {
+            status = error.localizedDescription
+        }
     }
 
     private func runIntegrationAction(
@@ -1836,6 +1913,44 @@ private struct IntegrationsSettingsView: View {
         status = output
             ?? "\(install ? "Install" : "Uninstall") for \(integration) failed or returned no output."
         activeIntegration = nil
+    }
+}
+
+private struct ClaudeHooksPreviewSheet: View {
+    let preview: ClaudeHooksPreview
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(preview.action.rawValue) Claude Code Hooks")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Proposed ~/.claude/settings.json")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+            ScrollView([.horizontal, .vertical]) {
+                Text(preview.text)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(10)
+            .background(Theme.base)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                Button(preview.action.rawValue, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(width: 620, height: 480)
+        .background(Theme.raised)
+        .interactiveDismissDisabled()
     }
 }
 

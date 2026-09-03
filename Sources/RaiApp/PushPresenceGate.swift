@@ -34,7 +34,29 @@ struct PhonePushEvent: Equatable, Sendable {
     let workspaceID: String
     let workspaceName: String
     let status: AgentStatus
+    let notificationBody: String?
+    let allowsRemoteActions: Bool?
     let occurredAt: Date
+
+    init(
+        paneID: String,
+        paneName: String,
+        workspaceID: String,
+        workspaceName: String,
+        status: AgentStatus,
+        notificationBody: String? = nil,
+        allowsRemoteActions: Bool? = nil,
+        occurredAt: Date
+    ) {
+        self.paneID = paneID
+        self.paneName = paneName
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.status = status
+        self.notificationBody = notificationBody
+        self.allowsRemoteActions = allowsRemoteActions
+        self.occurredAt = occurredAt
+    }
 }
 
 struct PhonePushBurst: Equatable, Sendable {
@@ -51,13 +73,16 @@ struct PhonePushBurst: Equatable, Sendable {
 
     var body: String {
         guard isSummary else {
-            return events[0].status == .blocked ? "Needs you" : "Finished"
+            return events[0].notificationBody
+                ?? (events[0].status == .blocked ? "Needs you" : "Finished")
         }
         return events.map(\.paneName).joined(separator: ", ")
     }
 
     var paneID: String? { isSummary ? nil : events[0].paneID }
-    var requiresAttention: Bool { !isSummary && events[0].status == .blocked }
+    var requiresAttention: Bool {
+        !isSummary && (events[0].allowsRemoteActions ?? (events[0].status == .blocked))
+    }
     var notificationIDs: [String] {
         events.map { PushNotificationIdentity.pane($0.paneID) }
     }

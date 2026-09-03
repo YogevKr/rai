@@ -120,6 +120,42 @@ final class BridgeProtocolTests: XCTestCase {
         XCTAssertEqual(bridgeProtocolVersion, 6)
     }
 
+    func testSnapshotPaneDecodesAdditiveBeaconAndUnknownFields() throws {
+        let data = Data(
+            """
+            {
+              "type":"snapshot",
+              "snapshot":{
+                "version":"0.1","protocol":16,
+                "focused_workspace_id":null,"focused_tab_id":null,
+                "focused_pane_id":"w1:p1","workspaces":[],"tabs":[],
+                "panes":[{
+                  "pane_id":"w1:p1","terminal_id":"term-1",
+                  "workspace_id":"w1","tab_id":"w1:t1","focused":true,
+                  "cwd":"/repo","agent":"claude","agent_status":"blocked",
+                  "revision":1,"future_phone_field":{"safe":true},
+                  "beacon":{
+                    "event":"PermissionRequest","pane_id":"w1:p1",
+                    "session_id":"session-1","cwd":"/repo",
+                    "transcript_path":"/tmp/session.jsonl","tool_name":"Bash",
+                    "tool_input":{"command":"swift test"},"ts":1780000000
+                  }
+                }],
+                "layouts":[]
+              }
+            }
+            """.utf8
+        )
+
+        guard case let .snapshot(snapshot) = try JSONDecoder().decode(
+            BridgeMessage.self,
+            from: data
+        ) else {
+            return XCTFail("Expected snapshot")
+        }
+        XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
+    }
+
     // Additive-only messages (workspace ops, broadcast, sessions, background
     // work) round-trip and stay valid JSON — old clients skip unknown types.
     func testParityBatchMessagesRoundTrip() throws {

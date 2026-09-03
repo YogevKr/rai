@@ -29,6 +29,7 @@ STAGE="$(mktemp -d)/${APP_NAME}.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
 [ -f Resources/Rai.icns ] && cp Resources/Rai.icns "$STAGE/Contents/Resources/Rai.icns"
+[ -f Resources/rai-hook.sh ] && cp Resources/rai-hook.sh "$STAGE/Contents/Resources/rai-hook.sh"
 
 # SwiftPM resource bundles (e.g. SwiftTerm_SwiftTerm.bundle, which carries
 # Shaders.metal). Without these in Contents/Resources, SwiftTerm's Metal
