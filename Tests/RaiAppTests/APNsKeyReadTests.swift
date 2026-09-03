@@ -49,4 +49,17 @@ final class APNsKeyReadTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Keychain"))
         }
     }
+
+    func testParserAcceptsPastedKeyShapes() throws {
+        let clean = try APNsKeyParser.privateKey(from: Self.pem)
+        let crlf = try APNsKeyParser.privateKey(from: Self.pem.replacingOccurrences(of: "\n", with: "\r\n"))
+        let quoted = try APNsKeyParser.privateKey(from: "\"" + Self.pem + "\"\n")
+        let oneLine = try APNsKeyParser.privateKey(from: Self.pem.replacingOccurrences(of: "\n", with: ""))
+        let bodyOnly = try APNsKeyParser.privateKey(from: Self.pem
+            .components(separatedBy: "\n").filter { !$0.contains("-----") }.joined(separator: "\n"))
+        for key in [crlf, quoted, oneLine, bodyOnly] {
+            XCTAssertEqual(key.rawRepresentation, clean.rawRepresentation)
+        }
+        XCTAssertThrowsError(try APNsKeyParser.privateKey(from: "not a key"))
+    }
 }

@@ -52,6 +52,37 @@ enum APNsKeyError: LocalizedError, Equatable {
     }
 }
 
+/// Loads the .p8 however it was pasted: a proper PEM, a PEM with CRLF line
+/// ends or stray quotes, a single-line PEM, or just the base64 body. CryptoKit's
+/// PEM reader is strict about line structure; the DER inside is what matters.
+enum APNsKeyParser {
+    static func privateKey(from text: String) throws -> P256.Signing.PrivateKey {
+        let trimmed = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard !trimmed.isEmpty else { throw APNsKeyError.missing }
+
+        // Body = the text minus the BEGIN/END markers and all whitespace, so a
+        // one-line paste works as well as a proper PEM.
+        let body = trimmed
+            .replacingOccurrences(of: "-----[A-Z ]*-----", with: "", options: .regularExpression)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+        if let der = Data(base64Encoded: body), !der.isEmpty {
+            if let key = try? P256.Signing.PrivateKey(derRepresentation: der) {
+                return key
+            }
+        }
+        do {
+            return try P256.Signing.PrivateKey(pemRepresentation: trimmed)
+        } catch {
+            throw APNsKeyError.invalid(String(describing: error))
+        }
+    }
+}
+
 struct APNsProviderJWT {
     static func make(
         configuration: APNsConfiguration,
@@ -65,14 +96,7 @@ struct APNsProviderJWT {
             iat: Int(issuedAt.timeIntervalSince1970)
         ))
         let signingInput = "\(header.base64URLEncoded()).\(claims.base64URLEncoded())"
-        let pem = configuration.keyP8.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !pem.isEmpty else { throw APNsKeyError.missing }
-        let key: P256.Signing.PrivateKey
-        do {
-            key = try P256.Signing.PrivateKey(pemRepresentation: pem)
-        } catch {
-            throw APNsKeyError.invalid(String(describing: error))
-        }
+        let key = try APNsKeyParser.privateKey(from: configuration.keyP8)
         let signature = try key.signature(for: Data(signingInput.utf8))
         return "\(signingInput).\(signature.rawRepresentation.base64URLEncoded())"
     }

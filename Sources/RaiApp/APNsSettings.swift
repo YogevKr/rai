@@ -76,7 +76,7 @@ final class APNsSettings: ObservableObject {
             return "The APNs key could not be read from the Keychain (OSStatus \(status)). "
                 + "If macOS asked whether rai may use the key, choose Always Allow and send again."
         }
-        guard (try? P256.Signing.PrivateKey(pemRepresentation: value)) != nil else {
+        guard (try? APNsKeyParser.privateKey(from: value)) != nil else {
             return "The stored APNs key is not a valid .p8 PEM."
         }
         return nil
@@ -109,7 +109,7 @@ final class APNsSettings: ObservableObject {
         guard hasStoredKey else { return .missing }
         let value = keyP8.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty,
-              (try? P256.Signing.PrivateKey(pemRepresentation: value)) != nil else {
+              (try? APNsKeyParser.privateKey(from: value)) != nil else {
             return .unreadable
         }
         return .readable
