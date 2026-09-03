@@ -24,19 +24,22 @@ final class APNsKeyReadTests: XCTestCase {
         var attempts = 0
         let settings = APNsSettings(defaults: makeDefaults()) {
             attempts += 1
-            return attempts == 1 ? ("", errSecAuthFailed) : (Self.pem, errSecSuccess)
+            // Two failures (the first read, and keyProblem's own retry), then
+            // the Keychain answers.
+            return attempts <= 2 ? ("", errSecAuthFailed) : (Self.pem, errSecSuccess)
         }
 
         XCTAssertEqual(settings.keyP8, "")
         XCTAssertEqual(settings.lastKeyReadStatus, errSecAuthFailed)
-        XCTAssertNotNil(settings.keyProblem)
-        XCTAssertTrue(settings.keyProblem?.contains("OSStatus \(errSecAuthFailed)") == true)
+        let problem = settings.keyProblem
+        XCTAssertNotNil(problem)
+        XCTAssertTrue(problem?.contains("OSStatus \(errSecAuthFailed)") == true, problem ?? "nil")
 
         // The next read retries and the success is cached.
         XCTAssertEqual(settings.keyP8, Self.pem)
         XCTAssertNil(settings.keyProblem)
         XCTAssertEqual(settings.keyP8, Self.pem)
-        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(attempts, 3)
     }
 
     func testEmptyKeyIsNamedNotAnASN1Error() {
