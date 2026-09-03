@@ -1,36 +1,229 @@
 import Foundation
+import RaiCore
+
+enum PromptKind: Equatable {
+    case numberedPermission
+    case askUserQuestion
+    case unnumberedConfirm
+    case planApproval
+}
+
+enum PromptSubmitState: Equatable {
+    case none
+    case unavailable
+    case ready
+}
+
+enum PromptStepState: Equatable {
+    case done
+    case current
+    case pending
+}
+
+struct PromptStep: Equatable, Identifiable {
+    let index: Int
+    let label: String
+    let state: PromptStepState
+
+    var id: Int { index }
+}
 
 struct PromptOption: Equatable, Identifiable {
-    let digit: Int
+    let digit: Int?
     let label: String
+    let description: String?
+    let isSelected: Bool
+    let isChecked: Bool?
+    let isFreeText: Bool
+    let isChat: Bool
 
-    var id: Int { digit }
+    init(
+        digit: Int?,
+        label: String,
+        description: String? = nil,
+        isSelected: Bool = false,
+        isChecked: Bool? = nil,
+        isFreeText: Bool = false,
+        isChat: Bool = false
+    ) {
+        self.digit = digit
+        self.label = label
+        self.description = description
+        self.isSelected = isSelected
+        self.isChecked = isChecked
+        self.isFreeText = isFreeText
+        self.isChat = isChat
+    }
+
+    var id: String { "\(digit.map(String.init) ?? "-"):\(label)" }
 }
 
 struct PromptModel: Equatable {
+    let kind: PromptKind
+    let question: String?
+    let steps: [PromptStep]
+    let currentQuestionIndex: Int?
     let options: [PromptOption]
+    let multiSelect: Bool
+    let submitState: PromptSubmitState
+    let showsSelectionFooter: Bool
+    /// Exact visible prompt region. This keeps the existing tap race guard.
     let signature: String
+    /// Stable while a marker moves or an AskUserQuestion wizard advances.
+    let dialogSignature: String
+
+    var selectedOptionIndex: Int? {
+        options.firstIndex(where: \.isSelected)
+    }
+
+    var isFreeTextEntryActive: Bool {
+        kind == .askUserQuestion && submitState == .none && !showsSelectionFooter
+    }
 }
 
 enum PromptDetector {
     private static let optionExpression = try! NSRegularExpression(
-        pattern: #"^\s*[❯>›]?\s*([1-9])[\.\)]\s+(.+?)\s*$"#
+        pattern: #"^\s*([❯>›])?\s*([1-9][0-9]*)[\.\)]\s+(?:\[([ xX✓✔])\]\s*)?(.+?)\s*$"#
+    )
+    private static let stepExpression = try! NSRegularExpression(
+        pattern: #"[☐□✔✓]\s+(.+?)(?=\s{2,}[☐□✔✓]|\s+→|$)"#
     )
 
-    /// Detects only Claude Code's V1 single-choice permission and trust prompts.
     /// Input is rendered terminal-grid text, never an ANSI byte stream.
-    static func detect(in gridText: String) -> PromptModel? {
+    static func detect(in gridText: String, beacon: AgentBeacon? = nil) -> PromptModel? {
         let lines = normalizedLines(gridText)
-        var parsed: [(line: Int, option: PromptOption)] = []
+        let detected = detectAskUserQuestion(lines)
+            ?? detectUnnumberedConfirm(lines)
+            ?? detectNumberedPrompt(lines)
+        guard let detected else { return nil }
+        return resolve(detected, from: beacon)
+    }
 
-        for (index, line) in lines.enumerated() {
-            guard let option = parseOption(line) else { continue }
-            parsed.append((index, option))
+    private static func detectAskUserQuestion(_ lines: [String]) -> PromptModel? {
+        guard let headerIndex = lines.lastIndex(where: isQuestionHeader) else { return nil }
+        let stepLabels = parseStepLabels(lines[headerIndex])
+        guard stepLabels.count >= 2,
+              stepLabels.last?.localizedCaseInsensitiveContains("submit") == true
+        else { return nil }
+
+        let footerIndex = lines[headerIndex...].firstIndex {
+            $0.localizedCaseInsensitiveContains("Enter to select")
+                && $0.localizedCaseInsensitiveContains("Tab/Arrow keys")
+                && $0.localizedCaseInsensitiveContains("Esc")
         }
+        let endIndex = footerIndex ?? lines.endIndex
+        let optionRows = parseAskOptionCluster(
+            lines: lines,
+            range: (headerIndex + 1)..<endIndex
+        )
+        guard optionRows.count >= 2 else { return nil }
+
+        let firstOptionLine = optionRows[0].line
+        let questionRegion = lines[(headerIndex + 1)..<firstOptionLine]
+        let questionLines = questionRegion
+            .map(trimmed)
+            .filter { !$0.isEmpty && !isRule($0) && !$0.hasPrefix("⚠") }
+        let question = lastTextBlock(in: questionRegion)
+        let submitIndex = stepLabels.count - 1
+        let isSubmit = questionLines.contains {
+            $0.localizedCaseInsensitiveContains("Review your answers")
+        } || question?.localizedCaseInsensitiveContains("submit your answers") == true
+        let currentIndex: Int? = isSubmit
+            ? nil
+            : inferQuestionIndex(question: question, headers: Array(stepLabels.dropLast()))
+        let submitState: PromptSubmitState = isSubmit
+            ? (lines[headerIndex..<endIndex].contains {
+                $0.localizedCaseInsensitiveContains("not answered all questions")
+            } ? .unavailable : .ready)
+            : .none
+        let steps = stepLabels.enumerated().map { index, label in
+            PromptStep(
+                index: index,
+                label: label,
+                state: stepState(
+                    index: index,
+                    submitIndex: submitIndex,
+                    currentQuestionIndex: currentIndex,
+                    submitState: submitState
+                )
+            )
+        }
+        let regionEnd = footerIndex.map { $0 + 1 } ?? endIndex
+        let region = Array(lines[headerIndex..<regionEnd])
+        return PromptModel(
+            kind: .askUserQuestion,
+            question: question,
+            steps: steps,
+            currentQuestionIndex: currentIndex,
+            options: optionRows.map(\.option),
+            multiSelect: optionRows.contains { $0.option.isChecked != nil },
+            submitState: submitState,
+            showsSelectionFooter: footerIndex != nil,
+            signature: signature(for: region),
+            dialogSignature: "ask:" + stepLabels.joined(separator: "|")
+        )
+    }
+
+    private static func detectUnnumberedConfirm(_ lines: [String]) -> PromptModel? {
+        guard let footerIndex = lines.lastIndex(where: {
+            $0.localizedCaseInsensitiveContains("Enter to confirm")
+                && $0.localizedCaseInsensitiveContains("Esc to cancel")
+        }) else { return nil }
+
+        var optionEnd = footerIndex
+        while optionEnd > 0, trimmed(lines[optionEnd - 1]).isEmpty { optionEnd -= 1 }
+        var optionStart = optionEnd
+        while optionStart > 0, !trimmed(lines[optionStart - 1]).isEmpty {
+            optionStart -= 1
+        }
+        guard optionEnd - optionStart >= 2 else { return nil }
+
+        let options = lines[optionStart..<optionEnd].compactMap(parseUnnumberedOption)
+        guard options.count >= 2,
+              options.filter(\.isSelected).count == 1
+        else { return nil }
+
+        let contextStart = max(0, optionStart - 10)
+        let context = Array(lines[contextStart...footerIndex])
+        let question = lines[contextStart..<optionStart]
+            .map(trimmed)
+            .last(where: { $0.contains("?") })
+        let text = context.joined(separator: "\n").lowercased()
+        guard text.contains("trust")
+                || text.contains("allow")
+                || text.contains("access")
+                || text.contains("proceed")
+                || text.contains("warning")
+                || text.contains("bypass")
+        else { return nil }
+
+        let kind: PromptKind = text.contains("would you like to proceed")
+            ? .planApproval
+            : .unnumberedConfirm
+        return PromptModel(
+            kind: kind,
+            question: question,
+            steps: [],
+            currentQuestionIndex: nil,
+            options: options,
+            multiSelect: false,
+            submitState: .none,
+            showsSelectionFooter: false,
+            signature: signature(for: context),
+            dialogSignature: dialogSignature(kind: kind, question: question, options: options)
+        )
+    }
+
+    private static func detectNumberedPrompt(_ lines: [String]) -> PromptModel? {
+        let parsed = parseNumberedOptions(
+            lines: lines,
+            range: lines.indices,
+            includeDescriptions: false
+        )
 
         // Old numbered output often remains above a live prompt. Work from the
         // bottom and consider each compact option cluster independently.
-        var clusters: [[(line: Int, option: PromptOption)]] = []
+        var clusters: [[ParsedOption]] = []
         for item in parsed {
             if let previous = clusters.last?.last, item.line - previous.line <= 2 {
                 clusters[clusters.count - 1].append(item)
@@ -40,70 +233,648 @@ enum PromptDetector {
         }
 
         for cluster in clusters.reversed() {
-            if let prompt = prompt(from: cluster, lines: lines) {
-                return prompt
-            }
+            guard cluster.count >= 2,
+                  Set(cluster.compactMap(\.option.digit)).count == cluster.count
+            else { continue }
+            let first = cluster[0].line
+            let last = cluster[cluster.count - 1].line
+            let contextStart = max(0, first - 4)
+            let contextEnd = min(lines.count - 1, last + 3)
+            let region = Array(lines[contextStart...contextEnd])
+            let context = region.joined(separator: "\n").lowercased()
+            let labels = cluster.map(\.option.label).joined(separator: " ").lowercased()
+            let hasPromptControls = context.contains("esc") || context.contains("cancel")
+            let isPermissionOrTrust = context.contains("permission")
+                || context.contains("allow")
+                || context.contains("approve")
+                || context.contains("trust")
+                || context.contains("proceed")
+                || (labels.contains("yes") && labels.contains("no"))
+            guard hasPromptControls, isPermissionOrTrust else { continue }
+
+            let question = region.map(trimmed).last(where: { $0.contains("?") })
+            let kind: PromptKind = context.contains("would you like to proceed")
+                ? .planApproval
+                : .numberedPermission
+            let options = cluster.map(\.option)
+            return PromptModel(
+                kind: kind,
+                question: question,
+                steps: [],
+                currentQuestionIndex: nil,
+                options: options,
+                multiSelect: false,
+                submitState: .none,
+                showsSelectionFooter: context.contains("enter to select"),
+                signature: signature(for: region),
+                dialogSignature: dialogSignature(kind: kind, question: question, options: options)
+            )
         }
         return nil
     }
 
-    private static func prompt(
-        from parsed: [(line: Int, option: PromptOption)],
-        lines: [String]
-    ) -> PromptModel? {
-        guard parsed.count >= 2,
-              Set(parsed.map(\.option.digit)).count == parsed.count
+    static func signatureMatches(
+        _ expected: PromptModel,
+        currentGridText: String,
+        beacon: AgentBeacon? = nil
+    ) -> Bool {
+        guard let current = detect(in: currentGridText, beacon: beacon) else { return false }
+        return current.signature == expected.signature
+            && current.dialogSignature == expected.dialogSignature
+    }
+
+    private static func resolve(_ grid: PromptModel, from beacon: AgentBeacon?) -> PromptModel {
+        guard grid.kind == .askUserQuestion,
+              let questions = askQuestions(from: beacon),
+              !questions.isEmpty,
+              beaconStepsMatchGrid(questions: questions, grid: grid)
+        else { return grid }
+
+        let currentIndex: Int? = {
+            guard grid.submitState == .none else { return nil }
+            if let question = grid.question,
+               let exact = questions.firstIndex(where: {
+                   normalized($0.question) == normalized(question)
+               }) {
+                return exact
+            }
+            return nil
+        }()
+        let definition = currentIndex.map { questions[$0] }.flatMap {
+            optionsMatchGrid(question: $0, grid: grid) ? $0 : nil
+        }
+        if grid.submitState == .none, definition == nil { return grid }
+        var options: [PromptOption] = []
+        if let definition {
+            for (index, source) in definition.options.enumerated() {
+                let visible = grid.options.indices.contains(index) ? grid.options[index] : nil
+                options.append(PromptOption(
+                    digit: visible?.digit,
+                    label: source.label,
+                    description: source.description,
+                    isSelected: visible?.isSelected ?? false,
+                    isChecked: definition.multiSelect ? visible?.isChecked ?? false : nil
+                ))
+            }
+            options.append(contentsOf: grid.options.dropFirst(definition.options.count))
+        } else {
+            options = grid.options
+        }
+
+        let stepLabels = questions.map(\.header) + ["Submit"]
+        let submitIndex = stepLabels.count - 1
+        let steps = stepLabels.enumerated().map { index, label in
+            PromptStep(
+                index: index,
+                label: label,
+                state: stepState(
+                    index: index,
+                    submitIndex: submitIndex,
+                    currentQuestionIndex: currentIndex,
+                    submitState: grid.submitState
+                )
+            )
+        }
+        return PromptModel(
+            kind: grid.kind,
+            question: currentIndex.map { questions[$0].question } ?? grid.question,
+            steps: steps,
+            currentQuestionIndex: currentIndex,
+            options: options,
+            multiSelect: definition?.multiSelect ?? grid.multiSelect,
+            submitState: grid.submitState,
+            showsSelectionFooter: grid.showsSelectionFooter,
+            signature: grid.signature,
+            dialogSignature: "ask:\(beacon?.sessionID ?? ""):\(beacon?.timestamp ?? 0):"
+                + stepLabels.joined(separator: "|")
+        )
+    }
+
+    private struct AskQuestion {
+        let question: String
+        let header: String
+        let options: [(label: String, description: String?)]
+        let multiSelect: Bool
+    }
+
+    private static func askQuestions(from beacon: AgentBeacon?) -> [AskQuestion]? {
+        guard beacon?.event == "PreToolUse",
+              beacon?.toolName == "AskUserQuestion",
+              case let .object(input)? = beacon?.toolInput,
+              case let .array(values)? = input["questions"]
         else { return nil }
 
-        let first = parsed[0].line
-        let last = parsed[parsed.count - 1].line
-        let contextStart = max(0, first - 4)
-        let contextEnd = min(lines.count - 1, last + 3)
-        let region = Array(lines[contextStart...contextEnd])
-        let context = region.joined(separator: "\n").lowercased()
-        let labels = parsed.map(\.option.label).joined(separator: " ").lowercased()
-
-        // Claude v2.1.220 dialogs hint "Esc to cancel · Tab to amend" with no
-        // Enter/Return wording, so only the cancel side is a reliable marker.
-        let hasPromptControls =
-            context.contains("esc") || context.contains("cancel")
-        let isPermissionOrTrust =
-            context.contains("permission")
-            || context.contains("allow")
-            || context.contains("approve")
-            || context.contains("trust")
-            || context.contains("proceed")
-            || (labels.contains("yes") && labels.contains("no"))
-
-        guard hasPromptControls, isPermissionOrTrust else { return nil }
-
-        let signature = region
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-        return PromptModel(options: parsed.map(\.option), signature: signature)
+        let questions = values.compactMap { value -> AskQuestion? in
+            guard case let .object(object) = value,
+                  case let .string(question)? = object["question"],
+                  case let .string(header)? = object["header"],
+                  case let .array(rawOptions)? = object["options"],
+                  case let .bool(multiSelect)? = object["multiSelect"]
+            else { return nil }
+            let options = rawOptions.compactMap { raw -> (String, String?)? in
+                guard case let .object(option) = raw,
+                      case let .string(label)? = option["label"]
+                else { return nil }
+                let description: String?
+                if case let .string(value)? = option["description"] {
+                    description = value
+                } else {
+                    description = nil
+                }
+                return (label, description)
+            }
+            guard !options.isEmpty else { return nil }
+            return AskQuestion(
+                question: question,
+                header: header,
+                options: options,
+                multiSelect: multiSelect
+            )
+        }
+        return questions.count == values.count ? questions : nil
     }
 
-    static func signatureMatches(_ expected: PromptModel, currentGridText: String) -> Bool {
-        detect(in: currentGridText)?.signature == expected.signature
+    private struct ParsedOption {
+        let line: Int
+        let option: PromptOption
     }
 
-    private static func parseOption(_ line: String) -> PromptOption? {
+    /// Keep only the menu cluster which contains Claude's selection marker.
+    /// A numbered line in the question must never become an answer button.
+    private static func parseAskOptionCluster(
+        lines: [String],
+        range: Range<Int>
+    ) -> [ParsedOption] {
+        let candidates = range.compactMap { index in
+            parseNumberedOption(lines[index]).map { ParsedOption(line: index, option: $0) }
+        }
+        guard let selected = candidates.firstIndex(where: { $0.option.isSelected }) else {
+            return []
+        }
+
+        var start = selected
+        while start > 0,
+              !hasBlankLine(
+                  lines: lines,
+                  between: candidates[start - 1].line,
+                  and: candidates[start].line
+              ) {
+            start -= 1
+        }
+        var end = selected + 1
+        while end < candidates.count,
+              !hasBlankLine(
+                  lines: lines,
+                  between: candidates[end - 1].line,
+                  and: candidates[end].line
+              ) {
+            end += 1
+        }
+
+        let firstLine = candidates[start].line
+        let lastLine = candidates[end - 1].line
+        return parseNumberedOptions(
+            lines: lines,
+            range: firstLine..<min(range.upperBound, lastLine + 2),
+            includeDescriptions: true
+        )
+    }
+
+    private static func hasBlankLine(lines: [String], between first: Int, and second: Int) -> Bool {
+        guard second > first + 1 else { return false }
+        return lines[(first + 1)..<second].contains { trimmed($0).isEmpty }
+    }
+
+    private static func parseNumberedOptions(
+        lines: [String],
+        range: Range<Int>,
+        includeDescriptions: Bool
+    ) -> [ParsedOption] {
+        var rows: [ParsedOption] = []
+        for index in range {
+            guard var option = parseNumberedOption(lines[index]) else { continue }
+            if includeDescriptions {
+                let next = index + 1
+                if next < range.upperBound {
+                    let candidate = trimmed(lines[next])
+                    if !candidate.isEmpty,
+                       !isRule(candidate),
+                       parseNumberedOption(lines[next]) == nil,
+                       !candidate.localizedCaseInsensitiveContains("Enter to select"),
+                       !(option.isFreeText && candidate.caseInsensitiveCompare("Submit") == .orderedSame) {
+                        option = PromptOption(
+                            digit: option.digit,
+                            label: option.label,
+                            description: candidate,
+                            isSelected: option.isSelected,
+                            isChecked: option.isChecked,
+                            isFreeText: option.isFreeText,
+                            isChat: option.isChat
+                        )
+                    }
+                }
+            }
+            rows.append(ParsedOption(line: index, option: option))
+        }
+        return rows
+    }
+
+    private static func parseNumberedOption(_ line: String) -> PromptOption? {
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         guard let match = optionExpression.firstMatch(in: line, range: range),
-              let digitRange = Range(match.range(at: 1), in: line),
-              let labelRange = Range(match.range(at: 2), in: line),
+              let digitRange = Range(match.range(at: 2), in: line),
+              let labelRange = Range(match.range(at: 4), in: line),
               let digit = Int(line[digitRange])
         else { return nil }
-
-        let label = line[labelRange]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = trimmed(String(line[labelRange]))
         guard !label.isEmpty else { return nil }
-        return PromptOption(digit: digit, label: label)
+        let checked: Bool?
+        if let markRange = Range(match.range(at: 3), in: line) {
+            checked = !trimmed(String(line[markRange])).isEmpty
+        } else {
+            checked = nil
+        }
+        return PromptOption(
+            digit: digit,
+            label: label,
+            isSelected: match.range(at: 1).location != NSNotFound,
+            isChecked: checked,
+            isFreeText: isInputOption(label),
+            isChat: label.localizedCaseInsensitiveContains("chat about this")
+        )
+    }
+
+    private static func parseUnnumberedOption(_ line: String) -> PromptOption? {
+        let value = trimmed(line)
+        guard !value.isEmpty else { return nil }
+        let markers = ["❯", ">", "›"]
+        let marker = markers.first(where: { value.hasPrefix($0) })
+        let label = marker.map { trimmed(String(value.dropFirst($0.count))) } ?? value
+        guard !label.isEmpty else { return nil }
+        return PromptOption(
+            digit: nil,
+            label: label,
+            isSelected: marker != nil,
+            isFreeText: isInputOption(label)
+        )
+    }
+
+    private static func isInputOption(_ label: String) -> Bool {
+        label.localizedCaseInsensitiveContains("type something")
+            || label.localizedCaseInsensitiveContains("keep planning")
+    }
+
+    private static func parseStepLabels(_ line: String) -> [String] {
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        return stepExpression.matches(in: line, range: range).compactMap { match in
+            guard let labelRange = Range(match.range(at: 1), in: line) else { return nil }
+            return trimmed(String(line[labelRange]))
+        }
+    }
+
+    private static func inferQuestionIndex(question: String?, headers: [String]) -> Int? {
+        guard let question else { return headers.isEmpty ? nil : 0 }
+        let normalizedQuestion = normalized(question)
+        if let match = headers.firstIndex(where: {
+            let header = normalized($0)
+            return !header.isEmpty && normalizedQuestion.contains(header)
+        }) {
+            return match
+        }
+        return headers.isEmpty ? nil : 0
+    }
+
+    private static func beaconStepsMatchGrid(
+        questions: [AskQuestion],
+        grid: PromptModel
+    ) -> Bool {
+        let visible = grid.steps.dropLast().map(\.label)
+        guard visible.count == questions.count else { return false }
+        return zip(visible, questions.map(\.header)).allSatisfy {
+            textIsCompatible($0.0, $0.1)
+        }
+    }
+
+    private static func optionsMatchGrid(question: AskQuestion, grid: PromptModel) -> Bool {
+        guard grid.options.count >= question.options.count else { return false }
+        return zip(grid.options, question.options).allSatisfy {
+            textIsCompatible($0.0.label, $0.1.label)
+        }
+    }
+
+    private static func textIsCompatible(_ visible: String, _ source: String) -> Bool {
+        let visible = normalized(visible)
+        let source = normalized(source)
+        guard !visible.isEmpty, !source.isEmpty else { return false }
+        return source.hasPrefix(visible)
+    }
+
+    private static func lastTextBlock(in lines: ArraySlice<String>) -> String? {
+        var current: [String] = []
+        var last: [String] = []
+        for line in lines {
+            let value = trimmed(line)
+            if value.isEmpty || isRule(value) || value.hasPrefix("⚠") {
+                if !current.isEmpty {
+                    last = current
+                    current = []
+                }
+            } else {
+                current.append(value)
+            }
+        }
+        if !current.isEmpty { last = current }
+        return last.isEmpty ? nil : last.joined(separator: " ")
+    }
+
+    private static func stepState(
+        index: Int,
+        submitIndex: Int,
+        currentQuestionIndex: Int?,
+        submitState: PromptSubmitState
+    ) -> PromptStepState {
+        if submitState != .none {
+            if index == submitIndex { return .current }
+            return submitState == .ready ? .done : .pending
+        }
+        guard let currentQuestionIndex else { return .pending }
+        if index < currentQuestionIndex { return .done }
+        if index == currentQuestionIndex { return .current }
+        return .pending
+    }
+
+    private static func dialogSignature(
+        kind: PromptKind,
+        question: String?,
+        options: [PromptOption]
+    ) -> String {
+        "\(kind):\(question ?? ""):\(options.map(\.label).joined(separator: "|"))"
+    }
+
+    private static func isQuestionHeader(_ line: String) -> Bool {
+        let value = trimmed(line)
+        return value.hasPrefix("←") && value.hasSuffix("→")
+            && value.localizedCaseInsensitiveContains("submit")
+    }
+
+    private static func isRule(_ line: String) -> Bool {
+        !line.isEmpty && line.allSatisfy { $0 == "─" || $0 == "-" }
+    }
+
+    private static func signature(for lines: [String]) -> String {
+        lines.map(trimmed).joined(separator: "\n")
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func trimmed(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func normalizedLines(_ text: String) -> [String] {
         text.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
+    }
+}
+
+enum PromptChoreographyResult: Equatable {
+    case sendKey(String)
+    case wait
+    case complete
+    case refused
+}
+
+struct PromptChoreography {
+    enum Action: Equatable {
+        case choose(optionID: String)
+        case toggle(optionID: String)
+        case advance
+        case submit
+    }
+
+    private enum Phase: Equatable {
+        case ready
+        case awaitingPosition(
+            expected: Int,
+            target: Int,
+            previous: Int?,
+            question: Int?,
+            frame: String
+        )
+        case awaitingToggle(expected: Bool, option: Int, frame: String)
+        case awaitingCompletion(question: Int?, allowsSameQuestion: Bool, frame: String)
+        case finished
+    }
+
+    static let responseWindow: TimeInterval = 4
+    static let maximumKeys = 16
+
+    let action: Action
+    let dialogSignature: String
+    let kind: PromptKind
+    let expiresAt: TimeInterval
+    let selectionQuestion: String?
+    let selectionOptionIDs: [String]
+    private var phase: Phase = .ready
+    private(set) var keyCount = 0
+
+    init(action: Action, prompt: PromptModel, now: TimeInterval) {
+        self.action = action
+        dialogSignature = prompt.dialogSignature
+        kind = prompt.kind
+        expiresAt = now + Self.responseWindow
+        selectionQuestion = prompt.question
+        selectionOptionIDs = prompt.options.map(\.id)
+    }
+
+    mutating func next(prompt: PromptModel?, now: TimeInterval) -> PromptChoreographyResult {
+        guard phase != .finished, now <= expiresAt, keyCount < Self.maximumKeys else {
+            phase = .finished
+            return .refused
+        }
+        if prompt == nil {
+            if case let .awaitingCompletion(_, allowsSameQuestion, _) = phase {
+                phase = .finished
+                return allowsSameQuestion ? .refused : .complete
+            }
+            phase = .finished
+            return .refused
+        }
+        guard let prompt else { return .refused }
+
+        if prompt.dialogSignature != dialogSignature {
+            phase = .finished
+            return .refused
+        }
+
+        switch phase {
+        case .ready, .awaitingPosition, .awaitingToggle:
+            guard prompt.question == selectionQuestion,
+                  prompt.options.map(\.id) == selectionOptionIDs
+            else {
+                phase = .finished
+                return .refused
+            }
+        case .awaitingCompletion, .finished:
+            break
+        }
+
+        switch phase {
+        case .ready:
+            return start(with: prompt)
+        case let .awaitingPosition(expected, target, previous, question, frame):
+            guard prompt.signature != frame else { return .wait }
+            guard prompt.selectedOptionIndex == expected,
+                  prompt.selectedOptionIndex != previous,
+                  prompt.currentQuestionIndex == question
+            else {
+                phase = .finished
+                return .refused
+            }
+            if expected == target {
+                return reached(option: target, in: prompt)
+            }
+            return move(to: target, in: prompt)
+        case let .awaitingToggle(expected, option, frame):
+            guard prompt.signature != frame else { return .wait }
+            guard prompt.options.indices.contains(option),
+                  prompt.options[option].isChecked == expected
+            else {
+                phase = .finished
+                return .refused
+            }
+            phase = .finished
+            return .complete
+        case let .awaitingCompletion(question, allowsSameQuestion, frame):
+            guard prompt.signature != frame else { return .wait }
+            if kind == .askUserQuestion,
+               prompt.currentQuestionIndex == question,
+               prompt.submitState == .none,
+               !allowsSameQuestion {
+                phase = .finished
+                return .refused
+            }
+            phase = .finished
+            return .complete
+        case .finished:
+            return .refused
+        }
+    }
+
+    private mutating func start(with prompt: PromptModel) -> PromptChoreographyResult {
+        switch action {
+        case let .choose(optionID), let .toggle(optionID):
+            guard let target = prompt.options.firstIndex(where: { $0.id == optionID }) else {
+                phase = .finished
+                return .refused
+            }
+            return move(to: target, in: prompt)
+        case .advance:
+            guard prompt.kind == .askUserQuestion,
+                  prompt.submitState == .none,
+                  prompt.selectedOptionIndex != nil,
+                  !prompt.multiSelect || prompt.options.contains(where: { $0.isChecked == true })
+            else {
+                phase = .finished
+                return .refused
+            }
+            return sendEnter(for: prompt)
+        case .submit:
+            guard prompt.kind == .askUserQuestion,
+                  prompt.submitState == .ready,
+                  let target = prompt.options.firstIndex(where: {
+                      $0.label.localizedCaseInsensitiveContains("submit")
+                  })
+            else {
+                phase = .finished
+                return .refused
+            }
+            return move(to: target, in: prompt)
+        }
+    }
+
+    private mutating func move(
+        to target: Int,
+        in prompt: PromptModel
+    ) -> PromptChoreographyResult {
+        if prompt.selectedOptionIndex == target {
+            return reached(option: target, in: prompt)
+        }
+        if let digit = prompt.options[target].digit {
+            phase = .awaitingPosition(
+                expected: target,
+                target: target,
+                previous: prompt.selectedOptionIndex,
+                question: prompt.currentQuestionIndex,
+                frame: prompt.signature
+            )
+            return send(String(digit))
+        }
+        guard let selected = prompt.selectedOptionIndex else {
+            phase = .finished
+            return .refused
+        }
+        let next = selected + (target > selected ? 1 : -1)
+        phase = .awaitingPosition(
+            expected: next,
+            target: target,
+            previous: selected,
+            question: prompt.currentQuestionIndex,
+            frame: prompt.signature
+        )
+        return send(target > selected ? "Down" : "Up")
+    }
+
+    private mutating func reached(
+        option index: Int,
+        in prompt: PromptModel
+    ) -> PromptChoreographyResult {
+        switch action {
+        case .toggle:
+            guard prompt.multiSelect, let checked = prompt.options[index].isChecked else {
+                phase = .finished
+                return .refused
+            }
+            phase = .awaitingToggle(
+                expected: !checked,
+                option: index,
+                frame: prompt.signature
+            )
+            return send("Space")
+        case .choose:
+            if prompt.options[index].isFreeText {
+                if prompt.kind == .askUserQuestion, !prompt.showsSelectionFooter {
+                    phase = .finished
+                    return .complete
+                }
+                return sendEnter(for: prompt, allowsSameQuestion: true)
+            }
+            return sendEnter(for: prompt)
+        case .submit:
+            return sendEnter(for: prompt)
+        case .advance:
+            phase = .finished
+            return .refused
+        }
+    }
+
+    private mutating func sendEnter(
+        for prompt: PromptModel,
+        allowsSameQuestion: Bool = false
+    ) -> PromptChoreographyResult {
+        phase = .awaitingCompletion(
+            question: prompt.currentQuestionIndex,
+            allowsSameQuestion: allowsSameQuestion,
+            frame: prompt.signature
+        )
+        return send("Enter")
+    }
+
+    private mutating func send(_ key: String) -> PromptChoreographyResult {
+        keyCount += 1
+        return .sendKey(key)
     }
 }

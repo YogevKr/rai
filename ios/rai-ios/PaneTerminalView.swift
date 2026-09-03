@@ -25,6 +25,7 @@ struct PaneTerminalView: View {
             connection: connection,
             search: terminalSearch,
             prompts: promptController,
+            beacon: pane.beacon,
             send: { connection.sendInput($0, to: pane.paneID) }
         )
         // Breathing room between the last terminal row and the compose
@@ -80,19 +81,31 @@ struct PaneTerminalView: View {
                 if let prompt = promptController.prompt {
                     PromptBar(
                         prompt: prompt,
+                        isBusy: promptController.isBusy,
                         select: { option in
-                            promptController.send(
-                                option: option,
-                                // Dialogs listen for keypresses; a digit sent as
-                                // text arrives as a paste and is ignored. Route
-                                // the answer through herdr's key semantics.
-                                through: { bytes in
-                                    connection.sendKeys(
-                                        [String(decoding: bytes, as: UTF8.self)],
-                                        to: pane.paneID
-                                    )
-                                }
-                            )
+                            let sendKey: (String) -> Void = {
+                                connection.sendKeys([$0], to: pane.paneID)
+                            }
+                            if prompt.kind == .numberedPermission {
+                                promptController.sendLegacy(
+                                    option: option,
+                                    through: { bytes in
+                                        sendKey(String(decoding: bytes, as: UTF8.self))
+                                    }
+                                )
+                            } else {
+                                promptController.select(option: option, through: sendKey)
+                            }
+                        },
+                        advance: {
+                            promptController.advance {
+                                connection.sendKeys([$0], to: pane.paneID)
+                            }
+                        },
+                        submit: {
+                            promptController.submit {
+                                connection.sendKeys([$0], to: pane.paneID)
+                            }
                         },
                         escape: {
                             promptController.sendEscape(
@@ -247,6 +260,9 @@ struct PaneTerminalView: View {
             }
         }
         .onDisappear { connection.detachPane(paneID: pane.paneID) }
+        .onChange(of: promptController.focusComposerRequest) { _, _ in
+            composeFocused = true
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await sendPhoto(item) }
@@ -388,6 +404,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
     let connection: BridgeConnection
     let search: TerminalSearchController
     let prompts: TerminalPromptController
+    let beacon: AgentBeacon?
     let send: ([UInt8]) -> Void
 
     // Render the pane at a faithful MINIMUM width (agent TUIs assume ~80 cols):
@@ -433,6 +450,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         prompts.readGrid = { [weak terminal] in
             terminal?.liveGridText() ?? ""
         }
+        prompts.beacon = beacon
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
@@ -527,6 +545,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
+        if prompts.beacon != beacon {
+            prompts.beacon = beacon
+            DispatchQueue.main.async { [prompts] in prompts.refresh() }
+        }
     }
 
     static func dismantleUIView(_ scroll: UIScrollView, coordinator: Coordinator) {
@@ -657,15 +679,26 @@ final class GridReadableTerminalView: TerminalView {
 @MainActor
 private final class TerminalPromptController: ObservableObject {
     @Published private(set) var prompt: PromptModel?
+    @Published private(set) var isBusy = false
+    @Published private(set) var focusComposerRequest = 0
     var readGrid: (() -> String)?
+    var beacon: AgentBeacon?
     private var dismissedSignature: String?
+    private var choreography: PromptChoreography?
+    private var choreographyGeneration = 0
+    private var pendingSendKey: ((String) -> Void)?
+    private var focusComposerAfterCompletion = false
 
     func refresh() {
         guard let grid = readGrid?() else {
             prompt = nil
+            cancelChoreography()
             return
         }
-        let detected = PromptDetector.detect(in: grid)
+        let detected = PromptDetector.detect(in: grid, beacon: beacon)
+        if choreography != nil {
+            drive(with: detected)
+        }
         if detected?.signature != dismissedSignature {
             dismissedSignature = nil
         }
@@ -675,24 +708,56 @@ private final class TerminalPromptController: ObservableObject {
     func dismiss() {
         dismissedSignature = prompt?.signature
         prompt = nil
+        cancelChoreography()
     }
 
-    func send(option: PromptOption, through send: ([UInt8]) -> Void) {
+    /// Keep the original numbered permission path as one guarded digit key.
+    func sendLegacy(option: PromptOption, through send: ([UInt8]) -> Void) {
         guard let current = prompt,
+              current.kind == .numberedPermission,
+              let digit = option.digit,
               let grid = readGrid?(),
-              PromptDetector.signatureMatches(current, currentGridText: grid)
+              PromptDetector.signatureMatches(
+                  current,
+                  currentGridText: grid,
+                  beacon: beacon
+              )
         else {
             refresh()
             return
         }
-        send(Array(String(option.digit).utf8))
+        send(Array(String(digit).utf8))
         dismiss()
+    }
+
+    func select(option: PromptOption, through sendKey: @escaping (String) -> Void) {
+        let action: PromptChoreography.Action = prompt?.multiSelect == true
+            && !option.isFreeText && !option.isChat
+            ? .toggle(optionID: option.id)
+            : .choose(optionID: option.id)
+        begin(
+            action,
+            focusComposer: option.isFreeText,
+            through: sendKey
+        )
+    }
+
+    func advance(through sendKey: @escaping (String) -> Void) {
+        begin(.advance, through: sendKey)
+    }
+
+    func submit(through sendKey: @escaping (String) -> Void) {
+        begin(.submit, through: sendKey)
     }
 
     func sendEscape(through send: ([UInt8]) -> Void) {
         guard let current = prompt,
               let grid = readGrid?(),
-              PromptDetector.signatureMatches(current, currentGridText: grid)
+              PromptDetector.signatureMatches(
+                  current,
+                  currentGridText: grid,
+                  beacon: beacon
+              )
         else {
             refresh()
             return
@@ -700,15 +765,98 @@ private final class TerminalPromptController: ObservableObject {
         send([0x1B])
         dismiss()
     }
+
+    private func begin(
+        _ action: PromptChoreography.Action,
+        focusComposer: Bool = false,
+        through sendKey: @escaping (String) -> Void
+    ) {
+        guard choreography == nil,
+              let displayed = prompt,
+              let grid = readGrid?(),
+              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              current.signature == displayed.signature,
+              current.dialogSignature == displayed.dialogSignature
+        else {
+            refresh()
+            return
+        }
+        choreography = PromptChoreography(
+            action: action,
+            prompt: current,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        choreographyGeneration += 1
+        let generation = choreographyGeneration
+        pendingSendKey = sendKey
+        focusComposerAfterCompletion = focusComposer
+        isBusy = true
+        drive(with: current)
+        let deadline = PromptChoreography.responseWindow
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            guard let self,
+                  self.choreography != nil,
+                  self.choreographyGeneration == generation
+            else { return }
+            let current: PromptModel?
+            if let grid = self.readGrid?() {
+                current = PromptDetector.detect(in: grid, beacon: self.beacon)
+            } else {
+                current = nil
+            }
+            self.drive(with: current)
+        }
+    }
+
+    private func drive(with current: PromptModel?) {
+        guard var choreography else { return }
+        let result = choreography.next(
+            prompt: current,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        self.choreography = choreography
+        switch result {
+        case let .sendKey(key):
+            pendingSendKey?(key)
+        case .wait:
+            break
+        case .complete:
+            let shouldFocus = focusComposerAfterCompletion
+            cancelChoreography()
+            if shouldFocus { focusComposerRequest += 1 }
+        case .refused:
+            cancelChoreography()
+        }
+    }
+
+    private func cancelChoreography() {
+        choreography = nil
+        pendingSendKey = nil
+        focusComposerAfterCompletion = false
+        isBusy = false
+    }
 }
 
 private struct PromptBar: View {
     let prompt: PromptModel
+    let isBusy: Bool
     let select: (PromptOption) -> Void
+    let advance: () -> Void
+    let submit: () -> Void
     let escape: () -> Void
     let dismiss: () -> Void
 
+    @ViewBuilder
     var body: some View {
+        if prompt.kind == .numberedPermission {
+            legacyBar
+        } else {
+            structuredBar
+        }
+    }
+
+    private var legacyBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(prompt.options) { option in
@@ -716,7 +864,7 @@ private struct PromptBar: View {
                         select(option)
                     } label: {
                         HStack(spacing: 4) {
-                            Text("\(option.digit)")
+                            Text(option.digit.map(String.init) ?? "")
                                 .font(.caption.monospacedDigit().weight(.bold))
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
@@ -742,6 +890,152 @@ private struct PromptBar: View {
             .padding(.vertical, 6)
         }
         .background(.bar)
+    }
+
+    private var structuredBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !prompt.steps.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(prompt.steps) { step in
+                            Label(step.label, systemImage: stepSymbol(step.state))
+                                .font(.caption.weight(step.state == .current ? .bold : .regular))
+                                .foregroundStyle(step.state == .current ? .primary : .secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(
+                                    step.state == .current
+                                        ? Color.accentColor.opacity(0.18)
+                                        : Color.secondary.opacity(0.08),
+                                    in: Capsule()
+                                )
+                        }
+                    }
+                }
+            }
+            if let question = prompt.question {
+                Text(question)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if prompt.submitState == .none {
+                if prompt.isFreeTextEntryActive {
+                    Label("Enter your answer in the composer", systemImage: "keyboard")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(prompt.options) { option in
+                                optionCard(option)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 230)
+                }
+            } else {
+                submitControls
+            }
+            HStack {
+                if prompt.multiSelect, !prompt.isFreeTextEntryActive {
+                    Button("Next", action: advance)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            isBusy || !prompt.options.contains(where: { $0.isChecked == true })
+                        )
+                }
+                Spacer()
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Checking terminal response")
+                }
+                Button("Esc", action: escape)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isBusy)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(isBusy)
+                .accessibilityLabel("Dismiss prompt controls")
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func optionCard(_ option: PromptOption) -> some View {
+        Button { select(option) } label: {
+            HStack(alignment: .top, spacing: 9) {
+                if prompt.multiSelect, !option.isFreeText, !option.isChat {
+                    Image(systemName: option.isChecked == true ? "checkmark.square.fill" : "square")
+                        .foregroundStyle(option.isChecked == true ? Color.accentColor : .secondary)
+                } else if option.isSelected {
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(Color.accentColor)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label)
+                        .font(.subheadline.weight(.medium))
+                        .multilineTextAlignment(.leading)
+                    if let description = option.description {
+                        Text(description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 4)
+                if option.isFreeText {
+                    Image(systemName: "keyboard")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(9)
+            .background(
+                option.isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.07),
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(option.isSelected ? Color.accentColor.opacity(0.45) : .clear)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+    }
+
+    private var submitControls: some View {
+        HStack(spacing: 8) {
+            Button("Submit", action: submit)
+                .buttonStyle(.borderedProminent)
+                .disabled(isBusy || prompt.submitState != .ready)
+            if let cancel = prompt.options.first(where: {
+                $0.label.localizedCaseInsensitiveContains("cancel")
+            }) {
+                Button("Cancel") { select(cancel) }
+                    .buttonStyle(.bordered)
+                    .disabled(isBusy)
+            }
+            if prompt.submitState == .unavailable {
+                Text("Answer every question first")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func stepSymbol(_ state: PromptStepState) -> String {
+        switch state {
+        case .done: "checkmark.circle.fill"
+        case .current: "circle.inset.filled"
+        case .pending: "circle"
+        }
     }
 }
 

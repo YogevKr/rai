@@ -80,9 +80,10 @@ crook for the herd:
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away.
-- **Answer Claude without reading a TUI** — permission and choice dialogs
-  render as native tappable buttons, race-guarded so a stale tap can never
-  answer the wrong prompt.
+- **Answer Claude without reading a TUI** — permission, trust, plan, and
+  AskUserQuestion dialogs render as native controls. Wizards show steps,
+  descriptions, checkboxes, free-text entry, and Submit. Each key waits for
+  visible terminal proof, so a stale tap cannot answer another prompt.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
   rides herdr's key semantics, so Enter submits and Backspace erases.

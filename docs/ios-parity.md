@@ -21,6 +21,7 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
+| Claude prompt controls | native terminal | permission, trust, plan, and AskUserQuestion blocks | ✅ phone support |
 | Notifications on blocked/done | native macOS + dock badge | APNs bursts, workspace groups, actions, retraction, tap-to-open | ✅ parity (physical delivery not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
@@ -67,8 +68,19 @@ All additive, no version bump (old phones skip unknown message types):
 - Settings → iPhone now has per-device test results and a read-only Doctor.
 - APNs work uses one queue per device. A stalled device does not delay another device.
 - Snapshot pane objects include an optional Claude hook `beacon` value.
-  The shared iOS model decodes it, but phone prompt controls remain in wave 2.
+  AskUserQuestion blocks use its labels and descriptions before grid text.
 - The beacon field is additive within protocol v6. It does not require another bump.
+
+## Structured prompt controls LANDED (2026-09-03)
+
+- AskUserQuestion blocks show steps, descriptions, checkboxes, free text, and Submit.
+- Hook beacon questions supply labels. The live grid supplies state and key proof.
+- Unnumbered trust and confirm dialogs use verified arrow movement before Enter.
+- Numbered permission dialogs keep their prior digit-only action.
+- Each structured action stops after four seconds or an unexpected grid change.
+- The raw terminal remains available for unknown dialog forms.
+- Plan approval follows its documented shape. No real plan capture verified this grammar.
+- This work adds no bridge message and keeps protocol version 6.
 
 ## Backlog (value order)
 

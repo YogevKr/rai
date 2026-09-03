@@ -1009,6 +1009,7 @@ private struct NightAgentRow: View {
     /// The terminal title doubles as the live activity when it says something
     /// beyond the row title (Claude keeps it set to the current step).
     private var activity: String? {
+        if let pending = item.pane.beacon?.pendingSummary { return pending }
         guard let stripped = item.pane.terminalTitleStripped, !stripped.isEmpty
         else { return nil }
         // The title is often the same text — or herdr's own "…"-truncated
@@ -1090,9 +1091,11 @@ private struct TabGroup: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Night.text)
                         .lineLimit(1)
-                        Text(Night.repoName(pane.cwd) ?? "")
+                        Text(PaneRowSecondaryText.resolve(pane) ?? "")
                             .font(.caption.monospaced())
-                            .foregroundStyle(Night.repoBlue)
+                            .foregroundStyle(
+                                pane.beacon?.pendingSummary == nil ? Night.repoBlue : Night.faint
+                            )
                             .lineLimit(1)
                     }
                     Spacer()
@@ -1180,15 +1183,23 @@ private struct PaneRow: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Night.text)
                     .lineLimit(1)
-                Text(Night.repoName(pane.cwd) ?? "")
+                Text(PaneRowSecondaryText.resolve(pane) ?? "")
                     .font(.caption.monospaced())
-                    .foregroundStyle(Night.repoBlue)
+                    .foregroundStyle(
+                        pane.beacon?.pendingSummary == nil ? Night.repoBlue : Night.faint
+                    )
                     .lineLimit(1)
             }
             Spacer()
             PaneStatus(status: pane.agentStatus, backgroundWorkCount: backgroundWork.count)
         }
         .padding(.vertical, 2)
+    }
+}
+
+enum PaneRowSecondaryText {
+    static func resolve(_ pane: Pane) -> String? {
+        pane.beacon?.pendingSummary ?? Night.repoName(pane.cwd)
     }
 }
 

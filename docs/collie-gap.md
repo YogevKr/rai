@@ -27,15 +27,15 @@ of what rai should absorb.
 
 ## July list — status
 
-Closed since the July audit: single-choice permission/trust prompt buttons
-with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac and phone
-notification retraction; push coalescing and grouping; triage groups with counts
-and a filter pulse line (Nightwatch); session follow.
+Closed since the July audit: structured permission, trust, plan, and
+AskUserQuestion prompt controls with a signature race guard; quick replies;
+an agent-aware slash palette; destructive-input confirm; push presence gate;
+Mac and phone notification retraction; push coalescing and grouping; triage
+groups with counts and a filter pulse line (Nightwatch); session follow.
 
-Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
-diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
+Still open from July: per-kind prompt toggles; DND/snooze; statusline strip;
+connection-cause diagnosis; read-only tier and audit log; draft take-over;
+per-pane display prefs.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -144,8 +144,7 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
-(AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
-dialogs) on iOS; transcript history view; operator config files;
+Wave 2: ✅ structured prompt blocks now use beacons and verified grid steps on iOS.
+Remaining work includes transcript history, operator config files,
 phone-side notification prefs (per-kind, snooze) on top of protocol 6;
 bridge error codes on the Mac side; statusline strip; LAN TLS.
