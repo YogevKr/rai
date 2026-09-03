@@ -54,6 +54,11 @@ final class BridgeProtocolTests: XCTestCase {
             .sendKeys(paneID: "pane-1", keys: ["1"]),
             .decide(paneID: "pane-1", requestID: "request-1", decision: .allow),
             .decisionAvailability(available: false, pushAuthorized: false),
+            .pushPrefs(PushPreferences(
+                kinds: .init(needsYou: true, finished: false),
+                snoozeUntil: Date(timeIntervalSinceReferenceDate: 1_000),
+                dnd: .init(start: 22 * 60, end: 8 * 60)
+            )),
             .paired(
                 token: "device-token",
                 protocolVersion: bridgeProtocolVersion,
@@ -61,7 +66,11 @@ final class BridgeProtocolTests: XCTestCase {
             ),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
-            .authFailed(reason: "Invalid pairing token"),
+            .authFailed(
+                reason: "Invalid pairing token",
+                code: .repairRequired,
+                detail: "Credential not found"
+            ),
             .snapshot(snapshot),
             .event(BridgeEvent(
                 name: "layout.updated",
@@ -74,7 +83,12 @@ final class BridgeProtocolTests: XCTestCase {
                 paneID: "pane-1", bytesBase64: bytes, full: true, seq: 1,
                 cols: 80, rows: 29),
             .scrollback(paneID: "pane-1", bytesBase64: bytes),
-            .error(message: "Herdr is unavailable"),
+            .pushPrefsState(.default),
+            .error(
+                message: "Herdr is unavailable",
+                code: .herdMissing,
+                detail: "No snapshot"
+            ),
             .paneError(paneID: "pane-1", message: "That prompt already closed"),
             .decisionResult(
                 paneID: "pane-1",
@@ -143,6 +157,50 @@ final class BridgeProtocolTests: XCTestCase {
             try JSONDecoder().decode(BridgeMessage.self, from: scrollback),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false)
         )
+        let error = Data(#"{"type":"error","message":"Old Mac prose"}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: error),
+            .error(message: "Old Mac prose", code: nil, detail: nil)
+        )
+        let auth = Data(#"{"type":"authFailed","reason":"Old reason"}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: auth),
+            .authFailed(reason: "Old reason", code: nil, detail: nil)
+        )
+        let futureAuth = Data(
+            #"{"type":"authFailed","reason":"Mac is starting","code":"startup_pending","detail":"Herd not ready"}"#.utf8
+        )
+        let decodedFutureAuth = try JSONDecoder().decode(BridgeMessage.self, from: futureAuth)
+        XCTAssertEqual(
+            decodedFutureAuth,
+            .authFailed(
+                reason: "Mac is starting",
+                code: nil,
+                detail: "Herd not ready",
+                unrecognizedCode: "startup_pending"
+            )
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                BridgeMessage.self,
+                from: JSONEncoder().encode(decodedFutureAuth)
+            ),
+            decodedFutureAuth
+        )
+        let future = Data(
+            #"{"type":"error","message":"Future prose","code":"future_code","detail":"More"}"#.utf8
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: future),
+            .error(message: "Future prose", code: nil, detail: "More")
+        )
+        let preferences = Data(
+            #"{"type":"pushPrefs","kinds":{"needsYou":true,"finished":true},"dnd":{"start":1320,"end":480}}"#.utf8
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: preferences),
+            .pushPrefs(.init(dnd: .init(start: 1_320, end: 480)))
+        )
     }
 
     func testBridgeProtocolVersionIsSix() {
@@ -199,6 +257,8 @@ final class BridgeProtocolTests: XCTestCase {
             .broadcastInput(tabID: "w7:t1", text: "git status"),
             .listSessions,
             .selectSession(name: "default"),
+            .pushPrefs(.default),
+            .pushPrefsState(.default),
             .backgroundWork([
                 PaneBackgroundWork(
                     paneID: "w7:p1",

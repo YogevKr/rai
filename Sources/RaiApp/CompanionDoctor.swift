@@ -1,4 +1,5 @@
 import Foundation
+import RaiCore
 
 enum DoctorSeverity: Int, Equatable, Sendable {
     case green
@@ -29,6 +30,13 @@ struct CompanionDoctorState: Equatable, Sendable {
     let pendingPushCount: Int
     let lastPushResult: String?
     let lastPushSucceeded: Bool?
+    let devicePreferences: [DoctorDevicePreferences]
+}
+
+struct DoctorDevicePreferences: Equatable, Sendable {
+    let id: String
+    let label: String
+    let preferences: PushPreferences
 }
 
 enum CompanionDoctor {
@@ -41,7 +49,7 @@ enum CompanionDoctor {
             devicesFinding(state),
             presenceFinding(state),
             lastPushFinding(state),
-        ]
+        ] + state.devicePreferences.map(preferencesFinding)
     }
 
     private static func bridgeFinding(_ state: CompanionDoctorState) -> DoctorFinding {
@@ -183,5 +191,35 @@ enum CompanionDoctor {
                 ? "No action needed."
                 : "Check the APNs key, environment, bundle ID, and device token."
         )
+    }
+
+    private static func preferencesFinding(_ device: DoctorDevicePreferences) -> DoctorFinding {
+        let preferences = device.preferences
+        var parts = [
+            "Needs you \(preferences.kinds.needsYou ? "on" : "off")",
+            "Finished \(preferences.kinds.finished ? "on" : "off")",
+        ]
+        if let snooze = preferences.snoozeUntil {
+            parts.append("Snoozed until \(snooze.formatted(date: .abbreviated, time: .shortened))")
+        } else {
+            parts.append("Not snoozed")
+        }
+        if let dnd = preferences.dnd {
+            let zone = dnd.timeZoneIdentifier.map { " · \($0)" } ?? ""
+            parts.append("DND \(clock(dnd.start))–\(clock(dnd.end))\(zone)")
+        } else {
+            parts.append("DND off")
+        }
+        return .init(
+            id: "push-prefs-\(device.id)",
+            severity: .green,
+            title: "Notifications · \(device.label)",
+            detail: parts.joined(separator: "; "),
+            fix: "Change these settings on this iPhone."
+        )
+    }
+
+    private static func clock(_ minutes: Int) -> String {
+        String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
 }

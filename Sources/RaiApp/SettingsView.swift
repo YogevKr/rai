@@ -347,7 +347,14 @@ private struct CompanionSettingsView: View {
             presenceGateIsAway: presenceStatus.isAway,
             pendingPushCount: presenceStatus.pendingCount,
             lastPushResult: server.lastPushResult,
-            lastPushSucceeded: server.lastPushSucceeded
+            lastPushSucceeded: server.lastPushSucceeded,
+            devicePreferences: server.pairedDevices.map {
+                DoctorDevicePreferences(
+                    id: $0.id,
+                    label: $0.label,
+                    preferences: $0.pushPreferences.effective(at: Date())
+                )
+            }
         ))
     }
 

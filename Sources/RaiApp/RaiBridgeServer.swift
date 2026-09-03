@@ -177,6 +177,7 @@ final class RaiBridgeServer: ObservableObject {
     private let liveConnections = BridgeLiveConnectionRegistry()
     private let credentialStore: BridgeDeviceCredentialStore
     private let auditLogger: BridgeAuditLogger?
+    private let clock: () -> Date
     private var pairingExpiryTask: Task<Void, Never>?
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
     /// Consecutive unexpected observe exits per (client, pane); reset when a
@@ -188,20 +189,25 @@ final class RaiBridgeServer: ObservableObject {
     private var pushBadgeLedger = PushBadgeLedger<PushRegistration>()
     private let apnsPusher = APNsPusher()
     /// Serializes each device without making one device wait for another.
-    private let pushDeliveryQueue = APNsDeliveryQueue()
+    private let pushDeliveryQueue: APNsDeliveryQueue
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
+    var pushPreferencesDidChange: ((String, PushPreferences) -> Void)?
 
     init(
         model: RaiModel,
         userDefaults: UserDefaults = .standard,
         apnsSettings: APNsSettings? = nil,
-        auditLogURL: URL? = nil
+        auditLogURL: URL? = nil,
+        pushDeliveryQueue: APNsDeliveryQueue? = nil,
+        now: @escaping () -> Date = Date.init
     ) {
         self.model = model
         self.userDefaults = userDefaults
         self.apnsSettings = apnsSettings ?? .shared
+        self.pushDeliveryQueue = pushDeliveryQueue ?? APNsDeliveryQueue()
+        clock = now
         if !userDefaults.bool(forKey: Self.credentialMigrationKey) {
             userDefaults.removeObject(forKey: "companionBridgePairingToken")
             userDefaults.removeObject(forKey: Self.pushRegistrationsKey)
@@ -430,11 +436,31 @@ final class RaiBridgeServer: ObservableObject {
         broadcast(.backgroundWork(work), onlyToSubscribers: true)
     }
 
-    func sendPush(_ burst: PhonePushBurst) {
+    func sendPush(
+        _ burst: PhonePushBurst,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
         guard !registrations.isEmpty else {
             recordNoDelivery("Push not sent: no registered devices.")
+            return
+        }
+        let plans = registrations.compactMap {
+            registration -> (PushRegistration, PhonePushBurst)? in
+            guard let allowed = allowedPushBurst(
+                burst,
+                for: registration,
+                now: now,
+                calendar: calendar
+            ) else { return nil }
+            return (registration, allowed)
+        }
+
+        guard !plans.isEmpty else {
+            lastPushSucceeded = true
+            lastPushResult = "Push dropped by device notification preferences."
             return
         }
         guard configuration.isConfigured else {
@@ -445,23 +471,23 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Push not sent: APNs configuration is incomplete.")
             return
         }
-        let stableIDs = Set(burst.notificationIDs)
-        let deliveries = registrations.map { registration in
+        let deliveries = plans.map { registration, effectiveBurst in
             let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
-            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
-                guard let self else {
-                    return PushDeliveryReport(
-                        deviceToken: registration.deviceToken,
-                        environment: registration.environment,
-                        status: nil,
-                        reason: "Bridge stopped"
-                    )
-                }
+            return pushDeliveryQueue.enqueue(key: deliveryKey) {
+                [weak self] () -> PushDeliveryReport? in
+                guard let self else { return nil }
+                let deliveryNow = await self.clock()
+                guard let deliveryBurst = await self.allowedPushBurst(
+                    effectiveBurst,
+                    for: registration,
+                    now: deliveryNow,
+                    calendar: calendar
+                ) else { return nil }
                 return await self.deliverAlert(
                     configuration: configuration,
                     registration: registration,
-                    burst: burst,
-                    stableIDs: stableIDs
+                    burst: deliveryBurst,
+                    stableIDs: Set(deliveryBurst.notificationIDs)
                 )
             }
         }
@@ -470,10 +496,52 @@ final class RaiBridgeServer: ObservableObject {
             guard let self else { return }
             var reports: [PushDeliveryReport] = []
             for delivery in deliveries {
-                reports.append(await delivery.value)
+                if let report = await delivery.value {
+                    reports.append(report)
+                }
             }
-            self.recordDelivery(reports.sorted { $0.id < $1.id })
+            if reports.isEmpty {
+                self.lastPushSucceeded = true
+                self.lastPushResult = "Push dropped by device notification preferences."
+            } else {
+                self.recordDelivery(reports.sorted { $0.id < $1.id })
+            }
         }
+    }
+
+    private func allowedPushBurst(
+        _ burst: PhonePushBurst,
+        for registration: PushRegistration,
+        now: Date,
+        calendar: Calendar
+    ) -> PhonePushBurst? {
+        guard let deviceID = registration.deviceID,
+              let device = pairedDevices.first(where: { $0.id == deviceID }) else {
+            pruneStalePushRegistration(registration)
+            return nil
+        }
+        return PushPreferenceGate.allowedBurst(
+            burst,
+            deviceID: deviceID,
+            preferences: device.pushPreferences,
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    func deviceIDsSuppressingHeldEvent(
+        status: AgentStatus,
+        occurredAt: Date,
+        calendar: Calendar = .current
+    ) -> Set<String> {
+        Set(pairedDevices.compactMap { device in
+            PushPreferenceGate.suppressesHeldEvent(
+                status: status,
+                occurredAt: occurredAt,
+                preferences: device.pushPreferences,
+                calendar: calendar
+            ) ? device.id : nil
+        })
     }
 
     func retractPushNotifications(identifiers: [String]) {
@@ -589,6 +657,7 @@ final class RaiBridgeServer: ObservableObject {
             summaryArgument: burst.summaryArgument,
             summaryArgumentCount: burst.events.count,
             occurredAt: burst.occurredAt,
+            interruptionLevel: burst.interruptionLevel,
             badge: badge
         )
         let report = PushDeliveryReport(
@@ -659,6 +728,7 @@ final class RaiBridgeServer: ObservableObject {
             summaryArgument: "rai",
             summaryArgumentCount: 1,
             occurredAt: now,
+            interruptionLevel: .active,
             badge: nil
         )
         let report = PushDeliveryReport(
@@ -767,7 +837,11 @@ final class RaiBridgeServer: ObservableObject {
                    metadata.opcode == .text {
                     await self.handle(data, from: client)
                 } else {
-                    self.send(.error(message: "Only WebSocket text frames are supported."), to: client)
+                    self.send(.error(
+                        message: "Only WebSocket text frames are supported.",
+                        code: .invalidRequest,
+                        detail: "The bridge accepts WebSocket text frames only."
+                    ), to: client)
                 }
                 if self.clients[ObjectIdentifier(client.connection)] != nil {
                     self.receive(from: client)
@@ -781,7 +855,11 @@ final class RaiBridgeServer: ObservableObject {
         do {
             message = try JSONDecoder().decode(BridgeMessage.self, from: data)
         } catch {
-            send(.error(message: "Invalid bridge message: \(error.localizedDescription)"), to: client)
+            send(.error(
+                message: "Invalid bridge message: \(error.localizedDescription)",
+                code: .unknownMessage,
+                detail: error.localizedDescription
+            ), to: client)
             return
         }
 
@@ -789,7 +867,12 @@ final class RaiBridgeServer: ObservableObject {
             switch message {
             case let .pair(code, clientProtocolVersion, info):
                 guard clientProtocolVersion == bridgeProtocolVersion else {
-                    reject(client, reason: "Re-pair required")
+                    reject(
+                        client,
+                        reason: "Re-pair required",
+                        code: .protocolMismatch,
+                        detail: "Phone protocol \(clientProtocolVersion); Mac protocol \(bridgeProtocolVersion)."
+                    )
                     return
                 }
                 switch credentialStore.exchange(code: code, client: info) {
@@ -805,14 +888,18 @@ final class RaiBridgeServer: ObservableObject {
                     )
                 case .failure(.invalidOrExpired):
                     syncCredentialState()
-                    reject(client, reason: "Pairing code invalid or expired")
+                    reject(
+                        client,
+                        reason: "Pairing code invalid or expired",
+                        code: .pairingCodeInvalid
+                    )
                 case .failure(.entropyUnavailable):
                     statusMessage = "Secure random data is unavailable."
-                    reject(client, reason: "Pairing is unavailable")
+                    reject(client, reason: "Pairing is unavailable", code: .operationFailed)
                 }
             case let .hello(token, info):
                 guard let device = credentialStore.authenticate(token: token) else {
-                    reject(client, reason: "Re-pair required")
+                    reject(client, reason: "Re-pair required", code: .repairRequired)
                     return
                 }
                 syncCredentialState()
@@ -827,8 +914,13 @@ final class RaiBridgeServer: ObservableObject {
                     ),
                     to: client
                 )
+                send(.pushPrefsState(device.pushPreferences.effective(at: Date())), to: client)
             default:
-                reject(client, reason: "Pair or hello must be the first message")
+                reject(
+                    client,
+                    reason: "Pair or hello must be the first message",
+                    code: .repairRequired
+                )
             }
             return
         }
@@ -836,7 +928,11 @@ final class RaiBridgeServer: ObservableObject {
         if let auditEvent = BridgeAuditEvent(message) {
             guard let auditLogger else {
                 statusMessage = "Bridge audit log is unavailable. Write actions are blocked."
-                send(.error(message: "Bridge audit log is unavailable."), to: client)
+                send(.error(
+                    message: "Bridge audit log is unavailable.",
+                    code: .auditUnavailable,
+                    detail: "The Mac could not open the audit log."
+                ), to: client)
                 return
             }
             guard auditLogger.enqueue(
@@ -845,7 +941,11 @@ final class RaiBridgeServer: ObservableObject {
                 event: auditEvent
             ) else {
                 statusMessage = "Bridge audit write failed. Write actions are blocked."
-                send(.error(message: "Bridge audit write failed."), to: client)
+                send(.error(
+                    message: "Bridge audit write failed.",
+                    code: .auditUnavailable,
+                    detail: "The Mac could not append the audit event."
+                ), to: client)
                 return
             }
         }
@@ -856,15 +956,27 @@ final class RaiBridgeServer: ObservableObject {
             if let snapshot = model.snapshot {
                 send(.snapshot(snapshot.addingBeacons(model.beaconsForBridge)), to: client)
             } else {
-                send(.error(message: "Herdr is not connected."), to: client)
+                send(.error(
+                    message: "Herdr is not connected.",
+                    code: .herdMissing,
+                    detail: "The Mac bridge has no active herdr snapshot."
+                ), to: client)
             }
         case let .attachStream(paneID, cols, rows, fullGrid):
             guard client.isSubscribed else {
-                send(.error(message: "Subscribe before attaching a pane stream."), to: client)
+                send(.error(
+                    message: "Subscribe before attaching a pane stream.",
+                    code: .invalidRequest,
+                    detail: "The client did not subscribe."
+                ), to: client)
                 return
             }
             guard cols > 0, rows > 0 else {
-                send(.error(message: "Pane dimensions must be positive."), to: client)
+                send(.error(
+                    message: "Pane dimensions must be positive.",
+                    code: .invalidRequest,
+                    detail: "Columns and rows must exceed zero."
+                ), to: client)
                 return
             }
             startObserveStream(
@@ -873,7 +985,11 @@ final class RaiBridgeServer: ObservableObject {
             stopObserveStream(paneID: paneID, for: client)
         case let .input(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else {
-                send(.error(message: "input bytesBase64 is invalid."), to: client)
+                send(.error(
+                    message: "input bytesBase64 is invalid.",
+                    code: .invalidRequest,
+                    detail: "Input is not valid Base64 data."
+                ), to: client)
                 return
             }
             await perform(for: client) {
@@ -881,11 +997,19 @@ final class RaiBridgeServer: ObservableObject {
             }
         case let .sendImage(paneID, bytesBase64, filename):
             guard let data = Data(base64Encoded: bytesBase64), !data.isEmpty else {
-                send(.error(message: "sendImage bytesBase64 is invalid."), to: client)
+                send(.error(
+                    message: "sendImage bytesBase64 is invalid.",
+                    code: .invalidRequest,
+                    detail: "Image input is empty or invalid Base64 data."
+                ), to: client)
                 return
             }
             guard data.count <= 5 * 1_024 * 1_024 else {
-                send(.error(message: "Images must be 5 MB or smaller."), to: client)
+                send(.error(
+                    message: "Images must be 5 MB or smaller.",
+                    code: .invalidRequest,
+                    detail: "The decoded image exceeds 5242880 bytes."
+                ), to: client)
                 return
             }
             await perform(for: client) {
@@ -910,15 +1034,39 @@ final class RaiBridgeServer: ObservableObject {
             send(.sessions(model.bridgeSessionList()), to: client)
         case let .selectSession(name):
             model.selectSessionFromBridge(named: name)
+        case let .pushPrefs(preferences):
+            guard let deviceID = client.deviceID,
+                  let device = credentialStore.updatePushPreferences(
+                    preferences.effective(at: Date()),
+                    deviceID: deviceID
+                  ) else {
+                send(.error(
+                    message: "Re-pair required.",
+                    code: .repairRequired,
+                    detail: "The paired device record is missing."
+                ), to: client)
+                return
+            }
+            syncCredentialState()
+            pushPreferencesDidChange?(deviceID, device.pushPreferences)
+            send(.pushPrefsState(device.pushPreferences), to: client)
         case let .selectPane(paneID):
             guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
-                send(.error(message: "Unknown pane \(paneID)."), to: client)
+                send(.error(
+                    message: "Unknown pane \(paneID).",
+                    code: .paneGone,
+                    detail: paneID
+                ), to: client)
                 return
             }
             model.select(paneID: paneID, focusInHerdr: true)
         case let .resizePane(paneID, cols, rows):
             guard cols > 0, rows > 0 else {
-                send(.error(message: "Pane dimensions must be positive."), to: client)
+                send(.error(
+                    message: "Pane dimensions must be positive.",
+                    code: .invalidRequest,
+                    detail: "Columns and rows must exceed zero."
+                ), to: client)
                 return
             }
             let clientID = ObjectIdentifier(client.connection)
@@ -935,7 +1083,11 @@ final class RaiBridgeServer: ObservableObject {
                model.snapshot?.workspaces.contains(where: {
                    $0.workspaceID == workspaceID
                }) != true {
-                send(.error(message: "Unknown workspace \(workspaceID)."), to: client)
+                send(.error(
+                    message: "Unknown workspace \(workspaceID).",
+                    code: .operationFailed,
+                    detail: workspaceID
+                ), to: client)
                 return
             }
             // "terminal" is a plain shell pane, not an agent — routed through
@@ -943,43 +1095,75 @@ final class RaiBridgeServer: ObservableObject {
             if agent == "terminal" {
                 guard await model.createTerminalFromBridge(workspaceID: workspaceID, cwd: cwd)
                 else {
-                    send(.error(message: "Could not launch \(agent)."), to: client)
+                    send(.error(
+                        message: "Could not launch \(agent).",
+                        code: .operationFailed,
+                        detail: agent
+                    ), to: client)
                     return
                 }
                 return
             }
             guard let kind = AgentLaunchKind(rawValue: agent) else {
-                send(.error(message: "Agent must be claude or codex."), to: client)
+                send(.error(
+                    message: "Agent must be claude or codex.",
+                    code: .invalidRequest,
+                    detail: agent
+                ), to: client)
                 return
             }
             guard await model.launchAgentFromBridge(kind, workspaceID: workspaceID, cwd: cwd)
             else {
-                send(.error(message: "Could not launch \(agent)."), to: client)
+                send(.error(
+                    message: "Could not launch \(agent).",
+                    code: .operationFailed,
+                    detail: agent
+                ), to: client)
                 return
             }
         case let .renamePane(paneID, label):
             guard await model.renamePaneFromBridge(paneID: paneID, label: label) else {
-                send(.error(message: "Could not rename pane \(paneID)."), to: client)
+                send(.error(
+                    message: "Could not rename pane \(paneID).",
+                    code: .paneGone,
+                    detail: paneID
+                ), to: client)
                 return
             }
         case let .renameTab(tabID, label):
             guard await model.renameTabFromBridge(tabID: tabID, label: label) else {
-                send(.error(message: "Could not rename tab \(tabID)."), to: client)
+                send(.error(
+                    message: "Could not rename tab \(tabID).",
+                    code: .operationFailed,
+                    detail: tabID
+                ), to: client)
                 return
             }
         case let .closePane(paneID):
             guard await model.closePaneFromBridge(paneID: paneID) else {
-                send(.error(message: "Could not close pane \(paneID)."), to: client)
+                send(.error(
+                    message: "Could not close pane \(paneID).",
+                    code: .paneGone,
+                    detail: paneID
+                ), to: client)
                 return
             }
         case let .closeTab(tabID):
             guard await model.closeTabFromBridge(tabID: tabID) else {
-                send(.error(message: "Could not close tab \(tabID)."), to: client)
+                send(.error(
+                    message: "Could not close tab \(tabID).",
+                    code: .operationFailed,
+                    detail: tabID
+                ), to: client)
                 return
             }
         case let .sendKeys(paneID, keys):
             guard !keys.isEmpty, keys.count <= 8 else {
-                send(.error(message: "sendKeys takes 1-8 keys."), to: client)
+                send(.error(
+                    message: "sendKeys takes 1-8 keys.",
+                    code: .invalidRequest,
+                    detail: "Received \(keys.count) keys."
+                ), to: client)
                 return
             }
             await perform(for: client) {
@@ -1010,7 +1194,11 @@ final class RaiBridgeServer: ObservableObject {
             model.reevaluatePendingDecisions()
         case let .readScrollback(paneID, lines, rows, fullGrid):
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
-                send(.error(message: "Unknown pane \(paneID)."), to: client)
+                send(.error(
+                    message: "Unknown pane \(paneID).",
+                    code: .paneGone,
+                    detail: paneID
+                ), to: client)
                 return
             }
             // A full-grid client's frame stream repaints the pane's WHOLE
@@ -1027,7 +1215,11 @@ final class RaiBridgeServer: ObservableObject {
                 clientRows: min(max(seamRows, 0), 200)
             )
             guard let payload else {
-                send(.error(message: "Could not read scrollback for \(paneID)."), to: client)
+                send(.error(
+                    message: "Could not read scrollback for \(paneID).",
+                    code: .scrollbackUnavailable,
+                    detail: paneID
+                ), to: client)
                 return
             }
             send(
@@ -1036,14 +1228,22 @@ final class RaiBridgeServer: ObservableObject {
             )
         case let .registerPush(deviceToken, environment):
             guard environment == "sandbox" || environment == "production" else {
-                send(.error(message: "Push environment must be sandbox or production."), to: client)
+                send(.error(
+                    message: "Push environment must be sandbox or production.",
+                    code: .invalidRequest,
+                    detail: environment
+                ), to: client)
                 return
             }
             let normalizedToken = deviceToken.lowercased()
             guard normalizedToken.count == 64,
                   normalizedToken.allSatisfy(\.isHexDigit)
             else {
-                send(.error(message: "Push device token must be 64 hexadecimal characters."), to: client)
+                send(.error(
+                    message: "Push device token must be 64 hexadecimal characters.",
+                    code: .invalidRequest,
+                    detail: "The token format is invalid."
+                ), to: client)
                 return
             }
             registerPush(
@@ -1055,11 +1255,19 @@ final class RaiBridgeServer: ObservableObject {
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .pair, .hello:
-            send(.error(message: "Connection is already authenticated."), to: client)
+            send(.error(
+                message: "Connection is already authenticated.",
+                code: .invalidRequest,
+                detail: "Pair and hello are handshake messages."
+            ), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
              .paneError, .decisionResult,
-             .backgroundWork, .sessions:
-            send(.error(message: "Server-to-client message received from client."), to: client)
+             .backgroundWork, .sessions, .pushPrefsState:
+            send(.error(
+                message: "Server-to-client message received from client.",
+                code: .unknownMessage,
+                detail: "The message direction is invalid."
+            ), to: client)
         }
     }
 
@@ -1156,7 +1364,11 @@ final class RaiBridgeServer: ObservableObject {
         for client: BridgeClient
     ) {
         guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
-            send(.error(message: "Unknown pane \(paneID)."), to: client)
+            send(.error(
+                message: "Unknown pane \(paneID).",
+                code: .paneGone,
+                detail: paneID
+            ), to: client)
             return
         }
 
@@ -1246,7 +1458,9 @@ final class RaiBridgeServer: ObservableObject {
                     self.observeRestarts[clientID]?[paneID] = 0
                     self.send(
                         .error(
-                            message: "Pane stream \(paneID) exited with status \(process.terminationStatus)."
+                            message: "Pane stream \(paneID) exited with status \(process.terminationStatus).",
+                            code: .paneBusy,
+                            detail: "Observe exited after five restart attempts."
                         ),
                         to: client
                     )
@@ -1276,7 +1490,11 @@ final class RaiBridgeServer: ObservableObject {
         } catch {
             removeObserveStream(paneID: paneID, clientID: clientID)
             send(
-                .error(message: "Unable to start pane stream \(paneID): \(error.localizedDescription)"),
+                .error(
+                    message: "Unable to start pane stream \(paneID): \(error.localizedDescription)",
+                    code: .streamUnavailable,
+                    detail: error.localizedDescription
+                ),
                 to: client
             )
         }
@@ -1321,12 +1539,36 @@ final class RaiBridgeServer: ObservableObject {
         do {
             try await operation()
         } catch {
-            send(.error(message: error.localizedDescription), to: client)
+            let code = Self.errorCode(for: error)
+            send(.error(
+                message: error.localizedDescription,
+                code: code,
+                detail: String(reflecting: error)
+            ), to: client)
         }
     }
 
-    private func reject(_ client: BridgeClient, reason: String) {
-        send(.authFailed(reason: reason), to: client) {
+    private static func errorCode(for error: Error) -> BridgeErrorCode {
+        guard case let HerdrClientError.remote(code, _) = error else {
+            return .operationFailed
+        }
+        if code.localizedCaseInsensitiveContains("busy") {
+            return .paneBusy
+        }
+        if code.localizedCaseInsensitiveContains("pane"),
+           code.localizedCaseInsensitiveContains("not") {
+            return .paneGone
+        }
+        return .operationFailed
+    }
+
+    private func reject(
+        _ client: BridgeClient,
+        reason: String,
+        code: BridgeErrorCode,
+        detail: String? = nil
+    ) {
+        send(.authFailed(reason: reason, code: code, detail: detail ?? reason), to: client) {
             client.connection.cancel()
         }
     }
@@ -1423,6 +1665,19 @@ final class RaiBridgeServer: ObservableObject {
         if changed { persistPushRegistrations() }
     }
 
+    private func pruneStalePushRegistration(_ stale: PushRegistration) {
+        let oldCount = pushRegistrations.count
+        pushRegistrations = Set(pushRegistrations.filter {
+            !($0.deviceToken == stale.deviceToken
+                && $0.environment == stale.environment
+                && $0.deviceID == stale.deviceID)
+        })
+        if pushRegistrations.count != oldCount {
+            pushBadgeLedger.removeDevices { $0.deviceToken == stale.deviceToken }
+            persistPushRegistrations()
+        }
+    }
+
     private func persistPushRegistrations() {
         if let data = try? JSONEncoder().encode(pushRegistrations) {
             userDefaults.set(data, forKey: Self.pushRegistrationsKey)
@@ -1449,7 +1704,7 @@ final class RaiBridgeServer: ObservableObject {
         let id = ObjectIdentifier(client.connection)
         liveConnections.register(id: id, deviceID: device.id) { [weak self, weak client] in
             guard let self, let client else { return }
-            self.reject(client, reason: "Re-pair required")
+            self.reject(client, reason: "Re-pair required", code: .repairRequired)
         }
         updateConnectedDeviceCount()
     }

@@ -89,8 +89,8 @@ final class PermissionDecisionTests: XCTestCase {
             sessionID: "session",
             cwd: "/repo",
             transcriptPath: "/tmp/a",
-            timestamp: 1,
             requestID: "request-a",
+            timestamp: 1,
             awaitsDecision: true
         )
         let requestB = requestA.withDecisionRequestForTesting("request-b")
@@ -235,8 +235,8 @@ final class PermissionDecisionTests: XCTestCase {
             sessionID: "session",
             cwd: "/repo",
             transcriptPath: "/tmp/a",
-            timestamp: 10_000,
             requestID: "request-a",
+            timestamp: 10_000,
             awaitsDecision: true,
             decisionHoldSeconds: 45,
             deadline: Date(timeIntervalSince1970: 10_080)
@@ -273,12 +273,24 @@ final class PermissionDecisionTests: XCTestCase {
             sessionID: "session-1",
             cwd: "/repo",
             transcriptPath: "/tmp/session.jsonl",
-            timestamp: 1,
-            requestID: "request-1"
+            requestID: "request-1",
+            timestamp: 1
         )
 
         XCTAssertTrue(PermissionPromptTransport.usesLegacyKeys(beacon: oldBeacon))
         XCTAssertFalse(PermissionPromptTransport.usesLegacyKeys(beacon: closedDecision))
+        XCTAssertTrue(
+            PermissionPromptTransport.allowsEscape(
+                promptKind: .askUserQuestion,
+                beacon: closedDecision
+            )
+        )
+        XCTAssertFalse(
+            PermissionPromptTransport.allowsEscape(
+                promptKind: .numberedPermission,
+                beacon: closedDecision
+            )
+        )
     }
 }
 
@@ -333,12 +345,12 @@ private extension AgentBeacon {
             transcriptPath: transcriptPath,
             toolName: toolName,
             toolInput: toolInput,
+            requestID: requestID,
             notificationType: notificationType,
             message: message,
             lastAssistantMessage: lastAssistantMessage,
             timestamp: timestamp,
             parentPID: parentPID,
-            requestID: requestID,
             awaitsDecision: true,
             decisionHoldSeconds: decisionHoldSeconds,
             deadline: deadline

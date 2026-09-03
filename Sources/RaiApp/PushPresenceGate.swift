@@ -34,6 +34,98 @@ enum PhonePushQueuePolicy {
     }
 }
 
+enum PushPreferenceDecision: Equatable {
+    case allow
+    case kindDisabled
+    case snoozed
+    case doNotDisturb
+}
+
+enum PushPreferenceGate {
+    static func allowedBurst(
+        _ burst: PhonePushBurst,
+        deviceID: String?,
+        preferences: PushPreferences,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> PhonePushBurst? {
+        let events = burst.events.filter { event in
+            if let deviceID, event.suppressedDeviceIDs.contains(deviceID) {
+                return false
+            }
+            return evaluate(
+                status: event.status,
+                occurredAt: event.occurredAt,
+                preferences: preferences,
+                now: now,
+                calendar: calendar
+            ) == .allow
+        }
+        return events.isEmpty ? nil : PhonePushBurst(events: events)
+    }
+
+    static func suppressesHeldEvent(
+        status: AgentStatus,
+        occurredAt: Date,
+        preferences: PushPreferences,
+        calendar: Calendar = .current
+    ) -> Bool {
+        evaluate(
+            status: status,
+            occurredAt: occurredAt,
+            preferences: preferences,
+            now: occurredAt,
+            calendar: calendar
+        ) != .allow
+    }
+
+    static func suppressDisabledKinds(
+        in events: [String: PhonePushEvent],
+        for deviceID: String,
+        preferences: PushPreferences
+    ) -> [String: PhonePushEvent] {
+        events.mapValues { event in
+            guard evaluate(
+                status: event.status,
+                occurredAt: event.occurredAt,
+                preferences: PushPreferences(kinds: preferences.kinds),
+                now: event.occurredAt
+            ) == .kindDisabled else { return event }
+            return event.suppressing(deviceID: deviceID)
+        }
+    }
+
+    static func evaluate(
+        status: AgentStatus,
+        occurredAt: Date,
+        preferences: PushPreferences,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> PushPreferenceDecision {
+        switch status {
+        case .blocked where !preferences.kinds.needsYou:
+            return .kindDisabled
+        case .done where !preferences.kinds.finished:
+            return .kindDisabled
+        case .blocked, .done:
+            break
+        default:
+            return .kindDisabled
+        }
+
+        if let snoozeUntil = preferences.snoozeUntil,
+           occurredAt < snoozeUntil || now < snoozeUntil {
+            return .snoozed
+        }
+        if let dnd = preferences.dnd,
+           dnd.contains(occurredAt, calendar: calendar)
+            || dnd.contains(now, calendar: calendar) {
+            return .doNotDisturb
+        }
+        return .allow
+    }
+}
+
 struct PhonePushEvent: Equatable, Sendable {
     let paneID: String
     let paneName: String
@@ -44,6 +136,7 @@ struct PhonePushEvent: Equatable, Sendable {
     let allowsRemoteActions: Bool?
     let requestID: String?
     let occurredAt: Date
+    let suppressedDeviceIDs: Set<String>
 
     init(
         paneID: String,
@@ -54,7 +147,8 @@ struct PhonePushEvent: Equatable, Sendable {
         notificationBody: String? = nil,
         allowsRemoteActions: Bool? = nil,
         requestID: String? = nil,
-        occurredAt: Date
+        occurredAt: Date,
+        suppressedDeviceIDs: Set<String> = []
     ) {
         self.paneID = paneID
         self.paneName = paneName
@@ -65,6 +159,22 @@ struct PhonePushEvent: Equatable, Sendable {
         self.allowsRemoteActions = allowsRemoteActions
         self.requestID = requestID
         self.occurredAt = occurredAt
+        self.suppressedDeviceIDs = suppressedDeviceIDs
+    }
+
+    func suppressing(deviceID: String) -> PhonePushEvent {
+        PhonePushEvent(
+            paneID: paneID,
+            paneName: paneName,
+            workspaceID: workspaceID,
+            workspaceName: workspaceName,
+            status: status,
+            notificationBody: notificationBody,
+            allowsRemoteActions: allowsRemoteActions,
+            requestID: requestID,
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: suppressedDeviceIDs.union([deviceID])
+        )
     }
 }
 
@@ -90,6 +200,9 @@ struct PhonePushBurst: Equatable, Sendable {
 
     var paneID: String? { isSummary ? nil : events[0].paneID }
     var requestID: String? { isSummary ? nil : events[0].requestID }
+    var interruptionLevel: APNsInterruptionLevel {
+        events.contains(where: { $0.status == .blocked }) ? .timeSensitive : .active
+    }
     var requiresAttention: Bool {
         !isSummary && (events[0].allowsRemoteActions ?? (events[0].status == .blocked))
     }

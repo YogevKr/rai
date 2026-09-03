@@ -462,8 +462,8 @@ final class HookBeaconReceiverTests: XCTestCase {
                 transcriptPath: "/tmp/session.jsonl",
                 toolName: "Bash",
                 toolInput: .object(["command": .string("touch x")]),
-                timestamp: 1,
                 requestID: "request-1",
+                timestamp: 1,
                 awaitsDecision: true,
                 decisionHoldSeconds: 5
             ),
@@ -512,8 +512,8 @@ final class HookBeaconReceiverTests: XCTestCase {
                 sessionID: "session-1",
                 cwd: "/repo",
                 transcriptPath: "/tmp/session.jsonl",
-                timestamp: 1,
                 requestID: "request-presence",
+                timestamp: 1,
                 awaitsDecision: true,
                 decisionHoldSeconds: 30
             ),
@@ -544,8 +544,8 @@ final class HookBeaconReceiverTests: XCTestCase {
                 sessionID: "session-1",
                 cwd: "/repo",
                 transcriptPath: "/tmp/session.jsonl",
-                timestamp: 2,
                 requestID: "request-phone",
+                timestamp: 2,
                 awaitsDecision: true,
                 decisionHoldSeconds: 30
             ),

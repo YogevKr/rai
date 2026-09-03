@@ -16,12 +16,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
     public let transcriptPath: String
     public let toolName: String?
     public let toolInput: JSONValue?
+    public let requestID: String?
     public let notificationType: String?
     public let message: String?
     public let lastAssistantMessage: String?
     public let timestamp: TimeInterval
     public let parentPID: Int?
-    public let requestID: String?
     public let awaitsDecision: Bool
     public let decisionHoldSeconds: Int?
     public let deadline: Date?
@@ -35,12 +35,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         transcriptPath: String,
         toolName: String? = nil,
         toolInput: JSONValue? = nil,
+        requestID: String? = nil,
         notificationType: String? = nil,
         message: String? = nil,
         lastAssistantMessage: String? = nil,
         timestamp: TimeInterval,
         parentPID: Int? = nil,
-        requestID: String? = nil,
         awaitsDecision: Bool = false,
         decisionHoldSeconds: Int? = nil,
         deadline: Date? = nil
@@ -53,12 +53,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         self.transcriptPath = transcriptPath
         self.toolName = toolName
         self.toolInput = Self.bounded(toolInput)
+        self.requestID = requestID
         self.notificationType = notificationType
         self.message = Self.boundedPrefix(message)
         self.lastAssistantMessage = Self.boundedSuffix(lastAssistantMessage)
         self.timestamp = timestamp
         self.parentPID = parentPID
-        self.requestID = requestID
         self.awaitsDecision = awaitsDecision
         self.decisionHoldSeconds = decisionHoldSeconds
         self.deadline = deadline
@@ -73,12 +73,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         case transcriptPath = "transcript_path"
         case toolName = "tool_name"
         case toolInput = "tool_input"
+        case requestID = "request_id"
         case notificationType = "notification_type"
         case message
         case lastAssistantMessage = "last_assistant_message"
         case timestamp = "ts"
         case parentPID = "parent_pid"
-        case requestID = "request_id"
         case awaitsDecision = "awaits_decision"
         case decisionHoldSeconds = "decision_hold_seconds"
         case deadline
@@ -99,6 +99,7 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         toolInput = Self.bounded(
             try container.decodeIfPresent(JSONValue.self, forKey: .toolInput)
         )
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
         notificationType = try container.decodeIfPresent(
             String.self,
             forKey: .notificationType
@@ -111,7 +112,6 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         )
         timestamp = try container.decode(TimeInterval.self, forKey: .timestamp)
         parentPID = try container.decodeIfPresent(Int.self, forKey: .parentPID)
-        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
         awaitsDecision = try container.decodeIfPresent(Bool.self, forKey: .awaitsDecision)
             ?? false
         decisionHoldSeconds = try container.decodeIfPresent(
@@ -140,12 +140,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
             transcriptPath: transcriptPath,
             toolName: previous.toolName,
             toolInput: previous.toolInput,
+            requestID: requestID ?? previous.requestID,
             notificationType: notificationType,
             message: message,
             lastAssistantMessage: lastAssistantMessage,
             timestamp: timestamp,
             parentPID: parentPID ?? previous.parentPID,
-            requestID: requestID,
             awaitsDecision: awaitsDecision,
             decisionHoldSeconds: decisionHoldSeconds,
             deadline: deadline
@@ -162,12 +162,12 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
             transcriptPath: transcriptPath,
             toolName: toolName,
             toolInput: toolInput,
+            requestID: requestID,
             notificationType: notificationType,
             message: message,
             lastAssistantMessage: lastAssistantMessage,
             timestamp: timestamp,
             parentPID: parentPID,
-            requestID: requestID,
             awaitsDecision: awaiting,
             decisionHoldSeconds: decisionHoldSeconds,
             deadline: deadline

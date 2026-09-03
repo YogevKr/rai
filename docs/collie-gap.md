@@ -27,15 +27,13 @@ of what rai should absorb.
 
 ## July list — status
 
-Closed since the July audit: single-choice permission/trust prompt buttons
-with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac and phone
-notification retraction; push coalescing and grouping; triage groups with counts
-and a filter pulse line (Nightwatch); session follow.
+Closed since the July audit: structured permission, trust, plan, and
+AskUserQuestion prompt controls with a signature race guard; quick replies;
+an agent-aware slash palette; destructive-input confirm; push presence gate;
+Mac and phone notification retraction; push coalescing and grouping; triage
+groups with counts and a filter pulse line (Nightwatch); session follow.
 
-Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
-diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
+Still open from July: draft take-over; per-pane display preferences.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -83,8 +81,8 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    `quick-replies.toml`, live-reloaded, with a `scope` so rows replace the
    shipped catalog on matching panes (ADR 0018). rai hardcodes both catalogs
    in `Composer.swift`.
-9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
-   TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
+9. ✅ **Stable error codes from the bridge.** The Mac sends codes and details.
+   The phone maps each code to a recovery action or an action error.
 10. **Push grouping. ✅ Landed 2026-09-02.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
@@ -155,8 +153,13 @@ It also tolerates brief reconnects and refreshes notification permission after e
 
 Later notification grants restart APNs registration. Token redaction now handles punctuation and non-path slash values.
 
-Wave 2 remains: structured prompt blocks fed by beacons
-(AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
-dialogs) on iOS; transcript history view; operator config files;
-phone-side notification prefs (per-kind, snooze) on top of protocol 6;
-bridge error codes on the Mac side; statusline strip; LAN TLS.
+Wave 2: ✅ structured prompt blocks now use beacons and verified grid steps on iOS.
+Remaining work includes transcript history, operator config files, and LAN TLS.
+
+Wave 2 quality-of-life outcome (2026-09-03):
+
+| Item | Result |
+| --- | --- |
+| 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
+| 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
+| 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |

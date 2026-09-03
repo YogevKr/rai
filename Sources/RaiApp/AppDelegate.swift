@@ -214,6 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func connect(to model: RaiModel) {
         self.model = model
         model.snapshotObserver = self
+        model.bridgeServer.pushPreferencesDidChange = { [weak self] deviceID, preferences in
+            guard let self else { return }
+            self.pendingPhonePushes = PushPreferenceGate.suppressDisabledKinds(
+                in: self.pendingPhonePushes,
+                for: deviceID,
+                preferences: preferences
+            )
+            self.updatePresenceStatus()
+        }
         updateDockBadge(count: model.blockedAgentCount)
         if let snapshot = model.snapshot {
             focusPendingPane(in: snapshot, model: model)
@@ -420,6 +429,7 @@ extension AppDelegate: RaiSnapshotObserver {
             updatePresenceStatus()
             return
         }
+        let occurredAt = Date()
         pendingPhonePushes[pane.paneID] = PhonePushEvent(
             paneID: pane.paneID,
             paneName: title,
@@ -428,7 +438,11 @@ extension AppDelegate: RaiSnapshotObserver {
             status: transition.newStatus,
             notificationBody: body,
             allowsRemoteActions: allowsRemoteActions,
-            occurredAt: Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                status: transition.newStatus,
+                occurredAt: occurredAt
+            )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)
@@ -548,6 +562,7 @@ extension AppDelegate: RaiSnapshotObserver {
         )
 
         let prior = pendingPhonePushes[paneID]
+        let occurredAt = prior?.occurredAt ?? Date()
         pendingPhonePushes[paneID] = PhonePushEvent(
             paneID: paneID,
             paneName: snapshot.displayName(for: pane),
@@ -556,7 +571,12 @@ extension AppDelegate: RaiSnapshotObserver {
             status: pane.agentStatus,
             notificationBody: body,
             allowsRemoteActions: false,
-            occurredAt: prior?.occurredAt ?? Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: prior?.suppressedDeviceIDs
+                ?? model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                    status: pane.agentStatus,
+                    occurredAt: occurredAt
+                )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)
