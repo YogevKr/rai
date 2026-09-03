@@ -1,0 +1,26 @@
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.259[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mFable 5.1 with xhigh effort · Claude Max[0m
+[0m[38;2;215;119;87m  ▝▝ ▝▝    [0m[38;2;153;153;153m/private/tmp/rai-herdr-lab-9edc55ff/work[0m
+
+[0m[38;2;255;193;7m⚠ 1 MCP server needs authentication[0m[38;2;153;153;153m · run /mcp[0m
+
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse the AskUserQuestion tool now, with exactly two questions: first header "Color", [0m[48;2;55;55;55m       [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mquestion "Which color should the badge use?", options Red, Blue, Green, single select; [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55msecond header "Toppings", question "Which toppings do you want?", options Cheese, Olives, [0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mHam, with multiSelect true. Do nothing else.[0m[48;2;55;55;55m                                               [0m
+[0m[38;2;153;153;153m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;177;185;249m ☐ Color [0m ☐ Toppings  ✔ Submit  →
+
+[0m[1m[38;2;255;255;255mWhich color should the badge use?[0m
+
+[0m[38;2;177;185;249m❯[0m [0m[38;2;153;153;153m1.[0m [0m[38;2;177;185;249mRed[0m
+     [0m[38;2;153;153;153mUse a red badge.[0m
+  [0m[38;2;153;153;153m2. [0mBlue
+     [0m[38;2;153;153;153mUse a blue badge.[0m
+  [0m[38;2;153;153;153m3. [0mGreen
+     [0m[38;2;153;153;153mUse a green badge.[0m
+  [0m[38;2;153;153;153m4. Type something.[0m
+[0m[38;2;153;153;153m─────────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[0m

@@ -1,0 +1,22 @@
+ ▐▛███▛█   Claude Code v2.1.259
+▝▜██████▀  Fable 5.1 with xhigh effort · Claude Max
+  ▝▝ ▝▝    /private/tmp/rai-herdr-lab-9edc55ff/work
+
+⚠ 1 MCP server needs authentication · run /mcp
+
+❯ Use the AskUserQuestion tool now, with exactly two questions: first header "Color",
+  question "Which color should the badge use?", options Red, Blue, Green, single select;
+  second header "Toppings", question "Which toppings do you want?", options Cheese, Olives,
+  Ham, with multiSelect true. Do nothing else.
+
+─────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Color  ☐ Toppings  ✔ Submit  →
+
+Review your answers
+
+⚠ You have not answered all questions
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
