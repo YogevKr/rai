@@ -22,7 +22,9 @@ enum RaiBenchMain {
         }
 
         let app = NSApplication.shared
-        let delegate = BenchDelegate(options: options, corpus: corpus)
+        let delegate: NSApplicationDelegate = options.latency
+            ? LatencyBenchDelegate(options: options)
+            : BenchDelegate(options: options, corpus: corpus)
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()

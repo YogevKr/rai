@@ -48,6 +48,15 @@ terminal widget**.
   `session.snapshot`, kept live by herdr's event stream (no polling loop).
 - **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
   type, watch output, search the scrollback (⌘F).
+- **Low-latency typing** — confirmed shell echo predicts safe ASCII bursts.
+  TUI modes, copy mode, resizing, and scrollback always clear the prediction.
+  Focus, visibility, and reconnect changes also clear it. A recent 20-confirm
+  tail detects the daemon's bimodal delay. Unmatched output revokes confidence.
+  Local prediction is off by default because silent password prompts cannot be
+  detected. Enable it under Settings → Appearance. Small echoes bypass the
+  display throttle. Local echo measured about 4 ms median and 22 ms p90.
+  Measure both render paths with:
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --scratch-path .build-tests rai-bench --latency --renderer cg`.
 - **Nested splits** — rendered from the daemon's own split geometry and ratios.
 - **Split &amp; launch an agent** — spawn Claude or Codex directly into a new pane.
 - **Broadcast input** — send one command to every pane in a tab.

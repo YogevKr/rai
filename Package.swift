@@ -46,6 +46,7 @@ let package = Package(
         .executableTarget(
             name: "RaiBench",
             dependencies: [
+                "RaiCore",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ]
         ),

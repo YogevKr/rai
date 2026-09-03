@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import MetalKit
+import QuartzCore
+import RaiCore
 import SwiftTerm
 
 /// Renderer A/B harness for the terminal panes.
@@ -34,6 +37,12 @@ struct Options {
     var aggregated = true
     var cols = 100
     var rows = 32
+    var latency = false
+    var latencySamples = 200
+    var rendererSpecified = false
+    var metalPresentsWithTransaction = false
+    var metalDisplaySync = true
+    var latencyFastPath = true
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -46,7 +55,9 @@ struct Options {
             }
             switch arg {
             case "--panes": o.panes = Int(value() ?? "") ?? o.panes
-            case "--renderer": o.useMetal = (value() ?? "metal") != "cg"
+            case "--renderer":
+                o.useMetal = (value() ?? "metal") != "cg"
+                o.rendererSpecified = true
             case "--seconds": o.seconds = Double(value() ?? "") ?? o.seconds
             case "--warmup": o.warmup = Double(value() ?? "") ?? o.warmup
             case "--rate": o.bytesPerSecond = Int(value() ?? "") ?? o.bytesPerSecond
@@ -54,6 +65,11 @@ struct Options {
             case "--buffering": o.aggregated = (value() ?? "aggregated") != "per-row"
             case "--cols": o.cols = Int(value() ?? "") ?? o.cols
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
+            case "--latency": o.latency = true
+            case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
+            case "--no-fast-path": o.latencyFastPath = false
+            case "--metal-presents-with-transaction": o.metalPresentsWithTransaction = true
+            case "--metal-display-sync": o.metalDisplaySync = (value() ?? "on") != "off"
             case "--help", "-h":
                 print("""
                 rai-bench — CoreGraphics vs Metal pane rendering
@@ -67,13 +83,359 @@ struct Options {
                   --buffering B    aggregated | per-row (default aggregated,
                                    matching what the app enables)
                   --cols / --rows  per-pane grid size (default 100x32)
+                  --latency        measure byte feed and predictive overlay latency
+                  --samples N      samples per latency path (default 200)
+                  --no-fast-path   keep terminal echoes on SwiftTerm's path
+                  --metal-presents-with-transaction
+                                   present Metal frames with Core Animation transactions
+                  --metal-display-sync on|off
+                                   Metal display synchronization (default on)
                 """)
                 exit(0)
             default: break
             }
             i += 1
         }
+        if o.latency && !o.rendererSpecified {
+            // The app defaults to CoreGraphics. Keep bare --latency aligned
+            // with production while preserving Metal as the CPU-mode default.
+            o.useMetal = false
+        }
         return o
+    }
+}
+
+// MARK: - Typing latency
+
+@MainActor
+private func metalView(in view: NSView) -> MTKView? {
+    for child in view.subviews {
+        if let metal = child as? MTKView {
+            return metal
+        }
+        if let nested = metalView(in: child) {
+            return nested
+        }
+    }
+    return nil
+}
+
+@MainActor
+private final class LatencyTerminalDelegate: NSObject, @preconcurrency TerminalViewDelegate {
+    var onRangeChanged: (() -> Void)?
+    var onSend: ((ArraySlice<UInt8>) -> Void)?
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { onSend?(data) }
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        onRangeChanged?()
+    }
+}
+
+/// Measures the two latency paths controlled by rai. Both results end at a
+/// draw callback after the terminal or prediction overlay draws. Each sample
+/// waits for its own callback, so a prior frame cannot satisfy a later sample.
+@MainActor
+final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
+    private enum Phase {
+        case settling
+        case terminal
+        case prediction
+        case finished
+    }
+
+    private let options: Options
+    private let terminalDelegate = LatencyTerminalDelegate()
+    private let prediction = PredictiveEchoEngine(displayLatencyThreshold: 0.008)
+    private var window: NSWindow!
+    private var terminalView: TerminalView!
+    private var overlay: PredictionOverlayView!
+    private var phase = Phase.settling
+    private var sampleStart: UInt64?
+    private var currentByte: UInt8 = 0x61
+    private var terminalSamples: [Double] = []
+    private var predictionSamples: [Double] = []
+    private var terminalRepaintState = TerminalFeedRepaintState()
+
+    nonisolated init(options: Options) {
+        self.options = options
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildWindow()
+        print(
+            "latency-config renderer=\(options.useMetal ? "metal" : "coregraphics") "
+                + "presentsWithTransaction=\(options.metalPresentsWithTransaction) "
+                + "displaySync=\(options.metalDisplaySync) "
+                + "fastPath=\(options.latencyFastPath)"
+        )
+        terminalDelegate.onRangeChanged = { [weak self] in
+            self?.terminalDisplayDidUpdate()
+        }
+        terminalDelegate.onSend = { [weak self] data in
+            self?.terminalDidSend(data)
+        }
+        overlay.onDraw = { [weak self] in
+            self?.predictionOverlayDidDraw()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.startTerminalSamples()
+        }
+    }
+
+    private func buildWindow() {
+        let size = NSSize(width: 720, height: 420)
+        window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "rai-bench latency"
+        let content = NSView(frame: NSRect(origin: .zero, size: size))
+        window.contentView = content
+
+        terminalView = TerminalView(frame: content.bounds)
+        terminalView.autoresizingMask = [.width, .height]
+        terminalView.notifyUpdateChanges = true
+        terminalView.terminalDelegate = terminalDelegate
+        content.addSubview(terminalView)
+
+        overlay = PredictionOverlayView(
+            frame: NSRect(x: 10, y: 10, width: 24, height: 24)
+        )
+        overlay.cellWidth = 12
+        overlay.glyphFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        overlay.textColor = .labelColor
+        overlay.cellBackground = .windowBackgroundColor
+        overlay.isHidden = true
+        content.addSubview(overlay)
+
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(terminalView)
+        NSApp.activate(ignoringOtherApps: true)
+        configureMetalIfNeeded()
+    }
+
+    private func configureMetalIfNeeded() {
+        guard options.useMetal else { return }
+        do {
+            terminalView.metalBufferingMode = options.aggregated
+                ? .perFrameAggregated
+                : .perRowPersistent
+            try terminalView.setUseMetal(true)
+        } catch {
+            FileHandle.standardError.write(Data("rai-bench: Metal unavailable: \(error)\n".utf8))
+            exit(2)
+        }
+        guard let layer = metalView(in: terminalView)?.layer as? CAMetalLayer else {
+            FileHandle.standardError.write(Data("rai-bench: Metal layer unavailable\n".utf8))
+            exit(2)
+        }
+        layer.presentsWithTransaction = options.metalPresentsWithTransaction
+        layer.displaySyncEnabled = options.metalDisplaySync
+    }
+
+    private func startTerminalSamples() {
+        phase = .terminal
+        runNextTerminalSample()
+    }
+
+    private func runNextTerminalSample() {
+        guard terminalSamples.count < max(1, options.latencySamples) else {
+            report("terminal-key-to-display-update", samples: terminalSamples)
+            primePrediction()
+            return
+        }
+        currentByte = 0x61 + UInt8(terminalSamples.count % 26)
+        sampleStart = DispatchTime.now().uptimeNanoseconds
+        terminalView.keyDown(with: syntheticKeyEvent(byte: currentByte))
+    }
+
+    private func terminalDidSend(_ data: ArraySlice<UInt8>) {
+        guard phase == .terminal, sampleStart != nil else { return }
+        guard options.latencyFastPath else {
+            terminalView.feed(byteArray: data)
+            return
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        terminalRepaintState.noteUserInput(at: now)
+        let disposition = terminalRepaintState.disposition(
+            byteCount: data.count,
+            isFocused: true,
+            isVisible: true,
+            synchronizedOutputActive: false,
+            at: now
+        )
+        terminalView.feed(byteArray: data)
+        if disposition == .feedNowAndRepaint {
+            terminalView.needsDisplay = true
+            terminalView.displayIfNeeded()
+        }
+    }
+
+    private func terminalDisplayDidUpdate() {
+        guard phase == .terminal, let start = sampleStart else { return }
+        sampleStart = nil
+        terminalSamples.append(milliseconds(since: start))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            self?.runNextTerminalSample()
+        }
+    }
+
+    private func primePrediction() {
+        phase = .settling
+        establishPredictionConfidence { [weak self] in
+            self?.phase = .prediction
+            self?.runNextPredictionSample()
+        }
+    }
+
+    private func establishPredictionConfidence(completion: @escaping () -> Void) {
+        let now = Date()
+        let cursor = terminalView.getTerminal().getCursorLocation()
+        prediction.noteKey(
+            .printable("p"),
+            cursor: cursor,
+            columns: terminalView.getTerminal().cols,
+            terminalMode: .plain,
+            now: now
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            guard let self else { return }
+            let echo = [UInt8(ascii: "p")]
+            self.predictionDataReceived(echo[...], at: now.addingTimeInterval(0.020))
+            completion()
+        }
+    }
+
+    private func runNextPredictionSample() {
+        guard predictionSamples.count < max(1, options.latencySamples) else {
+            report("predictive-overlay-draw", samples: predictionSamples)
+            phase = .finished
+            NSApp.terminate(nil)
+            return
+        }
+        currentByte = 0x61 + UInt8(predictionSamples.count % 26)
+        let event = syntheticKeyEvent(byte: currentByte)
+        sampleStart = DispatchTime.now().uptimeNanoseconds
+        handlePredictionKey(event)
+        terminalView.keyDown(with: event)
+    }
+
+    private func handlePredictionKey(_ event: NSEvent) {
+        guard let character = event.characters?.first else { return }
+        let terminal = terminalView.getTerminal()
+        prediction.noteKey(
+            .printable(character),
+            cursor: terminal.getCursorLocation(),
+            columns: terminal.cols,
+            terminalMode: terminalMode
+        )
+        guard prediction.displayGlyphs() == [character] else {
+            FileHandle.standardError.write(
+                Data(
+                    "rai-bench: prediction confidence gate did not open "
+                        .appending("pending=\(prediction.pending.count) ")
+                        .appending("confirmed=\(prediction.echoConfirmedThisBurst) ")
+                        .appending("latency=\(prediction.smoothedConfirmLatency)\n")
+                        .utf8
+                )
+            )
+            exit(2)
+        }
+        overlay.glyphs = [character]
+        overlay.isHidden = false
+        overlay.needsDisplay = true
+        overlay.displayIfNeeded()
+    }
+
+    private func predictionOverlayDidDraw() {
+        guard phase == .prediction, let start = sampleStart else { return }
+        sampleStart = nil
+        predictionSamples.append(milliseconds(since: start))
+        overlay.isHidden = true
+        let byte = currentByte
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            guard let self else { return }
+            let echo = [byte]
+            self.predictionDataReceived(echo[...], at: Date())
+            // Keep every sample on one cell. A real line wrap ends prediction
+            // confidence by design, which would turn this into a safety test.
+            let cursorReset: [UInt8] = [0x0d]
+            self.predictionDataReceived(cursorReset[...], at: Date())
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
+                self?.establishPredictionConfidence { [weak self] in
+                    self?.runNextPredictionSample()
+                }
+            }
+        }
+    }
+
+    /// Matches production's dataReceived order: feed, then reconcile those bytes.
+    private func predictionDataReceived(_ bytes: ArraySlice<UInt8>, at now: Date) {
+        terminalView.feed(byteArray: bytes)
+        let terminal = terminalView.getTerminal()
+        prediction.reconcile(
+            cursor: terminal.getCursorLocation(),
+            terminalMode: terminalMode,
+            outputBytes: bytes,
+            readCell: { column, row in
+                guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
+                let character = cell.getCharacter()
+                return character == "\u{0}" ? nil : character
+            },
+            now: now
+        )
+    }
+
+    private var terminalMode: PredictiveEchoEngine.TerminalMode {
+        let terminal = terminalView.getTerminal()
+        return .init(
+            alternateScreen: terminal.isCurrentBufferAlternate,
+            bracketedPaste: terminal.bracketedPasteMode,
+            applicationCursorKeys: terminal.applicationCursor,
+            mouseTracking: terminal.mouseMode != .off
+        )
+    }
+
+    private func syntheticKeyEvent(byte: UInt8) -> NSEvent {
+        let character = String(Character(UnicodeScalar(byte)))
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: character,
+            charactersIgnoringModifiers: character,
+            isARepeat: false,
+            keyCode: 0
+        ) else {
+            fatalError("rai-bench: could not create key event")
+        }
+        return event
+    }
+
+    private func milliseconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    private func report(_ name: String, samples: [Double]) {
+        let sorted = samples.sorted()
+        let middle = sorted.count / 2
+        let median = sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
+        let p90 = sorted[max(0, Int(ceil(Double(sorted.count) * 0.9)) - 1)]
+        print(String(
+            format: "latency=%@ samples=%d median=%.3fms p90=%.3fms min=%.3fms max=%.3fms",
+            name, sorted.count, median, p90, sorted[0], sorted[sorted.count - 1]
+        ))
     }
 }
 
@@ -211,6 +573,10 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
                 // the screen each frame — which a scrolling agent pane is.
                 if options.aggregated { view.metalBufferingMode = .perFrameAggregated }
                 try view.setUseMetal(true)
+                if let layer = metalView(in: view)?.layer as? CAMetalLayer {
+                    layer.presentsWithTransaction = options.metalPresentsWithTransaction
+                    layer.displaySyncEnabled = options.metalDisplaySync
+                }
                 metalActive = true
             } catch {
                 FileHandle.standardError.write(
@@ -239,6 +605,16 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
                 if start >= corpus.count { start = 0 }
                 let chunk = min(remaining, corpus.count - start)
                 view.feed(byteArray: corpus[start..<(start + chunk)])
+                TerminalFeedRepaintPolicy.repaintIfNeeded(
+                    byteCount: chunk,
+                    isFocused: index == 0,
+                    isVisible: true,
+                    hasRecentUnpaintedUserInput: false,
+                    synchronizedOutputActive: view.getTerminal().synchronizedOutputActive
+                ) {
+                    view.needsDisplay = true
+                    view.displayIfNeeded()
+                }
                 start += chunk
                 remaining -= chunk
                 if measuring { bytesFed += chunk }
@@ -273,4 +649,3 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 }
-

@@ -18,10 +18,11 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
-    /// Set alongside `switchSocket` when the herd is remote. New views enable
-    /// predictive echo; existing views were already reaped by the switch.
-    var predictiveEchoEnabled = false
+    /// Set alongside `switchSocket`. New local and remote views use different
+    /// display thresholds; existing views were already reaped by the switch.
+    var predictiveEchoHerdLocation = PredictiveEchoEngine.HerdLocation.local
     private var themeObserver: AnyCancellable?
+    private var predictiveEchoSettingObserver: AnyCancellable?
     /// Terminals herdr reported in the last snapshot, once one has been seen.
     /// Closing a pane evicts its terminal, but SwiftUI still updates the
     /// outgoing pane's container once on its way out; without this the pool
@@ -48,6 +49,15 @@ final class TerminalPool {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.reapplyTheme() }
+            }
+        predictiveEchoSettingObserver = SettingsStore.shared.$predictiveEchoLocalEnabled
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                MainActor.assumeIsolated {
+                    self?.applyLocalPredictiveEchoSetting(enabled: enabled)
+                }
             }
     }
 
@@ -86,6 +96,7 @@ final class TerminalPool {
 
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font
+        view.notifyUpdateChanges = true
         GhosttyTheme.apply(to: view)
         // Mouse reporting stays off so SwiftTerm never clears a selection while a
         // program streams output (its feed path clears selection whenever this is
@@ -102,9 +113,12 @@ final class TerminalPool {
         // client points at the default socket, which is wrong the moment the
         // app is attached to another session (remote herd, herd switch).
         view.scrollbackSelection.client = HerdrClient(socketPath: socketPath)
-        if predictiveEchoEnabled {
-            view.enablePredictiveEcho()
-        }
+        view.configurePredictiveEcho(
+            for: Self.enabledPredictiveEchoLocation(
+                herdLocation: predictiveEchoHerdLocation,
+                localEnabled: SettingsStore.shared.predictiveEchoLocalEnabled
+            )
+        )
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
@@ -118,6 +132,25 @@ final class TerminalPool {
             evict(evictedID)
         }
         return view
+    }
+
+    nonisolated static func enabledPredictiveEchoLocation(
+        herdLocation: PredictiveEchoEngine.HerdLocation,
+        localEnabled: Bool
+    ) -> PredictiveEchoEngine.HerdLocation? {
+        switch herdLocation {
+        case .local:
+            localEnabled ? .local : nil
+        case .remote:
+            .remote
+        }
+    }
+
+    private func applyLocalPredictiveEchoSetting(enabled: Bool) {
+        guard predictiveEchoHerdLocation == .local else { return }
+        for entry in entries.values {
+            entry.view.configurePredictiveEcho(for: enabled ? .local : nil)
+        }
     }
 
     func retain(terminalIDs liveTerminalIDs: Set<String>) {
@@ -162,11 +195,27 @@ final class TerminalPool {
         }
     }
 
+    /// External input bypasses the pane's key monitor. Suppress prediction
+    /// until the full operation, including a delayed Enter, has finished.
+    func beginExternalInput(forPaneIDs paneIDs: Set<String>) {
+        guard !paneIDs.isEmpty else { return }
+        for entry in entries.values where entry.view.paneID.map(paneIDs.contains) == true {
+            entry.view.beginExternalInput()
+        }
+    }
+
+    func endExternalInput(forPaneIDs paneIDs: Set<String>) {
+        guard !paneIDs.isEmpty else { return }
+        for entry in entries.values where entry.view.paneID.map(paneIDs.contains) == true {
+            entry.view.endExternalInput()
+        }
+    }
+
     private func evict(_ terminalID: String) {
         guard let entry = entries.removeValue(forKey: terminalID) else { return }
         recency.remove(terminalID)
         // Stops the pane's scroll-event stream and hides its pill.
-        (entry.view as? FocusAwareTerminalView)?.paneID = nil
+        entry.view.paneID = nil
         entry.view.removeFromSuperview()
         entry.coordinator.stop(entry.view)
     }
@@ -177,7 +226,7 @@ private final class TerminalProcessCoordinator:
     NSObject,
     @preconcurrency LocalProcessTerminalViewDelegate
 {
-    private weak var view: LocalProcessTerminalView?
+    private weak var view: FocusAwareTerminalView?
     private let terminalID: String
     private let socketPath: String
     private var started = false
@@ -192,7 +241,7 @@ private final class TerminalProcessCoordinator:
         self.socketPath = socketPath
     }
 
-    func attach(_ view: LocalProcessTerminalView) {
+    func attach(_ view: FocusAwareTerminalView) {
         guard !started else { return }
         started = true
         self.view = view
@@ -229,6 +278,9 @@ private final class TerminalProcessCoordinator:
 
     private func launch() {
         guard let view else { return }
+        if PredictiveEchoViewPolicy.shouldClear(for: .reattach) {
+            view.resetPredictionsForReattach()
+        }
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         let path = env["PATH"] ?? ""
@@ -249,7 +301,9 @@ private final class TerminalProcessCoordinator:
     // Unexpected attach exits retry exactly as before. Pool eviction calls
     // stop() first, so intentional termination can never schedule a relaunch.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        guard !intentionalStop, retries < maxRetries else { return }
+        guard !intentionalStop else { return }
+        view?.resetPredictionsForReattach()
+        guard retries < maxRetries else { return }
         retries += 1
         let delay = 0.4 * Double(retries)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

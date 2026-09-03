@@ -1398,7 +1398,7 @@ final class RaiModel: ObservableObject {
         recreatedWorkspaceIDs = [:]
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
-        terminalPool.predictiveEchoEnabled = remote != nil
+        terminalPool.predictiveEchoHerdLocation = remote == nil ? .local : .remote
         connectionState = .connecting
 
         await refreshSnapshot(
@@ -3845,17 +3845,27 @@ final class RaiModel: ObservableObject {
     // Codex Micro: send Return to the currently focused pane (the mic-adjacent key).
     func microSendReturnToSelectedPane() {
         guard let paneID = selectedPaneID else { return }
-        Task { _ = await runHerdr(["pane", "send-keys", paneID, "Enter"]) }
+        beginExternalInput(paneID: paneID)
+        Task {
+            defer { endExternalInput(paneID: paneID) }
+            _ = await runHerdr(["pane", "send-keys", paneID, "Enter"])
+        }
     }
 
     func microSendKeysToSelectedPane(_ keys: String) {
         guard let paneID = selectedPaneID, !keys.isEmpty else { return }
-        Task { _ = await runHerdr(["pane", "send-keys", paneID, keys]) }
+        beginExternalInput(paneID: paneID)
+        Task {
+            defer { endExternalInput(paneID: paneID) }
+            _ = await runHerdr(["pane", "send-keys", paneID, keys])
+        }
     }
 
     func microSendTextToSelectedPane(_ text: String, submit: Bool) {
         guard let paneID = selectedPaneID, !text.isEmpty else { return }
+        beginExternalInput(paneID: paneID)
         Task {
+            defer { endExternalInput(paneID: paneID) }
             guard await runHerdr(["pane", "send-text", paneID, text]),
                   submit else {
                 return
@@ -3868,9 +3878,11 @@ final class RaiModel: ObservableObject {
         guard !text.isEmpty else { return }
         let paneIDs = visiblePanes.map(\.paneID)
         guard !paneIDs.isEmpty else { return }
+        beginExternalInput(paneIDs: Set(paneIDs))
         let client = client
         let generation = connectionGeneration
         Task {
+            defer { endExternalInput(paneIDs: Set(paneIDs)) }
             for paneID in paneIDs {
                 guard await runHerdr(["pane", "send-text", paneID, text]) else {
                     continue
@@ -4168,12 +4180,30 @@ final class RaiModel: ObservableObject {
         guard !text.isEmpty, let snapshot else { return }
         let paneIDs = snapshot.panes.filter { $0.tabID == tabID }.map(\.paneID)
         guard !paneIDs.isEmpty else { return }
+        beginExternalInput(paneIDs: Set(paneIDs))
         Task {
+            defer { endExternalInput(paneIDs: Set(paneIDs)) }
             for paneID in paneIDs {
                 guard await runHerdr(["pane", "send-text", paneID, text]) else { continue }
                 _ = await runHerdr(["pane", "send-keys", paneID, "Enter"])
             }
         }
+    }
+
+    func beginExternalInput(paneID: String) {
+        beginExternalInput(paneIDs: [paneID])
+    }
+
+    func endExternalInput(paneID: String) {
+        endExternalInput(paneIDs: [paneID])
+    }
+
+    func beginExternalInput(paneIDs: Set<String>) {
+        terminalPool.beginExternalInput(forPaneIDs: paneIDs)
+    }
+
+    func endExternalInput(paneIDs: Set<String>) {
+        terminalPool.endExternalInput(forPaneIDs: paneIDs)
     }
 
     /// The session list in the bridge's wire shape.

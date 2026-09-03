@@ -51,6 +51,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Off by default because a silent echo-off transition cannot be detected.
+    @Published var predictiveEchoLocalEnabled: Bool {
+        didSet {
+            userDefaults.set(
+                predictiveEchoLocalEnabled,
+                forKey: Self.predictiveEchoLocalEnabledKey
+            )
+        }
+    }
+
     /// On (default): phone pushes are held while the user is active at the
     /// Mac and fire only if the pane still wants attention once they step
     /// away. Off: push immediately, presence ignored.
@@ -85,6 +95,7 @@ final class SettingsStore: ObservableObject {
     private static let blockedSoundKey = "blockedNotificationSound"
     private static let doneSoundKey = "doneNotificationSound"
     private static let copyOnSelectKey = "terminalCopyOnSelect"
+    private static let predictiveEchoLocalEnabledKey = "predictiveEchoLocalEnabled"
     private static let holdPushesKey = "holdPushesWhileAtMac"
     static let answerFromPhoneKey = "answerFromPhone"
     static let answerFromPhoneHoldSecondsKey = "answerFromPhoneHoldSeconds"
@@ -107,6 +118,9 @@ final class SettingsStore: ObservableObject {
             rawValue: userDefaults.string(forKey: Self.doneSoundKey) ?? ""
         ) ?? .default
         copyOnSelect = userDefaults.bool(forKey: Self.copyOnSelectKey)
+        predictiveEchoLocalEnabled = userDefaults.bool(
+            forKey: Self.predictiveEchoLocalEnabledKey
+        )
         holdPushesWhileAtMac = userDefaults.object(forKey: Self.holdPushesKey) as? Bool ?? true
         answerFromPhone = userDefaults.object(forKey: Self.answerFromPhoneKey) as? Bool ?? true
         answerFromPhoneHoldSeconds = Self.clampedDecisionHoldSeconds(
@@ -776,6 +790,21 @@ private struct AppearanceSettingsView: View {
                             settings.copyOnSelect
                                 ? "Finishing a drag-selection copies it and clears the highlight (herdr-style)."
                                 : "Selections stay highlighted; copy with ⌘C (Ghostty-style)."
+                        )
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+
+                        Toggle(
+                            "Predict local typing",
+                            isOn: $settings.predictiveEchoLocalEnabled
+                        )
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        Text(
+                            "Draws typed characters before the shell echoes them. "
+                                + "A prompt that hides input without printing anything "
+                                + "(read -s, a silent password prompt) can briefly show "
+                                + "a typed character. Off by default."
                         )
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.textTertiary)

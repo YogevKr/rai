@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mosh-style predictive local echo for remote herds.
+/// Mosh-style predictive local echo for local and remote herds.
 ///
 /// Over a high-latency link every keystroke's echo pays a full round trip
 /// (211 ms via a relayed transatlantic tunnel, measured), so typing feels
@@ -9,26 +9,76 @@ import Foundation
 /// removing each one the moment the authoritative frame confirms it.
 ///
 /// The engine is deliberately conservative — authority always wins:
-/// - Only plain printable ASCII at the primary screen buffer is predicted.
-///   Alternate-screen programs (TUIs) repaint their own UI and are
-///   unpredictable, so any key while the alternate buffer is active clears.
+/// - Only plain printable ASCII in a shell-like terminal mode is predicted.
+///   Alternate-screen, bracketed-paste, application-cursor, and mouse-tracking
+///   modes are TUI evidence. Any key in those modes clears the current burst.
 /// - Any non-printable key (Enter, arrows, control chords, escape) clears all
 ///   pending predictions; the next frame repaints the truth.
 /// - A cell that comes back from the server with *different* visible content
 ///   than predicted clears everything (a misprediction flash, exactly like
 ///   mosh).
+/// - Any output that does not fully confirm queued predictions clears burst
+///   confidence. Later input must prove echo again before display.
 /// - Predictions expire unconditionally after `ttl`.
 ///
 /// Display is gated adaptively, also like mosh, and *conservatively for
 /// secrets*: glyphs are shown only when the link has demonstrated slowness
-/// (smoothed confirm latency above `displayLatencyThreshold`) AND the current
+/// (recent tail latency above `displayLatencyThreshold`) AND the current
 /// input burst has at least one server-confirmed echo. Every Enter/control
-/// key starts a new burst with no confidence, so typing at a hidden-input
-/// prompt (`sudo`, `ssh`, `read -s`) — always preceded by Enter — never
-/// paints a single secret character. If echo stops mid-burst (a program
-/// flips echo off without a boundary key), the unconfirmed queue is retracted
-/// after `max(2 × smoothed latency, retractionFloor)` and confidence drops.
+/// key starts a new burst with no confidence. Confidence also expires 300 ms
+/// after the last confirmed echo. This limits silent echo-off transitions,
+/// but cannot detect one within that window. The app therefore disables local
+/// prediction by default. If echo stops mid-burst, the unconfirmed queue is
+/// retracted after `max(2 × smoothed latency, retractionFloor)`.
 public final class PredictiveEchoEngine {
+    /// Public terminal state which separates a shell prompt from an agent TUI.
+    public struct TerminalMode: Equatable, Sendable {
+        public let alternateScreen: Bool
+        public let bracketedPaste: Bool
+        public let applicationCursorKeys: Bool
+        public let mouseTracking: Bool
+
+        public init(
+            alternateScreen: Bool,
+            bracketedPaste: Bool,
+            applicationCursorKeys: Bool,
+            mouseTracking: Bool
+        ) {
+            self.alternateScreen = alternateScreen
+            self.bracketedPaste = bracketedPaste
+            self.applicationCursorKeys = applicationCursorKeys
+            self.mouseTracking = mouseTracking
+        }
+
+        public static let plain = TerminalMode(
+            alternateScreen: false,
+            bracketedPaste: false,
+            applicationCursorKeys: false,
+            mouseTracking: false
+        )
+
+        public var permitsPrediction: Bool {
+            !alternateScreen && !bracketedPaste && !applicationCursorKeys && !mouseTracking
+        }
+    }
+
+    public enum HerdLocation: Equatable, Sendable {
+        case local
+        case remote
+
+        /// Local herdr echo is bimodal. Three 60-sample runs measured
+        /// median/p90 values of 20.3/22.2, 20.1/25.1, and 4.4/22.3 ms.
+        /// The combined range was 0.6–30.5 ms. An eight-millisecond threshold
+        /// catches the periodic daemon tick through the recent-tail signal.
+        /// Remote links retain 60 ms to avoid prediction on fast connections.
+        public var displayLatencyThreshold: TimeInterval {
+            switch self {
+            case .local: 0.008
+            case .remote: 0.060
+            }
+        }
+    }
+
     public struct Prediction: Equatable {
         public let character: Character
         /// Zero-based buffer column where the echo is expected to land.
@@ -46,9 +96,13 @@ public final class PredictiveEchoEngine {
 
     public private(set) var pending: [Prediction] = []
 
-    /// Smoothed observed echo latency, seconds. Starts at zero so a fast herd
-    /// never shows an overlay. Only confirmed echoes ever move it.
+    /// Smoothed observed echo latency, in seconds, used for the retraction window.
+    /// Only confirmed echoes move it.
     public private(set) var smoothedConfirmLatency: TimeInterval = 0
+
+    /// Maximum confirm latency among the last 20 authoritative echoes.
+    /// A center-weighted signal misses herdr's one-in-ten 20–30 ms tick.
+    public private(set) var recentTailConfirmLatency: TimeInterval = 0
 
     /// True once the current input burst has a server-confirmed echo — the
     /// evidence that the program at the other end is echoing what we type.
@@ -58,6 +112,11 @@ public final class PredictiveEchoEngine {
     private let displayLatencyThreshold: TimeInterval
     private let retractionFloor: TimeInterval
     private let maxPending: Int
+    private var recentConfirmLatencies: [TimeInterval] = []
+    private var lastConfirmedEchoAt: Date?
+    private static let confirmLatencyWindowSize = 20
+    /// Maximum idle time before the next key must prove that echo remains on.
+    public static let confidenceCarryWindow: TimeInterval = 0.300
 
     public init(
         ttl: TimeInterval = 5.0,
@@ -71,22 +130,30 @@ public final class PredictiveEchoEngine {
         self.maxPending = maxPending
     }
 
+    public convenience init(herdLocation: HerdLocation) {
+        self.init(displayLatencyThreshold: herdLocation.displayLatencyThreshold)
+    }
+
     /// Records a keystroke aimed at the pty. `cursor` is the terminal's
     /// current visible cursor position, `columns` the pane width.
     public func noteKey(
         _ key: KeyClass,
         cursor: (x: Int, y: Int),
         columns: Int,
-        alternateBufferActive: Bool,
+        terminalMode: TerminalMode,
         now: Date = Date()
     ) {
-        if alternateBufferActive {
+        if !terminalMode.permitsPrediction {
             pending.removeAll()
             echoConfirmedThisBurst = false
             return
         }
         switch key {
         case .printable(let character):
+            if let lastConfirmedEchoAt,
+               now.timeIntervalSince(lastConfirmedEchoAt) > Self.confidenceCarryWindow {
+                echoConfirmedThisBurst = false
+            }
             let column = pending.last.map { $0.column + 1 } ?? cursor.x
             let row = pending.first?.row ?? cursor.y
             // A prediction that would wrap the line is unpredictable (the
@@ -120,20 +187,33 @@ public final class PredictiveEchoEngine {
         }
     }
 
-    /// Prunes the queue against the authoritative screen. `readCell` returns
-    /// the visible character at (column, row) or nil for blank/unknown.
+    /// Prunes the queue against the authoritative screen. `outputBytes` lets
+    /// an authoritative feed prove that it contains only queued echoes.
+    /// Any other output ends burst confidence before the next prediction.
+    /// `readCell` returns the visible character at (column, row), or nil.
     public func reconcile(
         cursor: (x: Int, y: Int),
-        alternateBufferActive: Bool,
+        terminalMode: TerminalMode,
+        outputBytes: ArraySlice<UInt8>? = nil,
         readCell: (_ column: Int, _ row: Int) -> Character?,
         now: Date = Date()
     ) {
-        guard !pending.isEmpty else { return }
-        if alternateBufferActive {
+        let outputByteCount = outputBytes?.count ?? 0
+        let outputMatchesQueue = outputBytes.map(outputMatchesPendingPrefix) ?? true
+        var confirmedPredictionCount = 0
+        defer {
+            if outputByteCount > 0
+                && (!outputMatchesQueue || confirmedPredictionCount != outputByteCount) {
+                pending.removeAll()
+                echoConfirmedThisBurst = false
+            }
+        }
+        if !terminalMode.permitsPrediction {
             pending.removeAll()
             echoConfirmedThisBurst = false
             return
         }
+        guard !pending.isEmpty else { return }
         // No echo inside the retraction window means the program has stopped
         // echoing (echo turned off mid-burst): retract everything on screen
         // and drop confidence so nothing further displays.
@@ -155,7 +235,11 @@ public final class PredictiveEchoEngine {
         while let first = pending.first {
             let cell = readCell(first.column, first.row)
             if cell == first.character, cursor.x > first.column {
-                recordConfirmLatency(now.timeIntervalSince(first.madeAt))
+                recordConfirmLatency(
+                    now.timeIntervalSince(first.madeAt),
+                    confirmedAt: now
+                )
+                confirmedPredictionCount += 1
                 pending.removeFirst()
             } else if let cell, cell != first.character, cell != " " {
                 // The server put something else there — misprediction.
@@ -168,6 +252,20 @@ public final class PredictiveEchoEngine {
         }
     }
 
+    private func outputMatchesPendingPrefix(_ bytes: ArraySlice<UInt8>) -> Bool {
+        guard !bytes.isEmpty, bytes.count <= pending.count else { return false }
+        for (byte, prediction) in zip(bytes, pending) {
+            let scalars = prediction.character.unicodeScalars
+            guard scalars.count == 1,
+                  let scalar = scalars.first,
+                  scalar.value < 0x80,
+                  byte == UInt8(scalar.value) else {
+                return false
+            }
+        }
+        return true
+    }
+
     /// The glyphs the overlay should draw right now, offset in cells from the
     /// terminal's caret. Empty until the link has demonstrated slowness AND
     /// this burst has a confirmed echo — never gated on elapsed time alone,
@@ -175,7 +273,7 @@ public final class PredictiveEchoEngine {
     public func displayGlyphs(now: Date = Date()) -> [Character] {
         guard !pending.isEmpty,
               echoConfirmedThisBurst,
-              smoothedConfirmLatency > displayLatencyThreshold
+              recentTailConfirmLatency > displayLatencyThreshold
         else { return [] }
         return pending.map(\.character)
     }
@@ -185,10 +283,92 @@ public final class PredictiveEchoEngine {
         echoConfirmedThisBurst = false
     }
 
-    private func recordConfirmLatency(_ latency: TimeInterval) {
+    /// Clears pending input and learned latency for a new terminal attachment.
+    public func reset() {
+        clear()
+        smoothedConfirmLatency = 0
+        recentTailConfirmLatency = 0
+        recentConfirmLatencies.removeAll(keepingCapacity: true)
+        lastConfirmedEchoAt = nil
+    }
+
+    private func recordConfirmLatency(_ latency: TimeInterval, confirmedAt: Date) {
         echoConfirmedThisBurst = true
+        lastConfirmedEchoAt = confirmedAt
         smoothedConfirmLatency = smoothedConfirmLatency == 0
             ? latency
             : smoothedConfirmLatency * 0.7 + latency * 0.3
+        recentConfirmLatencies.append(latency)
+        if recentConfirmLatencies.count > Self.confirmLatencyWindowSize {
+            recentConfirmLatencies.removeFirst(
+                recentConfirmLatencies.count - Self.confirmLatencyWindowSize
+            )
+        }
+        recentTailConfirmLatency = recentConfirmLatencies.max() ?? 0
+    }
+}
+
+/// Pure presentation decisions used by the AppKit terminal view.
+public enum PredictiveEchoViewPolicy {
+    public enum Invalidation: Equatable {
+        case resize
+        case enterCopyMode
+        case scroll(offsetFromBottom: Int)
+        case focusLost
+        case applicationResignedActive
+        case windowResignedKey
+        case firstResponderLost
+        case removedFromWindow
+        case hidden
+        case reattach
+    }
+
+    public enum OverlayPlacement: Equatable {
+        case draw
+        case retract
+    }
+
+    public enum CoordinatedDraw: Equatable {
+        case updateOverlay
+        case drawTogether
+        case waitForTerminalDisplay
+    }
+
+    public static func shouldClear(for event: Invalidation) -> Bool {
+        switch event {
+        case .resize, .enterCopyMode, .focusLost, .applicationResignedActive,
+             .windowResignedKey, .firstResponderLost, .removedFromWindow,
+             .hidden, .reattach:
+            return true
+        case .scroll(let offsetFromBottom):
+            return offsetFromBottom != 0
+        }
+    }
+
+    public static func canPresent(hasDeferredTerminalBytes: Bool) -> Bool {
+        !hasDeferredTerminalBytes
+    }
+
+    public static func overlayPlacement(
+        prediction: (column: Int, row: Int),
+        cursor: (x: Int, y: Int),
+        isAtLiveBottom: Bool
+    ) -> OverlayPlacement {
+        guard isAtLiveBottom,
+              prediction.column == cursor.x,
+              prediction.row == cursor.y else {
+            return .retract
+        }
+        return .draw
+    }
+
+    public static func coordinatedDraw(
+        needsCoordination: Bool,
+        terminalPaintedDuringFeed: Bool,
+        immediateRepaintAllowed: Bool
+    ) -> CoordinatedDraw {
+        guard needsCoordination else { return .updateOverlay }
+        if terminalPaintedDuringFeed { return .updateOverlay }
+        return immediateRepaintAllowed ? .drawTogether : .waitForTerminalDisplay
     }
 }

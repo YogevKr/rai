@@ -1038,6 +1038,8 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 try await self.model.client.sendInput(paneID: paneID, bytes: [UInt8](data))
             }
@@ -1058,6 +1060,8 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 let url = try self.writeTemporaryImage(data, filename: filename)
                 let path = url.path.replacingOccurrences(of: " ", with: "\\ ")
@@ -1212,6 +1216,8 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 try await self.model.client.sendKeys(paneID: paneID, keys: keys)
             }
