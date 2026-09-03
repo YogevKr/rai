@@ -86,6 +86,7 @@ final class TerminalPool {
 
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font
+        view.notifyUpdateChanges = true
         GhosttyTheme.apply(to: view)
         // Mouse reporting stays off so SwiftTerm never clears a selection while a
         // program streams output (its feed path clears selection whenever this is

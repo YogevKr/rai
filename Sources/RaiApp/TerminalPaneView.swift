@@ -303,6 +303,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var userInputEventPending = false
     private var externalInputDepth = 0
     private var externalInputBlockedUntil: UInt64 = 0
+    private var terminalDisplayGeneration: UInt64 = 0
+    private var predictionOverlayUpdatePending = false
     private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
     func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
@@ -351,12 +353,15 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         predictionReconcileTimer = Timer.scheduledTimer(
             withTimeInterval: 0.04, repeats: true
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reconcilePredictions() }
+            MainActor.assumeIsolated { _ = self?.reconcilePredictions() }
         }
     }
 
-    private func reconcilePredictions() {
-        guard let engine = predictiveEcho else { return }
+    @discardableResult
+    private func reconcilePredictions(updateOverlay: Bool = true) -> Bool {
+        guard let engine = predictiveEcho else { return false }
+        let pendingBefore = engine.pending
+        let hadVisiblePrediction = !engine.displayGlyphs().isEmpty
         let terminal = getTerminal()
         engine.reconcile(
             cursor: terminal.getCursorLocation(),
@@ -368,11 +373,14 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             let character = cell.getCharacter()
             return character == "\u{0}" ? nil : character
         }
-        updatePredictionOverlay()
+        if updateOverlay {
+            updatePredictionOverlay()
+        }
         if engine.pending.isEmpty {
             predictionReconcileTimer?.invalidate()
             predictionReconcileTimer = nil
         }
+        return hadVisiblePrediction && engine.pending != pendingBefore
     }
 
     private func updatePredictionOverlay() {
@@ -409,6 +417,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     func resetPredictions() {
         predictiveEcho?.clear()
         predictionOverlay?.isHidden = true
+        predictionOverlayUpdatePending = false
         predictionReconcileTimer?.invalidate()
         predictionReconcileTimer = nil
     }
@@ -528,6 +537,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if textMods.isEmpty, let chars = event.characters, !chars.isEmpty,
            chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
            chars.unicodeScalars.contains(where: { $0.value > 0x7f }) {
+            userInputEventPending = false
             send(txt: chars)
             return true
         }
@@ -542,6 +552,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // protocol before rai attaches, so terminal state doesn't reflect it — and
     // pasting into an agent is the overwhelmingly common case.)
     override func paste(_ sender: Any) {
+        userInputEventPending = false
         resetPredictions()
         let clipboard = NSPasteboard.general
         if clipboard.string(forType: .string) == nil,
@@ -567,6 +578,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if !text.isEmpty,
            text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
            text.unicodeScalars.contains(where: { $0.value > 0x7f }) {
+            userInputEventPending = false
             resetPredictions()
             send(txt: text)
             return
@@ -595,15 +607,30 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if userInputEventPending {
+        let trackedUserInput = userInputEventPending
+        let needsExternalFence = !trackedUserInput
+        if needsExternalFence {
+            beginExternalInput()
+        }
+        defer {
+            if needsExternalFence {
+                endExternalInput()
+            }
+        }
+        if trackedUserInput {
             userInputEventPending = false
             feedRepaintState.noteUserInput()
-        } else {
-            // File drops, menu actions, and terminal-generated replies bypass
-            // the key monitor. They cannot safely retain prediction state.
-            resetPredictions()
         }
         super.send(source: source, data: data)
+    }
+
+    override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        super.rangeChanged(source: source, startY: startY, endY: endY)
+        terminalDisplayGeneration &+= 1
+        if predictionOverlayUpdatePending {
+            predictionOverlayUpdatePending = false
+            updatePredictionOverlay()
+        }
     }
 
     /// The attach process delivers its reads on the main queue. Reconcile the
@@ -616,21 +643,48 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             // Keep old external echoes from confirming a new local burst.
             extendExternalInputFence(from: now)
         }
+        let displayGenerationBeforeFeed = terminalDisplayGeneration
         super.dataReceived(slice: slice)
-        reconcilePredictions()
-        feedRepaintState.repaintIfNeeded(
+        let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
+        let reconciledVisiblePrediction = reconcilePredictions(updateOverlay: false)
+        let repainted = feedRepaintState.repaintIfNeeded(
             byteCount: slice.count,
             isFocused: window?.firstResponder === self,
             isVisible: window != nil && !isHiddenOrHasHiddenAncestor,
             synchronizedOutputActive: getTerminal().synchronizedOutputActive
         ) { [self] in
-            if isUsingMetalRenderer,
-               let metalView = subviews.first(where: { $0 is MTKView }) as? MTKView {
-                metalView.draw()
-            } else {
-                needsDisplay = true
-                displayIfNeeded()
-            }
+            updatePredictionOverlay()
+            drawTerminalNow()
+        }
+        guard !repainted else { return }
+        guard reconciledVisiblePrediction else {
+            updatePredictionOverlay()
+            return
+        }
+        if terminalPaintedDuringFeed {
+            updatePredictionOverlay()
+            return
+        }
+        let confirmationRepainted = TerminalFeedRepaintPolicy.repaintIfNeeded(
+            byteCount: slice.count,
+            isFocused: window?.firstResponder === self,
+            isVisible: window != nil && !isHiddenOrHasHiddenAncestor,
+            hasRecentUnpaintedUserInput: true,
+            synchronizedOutputActive: getTerminal().synchronizedOutputActive
+        ) { [self] in
+            updatePredictionOverlay()
+            drawTerminalNow()
+        }
+        predictionOverlayUpdatePending = !confirmationRepainted
+    }
+
+    private func drawTerminalNow() {
+        if isUsingMetalRenderer,
+           let metalView = subviews.first(where: { $0 is MTKView }) as? MTKView {
+            metalView.draw()
+        } else {
+            needsDisplay = true
+            displayIfNeeded()
         }
     }
 
