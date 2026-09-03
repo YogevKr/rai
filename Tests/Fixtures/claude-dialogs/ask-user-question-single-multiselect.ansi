@@ -1,0 +1,22 @@
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse AskUserQuestion now with exactly one [0m[48;2;55;55;55m           [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mmulti-select question. Ask: Which checks should [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mrun? Header: Checks. Options: Unit with description[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mFast; Integration with description Complete; UI [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mwith description Visual. Do not do anything else.[0m[48;2;55;55;55m   [0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;177;185;249m ☐ Checks [0m ✔ Submit  →
+
+[0m[1m[38;2;255;255;255mWhich checks should run?[0m
+
+[0m[38;2;177;185;249m❯[0m [0m[38;2;153;153;153m1.[0m [ ] [0m[38;2;177;185;249mUnit[0m
+  [0m[38;2;153;153;153mFast[0m
+  [0m[38;2;153;153;153m2.[0m [ ] Integration
+  [0m[38;2;153;153;153mComplete[0m
+  [0m[38;2;153;153;153m3. [0m[ ] UI
+  [0m[38;2;153;153;153mVisual[0m
+  [0m[38;2;153;153;153m4. [0m[ ] [0m[38;2;153;153;153mType something[0m
+     [0m[1mSubmit[0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

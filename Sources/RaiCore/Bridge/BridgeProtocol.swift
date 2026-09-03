@@ -6,17 +6,38 @@ import Foundation
 /// app can negotiate their wire contract without exposing daemon internals.
 public let bridgeProtocolVersion = 6
 
+public enum BridgeCapability {
+    public static let permissionDecisions = "permission_decisions"
+    public static let permissionDecisionPush = "permission_decision_push"
+}
+
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
     public let name: String
     public let platform: String
     public let model: String?
+    public let capabilities: [String]?
 
-    public init(deviceID: String, name: String, platform: String, model: String? = nil) {
+    public init(
+        deviceID: String,
+        name: String,
+        platform: String,
+        model: String? = nil,
+        capabilities: [String]? = nil
+    ) {
         self.deviceID = deviceID
         self.name = name
         self.platform = platform
         self.model = model
+        self.capabilities = capabilities
+    }
+
+    public var supportsPermissionDecisions: Bool {
+        capabilities?.contains(BridgeCapability.permissionDecisions) == true
+    }
+
+    public var supportsPermissionDecisionPush: Bool {
+        capabilities?.contains(BridgeCapability.permissionDecisionPush) == true
     }
 }
 
@@ -176,6 +197,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// Named keypresses (herdr key names: "enter", "1", "ctrl+c", …) that must
     /// act as keystrokes, not pasted text — e.g. answering a Claude dialog.
     case sendKeys(paneID: String, keys: [String])
+    case decide(paneID: String, requestID: String, decision: RemotePermissionDecision)
+    case decisionAvailability(available: Bool, pushAuthorized: Bool)
     case renameWorkspace(workspaceID: String, label: String)
     case closeWorkspace(workspaceID: String)
     case broadcastInput(tabID: String, text: String)
@@ -209,6 +232,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         code: BridgeErrorCode? = nil,
         detail: String? = nil
     )
+    case paneError(paneID: String, message: String)
+    case decisionResult(paneID: String, requestID: String, accepted: Bool, message: String?)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -219,10 +244,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case cols, rows
         case full, seq
         case protocolVersion, sessionName
-        case reason, detail, snapshot, event, message
+        case reason, detail, snapshot, event, message, accepted, available, pushAuthorized
         case deviceToken, environment
         case lines, keys
-        case text, name, work, sessions, kinds, snoozeUntil, dnd
+        case text, name, work, sessions, requestID, decision, kinds, snoozeUntil, dnd
     }
 
     private enum MessageType: String, Codable {
@@ -230,12 +255,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
-        case readScrollback, scrollback, sendKeys
+        case readScrollback, scrollback, sendKeys, decide, decisionAvailability
         case renameWorkspace, closeWorkspace, broadcastInput
         case listSessions, selectSession
         case pushPrefs, pushPrefsState
         case backgroundWork, sessions
-        case paired, welcome, authFailed, snapshot, event, paneFrame, error
+        case paired, welcome, authFailed, snapshot, event, paneFrame, error, paneError
+        case decisionResult
     }
 
     public init(from decoder: Decoder) throws {
@@ -325,6 +351,20 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 paneID: try container.decode(String.self, forKey: .paneID),
                 keys: try container.decode([String].self, forKey: .keys)
             )
+        case .decide:
+            self = .decide(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                decision: try container.decode(
+                    RemotePermissionDecision.self,
+                    forKey: .decision
+                )
+            )
+        case .decisionAvailability:
+            self = .decisionAvailability(
+                available: try container.decode(Bool.self, forKey: .available),
+                pushAuthorized: try container.decode(Bool.self, forKey: .pushAuthorized)
+            )
         case .scrollback:
             self = .scrollback(
                 paneID: try container.decode(String.self, forKey: .paneID),
@@ -408,6 +448,18 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                     .flatMap(BridgeErrorCode.init(rawValue:)),
                 detail: try container.decodeIfPresent(String.self, forKey: .detail)
             )
+        case .paneError:
+            self = .paneError(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                message: try container.decode(String.self, forKey: .message)
+            )
+        case .decisionResult:
+            self = .decisionResult(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                accepted: try container.decode(Bool.self, forKey: .accepted),
+                message: try container.decodeIfPresent(String.self, forKey: .message)
+            )
         }
     }
 
@@ -490,6 +542,15 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.sendKeys, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(keys, forKey: .keys)
+        case let .decide(paneID, requestID, decision):
+            try container.encode(MessageType.decide, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(decision, forKey: .decision)
+        case let .decisionAvailability(available, pushAuthorized):
+            try container.encode(MessageType.decisionAvailability, forKey: .type)
+            try container.encode(available, forKey: .available)
+            try container.encode(pushAuthorized, forKey: .pushAuthorized)
         case let .scrollback(paneID, bytesBase64):
             try container.encode(MessageType.scrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
@@ -559,6 +620,16 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(message, forKey: .message)
             try container.encodeIfPresent(code, forKey: .code)
             try container.encodeIfPresent(detail, forKey: .detail)
+        case let .paneError(paneID, message):
+            try container.encode(MessageType.paneError, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(message, forKey: .message)
+        case let .decisionResult(paneID, requestID, accepted, message):
+            try container.encode(MessageType.decisionResult, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(accepted, forKey: .accepted)
+            try container.encodeIfPresent(message, forKey: .message)
         }
     }
 }

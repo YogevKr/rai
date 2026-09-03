@@ -21,7 +21,9 @@ Audited 2026-09-03 against `main` (bridge protocol v6).
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
+| Claude prompt controls | native terminal | permission, trust, plan, and AskUserQuestion blocks | ✅ phone support |
 | Notifications on blocked/done | native macOS + dock badge | APNs bursts, per-device controls, groups, actions, and retraction | ✅ parity (physical delivery not verified) |
+| Permission decisions | local Claude dialog | data decision, deadline, key fallback | ✅ parity (physical push action not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -68,8 +70,33 @@ All additive, no version bump (old phones skip unknown message types):
 - The APNs P-256 key uses an owner-only file, with one-time Keychain migration.
 - APNs work uses one queue per device. A stalled device does not delay another device.
 - Snapshot pane objects include an optional Claude hook `beacon` value.
-  The shared iOS model decodes it, but phone prompt controls remain in wave 2.
+  AskUserQuestion blocks use its labels and descriptions before grid text.
+- A beacon can include an optional `request_id` for one prompt instance.
 - The beacon field is additive within protocol v6. It does not require another bump.
+
+## Decision hooks LANDED (2026-09-03)
+
+- Permission beacons include a request ID, wait flag, and deadline.
+- The phone sends `decide` for Approve and Deny.
+- Unknown and expired requests return a pane-scoped decision error.
+- Decision results let notification actions confirm Mac acceptance.
+- Rai retracts decision pushes when each request closes.
+- Waiting requests bypass push delay and never coalesce.
+- Waiting requests still honor each device's kind, snooze, and DND controls.
+- The phone shows a countdown in the pane and herd row.
+- Notification actions keep key input for older Macs.
+- New phones announce the `permission_decisions` capability.
+- Phones send `decisionAvailability` when notification or foreground state changes.
+- Notification permission enables background decisions.
+- Each foreground transition refreshes the system notification authorization state.
+- A new foreground grant starts APNs registration and refreshes capability after token registration.
+- A foreground bridge connection also enables decisions without notification permission.
+- The Mac never holds a request for an old phone alone.
+- A five-second reachability grace keeps brief phone reconnects from closing a held request.
+- Held choices map only exact Yes and No labels.
+- The phone hides other held choices and directs users to the Mac.
+- Countdown math uses elapsed phone time and does not trust matching wall clocks.
+- These messages are additive within protocol v6.
 
 ## Wave 2 quality of life LANDED (2026-09-03)
 
@@ -128,9 +155,33 @@ An iOS drift test requires one phone policy for every shared code.
 
 - The phone blocks composed lines when the last non-empty grid row is a password prompt.
 - The guard covers quick replies, slash commands, outbox flush, and notification replies.
-- Notification replies wait for one current pane frame when no live grid exists.
+- Notification replies wait up to five seconds for a current pane frame.
+- Each fresh clear frame permits at most one queued line for that pane.
 - Type mode stays available for direct keyboard input.
 - The guard does not change the bridge protocol.
+
+## Structured prompt controls LANDED (2026-09-03)
+
+- AskUserQuestion blocks show steps, descriptions, checkboxes, free text, and Submit.
+- Hook beacon questions supply labels. The live grid supplies state and key proof.
+- Unnumbered trust and confirm dialogs use verified arrow movement before Enter.
+- Numbered permission dialogs keep their prior digit-only action.
+- Each structured action stops after four seconds or an unexpected grid change.
+- Each tap stays bound to its rendered signature, prompt instance, beacon request, and question.
+- Older beacons use a per-pane prompt instance counter.
+- Full terminal reloads invalidate all prompt instances for that pane.
+- Disconnects hide prompt controls immediately. A frame from the new connection must arrive before controls return.
+- Next sends Tab. Previous appears on every later question and sends Left.
+- Enter only confirms an option or Submit.
+- Checkbox retries wait for a newer grid frame and confirm the wanted state.
+- Controls require a Claude agent in the pane snapshot. A retained beacon cannot override Codex or shell.
+- Real one-question captures cover single-select and multi-select arrow-only footers.
+- A one-question single-select wizard can use one header chip without Submit arrows.
+- Quoted dialogs above a live composer do not create controls.
+- Unknown hookless wizard steps disable step navigation.
+- The raw terminal remains available for unknown dialog forms.
+- Plan approval follows its documented shape. No real plan capture verified this grammar.
+- The optional beacon `request_id` is additive and keeps protocol version 6.
 
 ## Backlog (value order)
 
@@ -158,6 +209,12 @@ new `pair` message sends a short code, protocol version, and device data. The
 `paired` reply returns one device credential once. The phone confirms it with
 `hello`. A lost reply can retry the code until expiry. Later connections also
 use `hello`.
+
+The `decide`, `decisionAvailability`, `decisionResult`, and `paneError` messages remain additive in protocol version 6.
+
+Old phones skip the waiting beacon fields and server error messages.
+
+Old Macs reject `decide` per message. The phone uses keys without a request ID.
 
 This change is not compatible with protocol version 5. Old phones receive
 "Re-pair required" and must pair again.

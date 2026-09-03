@@ -91,6 +91,17 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    var hasDecisionCapablePhone: Bool {
+        guard isRunning else { return false }
+        let connected = clients.values.contains {
+            $0.isAuthenticated && $0.decisionAvailable
+        }
+        // A registered phone can wake from the push, reconnect, and decide.
+        let pushReady = apnsSettings.isConfigured
+            && pushRegistrations.contains { $0.supportsPermissionDecisions }
+        return connected || pushReady
+    }
+
     /// A hostname the phone can actually resolve over the LAN. The friendly
     /// computer name (`Host.localizedName`, e.g. "Yogev's MacBook Pro") is NOT a
     /// valid mDNS host — its spaces and apostrophe break resolution — so use the
@@ -295,6 +306,7 @@ final class RaiBridgeServer: ObservableObject {
         liveConnections.removeAll()
         connectedDeviceCount = 0
         isRunning = false
+        model.reevaluatePendingDecisions()
     }
 
     func stopAndWait() async {
@@ -370,6 +382,7 @@ final class RaiBridgeServer: ObservableObject {
         }
         syncCredentialState()
         updateConnectedDeviceCount()
+        model.reevaluatePendingDecisions()
     }
 
     func relay(events: [HerdrEvent]) {
@@ -635,14 +648,16 @@ final class RaiBridgeServer: ObservableObject {
             subtitle: burst.workspaceName,
             body: burst.body,
             paneID: burst.paneID,
+            requestID: burst.requestID,
             workspaceID: burst.workspaceID,
             workspace: burst.workspaceName,
-            category: burst.requiresAttention ? "agent-attention" : nil,
+            category: burst.category,
             notificationIDs: burst.notificationIDs,
             threadID: burst.threadID,
             summaryArgument: burst.summaryArgument,
             summaryArgumentCount: burst.events.count,
             occurredAt: burst.occurredAt,
+            interruptionLevel: burst.interruptionLevel,
             badge: badge
         )
         let report = PushDeliveryReport(
@@ -704,6 +719,7 @@ final class RaiBridgeServer: ObservableObject {
             subtitle: nil,
             body: "Push delivery works.",
             paneID: nil,
+            requestID: nil,
             workspaceID: nil,
             workspace: nil,
             category: nil,
@@ -712,6 +728,7 @@ final class RaiBridgeServer: ObservableObject {
             summaryArgument: "rai",
             summaryArgumentCount: 1,
             occurredAt: now,
+            interruptionLevel: .active,
             badge: nil
         )
         let report = PushDeliveryReport(
@@ -1167,6 +1184,29 @@ final class RaiBridgeServer: ObservableObject {
             await perform(for: client) {
                 try await self.model.client.sendKeys(paneID: paneID, keys: keys)
             }
+        case let .decide(paneID, requestID, decision):
+            let accepted = model.decide(
+                paneID: paneID,
+                requestID: requestID,
+                decision: decision
+            )
+            send(
+                .decisionResult(
+                    paneID: paneID,
+                    requestID: requestID,
+                    accepted: accepted,
+                    message: accepted ? nil : "That prompt already closed"
+                ),
+                to: client
+            )
+        case let .decisionAvailability(available, pushAuthorized):
+            client.decisionAvailable = available
+            client.decisionPushAuthorized = pushAuthorized
+            updatePushRegistrationCapability(
+                deviceID: client.deviceID,
+                supported: pushAuthorized
+            )
+            model.reevaluatePendingDecisions()
         case let .readScrollback(paneID, lines, rows, fullGrid):
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
                 send(.error(
@@ -1224,7 +1264,8 @@ final class RaiBridgeServer: ObservableObject {
             registerPush(
                 deviceToken: normalizedToken,
                 environment: environment,
-                deviceID: client.deviceID
+                deviceID: client.deviceID,
+                supportsPermissionDecisions: client.decisionPushAuthorized
             )
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
@@ -1235,6 +1276,7 @@ final class RaiBridgeServer: ObservableObject {
                 detail: "Pair and hello are handshake messages."
             ), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
+             .paneError, .decisionResult,
              .backgroundWork, .sessions, .pushPrefsState:
             send(.error(
                 message: "Server-to-client message received from client.",
@@ -1604,17 +1646,28 @@ final class RaiBridgeServer: ObservableObject {
         clients.removeValue(forKey: id)
         liveConnections.remove(id: id)
         updateConnectedDeviceCount()
+        model.reevaluatePendingDecisions()
     }
 
     private func updateConnectedDeviceCount() {
         connectedDeviceCount = liveConnections.connectedDeviceCount
     }
 
-    private func registerPush(deviceToken: String, environment: String, deviceID: String?) {
+    private func registerPush(
+        deviceToken: String,
+        environment: String,
+        deviceID: String?,
+        supportsPermissionDecisions: Bool
+    ) {
         pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         pushRegistrations.insert(
-            .init(deviceToken: deviceToken, environment: environment, deviceID: deviceID)
+            .init(
+                deviceToken: deviceToken,
+                environment: environment,
+                deviceID: deviceID,
+                supportsPermissionDecisions: supportsPermissionDecisions
+            )
         )
         persistPushRegistrations()
     }
@@ -1626,6 +1679,24 @@ final class RaiBridgeServer: ObservableObject {
         if pushRegistrations.count != oldCount {
             persistPushRegistrations()
         }
+    }
+
+    private func updatePushRegistrationCapability(deviceID: String?, supported: Bool) {
+        guard let deviceID else { return }
+        var changed = false
+        pushRegistrations = Set(pushRegistrations.map { registration in
+            guard registration.deviceID == deviceID,
+                  registration.supportsPermissionDecisions != supported
+            else { return registration }
+            changed = true
+            return PushRegistration(
+                deviceToken: registration.deviceToken,
+                environment: registration.environment,
+                deviceID: registration.deviceID,
+                supportsPermissionDecisions: supported
+            )
+        })
+        if changed { persistPushRegistrations() }
     }
 
     private func pruneStalePushRegistration(_ stale: PushRegistration) {
@@ -1657,6 +1728,12 @@ final class RaiBridgeServer: ObservableObject {
         client.info = info
         client.deviceID = device.id
         client.deviceLabel = device.label
+        client.decisionAvailable = info.supportsPermissionDecisions
+        client.decisionPushAuthorized = info.supportsPermissionDecisionPush
+        updatePushRegistrationCapability(
+            deviceID: device.id,
+            supported: client.decisionPushAuthorized
+        )
         pushBadgeLedger.removeAll()
         let id = ObjectIdentifier(client.connection)
         liveConnections.register(id: id, deviceID: device.id) { [weak self, weak client] in
@@ -1695,12 +1772,21 @@ private struct PushRegistration: Codable, Hashable, Sendable {
     let deviceToken: String
     let environment: String
     let deviceID: String?
+    let decisionCapable: Bool?
 
-    init(deviceToken: String, environment: String, deviceID: String? = nil) {
+    init(
+        deviceToken: String,
+        environment: String,
+        deviceID: String? = nil,
+        supportsPermissionDecisions: Bool = false
+    ) {
         self.deviceToken = deviceToken
         self.environment = environment
         self.deviceID = deviceID
+        decisionCapable = supportsPermissionDecisions
     }
+
+    var supportsPermissionDecisions: Bool { decisionCapable == true }
 
     static func == (lhs: PushRegistration, rhs: PushRegistration) -> Bool {
         lhs.deviceToken == rhs.deviceToken && lhs.environment == rhs.environment
@@ -1838,6 +1924,8 @@ private final class BridgeClient: @unchecked Sendable {
     var info: ClientInfo?
     var deviceID: String?
     var deviceLabel: String?
+    var decisionAvailable = false
+    var decisionPushAuthorized = false
 
     init(connection: NWConnection) {
         self.connection = connection

@@ -89,13 +89,85 @@ Doctor asks for a new paste when the old item is invalid.
 Rai attempts automatic migration once per Mac launch.
 Settings offers Retry Migration after a temporary Keychain read failure.
 
+Blocked-agent alerts use the Time Sensitive interruption level. This lets them
+pass Focus when the user permits Time Sensitive alerts. Finished alerts stay
+active. The app declares the required
+`com.apple.developer.usernotifications.time-sensitive` entitlement.
+
 Rai can use Claude Code hooks for accurate notification and push text. Install
 them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
 Single-pane pushes use the current tool request, question, or completion line.
-Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
+Waiting permission pushes include Approve and Deny actions.
+The Mac keeps existing hook entries.
 
 The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
-model decodes it. A later iOS task will add structured prompt controls.
+model decodes it. Waiting beacons include a request ID and deadline.
+
+The prompt bar and herd row show the remaining hold time.
+
+The countdown uses elapsed phone time, so Mac and phone clock differences do not change it.
+
+Approve and Deny send a structured `decide` message.
+
+The phone waits for the Mac's decision result after a notification action.
+
+The Mac retracts the action push when the request closes.
+
+Always-allow and auto-mode choices remain available only on the Mac.
+
+The phone maps only exact Yes and No choices to data decisions.
+
+It hides other choices while the hook waits and shows `answer on the Mac`.
+
+Older Macs omit the request ID. The phone then keeps the key-based action path.
+
+New phones announce permission decision support during authentication.
+
+Notification permission enables decisions while the app runs in the background.
+
+The phone reads the current system permission each time it enters the foreground.
+
+A newly granted permission starts APNs registration. Token registration then refreshes the decision capability.
+
+A denied phone advertises decision support only during a foreground bridge connection.
+
+The Mac does not hold a hook for an old phone alone.
+
+Held decision pushes bypass the presence delay. They still honor each device's kind, snooze, and do-not-disturb controls.
+
+The iPhone uses
+AskUserQuestion beacon data for question, header, option, and description text.
+The terminal grid still identifies the active step and confirms each key.
+An optional `request_id` identifies one prompt instance. Older beacons use a
+per-pane counter that changes after a prompt disappears or changes.
+Every full terminal reload invalidates all prompt instances for that pane.
+
+## Structured Claude prompts
+
+Rai Remote renders Claude permission, trust, plan, and AskUserQuestion dialogs
+as native controls. AskUserQuestion shows step chips, option descriptions,
+multi-select checkboxes, free-text entry, and a final Submit action.
+
+Each tap keeps its rendered signature, prompt instance, beacon request, and question.
+Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
+Rai hides prompt controls when a connection generation ends. A new frame must arrive before controls return.
+
+Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
+The sequence stops after four seconds or any unexpected change. Rai never sends
+an automatic Enter without visible proof of the selected row.
+Next sends Tab, and Previous sends Left. Previous appears on every later question.
+These navigation buttons never send Enter.
+An unconfirmed checkbox key stays pending until a newer terminal frame arrives.
+
+Controls only appear when the pane snapshot identifies Claude. A retained beacon
+cannot enable controls for Codex or shell panes. Dialog footers must own the grid bottom.
+Quoted dialogs above Claude's composer stay inert.
+Wrapped labels remain one logical option. Unknown wizard steps disable navigation.
+
+The detector accepts real single-question arrow-only and multi-question Tab/Arrow
+footers from Claude Code 2.1.259. A one-question wizard does not need Submit arrows.
+Plan approval uses the documented `Would you like to proceed?` shape, but lacks a real capture.
+Use the raw terminal when a new Claude dialog shape does not match.
 
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and
 Approve / Deny / Reply actions. A burst becomes one triage alert, such as
@@ -152,6 +224,8 @@ The phone sends them after the next welcome and clears pending after confirmatio
 The Mac drops disabled kinds when events arrive or when a kind becomes disabled.
 The Mac drops events that occur during snooze or do-not-disturb.
 It does not send those events when the quiet period ends.
+Needs-you pushes stay Time Sensitive after action removal or burst grouping.
+Finished pushes stay Active.
 
 ## 4. Pair
 
@@ -267,6 +341,10 @@ com.whetstone.rai.ios payload.json` to test a single alert:
   "notificationTimestamp": 1788386300
 }
 ```
+
+A held permission alert also includes `"request_id": "<uuid>"`.
+
+Its Approve and Deny actions connect and send `decide` to the Mac.
 
 Use this payload to test phone-side retraction:
 

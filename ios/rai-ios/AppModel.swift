@@ -258,6 +258,16 @@ final class AppModel: ObservableObject {
         registerPushIfPossible()
     }
 
+    func updateDecisionAvailability(
+        notificationAuthorized: Bool,
+        isForeground: Bool
+    ) {
+        connection.updateDecisionAvailability(
+            notificationAuthorized: notificationAuthorized,
+            isForeground: isForeground
+        )
+    }
+
     func sendNotificationInput(_ bytes: [UInt8], to paneID: String) async -> Bool {
         guard let pairing else { return false }
         return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
@@ -270,6 +280,20 @@ final class AppModel: ObservableObject {
 
     func showActionError(_ message: String) {
         connection.showActionError(message)
+    }
+
+    func sendNotificationDecision(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String
+    ) async -> Bool {
+        guard let pairing else { return false }
+        return await connection.connectAndDecide(
+            decision,
+            requestID: requestID,
+            paneID: paneID,
+            pairing: pairing
+        )
     }
 
     func openTriage() {

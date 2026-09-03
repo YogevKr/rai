@@ -1,0 +1,12 @@
+Claude said:
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on · shift+tab to cycle

@@ -1,0 +1,22 @@
+❯ Use AskUserQuestion now with exactly one
+  multi-select question. Ask: Which checks should
+  run? Header: Checks. Options: Unit with description
+  Fast; Integration with description Complete; UI
+  with description Visual. Do not do anything else.
+──────────────────────────────────────────────────────
+←  ☐ Checks  ✔ Submit  →
+
+Which checks should run?
+
+❯ 1. [ ] Unit
+  Fast
+  2. [ ] Integration
+  Complete
+  3. [ ] UI
+  Visual
+  4. [ ] Type something
+     Submit
+──────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

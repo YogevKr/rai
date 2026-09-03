@@ -22,6 +22,75 @@ enum HookBeaconReceiverError: LocalizedError {
     }
 }
 
+final class HookDecisionReply: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: Int32
+
+    init(descriptor: Int32) {
+        self.descriptor = descriptor
+        var noSigPipe: Int32 = 1
+        _ = setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &noSigPipe,
+            socklen_t(MemoryLayout<Int32>.size)
+        )
+    }
+
+    deinit {
+        _ = send(decision: "none")
+    }
+
+    @discardableResult
+    func allow() -> Bool {
+        send(decision: "allow")
+    }
+
+    @discardableResult
+    func deny(message: String = "Denied from Rai Remote") -> Bool {
+        send(decision: "deny", message: message)
+    }
+
+    @discardableResult
+    func none() -> Bool {
+        send(decision: "none")
+    }
+
+    private func send(decision: String, message: String? = nil) -> Bool {
+        lock.lock()
+        let fd = descriptor
+        descriptor = -1
+        lock.unlock()
+        guard fd >= 0 else { return false }
+        defer {
+            Darwin.shutdown(fd, SHUT_RDWR)
+            Darwin.close(fd)
+        }
+
+        var object = ["decision": decision]
+        if let message { object["message"] = message }
+        guard var data = try? JSONSerialization.data(withJSONObject: object) else {
+            return false
+        }
+        data.append(0x0A)
+        return data.withUnsafeBytes { bytes in
+            var sent = 0
+            while sent < bytes.count {
+                let count = Darwin.send(
+                    fd,
+                    bytes.baseAddress! + sent,
+                    bytes.count - sent,
+                    MSG_NOSIGNAL
+                )
+                guard count > 0 else { return false }
+                sent += count
+            }
+            return true
+        }
+    }
+}
+
 /// A local, owner-only, newline-delimited JSON receiver for Claude Code hooks.
 final class HookBeaconReceiver: @unchecked Sendable {
     private struct SocketIdentity: Equatable {
@@ -36,9 +105,11 @@ final class HookBeaconReceiver: @unchecked Sendable {
     }
 
     private static let maximumLineBytes = 256 * 1_024
+    private static let lineReadDeadlineNanoseconds: UInt64 = 2_000_000_000
 
     private let socketURL: URL
-    private let onBeacon: @Sendable (AgentBeacon) -> Void
+    private let onBeacon: @Sendable (AgentBeacon, HookDecisionReply?) -> Void
+    private let onDiagnostic: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "gr.krig.rai.hook-beacons")
     private let lock = NSLock()
     private var descriptor: Int32 = -1
@@ -46,10 +117,26 @@ final class HookBeaconReceiver: @unchecked Sendable {
 
     init(
         socketURL: URL = HookBeaconReceiver.defaultSocketURL,
+        onDiagnostic: @escaping @Sendable (String) -> Void = {
+            NSLog("rai: %@", $0)
+        },
         onBeacon: @escaping @Sendable (AgentBeacon) -> Void
     ) {
         self.socketURL = socketURL
-        self.onBeacon = onBeacon
+        self.onDiagnostic = onDiagnostic
+        self.onBeacon = { beacon, _ in onBeacon(beacon) }
+    }
+
+    init(
+        socketURL: URL = HookBeaconReceiver.defaultSocketURL,
+        onDiagnostic: @escaping @Sendable (String) -> Void = {
+            NSLog("rai: %@", $0)
+        },
+        onBeaconWithReply: @escaping @Sendable (AgentBeacon, HookDecisionReply?) -> Void
+    ) {
+        self.socketURL = socketURL
+        self.onDiagnostic = onDiagnostic
+        self.onBeacon = onBeaconWithReply
     }
 
     deinit {
@@ -129,35 +216,64 @@ final class HookBeaconReceiver: @unchecked Sendable {
                 if errno == EINTR { continue }
                 return
             }
-            receiveOneLine(from: client)
-            Darwin.close(client)
+            if !receiveOneLine(from: client) {
+                Darwin.close(client)
+            }
         }
     }
 
-    private func receiveOneLine(from descriptor: Int32) {
-        var timeout = timeval(tv_sec: 1, tv_usec: 0)
-        _ = setsockopt(
-            descriptor,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            &timeout,
-            socklen_t(MemoryLayout<timeval>.size)
-        )
+    /// Returns true when a decision reply owns the client descriptor.
+    private func receiveOneLine(from descriptor: Int32) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + Self.lineReadDeadlineNanoseconds
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 8_192)
         while data.count <= Self.maximumLineBytes {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return false }
+            let remainingMicroseconds = max(1, (deadline - now) / 1_000)
+            var timeout = timeval(
+                tv_sec: Int(remainingMicroseconds / 1_000_000),
+                tv_usec: Int32(remainingMicroseconds % 1_000_000)
+            )
+            _ = setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                &timeout,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
             let count = Darwin.read(descriptor, &buffer, buffer.count)
-            guard count > 0 else { return }
+            guard count > 0 else { return false }
             if let newline = buffer[..<count].firstIndex(of: 0x0A) {
+                guard data.count + newline <= Self.maximumLineBytes else {
+                    reportOversizedLine()
+                    return false
+                }
                 data.append(contentsOf: buffer[..<newline])
-                guard data.count <= Self.maximumLineBytes,
-                      let beacon = try? JSONDecoder().decode(AgentBeacon.self, from: data)
-                else { return }
-                onBeacon(beacon)
-                return
+                guard let beacon = try? JSONDecoder().decode(AgentBeacon.self, from: data)
+                else { return false }
+                if beacon.event == "PermissionRequest",
+                   beacon.awaitsDecision,
+                   let requestID = beacon.requestID,
+                   UUID(uuidString: requestID) != nil {
+                    onBeacon(beacon, HookDecisionReply(descriptor: descriptor))
+                    return true
+                }
+                onBeacon(beacon, nil)
+                return false
+            }
+            guard data.count + count <= Self.maximumLineBytes else {
+                reportOversizedLine()
+                return false
             }
             data.append(contentsOf: buffer[..<count])
         }
+        return false
+    }
+
+    private func reportOversizedLine() {
+        onDiagnostic("Claude hook request exceeded the 256 KiB line limit.")
     }
 
     private var currentDescriptor: Int32 {

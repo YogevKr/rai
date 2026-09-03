@@ -76,7 +76,8 @@ enum ClaudeHooksInstaller {
         action: ClaudeHooksAction,
         settingsURL: URL = defaultSettingsURL,
         scriptURL: URL = defaultScriptURL,
-        bundledScriptURL: URL? = bundledScriptURL
+        bundledScriptURL: URL? = bundledScriptURL,
+        decisionHoldSeconds: Int = ClaudeHookSettings.defaultDecisionHoldSeconds
     ) throws -> ClaudeHooksPreview {
         try rejectSymbolicLink(at: settingsURL)
         let original = try existingData(at: settingsURL)
@@ -90,7 +91,8 @@ enum ClaudeHooksInstaller {
             scriptData = try Data(contentsOf: bundledScriptURL)
             updated = try ClaudeHookSettings.merged(
                 settings: original,
-                scriptPath: scriptURL.path
+                scriptPath: scriptURL.path,
+                decisionHoldSeconds: decisionHoldSeconds
             )
         case .remove:
             scriptData = nil
