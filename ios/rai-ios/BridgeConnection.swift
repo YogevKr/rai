@@ -404,9 +404,7 @@ final class BridgeConnection: ObservableObject {
         // Keep one request per pane in flight. sendAction uses independent
         // tasks, so FIFO reply metadata is safe only without overlap.
         guard status.isConnected, pendingHistoryRequests[paneID] == nil else { return }
-        let effectiveSessionID = sessionID.isEmpty
-            ? knownHistorySessions[paneID] ?? ""
-            : sessionID
+        let effectiveSessionID = sessionID
         if PendingHistoryRequest.sessionChanged(
             previous: knownHistorySessions[paneID], current: effectiveSessionID
         ) {
@@ -962,7 +960,7 @@ final class BridgeConnection: ObservableObject {
                 pairingInProgress: invitation != nil
             ) {
                 stopWithFailure(.macPredatesPairing())
-            } else if let paneErrors = TranscriptHistoryErrorRouter.consumeDowngraded(
+            } else if let paneErrors = TranscriptHistoryErrorRouter.consumeAnyLegacyError(
                 pending: &pendingHistoryRequests,
                 message: message
             ) {
@@ -1026,9 +1024,17 @@ final class BridgeConnection: ObservableObject {
     private func updateHistoryPaneSet(_ panes: [Pane], now: Date) {
         let livePaneIDs = Set(panes.map(\.paneID))
         for pane in panes {
-            let sessionID = pane.beacon?.sessionID
-                ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-                ?? ""
+            guard let beacon = pane.beacon,
+                  !beacon.transcriptPath.isEmpty,
+                  !beacon.sessionID.isEmpty else {
+                if historyPages[pane.paneID] != nil
+                    || knownHistorySessions[pane.paneID] != nil {
+                    resetHistory(paneID: pane.paneID, sessionID: "")
+                }
+                historyMissingSince.removeValue(forKey: pane.paneID)
+                continue
+            }
+            let sessionID = beacon.sessionID
             if PendingHistoryRequest.sessionChanged(
                 previous: knownHistorySessions[pane.paneID], current: sessionID
             ) {
@@ -1440,20 +1446,11 @@ struct TranscriptHistoryErrorRouter {
         return (paneID, message)
     }
 
-    static func consumeDowngraded(
+    static func consumeAnyLegacyError(
         pending: inout [String: PendingHistoryRequest],
         message: String
     ) -> [String: String]? {
-        let lower = message.lowercased()
-        let affected: [String]
-        if lower.contains("history") || lower.contains("unsupported") {
-            affected = Array(pending.keys)
-        } else if message.hasPrefix("Unknown pane "),
-                  let paneID = pending.keys.first(where: { message.contains($0) }) {
-            affected = [paneID]
-        } else {
-            return nil
-        }
+        let affected = Array(pending.keys)
         guard !affected.isEmpty else { return nil }
         for paneID in affected { pending.removeValue(forKey: paneID) }
         return Dictionary(uniqueKeysWithValues: affected.map { ($0, message) })

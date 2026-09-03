@@ -82,7 +82,8 @@ crook for the herd:
   while you were away.
 - **Conversation history** — read Claude prompts, replies, tool calls, and
   results as cards. Search, refresh, load older turns, or jump to your last prompt.
-  Rai asks for a hook beacon when a directory match could belong to two panes.
+  History uses the Claude hook's transcript path and session ID. Rai never guesses
+  from a pane directory. Settings → Integrations explains how to enable the hook.
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
   answer the wrong prompt.

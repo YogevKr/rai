@@ -63,103 +63,66 @@ final class TranscriptReaderTests: XCTestCase {
         XCTAssertEqual(document.turns.map(\.text), ["visible prompt"])
     }
 
-    func testClaudeProjectDirectoryEncodingMatchesLabProbe() {
-        XCTAssertEqual(
-            ClaudeTranscriptLocator.projectDirectoryName(
-                for: "/private/tmp/rai.transcript_history fixture"
-            ),
-            "-private-tmp-rai-transcript-history-fixture"
+    func testTranscriptIndexRequiresBeaconPathAndMatchingSession() async throws {
+        let setup = try transcriptDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        let file = setup.project.appendingPathComponent("session.jsonl")
+        try transcript(cwd: "/tmp/repo", sessionID: "session").write(to: file)
+        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+
+        if case .hookRequired = await index.read(
+            paneID: "p1", beaconPath: nil, sessionID: "session"
+        ) {} else { XCTFail("A session ID without a beacon path must not resolve") }
+        let missingHookPage = await index.page(
+            paneID: "p1", beaconPath: nil, sessionID: nil,
+            requestedSessionID: "", requestID: "missing-hook",
+            herdSessionName: "herd", beforeTurnIndex: nil, limit: 50
         )
+        XCTAssertEqual(missingHookPage.state, .hookRequired)
+        XCTAssertTrue(missingHookPage.turns.isEmpty)
+        if case .hookRequired = await index.read(
+            paneID: "p1", beaconPath: file.path, sessionID: nil
+        ) {} else { XCTFail("A beacon path without its session ID must not resolve") }
+        if case .notFound = await index.read(
+            paneID: "p1", beaconPath: file.path, sessionID: "other"
+        ) {} else { XCTFail("The beacon path and session ID must match") }
+        if case let .found(url, document) = await index.read(
+            paneID: "p1", beaconPath: file.path, sessionID: "session"
+        ) {
+            XCTAssertEqual(canonicalPath(url), canonicalPath(file))
+            XCTAssertEqual(document.sessionID, "session")
+        } else { XCTFail("A complete matching beacon must resolve") }
     }
 
-    func testNewestRecentTranscriptWins() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rai-transcript-locator-\(UUID().uuidString)")
-        let claude = root.appendingPathComponent(".claude")
-        let project = claude.appendingPathComponent("projects/-tmp-repo")
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let now = Date(timeIntervalSince1970: 10_000)
-        let old = project.appendingPathComponent("old.jsonl")
-        let newest = project.appendingPathComponent("new.jsonl")
-        try transcript(cwd: "/tmp/repo", sessionID: "old").write(to: old)
-        try transcript(cwd: "/tmp/repo", sessionID: "new").write(to: newest)
-        try FileManager.default.setAttributes(
-            [.modificationDate: now.addingTimeInterval(-100)],
-            ofItemAtPath: old.path
-        )
-        try FileManager.default.setAttributes(
-            [.modificationDate: now.addingTimeInterval(-10)],
-            ofItemAtPath: newest.path
+    func testTranscriptIndexBuildsBoundedPage() async throws {
+        let setup = try transcriptDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
+        let file = setup.project.appendingPathComponent("session.jsonl")
+        let lines = (0..<80).map { index in
+            """
+            {"type":"assistant","sessionId":"session","message":{"id":"message-\(index)","role":"assistant","content":[{"type":"text","text":"turn \(index)"}]}}
+            """
+        }.joined(separator: "\n")
+        try Data(lines.utf8).write(to: file)
+        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
+
+        let page = await index.page(
+            paneID: "p1",
+            beaconPath: file.path,
+            sessionID: "session",
+            requestedSessionID: "session",
+            requestID: "request",
+            herdSessionName: "herd",
+            beforeTurnIndex: nil,
+            limit: 500
         )
 
-        XCTAssertEqual(
-            canonicalPath(ClaudeTranscriptLocator.newestTranscript(
-                cwd: "/tmp/repo",
-                claudeDirectory: claude,
-                now: now,
-                maximumAge: 60
-            )),
-            canonicalPath(newest)
-        )
-    }
-
-    func testResolutionPrefersBeaconAndFallsBackToNewest() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rai-transcript-resolve-\(UUID().uuidString)")
-        let claude = root.appendingPathComponent(".claude")
-        let project = claude.appendingPathComponent("projects/-tmp-repo")
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let beacon = project.appendingPathComponent("beacon.jsonl")
-        let newest = project.appendingPathComponent("newest.jsonl")
-        try transcript(cwd: "/tmp/repo", sessionID: "beacon").write(to: beacon)
-        try transcript(cwd: "/tmp/repo", sessionID: "newest").write(to: newest)
-        let now = Date()
-        try FileManager.default.setAttributes(
-            [.modificationDate: now.addingTimeInterval(-20)],
-            ofItemAtPath: beacon.path
-        )
-        try FileManager.default.setAttributes(
-            [.modificationDate: now.addingTimeInterval(-10)],
-            ofItemAtPath: newest.path
-        )
-
-        XCTAssertEqual(
-            canonicalPath(ClaudeTranscriptLocator.resolve(
-                beaconPath: beacon.path,
-                cwd: "/tmp/repo",
-                claudeDirectory: claude,
-                now: now
-            )),
-            canonicalPath(beacon)
-        )
-        XCTAssertEqual(
-            canonicalPath(ClaudeTranscriptLocator.resolve(
-                beaconPath: root.appendingPathComponent("outside.jsonl").path,
-                cwd: "/tmp/repo",
-                claudeDirectory: claude,
-                now: now
-            )),
-            canonicalPath(newest)
-        )
-        XCTAssertEqual(
-            canonicalPath(ClaudeTranscriptLocator.resolve(
-                beaconPath: nil,
-                cwd: "/tmp/repo",
-                claudeDirectory: claude,
-                sessionID: "beacon",
-                now: now
-            )),
-            canonicalPath(beacon)
-        )
-        XCTAssertNil(ClaudeTranscriptLocator.resolve(
-            beaconPath: nil,
-            cwd: "/tmp/repo",
-            claudeDirectory: claude,
-            sessionID: "missing",
-            now: now
-        ))
+        XCTAssertEqual(page.turns.count, 50)
+        XCTAssertEqual(page.turns.first?.text, "turn 30")
+        XCTAssertEqual(page.turns.last?.text, "turn 79")
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.requestID, "request")
+        XCTAssertEqual(page.state, .available)
     }
 
     func testPaneRestartRequiresNewResolution() {
@@ -177,83 +140,7 @@ final class TranscriptReaderTests: XCTestCase {
         ).requiresTranscriptResolution(after: old))
     }
 
-    func testFallbackIsAmbiguousForSharedCWDOrMultipleLiveTranscripts() async throws {
-        let setup = try transcriptDirectory(cwd: "/tmp/shared")
-        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
-        try transcript(cwd: "/tmp/shared", sessionID: "one").write(
-            to: setup.project.appendingPathComponent("one.jsonl")
-        )
-        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
-
-        if case .ambiguous = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
-            sessionID: nil, fallbackPaneCount: 2
-        ) {} else { XCTFail("A shared cwd must be ambiguous") }
-
-        try transcript(cwd: "/tmp/shared", sessionID: "two").write(
-            to: setup.project.appendingPathComponent("two.jsonl")
-        )
-        if case .ambiguous = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
-            sessionID: nil, fallbackPaneCount: 1
-        ) {} else { XCTFail("Multiple live transcripts must be ambiguous") }
-
-        let ownershipIndex = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
-        if case let .found(url, _) = await ownershipIndex.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/shared",
-            sessionID: "one", fallbackPaneCount: 1
-        ) {
-            XCTAssertEqual(
-                canonicalPath(url),
-                canonicalPath(setup.project.appendingPathComponent("one.jsonl"))
-            )
-        } else { XCTFail("A known session should select its transcript") }
-        let beaconPath = setup.project.appendingPathComponent("one.jsonl").path
-        if case .found = await ownershipIndex.read(
-            paneID: "p1", beaconPath: beaconPath, cwd: "/tmp/shared",
-            sessionID: "one", fallbackPaneCount: 2
-        ) {} else { XCTFail("The beacon path should resolve for its first pane") }
-        if case .ambiguous = await ownershipIndex.read(
-            paneID: "p2", beaconPath: beaconPath, cwd: "/tmp/shared",
-            sessionID: "one", fallbackPaneCount: 2
-        ) {} else { XCTFail("One transcript must not bind to two panes") }
-    }
-
-    func testCachedFallbackRechecksSharedPaneCount() async throws {
-        let setup = try transcriptDirectory(cwd: "/tmp/cached-shared")
-        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
-        try transcript(cwd: "/tmp/cached-shared", sessionID: "one").write(
-            to: setup.project.appendingPathComponent("one.jsonl")
-        )
-        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
-
-        if case .found = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/cached-shared",
-            sessionID: "one", fallbackPaneCount: 1
-        ) {} else { XCTFail("The unique fallback should resolve") }
-        if case .ambiguous = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/cached-shared",
-            sessionID: "one", fallbackPaneCount: 2
-        ) {} else { XCTFail("Every fallback resolution must recheck pane count") }
-    }
-
-    func testProjectPrefilterUsesExactTranscriptCWDToAvoidPunctuationCollision() throws {
-        let setup = try transcriptDirectory(cwd: "/repo/a-b")
-        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
-        let dash = setup.project.appendingPathComponent("dash.jsonl")
-        let underscore = setup.project.appendingPathComponent("underscore.jsonl")
-        try transcript(cwd: "/repo/a-b", sessionID: "dash").write(to: dash)
-        try transcript(cwd: "/repo/a_b", sessionID: "underscore").write(to: underscore)
-
-        XCTAssertEqual(canonicalPath(ClaudeTranscriptLocator.newestTranscript(
-            cwd: "/repo/a-b", claudeDirectory: setup.claude
-        )), canonicalPath(dash))
-        XCTAssertEqual(canonicalPath(ClaudeTranscriptLocator.newestTranscript(
-            cwd: "/repo/a_b", claudeDirectory: setup.claude
-        )), canonicalPath(underscore))
-    }
-
-    func testProjectDirectorySymlinkCannotEscapeClaudeProjectsRoot() throws {
+    func testBeaconSymlinkCannotEscapeClaudeProjectsRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("rai-transcript-symlink-\(UUID().uuidString)")
         let claude = root.appendingPathComponent(".claude")
@@ -265,75 +152,14 @@ final class TranscriptReaderTests: XCTestCase {
         try transcript(cwd: "/tmp/escape", sessionID: "escaped").write(
             to: outside.appendingPathComponent("escaped.jsonl")
         )
+        let link = projects.appendingPathComponent("escaped.jsonl")
         try FileManager.default.createSymbolicLink(
-            at: projects.appendingPathComponent("-tmp-escape"),
-            withDestinationURL: outside
+            at: link, withDestinationURL: outside.appendingPathComponent("escaped.jsonl")
         )
 
-        XCTAssertNil(ClaudeTranscriptLocator.newestTranscript(
-            cwd: "/tmp/escape", claudeDirectory: claude
+        XCTAssertNil(ClaudeTranscriptLocator.beaconTranscript(
+            path: link.path, sessionID: "escaped", claudeDirectory: claude
         ))
-    }
-
-    func testCWDComparisonResolvesTmpAliasAndTrailingSlash() throws {
-        let canonicalCWD = "/private/tmp/rai-transcript-alias-" + UUID().uuidString
-        try FileManager.default.createDirectory(
-            atPath: canonicalCWD, withIntermediateDirectories: true
-        )
-        addTeardownBlock { try? FileManager.default.removeItem(atPath: canonicalCWD) }
-        let setup = try transcriptDirectory(cwd: canonicalCWD)
-        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
-        let file = setup.project.appendingPathComponent("alias.jsonl")
-        try transcript(cwd: canonicalCWD, sessionID: "alias").write(to: file)
-        let aliasCWD = canonicalCWD.replacingOccurrences(of: "/private/tmp/", with: "/tmp/")
-
-        XCTAssertEqual(
-            canonicalPath(ClaudeTranscriptLocator.newestTranscript(
-                cwd: aliasCWD + "/", claudeDirectory: setup.claude
-            )),
-            canonicalPath(file)
-        )
-    }
-
-    func testTranscriptIndexCachesMetadataUntilFileChanges() async throws {
-        let setup = try transcriptDirectory(cwd: "/tmp/indexed")
-        addTeardownBlock { try? FileManager.default.removeItem(at: setup.root) }
-        let file = setup.project.appendingPathComponent("session.jsonl")
-        try transcript(cwd: "/tmp/indexed", sessionID: "session").write(to: file)
-        let index = ClaudeTranscriptIndex(claudeDirectory: setup.claude)
-
-        _ = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
-            sessionID: nil, fallbackPaneCount: 1
-        )
-        _ = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
-            sessionID: nil, fallbackPaneCount: 1
-        )
-        let initialCount = await index.metadataParseCountForTesting()
-        XCTAssertEqual(initialCount, 1)
-
-        let originalDate = try XCTUnwrap(
-            file.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate
-        )
-        let replacement = transcript(cwd: "/tmp/changed", sessionID: "session")
-        XCTAssertEqual(replacement.count, transcript(
-            cwd: "/tmp/indexed", sessionID: "session"
-        ).count)
-        try replacement.write(to: file)
-        try FileManager.default.setAttributes(
-            [.modificationDate: originalDate], ofItemAtPath: file.path
-        )
-        let rewritten = await index.read(
-            paneID: "p1", beaconPath: nil, cwd: "/tmp/indexed",
-            sessionID: nil, fallbackPaneCount: 1
-        )
-        if case .notFound = rewritten {} else {
-            XCTFail("A same-size rewrite with preserved mtime must revalidate cwd")
-        }
-        let changedCount = await index.metadataParseCountForTesting()
-        XCTAssertEqual(changedCount, 2)
     }
 
     func testPaginationClampsLimitAndBoundsText() {
@@ -412,6 +238,38 @@ final class TranscriptReaderTests: XCTestCase {
         ), 8)
     }
 
+    func testDeliveryCursorsUsePerDeviceLRUAndClearOnRevocation() {
+        var tracker = HistoryDeliveryTracker<String, String>(maximumPanesPerDevice: 2)
+        for pane in ["p0", "p1"] {
+            tracker.recordDelivery(
+                device: "phone", connection: "old", paneID: pane,
+                sessionID: "session", highestTurnIndex: 1
+            )
+        }
+        XCTAssertEqual(tracker.sinceLastSeen(
+            device: "phone", connection: "read", paneID: "p0", sessionID: "session"
+        ), 1)
+        tracker.recordDelivery(
+            device: "phone", connection: "old", paneID: "p2",
+            sessionID: "session", highestTurnIndex: 2
+        )
+
+        XCTAssertEqual(tracker.cursorCount(for: "phone"), 2)
+        XCTAssertNil(tracker.sinceLastSeen(
+            device: "phone", connection: "new", paneID: "p1", sessionID: "session"
+        ))
+        XCTAssertEqual(tracker.sinceLastSeen(
+            device: "phone", connection: "new", paneID: "p0", sessionID: "session"
+        ), 1)
+
+        tracker.removeDevice("phone")
+        XCTAssertEqual(tracker.cursorCount(for: "phone"), 0)
+        XCTAssertNil(tracker.sinceLastSeen(
+            device: "phone", connection: "after-revoke", paneID: "p0",
+            sessionID: "session"
+        ))
+    }
+
     func testHistoryReceiptsMustMatchSentPagesAndStayBounded() {
         var ledger = HistoryReceiptLedger<String>()
         let expected = HistoryPageReceipt(
@@ -459,14 +317,12 @@ final class TranscriptReaderTests: XCTestCase {
         """.utf8)
     }
 
-    private func transcriptDirectory(
-        cwd: String
-    ) throws -> (root: URL, claude: URL, project: URL) {
+    private func transcriptDirectory() throws -> (root: URL, claude: URL, project: URL) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("rai-transcript-test-\(UUID().uuidString)")
         let claude = root.appendingPathComponent(".claude")
         let project = claude.appendingPathComponent("projects")
-            .appendingPathComponent(ClaudeTranscriptLocator.projectDirectoryName(for: cwd))
+            .appendingPathComponent("fixture")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         return (root, claude, project)
     }

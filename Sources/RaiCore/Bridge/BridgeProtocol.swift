@@ -73,6 +73,7 @@ public enum TranscriptHistoryState: String, Codable, Equatable, Sendable {
     case available
     case notFound = "not_found"
     case ambiguous
+    case hookRequired = "hook_required"
 }
 
 public struct TranscriptHistoryPage: Codable, Equatable, Sendable {

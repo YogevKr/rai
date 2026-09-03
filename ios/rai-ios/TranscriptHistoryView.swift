@@ -1,14 +1,29 @@
+import Foundation
 import RaiCore
 import SwiftUI
 
+struct TranscriptSearchMatchRanges: Equatable {
+    let text: [NSRange]
+    let toolName: [NSRange]
+    let toolSummary: [NSRange]
+
+    var isMatch: Bool {
+        !text.isEmpty || !toolName.isEmpty || !toolSummary.isEmpty
+    }
+}
+
 @MainActor
 final class TranscriptHistoryViewModel: ObservableObject {
-    @Published var query = ""
+    @Published var query = "" {
+        didSet { rebuildSearchCache() }
+    }
     @Published private(set) var turns: [TranscriptTurn] = []
     @Published private(set) var sessionID = ""
     @Published private(set) var hasMore = false
     @Published private(set) var sinceLastSeen: Int?
     @Published private(set) var state: TranscriptHistoryState = .notFound
+    private(set) var searchMatches: [Int: TranscriptSearchMatchRanges] = [:]
+    private(set) var searchCacheBuildCount = 0
 
     init(page: TranscriptHistoryPage? = nil) {
         if let page { apply(page) }
@@ -17,11 +32,7 @@ final class TranscriptHistoryViewModel: ObservableObject {
     var filteredTurns: [TranscriptTurn] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return turns }
-        return turns.filter { turn in
-            turn.text.localizedCaseInsensitiveContains(term)
-                || turn.tool?.name.localizedCaseInsensitiveContains(term) == true
-                || turn.tool?.summary.localizedCaseInsensitiveContains(term) == true
-        }
+        return turns.filter { searchMatches[$0.id]?.isMatch == true }
     }
 
     var olderBeforeTurnIndex: Int? {
@@ -49,6 +60,7 @@ final class TranscriptHistoryViewModel: ObservableObject {
         sinceLastSeen = isOlderPage
             ? sinceLastSeen
             : page.sinceLastSeen
+        rebuildSearchCache()
     }
 
     func clear() {
@@ -57,6 +69,46 @@ final class TranscriptHistoryViewModel: ObservableObject {
         hasMore = false
         sinceLastSeen = nil
         state = .notFound
+        rebuildSearchCache()
+    }
+
+    func matchRanges(for turnID: Int) -> TranscriptSearchMatchRanges? {
+        searchMatches[turnID]
+    }
+
+    private func rebuildSearchCache() {
+        searchCacheBuildCount += 1
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else {
+            searchMatches = [:]
+            return
+        }
+        searchMatches = Dictionary(uniqueKeysWithValues: turns.map { turn in
+            (turn.id, TranscriptSearchMatchRanges(
+                text: Self.matchRanges(in: turn.text, term: term),
+                toolName: Self.matchRanges(in: turn.tool?.name ?? "", term: term),
+                toolSummary: Self.matchRanges(in: turn.tool?.summary ?? "", term: term)
+            ))
+        })
+    }
+
+    private static func matchRanges(in text: String, term: String) -> [NSRange] {
+        let source = text as NSString
+        var searchRange = NSRange(location: 0, length: source.length)
+        var matches: [NSRange] = []
+        while searchRange.length > 0 {
+            let match = source.range(
+                of: term,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchRange,
+                locale: .current
+            )
+            guard match.location != NSNotFound else { break }
+            matches.append(match)
+            let next = NSMaxRange(match)
+            searchRange = NSRange(location: next, length: source.length - next)
+        }
+        return matches
     }
 }
 
@@ -75,9 +127,10 @@ struct TranscriptHistoryView: View {
     }
 
     var body: some View {
+        let displayedTurns = model.filteredTurns
         ScrollViewReader { proxy in
             Group {
-                if model.turns.isEmpty {
+                if needsClaudeHook || model.turns.isEmpty {
                     emptyState
                 } else {
                     ScrollView {
@@ -93,9 +146,13 @@ struct TranscriptHistoryView: View {
                                 .frame(maxWidth: .infinity)
                             }
 
-                            ForEach(Array(model.filteredTurns.enumerated()), id: \.element.id) {
+                            ForEach(Array(displayedTurns.enumerated()), id: \.element.id) {
                                 position, turn in
-                                if showsAwayDivider(before: turn, at: position) {
+                                if showsAwayDivider(
+                                    before: turn,
+                                    at: position,
+                                    displayedTurns: displayedTurns
+                                ) {
                                     AwayDivider()
                                 }
                                 TranscriptTurnCard(turn: turn)
@@ -165,16 +222,18 @@ struct TranscriptHistoryView: View {
         ContentUnavailableView {
             if connection.historyErrors[pane.paneID] != nil {
                 Label("History unavailable", systemImage: "exclamationmark.triangle")
-            } else if model.state == .ambiguous {
-                Label("History needs the hook beacon", systemImage: "link.badge.plus")
+            } else if needsClaudeHook
+                || model.state == .hookRequired || model.state == .ambiguous {
+                Label("History needs the Claude hook", systemImage: "link.badge.plus")
             } else {
                 Label("No transcript found", systemImage: "clock")
             }
         } description: {
             if let error = connection.historyErrors[pane.paneID] {
                 Text(error)
-            } else if model.state == .ambiguous {
-                Text("History needs the hook beacon for this pane")
+            } else if needsClaudeHook
+                || model.state == .hookRequired || model.state == .ambiguous {
+                Text("Enable the Claude hook in Settings → Integrations.")
             } else if pane.agent == "claude" {
                 Text("Claude has not reported a transcript yet.")
             } else {
@@ -184,15 +243,22 @@ struct TranscriptHistoryView: View {
     }
 
     private var paneSessionID: String {
-        pane.beacon?.sessionID
-            ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-            ?? model.sessionID
+        needsClaudeHook ? "" : pane.beacon?.sessionID ?? ""
     }
 
-    private func showsAwayDivider(before turn: TranscriptTurn, at position: Int) -> Bool {
+    private var needsClaudeHook: Bool {
+        guard let beacon = pane.beacon else { return true }
+        return beacon.sessionID.isEmpty || beacon.transcriptPath.isEmpty
+    }
+
+    private func showsAwayDivider(
+        before turn: TranscriptTurn,
+        at position: Int,
+        displayedTurns: [TranscriptTurn]
+    ) -> Bool {
         guard let marker = model.sinceLastSeen, turn.index > marker else { return false }
         guard position > 0 else { return true }
-        return model.filteredTurns[position - 1].index <= marker
+        return displayedTurns[position - 1].index <= marker
     }
 }
 

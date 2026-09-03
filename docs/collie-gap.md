@@ -63,8 +63,9 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    agent's own JSONL transcript (`bridge/journal/`) and offers
    find-in-history and jump-to-user-turn. Rai now reads local Claude JSONL.
    The phone shows paged cards, search, an away divider, and prompt jump.
-   Request identity blocks stale pages after restarts. Exact `cwd` and root checks
-   prevent ambiguous or escaped fallback matches. Phone caches now have hard limits.
+   Request identity blocks stale pages after restarts. History requires the Claude
+   hook's transcript path and session ID. Rai never guesses from cwd.
+   Phone caches and delivery cursors have hard limits.
    Codex and remote-host transcript history remain out of scope.
 4. **Password prompt recognition changes copy, never keys** (ADR 0017).
    Collie matches `[sudo] password for`, `'s password:`, `Enter passphrase`

@@ -1047,9 +1047,7 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
-            let currentSessionID = model.beacon(forPane: paneID)?.sessionID
-                ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-                ?? ""
+            let currentSessionID = model.beacon(forPane: paneID)?.sessionID ?? ""
             guard requestedSessionID.isEmpty || currentSessionID.isEmpty
                     || requestedSessionID == currentSessionID else {
                 send(.historyError(
@@ -1138,65 +1136,17 @@ final class RaiBridgeServer: ObservableObject {
         client: BridgeClient
     ) async -> TranscriptHistoryPage {
         let beacon = model.beacon(forPane: pane.paneID)
-        let knownSessionID = beacon?.sessionID
-            ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil)
-            ?? ""
-        let cwd = pane.foregroundCWD ?? pane.cwd
-        let normalizedCWD = ClaudeTranscriptLocator.standardizedPath(cwd)
-        let fallbackPaneCount = model.snapshot?.panes.filter {
-            $0.agent == "claude"
-                && ClaudeTranscriptLocator.standardizedPath($0.foregroundCWD ?? $0.cwd)
-                    == normalizedCWD
-        }.count ?? 0
-        let lookup = if model.remoteTarget == nil, beacon != nil || pane.agent == "claude" {
-            await transcriptIndex.read(
-                paneID: pane.paneID,
-                beaconPath: beacon?.transcriptPath,
-                cwd: cwd,
-                sessionID: beacon?.sessionID
-                    ?? (pane.agentSession?.kind == .id ? pane.agentSession?.value : nil),
-                fallbackPaneCount: fallbackPaneCount
-            )
-        } else {
-            TranscriptLookupResult.notFound
-        }
-        let source: URL?
-        let readDocument: TranscriptDocument?
-        let historyState: TranscriptHistoryState
-        switch lookup {
-        case let .found(url, document):
-            source = url
-            readDocument = document
-            historyState = .available
-        case .notFound:
-            source = nil
-            readDocument = nil
-            historyState = .notFound
-        case .ambiguous:
-            source = nil
-            readDocument = nil
-            historyState = .ambiguous
-        }
-        let document: TranscriptDocument?
-        if let readDocument,
-           let readSessionID = readDocument.sessionID,
-           !knownSessionID.isEmpty,
-           readSessionID != knownSessionID {
-            document = nil
-        } else {
-            document = readDocument
-        }
-        let sessionID = knownSessionID.isEmpty
-            ? (document?.sessionID ?? source?.deletingPathExtension().lastPathComponent ?? "")
-            : knownSessionID
-        let basePage = TranscriptPagination.page(
+        let basePage = await transcriptIndex.page(
             paneID: pane.paneID,
-            sessionID: sessionID,
+            beaconPath: model.remoteTarget == nil ? beacon?.transcriptPath : nil,
+            sessionID: model.remoteTarget == nil ? beacon?.sessionID : nil,
+            requestedSessionID: requestedSessionID,
+            requestID: requestID,
             herdSessionName: herdSessionName,
-            turns: document?.turns ?? [],
             beforeTurnIndex: beforeTurnIndex,
             limit: limit
         )
+        let sessionID = basePage.agentSessionID
         let sinceLastSeen = historyDelivery.sinceLastSeen(
             device: client.deviceID ?? "unknown",
             connection: ObjectIdentifier(client.connection),
@@ -1212,7 +1162,7 @@ final class RaiBridgeServer: ObservableObject {
             turns: basePage.turns,
             hasMore: basePage.hasMore,
             sinceLastSeen: sinceLastSeen,
-            state: historyState
+            state: basePage.state
         )
     }
 

@@ -28,6 +28,30 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertEqual(model.filteredTurns.map(\.index), [1])
     }
 
+    func testSearchRangesRebuildOnlyWhenQueryOrHistoryChanges() {
+        let model = TranscriptHistoryViewModel(page: page(
+            turns: [turn(0, .assistant, "Pass then pass again")],
+            hasMore: false
+        ))
+        let initialBuilds = model.searchCacheBuildCount
+
+        model.query = "pass"
+        let queryBuilds = model.searchCacheBuildCount
+        XCTAssertEqual(queryBuilds, initialBuilds + 1)
+        XCTAssertEqual(model.matchRanges(for: 0)?.text.count, 2)
+
+        _ = model.filteredTurns
+        _ = model.filteredTurns
+        XCTAssertEqual(model.searchCacheBuildCount, queryBuilds)
+
+        model.apply(page(
+            turns: [turn(1, .assistant, "another pass")],
+            hasMore: false
+        ))
+        XCTAssertEqual(model.searchCacheBuildCount, queryBuilds + 1)
+        XCTAssertEqual(model.filteredTurns.map(\.index), [1])
+    }
+
     func testLoadOlderMergesInOrderAndMovesBeforeIndex() {
         let model = TranscriptHistoryViewModel(page: page(
             turns: [turn(4, .user, "new prompt"), turn(5, .assistant, "new reply")],
@@ -148,14 +172,14 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         ))
     }
 
-    func testLiveSnapshotSessionReplacesCachedHistorySession() throws {
+    func testLivePaneWithoutBeaconDropsCachedHistory() throws {
         let connection = BridgeConnection()
         connection.restoreCachedHistory(
             ["p1": page(turns: [turn(1, .assistant, "old")], hasMore: false)],
             sessionName: "herd"
         )
 
-        connection.replaceWithLiveSnapshot(try snapshot(sessionID: "new-session"))
+        connection.replaceWithLiveSnapshot(try snapshot(sessionID: "session-1"))
 
         XCTAssertNil(connection.historyPages["p1"])
     }
@@ -306,7 +330,7 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertNotNil(pending["p2"])
     }
 
-    func testDowngradedUnsupportedHistoryErrorCompletesPendingRequests() {
+    func testAnyLegacyErrorCompletesPendingHistoryRequests() {
         var pending = [
             "p1": PendingHistoryRequest(
                 generation: 1, replacesPage: true, sessionName: "herd",
@@ -318,9 +342,9 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             ),
         ]
 
-        let errors = TranscriptHistoryErrorRouter.consumeDowngraded(
+        let errors = TranscriptHistoryErrorRouter.consumeAnyLegacyError(
             pending: &pending,
-            message: "Unsupported"
+            message: "Invalid bridge message."
         )
 
         XCTAssertEqual(Set(errors?.keys.map { $0 } ?? []), Set(["p1", "p2"]))

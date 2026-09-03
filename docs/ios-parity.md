@@ -84,14 +84,15 @@ All additive, no version bump (old phones skip unknown message types):
 - The first page after a device reconnect can include its last delivered index.
 - The phone shows an away divider after that index.
 - The phone caches the latest 50 turns for each pane and pairing.
-- Fallback requires one pane, exact JSONL `cwd`, and root containment.
-- A session ID selects its transcript. Unkeyed fallback requires one live transcript.
-- Ambiguous lookup asks for the hook beacon instead of selecting a transcript.
+- History requires the hook beacon's transcript path and session ID.
+- Rai never scans by cwd or selects an unkeyed transcript.
+- A missing beacon points the phone user to Settings → Integrations.
 - History errors remain local to one pane. They do not change bridge status.
-- Downgraded history errors also complete pending requests.
+- Any legacy error reply completes pending history requests.
 - Memory and disk history caches have pane and byte limits.
 - The memory limit protects the viewed pane and trims its oldest turns.
 - Disk restore requires the cached and live herd identities to match.
+- Delivery cursors keep at most 64 panes per device and clear on revocation.
 - Old phones skip `historyPage`. Old Macs return one message error for `history`.
 - Codex and remote-host transcript history are not supported.
 

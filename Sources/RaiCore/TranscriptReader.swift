@@ -312,125 +312,13 @@ public enum TranscriptReader {
 }
 
 public enum ClaudeTranscriptLocator {
-    public static let defaultMaximumAge: TimeInterval = 24 * 60 * 60
-
-    /// The lab kept ASCII letters and numbers and mapped tested separators to hyphens.
-    public static func projectDirectoryName(for cwd: String) -> String {
-        String(cwd.unicodeScalars.map { scalar in
-            let value = scalar.value
-            let isASCIIAlphaNumeric = (48...57).contains(value)
-                || (65...90).contains(value)
-                || (97...122).contains(value)
-            return isASCIIAlphaNumeric ? Character(String(scalar)) : "-"
-        })
-    }
-
-    public static func newestTranscript(
-        cwd: String,
-        claudeDirectory: URL,
-        sessionID: String? = nil,
-        now: Date = Date(),
-        maximumAge: TimeInterval = defaultMaximumAge,
-        fileManager: FileManager = .default
-    ) -> URL? {
-        matchingTranscripts(
-            cwd: cwd,
-            claudeDirectory: claudeDirectory,
-            sessionID: sessionID,
-            now: now,
-            maximumAge: maximumAge,
-            fileManager: fileManager
-        ).first
-    }
-
-    /// Uses Claude's encoded project directory only as a prefilter. The JSONL
-    /// `cwd` field is the authority because the encoding is not one-to-one.
-    public static func matchingTranscripts(
-        cwd: String,
-        claudeDirectory: URL,
-        sessionID: String? = nil,
-        now: Date = Date(),
-        maximumAge: TimeInterval = defaultMaximumAge,
-        fileManager: FileManager = .default
-    ) -> [URL] {
-        let expectedCWD = standardizedPath(cwd)
-        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL
-        let candidates = projectDirectoryNames(for: cwd).flatMap { name -> [URL] in
-            let directory = root.appendingPathComponent(name, isDirectory: true)
-                .resolvingSymlinksInPath().standardizedFileURL
-            guard isContained(directory, in: root) else { return [] }
-            return (try? fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-        }
-        return Set(candidates.map { $0.resolvingSymlinksInPath().standardizedFileURL })
-            .compactMap { resolved -> (URL, Date)? in
-            guard resolved.pathExtension == "jsonl",
-                  isContained(resolved, in: root),
-                  sessionID.map({ resolved.deletingPathExtension().lastPathComponent == $0 }) ?? true,
-                  let values = try? resolved.resourceValues(
-                    forKeys: [.contentModificationDateKey, .isRegularFileKey]
-                  ),
-                  values.isRegularFile == true,
-                  let modified = values.contentModificationDate,
-                  sessionID != nil || (
-                    now.timeIntervalSince(modified) >= 0
-                        && now.timeIntervalSince(modified) <= maximumAge
-                  ),
-                  transcriptCWD(at: resolved) == expectedCWD else { return nil }
-            return (resolved, modified)
-        }
-        .sorted { $0.1 > $1.1 }
-        .map(\.0)
-    }
-
-    public static func standardizedPath(_ path: String) -> String {
-        let result = URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath().standardizedFileURL.path
-        return result.count > 1 && result.hasSuffix("/")
-            ? String(result.dropLast())
-            : result
-    }
-
-    static func projectDirectoryNames(for cwd: String) -> [String] {
-        let raw = URL(fileURLWithPath: cwd).standardizedFileURL.path
-        let resolved = standardizedPath(cwd)
-        var paths = Set([raw, resolved])
-        let aliases = paths.compactMap { path -> String? in
-            if path == "/tmp" || path.hasPrefix("/tmp/") {
-                return "/private" + path
-            } else if path == "/private/tmp" || path.hasPrefix("/private/tmp/") {
-                return String(path.dropFirst("/private".count))
-            }
-            return nil
-        }
-        paths.formUnion(aliases)
-        return paths.map(projectDirectoryName).sorted()
-    }
-
-    private static func transcriptCWD(at url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 256 * 1_024)) ?? nil
-        guard let data else { return nil }
-        for line in data.split(separator: 0x0A).prefix(32) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
-                  let record = object as? [String: Any],
-                  let cwd = record["cwd"] as? String else { continue }
-            return standardizedPath(cwd)
-        }
-        return nil
-    }
-
     private static func isContained(_ candidate: URL, in root: URL) -> Bool {
         candidate.path == root.path || candidate.path.hasPrefix(root.path + "/")
     }
 
     public static func beaconTranscript(
         path: String,
+        sessionID: String,
         claudeDirectory: URL,
         fileManager: FileManager = .default
     ) -> URL? {
@@ -438,66 +326,23 @@ public enum ClaudeTranscriptLocator {
             .resolvingSymlinksInPath().standardizedFileURL
         let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         guard candidate.pathExtension == "jsonl",
+              candidate.deletingPathExtension().lastPathComponent == sessionID,
               isContained(candidate, in: root),
               fileManager.fileExists(atPath: candidate.path) else { return nil }
         return candidate
-    }
-
-    public static func resolve(
-        beaconPath: String?,
-        cwd: String,
-        claudeDirectory: URL,
-        sessionID: String? = nil,
-        now: Date = Date(),
-        maximumAge: TimeInterval = defaultMaximumAge,
-        fileManager: FileManager = .default
-    ) -> URL? {
-        if let beaconPath,
-           let beacon = beaconTranscript(
-               path: beaconPath,
-               claudeDirectory: claudeDirectory,
-               fileManager: fileManager
-           ) {
-            return beacon
-        }
-        return newestTranscript(
-            cwd: cwd,
-            claudeDirectory: claudeDirectory,
-            sessionID: sessionID,
-            now: now,
-            maximumAge: maximumAge,
-            fileManager: fileManager
-        )
     }
 }
 
 public enum TranscriptLookupResult: Sendable {
     case found(url: URL, document: TranscriptDocument)
     case notFound
-    case ambiguous
+    case hookRequired
 }
 
-/// Keeps blocking directory and transcript reads off the main actor.
+/// Keeps transcript reads and pagination off the main actor.
 public actor ClaudeTranscriptIndex {
-    private struct FileFingerprint: Equatable {
-        let inode: UInt64
-        let size: UInt64
-        let modifiedSeconds: Int64
-        let modifiedNanoseconds: Int64
-        let firstRecordHash: UInt64
-    }
-
-    private struct FileMetadata {
-        let modified: Date
-        let fingerprint: FileFingerprint
-        let cwd: String?
-    }
-
     private let claudeDirectory: URL
-    private var metadataCache: [URL: FileFingerprint] = [:]
-    private var paneCache: [String: (beaconPath: String, url: URL)] = [:]
-    private var transcriptOwners: [URL: String] = [:]
-    private var metadataParseCount = 0
+    private var paneCache: [String: (beaconPath: String, sessionID: String, url: URL)] = [:]
 
     public init(claudeDirectory: URL) {
         self.claudeDirectory = claudeDirectory
@@ -506,164 +351,86 @@ public actor ClaudeTranscriptIndex {
     public func read(
         paneID: String,
         beaconPath: String?,
-        cwd: String,
-        sessionID: String?,
-        fallbackPaneCount: Int,
-        now: Date = Date()
+        sessionID: String?
     ) -> TranscriptLookupResult {
-        if let beaconPath,
-           let cached = paneCache[paneID], cached.beaconPath == beaconPath {
-            return claim(read(url: cached.url), for: paneID)
+        guard let beaconPath, let sessionID, !sessionID.isEmpty else {
+            return .hookRequired
         }
-        if let beaconPath,
-           let url = ClaudeTranscriptLocator.beaconTranscript(
-               path: beaconPath,
-               claudeDirectory: claudeDirectory
-           ) {
-            paneCache[paneID] = (beaconPath, url)
-            return claim(read(url: url), for: paneID)
+        guard let resolved = ClaudeTranscriptLocator.beaconTranscript(
+            path: beaconPath,
+            sessionID: sessionID,
+            claudeDirectory: claudeDirectory
+        ) else { return .notFound }
+        let url: URL
+        if let cached = paneCache[paneID],
+           cached.beaconPath == beaconPath,
+           cached.sessionID == sessionID,
+           cached.url == resolved {
+            url = cached.url
+        } else {
+            url = resolved
         }
-
-        guard fallbackPaneCount == 1 else { return .ambiguous }
-        // A known session is authoritative. Without one, count every live cwd
-        // match before selecting fallback.
-        if let sessionID, !sessionID.isEmpty {
-            guard let url = matchingTranscripts(
-                cwd: cwd,
-                sessionID: sessionID,
-                now: now
-            ).first else { return .notFound }
-            return claim(read(url: url, expectedCWD: cwd), for: paneID)
-        }
-        let candidates = matchingTranscripts(
-            cwd: cwd,
-            sessionID: nil,
-            now: now
-        )
-        guard candidates.count <= 1 else { return .ambiguous }
-        guard let url = candidates.first else { return .notFound }
-        return claim(read(url: url, expectedCWD: cwd), for: paneID)
+        guard let document = try? TranscriptReader.read(url: url),
+              document.sessionID == sessionID else { return .notFound }
+        paneCache[paneID] = (beaconPath, sessionID, url)
+        return .found(url: url, document: document)
     }
 
-    public func metadataParseCountForTesting() -> Int {
-        metadataParseCount
+    public func page(
+        paneID: String,
+        beaconPath: String?,
+        sessionID: String?,
+        requestedSessionID: String,
+        requestID: String,
+        herdSessionName: String?,
+        beforeTurnIndex: Int?,
+        limit: Int
+    ) -> TranscriptHistoryPage {
+        let lookup = read(
+            paneID: paneID,
+            beaconPath: beaconPath,
+            sessionID: sessionID
+        )
+        let resolvedSessionID = sessionID ?? ""
+        let turns: [TranscriptTurn]
+        let state: TranscriptHistoryState
+        switch lookup {
+        case let .found(_, document):
+            turns = document.turns
+            state = .available
+        case .notFound:
+            turns = []
+            state = .notFound
+        case .hookRequired:
+            turns = []
+            state = .hookRequired
+        }
+        let page = TranscriptPagination.page(
+            paneID: paneID,
+            sessionID: resolvedSessionID,
+            herdSessionName: herdSessionName,
+            turns: turns,
+            beforeTurnIndex: beforeTurnIndex,
+            limit: limit
+        )
+        return TranscriptHistoryPage(
+            paneID: paneID,
+            sessionID: requestedSessionID,
+            resolvedSessionID: resolvedSessionID,
+            requestID: requestID,
+            herdSessionName: page.herdSessionName,
+            turns: page.turns,
+            hasMore: page.hasMore,
+            state: state
+        )
     }
 
     public func invalidate(paneID: String) {
         paneCache.removeValue(forKey: paneID)
-        transcriptOwners = transcriptOwners.filter { $0.value != paneID }
     }
 
     public func retainPanes(_ paneIDs: Set<String>) {
         paneCache = paneCache.filter { paneIDs.contains($0.key) }
-        transcriptOwners = transcriptOwners.filter { paneIDs.contains($0.value) }
-    }
-
-    private func matchingTranscripts(
-        cwd: String,
-        sessionID: String?,
-        now: Date
-    ) -> [URL] {
-        let expectedCWD = ClaudeTranscriptLocator.standardizedPath(cwd)
-        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL
-        let urls = ClaudeTranscriptLocator.projectDirectoryNames(for: cwd).flatMap {
-            name -> [URL] in
-            let directory = root.appendingPathComponent(name, isDirectory: true)
-                .resolvingSymlinksInPath().standardizedFileURL
-            guard directory.path.hasPrefix(root.path + "/") else { return [] }
-            return (try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-        }
-        return Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL })
-            .compactMap { url -> (URL, Date)? in
-            guard url.path.hasPrefix(root.path + "/"), url.pathExtension == "jsonl",
-                  sessionID.map({ url.deletingPathExtension().lastPathComponent == $0 }) ?? true,
-                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
-                  values.isRegularFile == true,
-                  let metadata = fileMetadata(url),
-                  sessionID != nil
-                    || now.timeIntervalSince(metadata.modified)
-                        <= ClaudeTranscriptLocator.defaultMaximumAge,
-                  now.timeIntervalSince(metadata.modified) >= 0 else { return nil }
-            if metadataCache[url] != metadata.fingerprint {
-                metadataCache[url] = metadata.fingerprint
-                metadataParseCount += 1
-            }
-            // Always trust this read, never the cached fingerprint's prior cwd.
-            return metadata.cwd == expectedCWD ? (url, metadata.modified) : nil
-        }.sorted { $0.1 > $1.1 }.map(\.0)
-    }
-
-    private func read(url: URL, expectedCWD: String? = nil) -> TranscriptLookupResult {
-        let root = claudeDirectory.appendingPathComponent("projects", isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL
-        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-        guard resolved.path.hasPrefix(root.path + "/"),
-              let metadata = fileMetadata(resolved),
-              expectedCWD.map({ metadata.cwd == ClaudeTranscriptLocator.standardizedPath($0) })
-                ?? true,
-              let document = try? TranscriptReader.read(url: resolved) else {
-            return .notFound
-        }
-        return .found(url: resolved, document: document)
-    }
-
-    private func claim(
-        _ result: TranscriptLookupResult,
-        for paneID: String
-    ) -> TranscriptLookupResult {
-        guard case let .found(url, document) = result else { return result }
-        if let owner = transcriptOwners[url], owner != paneID { return .ambiguous }
-        transcriptOwners = transcriptOwners.filter { $0.value != paneID }
-        transcriptOwners[url] = paneID
-        return .found(url: url, document: document)
-    }
-
-    private static func readHeader(_ url: URL) -> (cwd: String?, firstRecordHash: UInt64)? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 256 * 1_024) else { return nil }
-        let firstLine = data.split(
-            separator: 0x0A, maxSplits: 1, omittingEmptySubsequences: false
-        ).first ?? Data.SubSequence()
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in firstLine {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        for line in data.split(separator: 0x0A).prefix(32) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)),
-                  let record = object as? [String: Any],
-                  let cwd = record["cwd"] as? String else { continue }
-            return (ClaudeTranscriptLocator.standardizedPath(cwd), hash)
-        }
-        return (nil, hash)
-    }
-
-    private func fileMetadata(_ url: URL) -> FileMetadata? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
-              let size = (attributes[.size] as? NSNumber)?.uint64Value,
-              let modified = attributes[.modificationDate] as? Date,
-              let header = Self.readHeader(url) else { return nil }
-        let interval = modified.timeIntervalSince1970
-        let seconds = Int64(interval.rounded(.down))
-        let nanoseconds = Int64(((interval - Double(seconds)) * 1_000_000_000).rounded())
-        return FileMetadata(
-            modified: modified,
-            fingerprint: FileFingerprint(
-                inode: inode,
-                size: size,
-                modifiedSeconds: seconds,
-                modifiedNanoseconds: nanoseconds,
-                firstRecordHash: header.firstRecordHash
-            ),
-            cwd: header.cwd
-        )
     }
 }
 
@@ -686,12 +453,24 @@ public struct TranscriptPaneIdentity: Equatable, Sendable {
 }
 
 public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
-    private var lastDelivered: [Device: [String: Int]] = [:]
+    public static var defaultMaximumPanesPerDevice: Int { 64 }
+
+    private struct Cursor {
+        let sessionID: String
+        let highestTurnIndex: Int
+        var lastAccess: UInt64
+    }
+
+    private let maximumPanesPerDevice: Int
+    private var lastDelivered: [Device: [String: Cursor]] = [:]
     private var deliveredPanes: [Connection: Set<String>] = [:]
+    private var accessSequence: UInt64 = 0
 
-    public init() {}
+    public init(maximumPanesPerDevice: Int = defaultMaximumPanesPerDevice) {
+        self.maximumPanesPerDevice = max(1, maximumPanesPerDevice)
+    }
 
-    public func sinceLastSeen(
+    public mutating func sinceLastSeen(
         device: Device,
         connection: Connection,
         paneID: String,
@@ -699,7 +478,11 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
     ) -> Int? {
         let key = paneID + "\u{1F}" + sessionID
         guard deliveredPanes[connection]?.contains(key) != true else { return nil }
-        return lastDelivered[device]?[key]
+        guard var cursor = lastDelivered[device]?[paneID],
+              cursor.sessionID == sessionID else { return nil }
+        cursor.lastAccess = nextAccess()
+        lastDelivered[device]?[paneID] = cursor
+        return cursor.highestTurnIndex
     }
 
     public mutating func recordDelivery(
@@ -712,8 +495,20 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
         let key = paneID + "\u{1F}" + sessionID
         deliveredPanes[connection, default: []].insert(key)
         if let highestTurnIndex {
-            let old = lastDelivered[device]?[key] ?? -1
-            lastDelivered[device, default: [:]][key] = max(old, highestTurnIndex)
+            var cursors = lastDelivered[device, default: [:]]
+            let old = cursors[paneID]
+            cursors[paneID] = Cursor(
+                sessionID: sessionID,
+                highestTurnIndex: old?.sessionID == sessionID
+                    ? max(old?.highestTurnIndex ?? -1, highestTurnIndex)
+                    : highestTurnIndex,
+                lastAccess: nextAccess()
+            )
+            if cursors.count > maximumPanesPerDevice,
+               let oldest = cursors.min(by: { $0.value.lastAccess < $1.value.lastAccess })?.key {
+                cursors.removeValue(forKey: oldest)
+            }
+            lastDelivered[device] = cursors
         }
     }
 
@@ -723,6 +518,15 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
 
     public mutating func removeDevice(_ device: Device) {
         lastDelivered.removeValue(forKey: device)
+    }
+
+    public func cursorCount(for device: Device) -> Int {
+        lastDelivered[device]?.count ?? 0
+    }
+
+    private mutating func nextAccess() -> UInt64 {
+        accessSequence &+= 1
+        return accessSequence
     }
 }
 

@@ -95,7 +95,7 @@ final class BridgeProtocolTests: XCTestCase {
                 )],
                 hasMore: true,
                 sinceLastSeen: 4,
-                state: .available
+                state: .hookRequired
             )),
             .historyError(
                 paneID: "pane-1", sessionID: "session-1", requestID: "request-2",
