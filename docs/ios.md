@@ -15,6 +15,7 @@ depends on the shared `RaiCore` (bridge protocol + models) and `SwiftTerm` from
 the root Swift package.
 
 Pane attach keeps a fixed order: history seed, visible-grid frame, then live stream.
+The Mac skips the visible-grid frame after a two-second read timeout and starts the stream.
 The visible frame uses the pane's native grid size and a full repaint.
 The stream's first full frame replaces it without adding a second history seam.
 Rai skips the visible frame when the read fails.
@@ -262,12 +263,12 @@ and notification replies. Rai drops queued lines for that pane and reports the c
 The message explains that hidden input cannot be checked from these actions.
 Use Type mode to send direct keyboard input when you choose to answer the prompt.
 
-Notification replies wait up to five seconds when no live grid exists.
+Notification replies use one five-second budget for connection and live-grid verification.
 On timeout, Rai opens the pane, keeps the reply draft, and reports that verification failed.
 The guard accepts only grids received after the current connection welcome.
 Outbox lines stay queued until their pane receives a current grid.
-Each fresh clear frame permits at most one queued line.
-The next queued line waits for a frame received after Rai dispatches the prior line.
+After one queued line sends, the next line waits for 750 milliseconds of pane silence.
+It sends only when 750 milliseconds passed since the prior send and the latest grid remains clear.
 Held lines still expire after 15 minutes when a later frame starts another flush.
 
 The match is anchored to the last non-empty row.

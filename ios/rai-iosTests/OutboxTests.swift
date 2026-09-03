@@ -135,7 +135,7 @@ final class OutboxTests: XCTestCase {
         XCTAssertEqual(sentInputs, ["safe\r"])
     }
 
-    func testFlushSendsOneLineThenWaitsForANewerFrame() async throws {
+    func testEchoFrameDoesNotReleaseSecondLineBeforeQuietPeriod() async throws {
         var sentInputs: [String] = []
         let connection = BridgeConnection(messageSender: { message in
             if case let .input(_, bytesBase64) = message,
@@ -152,6 +152,12 @@ final class OutboxTests: XCTestCase {
 
         connection.handle(frame("$", paneID: "pane-a"))
         try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        connection.handle(frame("first\r\n$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(100))
 
         XCTAssertEqual(sentInputs, ["first\r"])
         XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
@@ -211,6 +217,23 @@ final class OutboxTests: XCTestCase {
         XCTAssertFalse(delivered)
         XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
         XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "keep me")
+    }
+
+    func testReplyConnectionWaitUsesTheSameBudgetAndKeepsDraft() async throws {
+        let connection = BridgeConnection(
+            messageSender: { _ in },
+            replyFrameWaitIterations: 1
+        )
+        let pairing = try Pairing(host: "127.0.0.1", port: 1, token: "secret")
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("keep offline"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
+        XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "keep offline")
+        connection.disconnect()
     }
 
     private func frame(_ text: String, paneID: String) -> BridgeMessage {

@@ -46,6 +46,20 @@ final class PaneFirstFrameCaptureTests: XCTestCase {
 
         XCTAssertNil(frame)
     }
+
+    func testStalledVisibleCaptureTimesOut() async {
+        let frame = await PaneFirstFrameCapture.capture(
+            paneID: "pane-7",
+            cols: 80,
+            rows: 24,
+            timeout: .milliseconds(20)
+        ) { _ in
+            try? await Task.sleep(for: .seconds(30))
+            return Data("late".utf8)
+        }
+
+        XCTAssertNil(frame)
+    }
 }
 
 private final class LockedArguments: @unchecked Sendable {

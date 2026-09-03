@@ -148,6 +148,7 @@ An iOS drift test requires one phone policy for every shared code.
 ## Attach hardening LANDED (2026-09-03)
 
 - Each phone attach gets one native-size visible frame before the observe stream.
+- A two-second read timeout skips a stalled first frame and continues with the stream.
 - The history seed still arrives first. Both live paints use full replacement frames.
 - This behavior changes no bridge message shape and needs no protocol version change.
 
@@ -155,8 +156,8 @@ An iOS drift test requires one phone policy for every shared code.
 
 - The phone blocks composed lines when the last non-empty grid row is a password prompt.
 - The guard covers quick replies, slash commands, outbox flush, and notification replies.
-- Notification replies wait up to five seconds for a current pane frame.
-- Each fresh clear frame permits at most one queued line for that pane.
+- Notification replies use one five-second budget for connection and current-grid verification.
+- Queued lines require 750 milliseconds without a pane frame after the prior send.
 - Type mode stays available for direct keyboard input.
 - The guard does not change the bridge protocol.
 
