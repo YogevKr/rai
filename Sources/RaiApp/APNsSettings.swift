@@ -145,6 +145,7 @@ final class APNsSettings: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         keyFileURL: URL = APNsSettings.defaultKeyFileURL,
+        migrateImmediately: Bool = false,
         keyReader: @escaping KeyReader = APNsSettings.readLegacyKey
     ) {
         self.defaults = defaults
@@ -156,7 +157,9 @@ final class APNsSettings: ObservableObject {
         keyID = defaults.string(forKey: Key.keyID) ?? ""
         bundleID = defaults.string(forKey: Key.bundleID) ?? "com.whetstone.rai.ios"
         defaultEnvironment = defaults.string(forKey: Key.defaultEnvironment) ?? "sandbox"
-        migrateLegacyKeyIfNeeded()
+        if migrateImmediately {
+            migrateLegacyKeyIfNeeded()
+        }
     }
 
     func setKeyP8(_ value: String) throws {
@@ -172,7 +175,7 @@ final class APNsSettings: ObservableObject {
         defaults.set(true, forKey: Key.migrationAttempted)
     }
 
-    private func migrateLegacyKeyIfNeeded() {
+    func migrateLegacyKeyIfNeeded() {
         if FileManager.default.fileExists(atPath: keyFileURL.path) {
             migrationProblem = nil
             defaults.removeObject(forKey: Key.migrationProblem)
