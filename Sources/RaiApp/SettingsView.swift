@@ -503,6 +503,12 @@ private struct CompanionSettingsView: View {
                                 Text(keyP8Error)
                                     .foregroundStyle(Theme.status(.blocked))
                             }
+                            if apnsSettings.canRetryLegacyKeyMigration {
+                                Button("Retry Migration") {
+                                    apnsSettings.retryLegacyKeyMigration()
+                                    keyP8Draft = apnsSettings.keyP8
+                                }
+                            }
                         }
                         HStack {
                             Text(apnsSettings.keyFileURL.path)

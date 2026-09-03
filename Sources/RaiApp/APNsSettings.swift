@@ -39,6 +39,23 @@ enum APNsKeyFileError: LocalizedError {
 }
 
 @MainActor
+final class APNsMigrationAttemptGate {
+    static let process = APNsMigrationAttemptGate()
+
+    private var attempted = false
+
+    func claim() -> Bool {
+        guard !attempted else { return false }
+        attempted = true
+        return true
+    }
+
+    func reset() {
+        attempted = false
+    }
+}
+
+@MainActor
 final class APNsSettings: ObservableObject {
     static let shared = APNsSettings()
 
@@ -140,16 +157,19 @@ final class APNsSettings: ObservableObject {
 
     private let defaults: UserDefaults
     private let keyReader: KeyReader
-    private var migrationProblem: MigrationProblem?
+    @Published private var migrationProblem: MigrationProblem?
+    private let migrationAttemptGate: APNsMigrationAttemptGate
 
     init(
         defaults: UserDefaults = .standard,
         keyFileURL: URL = APNsSettings.defaultKeyFileURL,
         migrateImmediately: Bool = false,
+        migrationAttemptGate: APNsMigrationAttemptGate? = nil,
         keyReader: @escaping KeyReader = APNsSettings.readLegacyKey
     ) {
         self.defaults = defaults
         self.keyFileURL = keyFileURL
+        self.migrationAttemptGate = migrationAttemptGate ?? .process
         self.keyReader = keyReader
         migrationProblem = defaults.string(forKey: Key.migrationProblem)
             .flatMap(MigrationProblem.init(rawValue:))
@@ -193,6 +213,7 @@ final class APNsSettings: ObservableObject {
         }
         let attempted = defaults.bool(forKey: Key.migrationAttempted)
         guard !attempted || migrationProblem == .unreadable else { return }
+        guard migrationAttemptGate.claim() else { return }
 
         let (value, status) = keyReader()
         guard status != errSecItemNotFound else {
@@ -221,6 +242,15 @@ final class APNsSettings: ObservableObject {
         } catch {
             recordMigrationProblem(.unreadable)
         }
+    }
+
+    var canRetryLegacyKeyMigration: Bool {
+        migrationProblem == .unreadable && !hasStoredKey
+    }
+
+    func retryLegacyKeyMigration() {
+        migrationAttemptGate.reset()
+        migrateLegacyKeyIfNeeded()
     }
 
     private func recordMigrationProblem(_ problem: MigrationProblem) {

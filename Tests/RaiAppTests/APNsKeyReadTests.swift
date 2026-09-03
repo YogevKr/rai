@@ -45,9 +45,11 @@ final class APNsKeyReadTests: XCTestCase {
     func testMissingLegacyItemLeavesFileMissing() throws {
         let (defaults, keyURL) = try fixture()
         var reads = 0
+        let gate = APNsMigrationAttemptGate()
 
         let settings = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
         ) {
             reads += 1
             return ("", errSecItemNotFound)
@@ -57,7 +59,10 @@ final class APNsKeyReadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
         XCTAssertEqual(reads, 1)
 
-        _ = APNsSettings(defaults: defaults, keyFileURL: keyURL, migrateImmediately: true) {
+        _ = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
             reads += 1
             return (Self.pem, errSecSuccess)
         }
@@ -68,9 +73,11 @@ final class APNsKeyReadTests: XCTestCase {
     func testValidLegacyItemMigratesOnce() throws {
         let (defaults, keyURL) = try fixture()
         var reads = 0
+        let gate = APNsMigrationAttemptGate()
 
         let settings = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
         ) {
             reads += 1
             return (Self.pem, errSecSuccess)
@@ -80,7 +87,10 @@ final class APNsKeyReadTests: XCTestCase {
         XCTAssertEqual(reads, 1)
         XCTAssertEqual(permissions(at: keyURL), 0o600)
 
-        _ = APNsSettings(defaults: defaults, keyFileURL: keyURL, migrateImmediately: true) {
+        _ = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
             reads += 1
             return ("not a key", errSecSuccess)
         }
@@ -92,7 +102,8 @@ final class APNsKeyReadTests: XCTestCase {
         let (defaults, keyURL) = try fixture()
 
         let settings = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             ("not a key", errSecSuccess)
         }
@@ -108,7 +119,8 @@ final class APNsKeyReadTests: XCTestCase {
         var reads = 0
 
         let first = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             reads += 1
             return ("", errSecInteractionNotAllowed)
@@ -116,7 +128,8 @@ final class APNsKeyReadTests: XCTestCase {
         XCTAssertEqual(first.keyReadState, .unreadable)
 
         let second = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             reads += 1
             return (Self.pem, errSecSuccess)
@@ -126,13 +139,51 @@ final class APNsKeyReadTests: XCTestCase {
     }
 
     @MainActor
+    func testTransientFailureAttemptsOnlyOncePerLaunchGate() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return ("", errSecInteractionNotAllowed)
+        }
+
+        settings.migrateLegacyKeyIfNeeded()
+
+        XCTAssertEqual(reads, 1)
+        XCTAssertTrue(settings.canRetryLegacyKeyMigration)
+    }
+
+    @MainActor
+    func testExplicitRetryCanRepeatMigrationAfterTransientFailure() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return reads == 1 ? ("", errSecInteractionNotAllowed) : (Self.pem, errSecSuccess)
+        }
+
+        settings.retryLegacyKeyMigration()
+
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(settings.keyReadState, .readable)
+        XCTAssertFalse(settings.canRetryLegacyKeyMigration)
+    }
+
+    @MainActor
     func testPriorReleaseUnreadableMigrationRetries() throws {
         let (defaults, keyURL) = try fixture()
         defaults.set(true, forKey: "apns.keyFileMigrationAttempted")
         defaults.set("unreadable", forKey: "apns.keyFileMigrationProblem")
 
         let settings = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             (Self.pem, errSecSuccess)
         }
@@ -146,14 +197,16 @@ final class APNsKeyReadTests: XCTestCase {
         let (defaults, keyURL) = try fixture()
 
         let first = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             ("", errSecInteractionNotAllowed)
         }
         XCTAssertEqual(first.keyReadState, .unreadable)
 
         let second = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             ("", errSecItemNotFound)
         }
@@ -175,7 +228,8 @@ final class APNsKeyReadTests: XCTestCase {
         try Data("blocked".utf8).write(to: blockedDirectory)
 
         let first = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             (Self.pem, errSecSuccess)
         }
@@ -183,7 +237,8 @@ final class APNsKeyReadTests: XCTestCase {
 
         try FileManager.default.removeItem(at: blockedDirectory)
         let second = APNsSettings(
-            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
         ) {
             (Self.pem, errSecSuccess)
         }
