@@ -3,6 +3,10 @@ import XCTest
 @testable import RaiCore
 
 final class PredictiveEchoTests: XCTestCase {
+    private final class TestUptime {
+        var nanoseconds: UInt64 = 1_000_000_000
+    }
+
     private var engine: PredictiveEchoEngine!
     private let start = Date(timeIntervalSinceReferenceDate: 1000)
 
@@ -34,7 +38,7 @@ final class PredictiveEchoTests: XCTestCase {
 
     func testFastLinkNeverDisplays() {
         type("a", cursorX: 0)
-        XCTAssertEqual(engine.displayGlyphs(now: start), [])
+        XCTAssertEqual(engine.displayGlyphs(), [])
     }
 
     func testLocalThresholdDisplaysAfterMeasuredDaemonTick() {
@@ -75,7 +79,7 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertLessThan(engine.smoothedConfirmLatency, 0.008)
         XCTAssertEqual(engine.recentTailConfirmLatency, 0.022, accuracy: 0.000_001)
         type("z", cursorX: cursorX, at: keyTime)
-        XCTAssertEqual(engine.displayGlyphs(now: keyTime), ["z"])
+        XCTAssertEqual(engine.displayGlyphs(), ["z"])
     }
 
     func testRemoteThresholdDoesNotDisplayAfterLocalDaemonTick() {
@@ -93,14 +97,18 @@ final class PredictiveEchoTests: XCTestCase {
     }
 
     func testNonEchoingPaneNeverDisplaysPrediction() {
-        engine = PredictiveEchoEngine(herdLocation: .local)
+        let uptime = TestUptime()
+        let startUptime = uptime.nanoseconds
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.local
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
         type("agent", cursorX: 0)
 
         for delay in [0.010, 0.050, 0.250, 1.0] {
-            XCTAssertEqual(
-                engine.displayGlyphs(now: start.addingTimeInterval(delay)),
-                []
-            )
+            uptime.nanoseconds = startUptime + UInt64(delay * 1_000_000_000)
+            XCTAssertEqual(engine.displayGlyphs(), [])
         }
     }
 
@@ -140,8 +148,14 @@ final class PredictiveEchoTests: XCTestCase {
     }
 
     func testSilentEchoOffAfterInterKeyPauseDoesNotDisplaySecondByte() {
-        engine = PredictiveEchoEngine(herdLocation: .local)
+        let uptime = TestUptime()
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.local
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
         type("a", cursorX: 0, at: start)
+        uptime.nanoseconds += 20_000_000
         engine.reconcile(
             cursor: (x: 1, y: 5),
             terminalMode: .plain,
@@ -151,6 +165,7 @@ final class PredictiveEchoTests: XCTestCase {
         )
         XCTAssertTrue(engine.echoConfirmedThisBurst)
 
+        uptime.nanoseconds += 301_000_000
         let hiddenKeyTime = start.addingTimeInterval(
             0.020 + PredictiveEchoEngine.confidenceCarryWindow + 0.001
         )
@@ -158,7 +173,85 @@ final class PredictiveEchoTests: XCTestCase {
 
         XCTAssertFalse(engine.echoConfirmedThisBurst)
         XCTAssertEqual(engine.pending.map(\.character), ["s"])
-        XCTAssertEqual(engine.displayGlyphs(now: hiddenKeyTime), [])
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
+    func testRemotePredictionAlsoRequiresEchoAfterPause() {
+        let uptime = TestUptime()
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.remote
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
+        type("a", cursorX: 0, at: start)
+        uptime.nanoseconds += 200_000_000
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.200)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        uptime.nanoseconds += 301_000_000
+        type("s", cursorX: 1, at: start.addingTimeInterval(0.501))
+
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
+    func testBackwardWallClockChangeDoesNotExtendConfidence() {
+        let uptime = TestUptime()
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.local
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
+        type("a", cursorX: 0, at: start)
+        uptime.nanoseconds += 20_000_000
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+
+        uptime.nanoseconds += 301_000_000
+        type("s", cursorX: 1, at: start.addingTimeInterval(-3_600))
+
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
+    func testVisiblePredictionExpiresAtMonotonicConfidenceDeadline() {
+        let uptime = TestUptime()
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: PredictiveEchoEngine.HerdLocation.local
+                .displayLatencyThreshold,
+            monotonicNow: { uptime.nanoseconds }
+        )
+        type("a", cursorX: 0, at: start)
+        uptime.nanoseconds += 20_000_000
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        uptime.nanoseconds += 1_000_000
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+        let deadline = uptime.nanoseconds + 299_000_000
+        XCTAssertEqual(engine.displayExpiryDeadlineUptimeNanoseconds, deadline)
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
+
+        uptime.nanoseconds = deadline
+
+        XCTAssertEqual(engine.displayGlyphs(), [])
+        XCTAssertTrue(engine.pending.isEmpty)
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
     }
 
     func testHarnessCursorResetOutputRequiresFreshConfirmation() {
@@ -238,8 +331,15 @@ final class PredictiveEchoTests: XCTestCase {
     /// `read -s`) echoes nothing — no waiting period may ever paint the
     /// secret.
     func testHiddenInputNeverDisplays() {
+        let uptime = TestUptime()
+        let startUptime = uptime.nanoseconds
+        engine = PredictiveEchoEngine(
+            displayLatencyThreshold: 0.06,
+            monotonicNow: { uptime.nanoseconds }
+        )
         // Learn that the link is slow, with a confirmed echo.
         type("sudo", cursorX: 0)
+        uptime.nanoseconds = startUptime + 200_000_000
         engine.reconcile(
             cursor: (x: 4, y: 5),
             terminalMode: .plain,
@@ -249,15 +349,20 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertGreaterThan(engine.smoothedConfirmLatency, 0.06)
 
         // Enter submits; the password prompt follows and echoes nothing.
+        uptime.nanoseconds = startUptime + 300_000_000
         engine.noteKey(
             .other, cursor: (x: 4, y: 5), columns: 80,
             terminalMode: .plain, now: start.addingTimeInterval(0.3)
         )
         let promptTime = start.addingTimeInterval(0.6)
+        uptime.nanoseconds = startUptime + 600_000_000
         type("hunter2", cursorX: 10, row: 6, at: promptTime)
         for delay in [0.0, 0.1, 0.3, 1.0, 4.0] {
+            uptime.nanoseconds = startUptime
+                + 600_000_000
+                + UInt64(delay * 1_000_000_000)
             XCTAssertEqual(
-                engine.displayGlyphs(now: promptTime.addingTimeInterval(delay)), [],
+                engine.displayGlyphs(), [],
                 "secret visible after \(delay)s"
             )
         }
@@ -299,7 +404,7 @@ final class PredictiveEchoTests: XCTestCase {
         // New prompt, new burst: the first character displays nothing…
         let next = start.addingTimeInterval(0.5)
         type("l", cursorX: 0, row: 7, at: next)
-        XCTAssertEqual(engine.displayGlyphs(now: next), [])
+        XCTAssertEqual(engine.displayGlyphs(), [])
         // …until its echo confirms, which re-proves the prompt echoes.
         engine.reconcile(
             cursor: (x: 1, y: 7),
@@ -309,7 +414,7 @@ final class PredictiveEchoTests: XCTestCase {
         )
         let after = next.addingTimeInterval(0.25)
         type("s", cursorX: 1, row: 7, at: after)
-        XCTAssertEqual(engine.displayGlyphs(now: after), ["s"])
+        XCTAssertEqual(engine.displayGlyphs(), ["s"])
     }
 
     func testDisplayOpensImmediatelyOnceLatencyIsLearned() {
@@ -326,7 +431,7 @@ final class PredictiveEchoTests: XCTestCase {
 
         let next = start.addingTimeInterval(0.3)
         type("b", cursorX: 1, at: next)
-        XCTAssertEqual(engine.displayGlyphs(now: next), ["b"])
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
     }
 
     func testTimerReconcileWithoutOutputKeepsCurrentBurstConfidence() {
@@ -350,7 +455,7 @@ final class PredictiveEchoTests: XCTestCase {
 
         let next = start.addingTimeInterval(0.22)
         type("b", cursorX: 1, at: next)
-        XCTAssertEqual(engine.displayGlyphs(now: next), ["b"])
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
     }
 
     func testConfirmsFromTheFrontAndKeepsTheRest() {
@@ -450,7 +555,7 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertFalse(engine.echoConfirmedThisBurst)
         let next = start.addingTimeInterval(0.35)
         type("b", cursorX: 1, at: next)
-        XCTAssertEqual(engine.displayGlyphs(now: next), [])
+        XCTAssertEqual(engine.displayGlyphs(), [])
     }
 
     func testWrapEndsTheBurst() {
@@ -466,7 +571,7 @@ final class PredictiveEchoTests: XCTestCase {
         type("bc", cursorX: 79, at: next)
         XCTAssertTrue(engine.pending.isEmpty)
         XCTAssertFalse(engine.echoConfirmedThisBurst)
-        XCTAssertEqual(engine.displayGlyphs(now: next), [])
+        XCTAssertEqual(engine.displayGlyphs(), [])
     }
 
     func testControlKeyClears() {

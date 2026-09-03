@@ -55,6 +55,8 @@ terminal widget**.
   Local prediction is off by default because silent password prompts cannot be
   detected. Enable it under Settings → Appearance. Small echoes bypass the
   display throttle. Local echo measured about 4 ms median and 22 ms p90.
+  After a pause longer than 300 ms, the next key waits for its echo, local and
+  remote.
   Measure both render paths with:
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --scratch-path .build-tests rai-bench --latency --renderer cg`.
 - **Nested splits** — rendered from the daemon's own split geometry and ratios.
