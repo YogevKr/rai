@@ -27,12 +27,19 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     self.pendingTriage = false
                 }
             }
+            if let pendingActionError {
+                Task { @MainActor in
+                    appModel?.showActionError(pendingActionError)
+                    self.pendingActionError = nil
+                }
+            }
         }
     }
 
     private var deviceToken: String?
     private var pendingPaneID: String?
     private var pendingTriage = false
+    private var pendingActionError: String?
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
         center: SystemPhoneNotificationCenter(),
         readStateStore: UserDefaultsPhoneNotificationReadStateStore()
@@ -145,14 +152,26 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         if let bytes {
             let delivered: Bool
             if let appModel {
-                delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+                if response.actionIdentifier == NotificationAction.reply {
+                    delivered = await appModel.sendNotificationReply(bytes, to: paneID)
+                } else {
+                    delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+                }
             } else if let pairing = PairingStore().load() {
                 let connection = await MainActor.run { BridgeConnection() }
-                delivered = await connection.connectAndSendInput(
-                    bytes,
-                    to: paneID,
-                    pairing: pairing
-                )
+                if response.actionIdentifier == NotificationAction.reply {
+                    delivered = await connection.connectAndSendComposedLine(
+                        bytes, to: paneID, pairing: pairing
+                    )
+                    if !delivered {
+                        let message = await MainActor.run { connection.actionError }
+                        if let message { await showActionError(message) }
+                    }
+                } else {
+                    delivered = await connection.connectAndSendInput(
+                        bytes, to: paneID, pairing: pairing
+                    )
+                }
             } else {
                 delivered = false
             }
@@ -174,6 +193,14 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         await MainActor.run {
             appModel?.openTriage()
             if appModel != nil { pendingTriage = false }
+        }
+    }
+
+    private func showActionError(_ message: String) async {
+        pendingActionError = message
+        await MainActor.run {
+            appModel?.showActionError(message)
+            if appModel != nil { pendingActionError = nil }
         }
     }
 }

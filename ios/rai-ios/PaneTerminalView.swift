@@ -291,20 +291,24 @@ struct PaneTerminalView: View {
             return
         }
         destructiveArmed = false
-        // Clear only once the line is actually on the wire. It used to clear
-        // unconditionally, so typing with no signal wiped the text and dropped
-        // it — the send failure was swallowed into handleSocketFailure and the
-        // user was never told. A queued line keeps the field's contents until
-        // it lands.
+        // The connection either sends, queues, or refuses this line.
+        // Clear the matching draft so a later tap cannot send it twice.
         Task {
-            let delivered = await connection.sendComposedLine(
+            _ = await connection.sendComposedLine(
                 Array(text.utf8) + [0x0D], to: pane.paneID)
-            if delivered { composedLine = "" }
+            if composedLine == text {
+                composedLine = ""
+            }
         }
     }
 
     private func sendLine(_ text: String) {
-        connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
+        Task {
+            _ = await connection.sendComposedLine(
+                Array(text.utf8) + [0x0D],
+                to: pane.paneID
+            )
+        }
     }
 
 

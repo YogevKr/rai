@@ -332,6 +332,12 @@ struct PaneGridSize: Equatable {
     let rows: Int
 }
 
+enum ComposedLineSendResult: Equatable {
+    case delivered
+    case queued
+    case refused
+}
+
 @MainActor
 final class BridgeConnection: ObservableObject {
     enum Status: Equatable {
@@ -440,6 +446,8 @@ final class BridgeConnection: ObservableObject {
     private let decoder = JSONDecoder()
     private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
+    private var latestGridByPaneID: [String: String] = [:]
+    private let passwordPromptGridReader = PasswordPromptGridReader()
     // A seed can land before the terminal view has registered its handler
     // (openPane fires from onAppear, which can precede makeUIView). Hold the
     // payload and deliver it on registration instead of dropping it.
@@ -525,6 +533,10 @@ final class BridgeConnection: ObservableObject {
         actionError = nil
     }
 
+    func showActionError(_ message: String) {
+        actionError = message
+    }
+
     func setPushPreferences(_ preferences: PushPreferences) {
         let preferences = PushPreferencesTimeZoneSync.applyingCurrentZone(
             to: preferences,
@@ -579,6 +591,8 @@ final class BridgeConnection: ObservableObject {
 
     func detachPane(paneID: String) {
         desiredStreams.removeValue(forKey: paneID)
+        latestGridByPaneID.removeValue(forKey: paneID)
+        passwordPromptGridReader.remove(paneID)
         // Re-opening the pane later should seed fresh history again.
         seededPanes.remove(paneID)
         Task {
@@ -708,22 +722,24 @@ final class BridgeConnection: ObservableObject {
     /// against whatever prompt exists minutes later it answers a question
     /// nobody asked. Direct-mode keys keep the old fire-and-forget behavior.
     ///
-    /// Returns true when the line went out on a live socket; false when it was
-    /// queued instead, so the compose field can hold on to its text.
+    /// Returns whether Rai delivered, queued, or refused the line.
     @discardableResult
-    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> Bool {
+    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> ComposedLineSendResult {
+        if refusePasswordPromptSend(to: paneID) {
+            return .refused
+        }
         if status.isConnected {
             do {
                 try await send(
                     .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
                 )
-                return true
+                return .delivered
             } catch {
                 handleSocketFailure(error)
             }
         }
         enqueue(bytes, to: paneID)
-        return false
+        return .queued
     }
 
     private func enqueue(_ bytes: [UInt8], to paneID: String) {
@@ -740,11 +756,19 @@ final class BridgeConnection: ObservableObject {
         outbox.removeAll()
     }
 
+    func updateVisibleGrid(_ grid: String, for paneID: String) {
+        latestGridByPaneID[paneID] = grid
+    }
+
     /// Delivered oldest-first on the next authenticated welcome. Lines older
     /// than the staleness window are dropped rather than replayed: the pane
     /// they were typed for has moved on, and a late line is worse than none.
     private func flushOutbox() {
         guard status.isConnected, !outbox.isEmpty else { return }
+        for paneID in Set(outbox.map(\.paneID)) {
+            _ = refusePasswordPromptSend(to: paneID)
+        }
+        guard !outbox.isEmpty else { return }
         let now = Date()
         let due = outbox.filter { now.timeIntervalSince($0.queuedAt) <= Self.outboxStaleness }
         let dropped = outbox.count - due.count
@@ -782,6 +806,18 @@ final class BridgeConnection: ObservableObject {
 
     private static let outboxLimit = 20
     private static let outboxStaleness: TimeInterval = 15 * 60
+
+    @discardableResult
+    private func refusePasswordPromptSend(to paneID: String) -> Bool {
+        guard let grid = latestGridByPaneID[paneID],
+              PasswordPromptGuard.isPasswordPrompt(grid) else {
+            return false
+        }
+        let dropped = outbox.count(where: { $0.paneID == paneID })
+        outbox.removeAll(where: { $0.paneID == paneID })
+        actionError = PasswordPromptGuard.refusalMessage(droppedQueuedLines: dropped)
+        return true
+    }
 
     func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
         try await send(
@@ -823,6 +859,50 @@ final class BridgeConnection: ObservableObject {
             handleSocketFailure(error)
             return false
         }
+    }
+
+    /// Notification replies are complete lines and use the same prompt guard.
+    func connectAndSendComposedLine(
+        _ bytes: [UInt8],
+        to paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if refusePasswordPromptSend(to: paneID) { return false }
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        var attachedTemporaryStream = false
+        if latestGridByPaneID[paneID] == nil, desiredStreams[paneID] == nil {
+            do {
+                try await send(
+                    .attachStream(paneID: paneID, cols: 80, rows: 24, fullGrid: true)
+                )
+                attachedTemporaryStream = true
+            } catch {
+                handleSocketFailure(error)
+                return false
+            }
+        }
+        for _ in 0..<80 where latestGridByPaneID[paneID] == nil {
+            guard status.isConnected else { return false }
+            try? await Task.sleep(for: .milliseconds(100))
+            if Task.isCancelled { return false }
+        }
+        guard latestGridByPaneID[paneID] != nil else {
+            actionError = "Rai could not verify the pane before sending the reply."
+            if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
+            return false
+        }
+        let result = await sendComposedLine(bytes, to: paneID)
+        if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
+        return result == .delivered
     }
 
     func registerPush(deviceToken: String, environment: String) {
@@ -1006,7 +1086,6 @@ final class BridgeConnection: ObservableObject {
             }
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
-            guard let handlers = paneFrameHandlers[paneID]?.values else { return }
             // Older Macs omit the frame's grid dimensions; clients then fall
             // back to sizing the emulator from the view.
             let grid: PaneGridSize? = if let cols, let rows, cols > 0, rows > 0 {
@@ -1014,6 +1093,15 @@ final class BridgeConnection: ObservableObject {
             } else {
                 nil
             }
+            if let text = passwordPromptGridReader.apply(
+                data: data,
+                full: full,
+                size: grid,
+                paneID: paneID
+            ) {
+                updateVisibleGrid(text, for: paneID)
+            }
+            guard let handlers = paneFrameHandlers[paneID]?.values else { return }
             for handler in handlers {
                 handler(data, full, grid)
             }

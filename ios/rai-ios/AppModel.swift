@@ -263,6 +263,15 @@ final class AppModel: ObservableObject {
         return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
     }
 
+    func sendNotificationReply(_ bytes: [UInt8], to paneID: String) async -> Bool {
+        guard let pairing else { return false }
+        return await connection.connectAndSendComposedLine(bytes, to: paneID, pairing: pairing)
+    }
+
+    func showActionError(_ message: String) {
+        connection.showActionError(message)
+    }
+
     func openTriage() {
         pendingOpenPaneID = nil
         triageRequest += 1

@@ -13,10 +13,9 @@ final class OutboxTests: XCTestCase {
         let connection = BridgeConnection()
         XCTAssertFalse(connection.status.isConnected)
 
-        let delivered = await connection.sendComposedLine(line("hello"), to: "p1")
+        let result = await connection.sendComposedLine(line("hello"), to: "p1")
 
-        // False is what keeps the user's text in the compose field.
-        XCTAssertFalse(delivered)
+        XCTAssertEqual(result, .queued)
         XCTAssertEqual(connection.outbox.count, 1)
         XCTAssertEqual(connection.outbox.first?.paneID, "p1")
         XCTAssertEqual(connection.outbox.first?.text, "hello\r")
@@ -64,5 +63,35 @@ final class OutboxTests: XCTestCase {
         // Replay has to reach the pane the line was typed for, not whichever
         // pane happens to be open when the connection returns.
         XCTAssertEqual(connection.outbox.map(\.paneID), ["pane-a", "pane-b"])
+    }
+
+    func testPasswordPromptDropsOnlyThatPanesQueuedLines() async {
+        let connection = BridgeConnection()
+        _ = await connection.sendComposedLine(line("secret"), to: "pane-a")
+        _ = await connection.sendComposedLine(line("keep"), to: "pane-b")
+
+        connection.updateVisibleGrid("output\n[sudo] password for yogev:", for: "pane-a")
+        let result = await connection.sendComposedLine(line("still secret"), to: "pane-a")
+
+        XCTAssertEqual(result, .refused)
+        XCTAssertEqual(connection.outbox.map(\.paneID), ["pane-b"])
+        XCTAssertEqual(
+            connection.actionError,
+            PasswordPromptGuard.refusal + " 1 queued line for this pane was dropped."
+        )
+    }
+
+    func testNotificationReplyUsesPasswordPromptGuardBeforeConnecting() async throws {
+        let connection = BridgeConnection()
+        let pairing = try Pairing(host: "studio.local", port: 9_876, token: "secret")
+        connection.updateVisibleGrid("Password:", for: "pane-a")
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("secret"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(connection.actionError, PasswordPromptGuard.refusal)
+        XCTAssertTrue(connection.outbox.isEmpty)
     }
 }

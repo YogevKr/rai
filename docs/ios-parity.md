@@ -124,6 +124,14 @@ An iOS drift test requires one phone policy for every shared code.
 - The history seed still arrives first. Both live paints use full replacement frames.
 - This behavior changes no bridge message shape and needs no protocol version change.
 
+## Password prompt guard LANDED (2026-09-03)
+
+- The phone blocks composed lines when the last non-empty grid row is a password prompt.
+- The guard covers quick replies, slash commands, outbox flush, and notification replies.
+- Notification replies wait for one current pane frame when no live grid exists.
+- Type mode stays available for direct keyboard input.
+- The guard does not change the bridge protocol.
+
 ## Backlog (value order)
 
 1. **Workspace ops over the bridge** — `renameWorkspace` / `closeWorkspace`

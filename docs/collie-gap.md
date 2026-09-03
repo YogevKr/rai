@@ -162,4 +162,4 @@ Wave 2 quality-of-life outcome (2026-09-03):
 | --- | --- |
 | 7. APNs key file | ✅ Validated P-256 file with owner-only modes and Keychain migration |
 | 8. First attach frame | ✅ Native visible-grid paint before observe |
-| 1b. Password prompt guard | Pending |
+| 1b. Password prompt guard | ✅ Anchored phone guard; direct Type mode stays available |

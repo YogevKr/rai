@@ -86,7 +86,8 @@ crook for the herd:
   answer the wrong prompt.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
-  rides herdr's key semantics, so Enter submits and Backspace erases.
+  rides herdr's key semantics, so Enter submits and Backspace erases. Line
+  actions stop at password prompts. Direct keyboard input remains available.
 - **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
   workspace or a fresh one at a chosen directory.
 - **Push notifications** (APNs) when agents block or finish. Bursts coalesce,

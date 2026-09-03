@@ -180,6 +180,18 @@ again. Rai does not accept the old token.
 Then: watch your herd, tap a pane to open its live terminal, and use the on‑screen
 keys / compose bar to drive the agent.
 
+Rai blocks line actions when the last non-empty grid row is a password prompt.
+This applies to the compose bar, quick replies, slash commands, queued lines,
+and notification replies. Rai drops queued lines for that pane and reports the count.
+The message explains that hidden input cannot be checked from these actions.
+Use Type mode to send direct keyboard input when you choose to answer the prompt.
+
+Notification replies wait for one pane frame when no live grid exists.
+Rai sends nothing when that frame is unavailable.
+
+The match is anchored to the last non-empty row.
+Quoted password text does not match when an agent composer row appears below it.
+
 ## Offline behavior
 
 The phone saves the latest herd snapshot in Application Support.
