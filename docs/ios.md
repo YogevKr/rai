@@ -117,6 +117,7 @@ every registered device and shows each APNs status and reason. The read-only
 Doctor checks the bridge, Bonjour, Tailscale, APNs, devices, gate, and last push.
 Each device has an independent delivery queue. One stalled device cannot delay
 alerts, retractions, or test pushes for another device.
+The Mac checks notification preferences again before a queued alert reaches APNs.
 
 Open the connection menu and select **Notifications** to control one paired device.
 You can enable needs-you and finished alerts separately.
@@ -183,10 +184,12 @@ Tap the diagnosis to show the raw system or bridge error.
 
 New Mac replies include stable bridge error codes and technical details.
 The phone uses the code to select Reconnect, Pair Again, or an action error.
+Authentication failures that need user action stop automatic reconnect attempts.
 It uses the old prose rules when a Mac omits the code.
 
 The live pane shows a status strip above the compose bar.
 It reads Claude and Codex status rows from the terminal grid.
+It only parses panes that the herd snapshot identifies as agents.
 The strip can show mode, model, effort, agent count, directory, and branch.
 The terminal keeps its original rows.
 

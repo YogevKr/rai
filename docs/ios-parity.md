@@ -77,10 +77,11 @@ All additive, no version bump (old phones skip unknown message types):
 - `pushPrefsState` returns the effective stored settings after `welcome` and each update.
 - The Mac audits each preference write before it stores the change.
 - The push gate drops disabled, snoozed, and DND events for each registered device.
+- The delivery queue checks these controls again before it calls APNs.
 - Disabling a kind also drops matching events that the presence gate already holds.
 - A snoozed event stays dropped after the presence gate releases its burst.
 - The Doctor reports each paired device's effective controls.
-- The phone parses Claude and Codex status rows from each live grid.
+- The phone parses status rows only when the snapshot identifies an agent.
 - Codex parsing requires the captured model, effort, separator, and path order.
 - A strip above the compose bar shows fields that the parser finds.
 - The terminal keeps the source status rows.
@@ -88,6 +89,7 @@ All additive, no version bump (old phones skip unknown message types):
 Bridge `error` and `authFailed` replies now include optional `code` and `detail` fields.
 Older phones ignore these added fields.
 New phones use old `message` or `reason` prose when a Mac omits `code`.
+Authentication diagnoses stop automatic retries when the user must act.
 
 | Code | Phone result |
 | --- | --- |

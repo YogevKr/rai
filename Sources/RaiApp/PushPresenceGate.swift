@@ -36,6 +36,28 @@ enum PushPreferenceDecision: Equatable {
 }
 
 enum PushPreferenceGate {
+    static func allowedBurst(
+        _ burst: PhonePushBurst,
+        deviceID: String?,
+        preferences: PushPreferences,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> PhonePushBurst? {
+        let events = burst.events.filter { event in
+            if let deviceID, event.suppressedDeviceIDs.contains(deviceID) {
+                return false
+            }
+            return evaluate(
+                status: event.status,
+                occurredAt: event.occurredAt,
+                preferences: preferences,
+                now: now,
+                calendar: calendar
+            ) == .allow
+        }
+        return events.isEmpty ? nil : PhonePushBurst(events: events)
+    }
+
     static func suppressesHeldEvent(
         status: AgentStatus,
         occurredAt: Date,

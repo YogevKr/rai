@@ -12,7 +12,10 @@ final class AgentStatuslineTests: XCTestCase {
             "trust-dialog",
         ]
         for name in names {
-            let status = try XCTUnwrap(AgentStatuslineParser.parse(fixture(name)), name)
+            let status = try XCTUnwrap(
+                AgentStatuslineParser.parse(fixture(name), agent: "claude"),
+                name
+            )
 
             XCTAssertEqual(status.model, "Fable 5.1", name)
             XCTAssertEqual(status.effort, "xhigh", name)
@@ -27,7 +30,7 @@ final class AgentStatuslineTests: XCTestCase {
         ◉ xhigh · /effort
         /rc
         """
-        let status = try XCTUnwrap(AgentStatuslineParser.parse(grid))
+        let status = try XCTUnwrap(AgentStatuslineParser.parse(grid, agent: "claude"))
 
         XCTAssertEqual(status.mode, "manual")
         XCTAssertEqual(status.effort, "xhigh")
@@ -36,7 +39,10 @@ final class AgentStatuslineTests: XCTestCase {
     }
 
     func testCodexCaptureProvidesModelEffortAndDirectory() throws {
-        let status = try XCTUnwrap(AgentStatuslineParser.parse(fixture("codex-statusline")))
+        let status = try XCTUnwrap(AgentStatuslineParser.parse(
+            fixture("codex-statusline"),
+            agent: "codex"
+        ))
 
         XCTAssertEqual(status.model, "gpt-5.6-sol")
         XCTAssertEqual(status.effort, "high")
@@ -45,7 +51,8 @@ final class AgentStatuslineTests: XCTestCase {
 
     func testBranchSegmentIsOptional() throws {
         let status = try XCTUnwrap(AgentStatuslineParser.parse(
-            "gpt-5.6-sol high · ~/rai · branch: codexspin/qol"
+            "gpt-5.6-sol high · ~/rai · branch: codexspin/qol",
+            agent: "codex"
         ))
         XCTAssertEqual(status.branch, "codexspin/qol")
     }
@@ -54,15 +61,21 @@ final class AgentStatuslineTests: XCTestCase {
         let oldOutput = "gpt-5.6-sol · high · ~/old"
         let blankRows = Array(repeating: "", count: 13).joined(separator: "\n")
 
-        XCTAssertNil(AgentStatuslineParser.parse("\(oldOutput)\n\(blankRows)"))
+        XCTAssertNil(AgentStatuslineParser.parse(
+            "\(oldOutput)\n\(blankRows)",
+            agent: "codex"
+        ))
     }
 
     func testNormalShellTextDoesNotBecomeAnEffortStatus() {
-        XCTAssertNil(AgentStatuslineParser.parse("build risk is high"))
+        XCTAssertNil(AgentStatuslineParser.parse("build risk is high", agent: "codex"))
     }
 
     func testCodexUltraEffortIsSupported() throws {
-        let status = try XCTUnwrap(AgentStatuslineParser.parse("gpt-5.6-sol ultra · ~/rai"))
+        let status = try XCTUnwrap(AgentStatuslineParser.parse(
+            "gpt-5.6-sol ultra · ~/rai",
+            agent: "codex"
+        ))
 
         XCTAssertEqual(status.effort, "ultra")
     }
@@ -72,9 +85,10 @@ final class AgentStatuslineTests: XCTestCase {
         Claude Code v2.1.259
         Fable 5.1 with xhigh effort
         /Users/me/My Project
-        """))
+        """, agent: "claude"))
         let codex = try XCTUnwrap(AgentStatuslineParser.parse(
-            "gpt-5.6-sol high · /Users/me/My Project"
+            "gpt-5.6-sol high · /Users/me/My Project",
+            agent: "codex"
         ))
 
         XCTAssertEqual(claude.cwd, "/Users/me/My Project")
@@ -84,8 +98,17 @@ final class AgentStatuslineTests: XCTestCase {
     func testCodexRejectsTranscriptAndOrdinaryOutputFixtures() throws {
         for line in try fixture("codex-statusline-negative").components(separatedBy: .newlines)
         where !line.isEmpty {
-            XCTAssertNil(AgentStatuslineParser.parse(line), line)
+            XCTAssertNil(AgentStatuslineParser.parse(line, agent: "codex"), line)
         }
+    }
+
+    func testShellPaneRejectsAnExactStatusRowNearTheBottom() {
+        let grid = """
+        $ printf 'gpt-5.6-sol high · ~/rai\\n'
+        gpt-5.6-sol high · ~/rai
+        """
+
+        XCTAssertNil(AgentStatuslineParser.parse(grid, agent: nil))
     }
 
     private func fixture(_ name: String) throws -> String {

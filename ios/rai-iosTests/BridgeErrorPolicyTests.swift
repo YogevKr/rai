@@ -1,3 +1,4 @@
+import Foundation
 import RaiCore
 import XCTest
 
@@ -51,5 +52,25 @@ final class BridgeErrorPolicyTests: XCTestCase {
             BridgeErrorPolicy.destination(for: .operationFailed, phase: .authentication),
             .actionError
         )
+    }
+
+    @MainActor
+    func testRepairRequiredAuthenticationStopsReconnectAndRequiresPairing() {
+        let connection = BridgeConnection()
+        connection.scheduleReconnect(after: URLError(.networkConnectionLost))
+        XCTAssertTrue(connection.hasPendingReconnect)
+
+        connection.handle(.authFailed(
+            reason: "Re-pair required",
+            code: .repairRequired,
+            detail: "The paired device credential was revoked."
+        ))
+
+        guard case let .failed(diagnosis) = connection.status else {
+            return XCTFail("Expected a failed connection status")
+        }
+        XCTAssertEqual(diagnosis.action, .pairAgain)
+        XCTAssertTrue(connection.requiresRepair)
+        XCTAssertFalse(connection.hasPendingReconnect)
     }
 }

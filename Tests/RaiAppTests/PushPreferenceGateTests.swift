@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import RaiCore
+import Security
 import XCTest
 
 @testable import RaiApp
@@ -151,6 +153,97 @@ final class PushPreferenceGateTests: XCTestCase {
         XCTAssertEqual(decision(.blocked, at: instant, preferences: newYork), .allow)
     }
 
+    @MainActor
+    func testQueuedAlertIsDroppedWhenDNDStartsBeforeDelivery() async throws {
+        _ = NSApplication.shared
+        let defaultsName = "PushPreferenceGateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defaults.removePersistentDomain(forName: defaultsName)
+        defaults.set(true, forKey: "companionBridgeCredentialMigrationV1")
+        defaults.set(true, forKey: "apns.hasKey")
+        defaults.set("team", forKey: "apns.teamID")
+        defaults.set("key", forKey: "apns.keyID")
+        defaults.set("bundle", forKey: "apns.bundleID")
+        addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
+
+        let credentialStore = BridgeDeviceCredentialStore(defaults: defaults)
+        let client = ClientInfo(
+            deviceID: "phone-1",
+            name: "Test Phone",
+            platform: "iOS",
+            model: "iPhone 16"
+        )
+        let pairingCode = try XCTUnwrap(credentialStore.pairingCode?.value)
+        let pairing = try credentialStore.exchange(
+            code: pairingCode,
+            client: client
+        ).get()
+        _ = try XCTUnwrap(credentialStore.authenticate(token: pairing.token))
+        let preferences = PushPreferences(dnd: .init(start: 13 * 60, end: 14 * 60))
+        _ = try XCTUnwrap(credentialStore.updatePushPreferences(
+            preferences,
+            deviceID: pairing.device.id
+        ))
+
+        let registration = TestPushRegistration(
+            deviceToken: "test-token",
+            environment: "sandbox",
+            deviceID: pairing.device.id
+        )
+        defaults.set(
+            try JSONEncoder().encode([registration]),
+            forKey: "companionBridgePushRegistrations"
+        )
+
+        let queue = APNsDeliveryQueue()
+        let blocker = PushQueueGate()
+        let blockerStarted = expectation(description: "blocking delivery started")
+        var currentTime = date(hour: 12)
+        let deliveryCalendar = calendar
+        let auditDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-push-gate-tests-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: auditDirectory) }
+        let model = RaiModel(
+            client: HerdrClient(socketPath: "/nonexistent/herdr.sock"),
+            userDefaults: defaults
+        )
+        let server = RaiBridgeServer(
+            model: model,
+            userDefaults: defaults,
+            apnsSettings: APNsSettings(defaults: defaults) { ("test-key", errSecSuccess) },
+            auditLogURL: auditDirectory.appendingPathComponent("audit.jsonl"),
+            pushDeliveryQueue: queue,
+            now: { currentTime }
+        )
+        let burst = PhonePushBurst(events: [PhonePushEvent(
+            paneID: "pane-1",
+            paneName: "Agent",
+            workspaceID: "workspace-1",
+            workspaceName: "Work",
+            status: .blocked,
+            occurredAt: date(hour: 12)
+        )])
+
+        let first = queue.enqueue(key: "sandbox:test-token") {
+            blockerStarted.fulfill()
+            await blocker.wait()
+        }
+        await fulfillment(of: [blockerStarted], timeout: 1)
+        server.sendPush(burst, now: currentTime, calendar: deliveryCalendar)
+
+        currentTime = date(hour: 13, minute: 15)
+        await blocker.open()
+        await first.value
+        for _ in 0..<100 where server.lastPushResult == nil {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            server.lastPushResult,
+            "Push dropped by device notification preferences."
+        )
+    }
+
     func testEffectivePreferencesRemoveExpiredAndInvalidValues() {
         let now = date(hour: 12)
         let preferences = PushPreferences(
@@ -187,5 +280,30 @@ final class PushPreferenceGateTests: XCTestCase {
             hour: hour,
             minute: minute
         ))!
+    }
+}
+
+private struct TestPushRegistration: Encodable {
+    let deviceToken: String
+    let environment: String
+    let deviceID: String
+}
+
+private actor PushQueueGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }

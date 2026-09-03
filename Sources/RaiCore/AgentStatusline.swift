@@ -53,7 +53,8 @@ public enum AgentStatuslineParser {
         #"(?:^|\s{2,})((?:~?/).+)$"#
     )
 
-    public static func parse(_ grid: String) -> AgentStatusline? {
+    public static func parse(_ grid: String, agent: String?) -> AgentStatusline? {
+        guard agent != nil else { return nil }
         let lines = grid.components(separatedBy: .newlines)
             .map {
                 $0.trimmingCharacters(

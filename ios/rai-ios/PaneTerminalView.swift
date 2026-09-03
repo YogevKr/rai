@@ -23,6 +23,7 @@ struct PaneTerminalView: View {
     var body: some View {
         StreamingTerminalView(
             paneID: pane.paneID,
+            agent: pane.agent,
             connection: connection,
             search: terminalSearch,
             prompts: promptController,
@@ -391,6 +392,7 @@ enum TerminalPaneLayout {
 
 private struct StreamingTerminalView: UIViewRepresentable {
     let paneID: String
+    let agent: String?
     let connection: BridgeConnection
     let search: TerminalSearchController
     let prompts: TerminalPromptController
@@ -413,6 +415,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             paneID: paneID,
+            agent: agent,
             connection: connection,
             search: search,
             prompts: prompts,
@@ -479,7 +482,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
             context.coordinator.prompts.refresh()
-            context.coordinator.statusline.refresh()
+            context.coordinator.statusline.refresh(agent: context.coordinator.agent)
             if full {
                 // A stream (re)start means "show me the live screen": follow
                 // the cursor region (NOT the geometric bottom — a pinned grid
@@ -488,7 +491,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 DispatchQueue.main.async { [weak terminal] in
                     terminal?.scrollToLive()
                     context.coordinator.prompts.refresh()
-                    context.coordinator.statusline.refresh()
+                    context.coordinator.statusline.refresh(agent: context.coordinator.agent)
                 }
             }
         }
@@ -540,6 +543,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
+        context.coordinator.agent = agent
+        context.coordinator.statusline.refresh(agent: agent)
     }
 
     static func dismantleUIView(_ scroll: UIScrollView, coordinator: Coordinator) {
@@ -575,6 +580,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     final class Coordinator: NSObject, TerminalViewDelegate {
         let paneID: String
+        var agent: String?
         let connection: BridgeConnection
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
@@ -606,6 +612,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
         init(
             paneID: String,
+            agent: String?,
             connection: BridgeConnection,
             search: TerminalSearchController,
             prompts: TerminalPromptController,
@@ -613,6 +620,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             send: @escaping ([UInt8]) -> Void
         ) {
             self.paneID = paneID
+            self.agent = agent
             self.connection = connection
             self.search = search
             self.prompts = prompts
@@ -724,8 +732,8 @@ private final class TerminalStatuslineController: ObservableObject {
     @Published private(set) var statusline: AgentStatusline?
     var readGrid: (() -> String)?
 
-    func refresh() {
-        statusline = readGrid.flatMap { AgentStatuslineParser.parse($0()) }
+    func refresh(agent: String?) {
+        statusline = readGrid.flatMap { AgentStatuslineParser.parse($0(), agent: agent) }
     }
 }
 

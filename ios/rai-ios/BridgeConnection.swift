@@ -344,6 +344,10 @@ final class BridgeConnection: ObservableObject {
         status.diagnosis?.action == .pairAgain
     }
 
+    var hasPendingReconnect: Bool {
+        reconnectTask != nil
+    }
+
     var shouldShowEmptyHerd: Bool {
         status.isConnected
             && snapshot?.panes.isEmpty == true
@@ -870,7 +874,7 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func handle(_ message: BridgeMessage) {
+    func handle(_ message: BridgeMessage) {
         switch message {
         case let .paired(token, protocolVersion, _):
             guard protocolVersion == bridgeProtocolVersion else {
@@ -1086,11 +1090,22 @@ final class BridgeConnection: ObservableObject {
         detail: String?,
         phase: BridgeErrorPhase
     ) {
-        switch BridgeErrorPolicy.destination(for: code, phase: phase) {
+        let destination = BridgeErrorPolicy.destination(for: code, phase: phase)
+        switch destination {
         case .actionError:
             actionError = message
         case .reconnect, .pairAgain:
-            status = .failed(.coded(code, message: message, detail: detail, host: host))
+            let diagnosis = ConnectionDiagnosis.coded(
+                code,
+                message: message,
+                detail: detail,
+                host: host
+            )
+            if phase == .authentication {
+                stopWithFailure(diagnosis)
+            } else {
+                status = .failed(diagnosis)
+            }
         case .ignore:
             NSLog("rai-ios: optional bridge feature unavailable: %@", detail ?? message)
         }
@@ -1143,7 +1158,7 @@ final class BridgeConnection: ObservableObject {
         scheduleReconnect(after: error)
     }
 
-    private func scheduleReconnect(after error: Error) {
+    func scheduleReconnect(after error: Error) {
         NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
         task = nil

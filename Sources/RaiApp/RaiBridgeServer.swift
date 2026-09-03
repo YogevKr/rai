@@ -166,6 +166,7 @@ final class RaiBridgeServer: ObservableObject {
     private let liveConnections = BridgeLiveConnectionRegistry()
     private let credentialStore: BridgeDeviceCredentialStore
     private let auditLogger: BridgeAuditLogger?
+    private let clock: () -> Date
     private var pairingExpiryTask: Task<Void, Never>?
     private var observeStreams: [ObjectIdentifier: [String: ObserveStream]] = [:]
     /// Consecutive unexpected observe exits per (client, pane); reset when a
@@ -177,7 +178,7 @@ final class RaiBridgeServer: ObservableObject {
     private var pushBadgeLedger = PushBadgeLedger<PushRegistration>()
     private let apnsPusher = APNsPusher()
     /// Serializes each device without making one device wait for another.
-    private let pushDeliveryQueue = APNsDeliveryQueue()
+    private let pushDeliveryQueue: APNsDeliveryQueue
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
@@ -187,11 +188,15 @@ final class RaiBridgeServer: ObservableObject {
         model: RaiModel,
         userDefaults: UserDefaults = .standard,
         apnsSettings: APNsSettings? = nil,
-        auditLogURL: URL? = nil
+        auditLogURL: URL? = nil,
+        pushDeliveryQueue: APNsDeliveryQueue? = nil,
+        now: @escaping () -> Date = Date.init
     ) {
         self.model = model
         self.userDefaults = userDefaults
         self.apnsSettings = apnsSettings ?? .shared
+        self.pushDeliveryQueue = pushDeliveryQueue ?? APNsDeliveryQueue()
+        clock = now
         if !userDefaults.bool(forKey: Self.credentialMigrationKey) {
             userDefaults.removeObject(forKey: "companionBridgePairingToken")
             userDefaults.removeObject(forKey: Self.pushRegistrationsKey)
@@ -429,27 +434,15 @@ final class RaiBridgeServer: ObservableObject {
             recordNoDelivery("Push not sent: no registered devices.")
             return
         }
-        let preferencesByDevice = Dictionary(
-            uniqueKeysWithValues: pairedDevices.map { ($0.id, $0.pushPreferences) }
-        )
         let plans = registrations.compactMap {
             registration -> (PushRegistration, PhonePushBurst)? in
-            let preferences = registration.deviceID.flatMap { preferencesByDevice[$0] } ?? .default
-            let allowedEvents = burst.events.filter {
-                if let deviceID = registration.deviceID,
-                   $0.suppressedDeviceIDs.contains(deviceID) {
-                    return false
-                }
-                return PushPreferenceGate.evaluate(
-                    status: $0.status,
-                    occurredAt: $0.occurredAt,
-                    preferences: preferences,
-                    now: now,
-                    calendar: calendar
-                ) == .allow
-            }
-            guard !allowedEvents.isEmpty else { return nil }
-            return (registration, PhonePushBurst(events: allowedEvents))
+            guard let allowed = allowedPushBurst(
+                burst,
+                for: registration,
+                now: now,
+                calendar: calendar
+            ) else { return nil }
+            return (registration, allowed)
         }
 
         guard !plans.isEmpty else {
@@ -467,20 +460,21 @@ final class RaiBridgeServer: ObservableObject {
         }
         let deliveries = plans.map { registration, effectiveBurst in
             let deliveryKey = "\(registration.environment):\(registration.deviceToken)"
-            return pushDeliveryQueue.enqueue(key: deliveryKey) { [weak self] in
-                guard let self else {
-                    return PushDeliveryReport(
-                        deviceToken: registration.deviceToken,
-                        environment: registration.environment,
-                        status: nil,
-                        reason: "Bridge stopped"
-                    )
-                }
+            return pushDeliveryQueue.enqueue(key: deliveryKey) {
+                [weak self] () -> PushDeliveryReport? in
+                guard let self else { return nil }
+                let deliveryNow = await self.clock()
+                guard let deliveryBurst = await self.allowedPushBurst(
+                    effectiveBurst,
+                    for: registration,
+                    now: deliveryNow,
+                    calendar: calendar
+                ) else { return nil }
                 return await self.deliverAlert(
                     configuration: configuration,
                     registration: registration,
-                    burst: effectiveBurst,
-                    stableIDs: Set(effectiveBurst.notificationIDs)
+                    burst: deliveryBurst,
+                    stableIDs: Set(deliveryBurst.notificationIDs)
                 )
             }
         }
@@ -489,10 +483,35 @@ final class RaiBridgeServer: ObservableObject {
             guard let self else { return }
             var reports: [PushDeliveryReport] = []
             for delivery in deliveries {
-                reports.append(await delivery.value)
+                if let report = await delivery.value {
+                    reports.append(report)
+                }
             }
-            self.recordDelivery(reports.sorted { $0.id < $1.id })
+            if reports.isEmpty {
+                self.lastPushSucceeded = true
+                self.lastPushResult = "Push dropped by device notification preferences."
+            } else {
+                self.recordDelivery(reports.sorted { $0.id < $1.id })
+            }
         }
+    }
+
+    private func allowedPushBurst(
+        _ burst: PhonePushBurst,
+        for registration: PushRegistration,
+        now: Date,
+        calendar: Calendar
+    ) -> PhonePushBurst? {
+        let preferences = registration.deviceID.flatMap { deviceID in
+            pairedDevices.first(where: { $0.id == deviceID })?.pushPreferences
+        } ?? .default
+        return PushPreferenceGate.allowedBurst(
+            burst,
+            deviceID: registration.deviceID,
+            preferences: preferences,
+            now: now,
+            calendar: calendar
+        )
     }
 
     func deviceIDsSuppressingHeldEvent(
