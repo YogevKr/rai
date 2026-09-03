@@ -74,6 +74,11 @@ The same `.p8` authentication key serves both APNs sandbox and production. The
 environment attached to each device token determines which APNs host the Mac
 uses. The private key is stored in the Mac's Keychain, not in preferences.
 
+Blocked-agent alerts use the Time Sensitive interruption level. This lets them
+pass Focus when the user permits Time Sensitive alerts. Finished alerts stay
+active. The app declares the required
+`com.apple.developer.usernotifications.time-sensitive` entitlement.
+
 Rai can use Claude Code hooks for accurate notification and push text. Install
 them from **Settings → Integrations → Install Claude Code hooks** on the Mac.
 Single-pane pushes use the current tool request, question, or completion line.

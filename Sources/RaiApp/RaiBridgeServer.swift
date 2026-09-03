@@ -643,6 +643,7 @@ final class RaiBridgeServer: ObservableObject {
             summaryArgument: burst.summaryArgument,
             summaryArgumentCount: burst.events.count,
             occurredAt: burst.occurredAt,
+            interruptionLevel: burst.requiresAttention ? .timeSensitive : .active,
             badge: badge
         )
         let report = PushDeliveryReport(
@@ -712,6 +713,7 @@ final class RaiBridgeServer: ObservableObject {
             summaryArgument: "rai",
             summaryArgumentCount: 1,
             occurredAt: now,
+            interruptionLevel: .active,
             badge: nil
         )
         let report = PushDeliveryReport(

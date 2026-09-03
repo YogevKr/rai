@@ -190,6 +190,7 @@ actor APNsPusher {
         summaryArgument: String,
         summaryArgumentCount: Int,
         occurredAt: Date,
+        interruptionLevel: APNsInterruptionLevel,
         badge: Int? = nil
     ) async -> Result {
         let payload: Data
@@ -207,6 +208,7 @@ actor APNsPusher {
                 summaryArgument: summaryArgument,
                 summaryArgumentCount: summaryArgumentCount,
                 occurredAt: occurredAt,
+                interruptionLevel: interruptionLevel,
                 badge: badge
             )
         } catch {
@@ -335,6 +337,11 @@ struct APNsRetractionBatch: Equatable, Sendable {
     let payload: Data
 }
 
+enum APNsInterruptionLevel: String, Encodable, Sendable {
+    case active
+    case timeSensitive = "time-sensitive"
+}
+
 enum APNsPayloadBuilder {
     static let maximumPayloadBytes = 4_096
 
@@ -362,6 +369,7 @@ enum APNsPayloadBuilder {
         summaryArgument: String,
         summaryArgumentCount: Int,
         occurredAt: Date,
+        interruptionLevel: APNsInterruptionLevel,
         badge: Int?
     ) throws -> Data {
         let title = title.apnsPrefix(maxBytes: 256)
@@ -389,7 +397,8 @@ enum APNsPayloadBuilder {
                     sound: "default",
                     category: category,
                     badge: badge,
-                    threadID: threadID
+                    threadID: threadID,
+                    interruptionLevel: interruptionLevel
                 ),
                 paneID: paneID,
                 workspaceID: workspaceID,
@@ -515,10 +524,12 @@ enum APNsPayloadBuilder {
             let category: String?
             let badge: Int?
             let threadID: String
+            let interruptionLevel: APNsInterruptionLevel
 
             enum CodingKeys: String, CodingKey {
                 case alert, sound, category, badge
                 case threadID = "thread-id"
+                case interruptionLevel = "interruption-level"
             }
         }
 
