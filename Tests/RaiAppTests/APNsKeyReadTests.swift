@@ -97,6 +97,80 @@ final class APNsKeyReadTests: XCTestCase {
     }
 
     @MainActor
+    func testTemporaryLegacyReadFailureRetriesOnNextLaunch() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+
+        let first = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            reads += 1
+            return ("", errSecInteractionNotAllowed)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        let second = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            reads += 1
+            return (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(second.keyReadState, .readable)
+        XCTAssertEqual(reads, 2)
+    }
+
+    @MainActor
+    func testPriorReleaseUnreadableMigrationRetries() throws {
+        let (defaults, keyURL) = try fixture()
+        defaults.set(true, forKey: "apns.keyFileMigrationAttempted")
+        defaults.set("unreadable", forKey: "apns.keyFileMigrationProblem")
+
+        let settings = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            (Self.pem, errSecSuccess)
+        }
+
+        XCTAssertEqual(settings.keyReadState, .readable)
+        XCTAssertNil(settings.keyProblem)
+    }
+
+    @MainActor
+    func testMissingLegacyItemClearsTemporaryReadFailure() throws {
+        let (defaults, keyURL) = try fixture()
+
+        let first = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            ("", errSecInteractionNotAllowed)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        let second = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            ("", errSecItemNotFound)
+        }
+        XCTAssertEqual(second.keyReadState, .missing)
+        XCTAssertEqual(
+            second.keyProblem,
+            "No APNs key file exists. Paste the .p8 in Settings → iPhone."
+        )
+    }
+
+    @MainActor
+    func testTemporaryFileWriteFailureRetriesOnNextLaunch() throws {
+        let (defaults, keyURL) = try fixture()
+        let blockedDirectory = keyURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: blockedDirectory.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("blocked".utf8).write(to: blockedDirectory)
+
+        let first = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        try FileManager.default.removeItem(at: blockedDirectory)
+        let second = APNsSettings(defaults: defaults, keyFileURL: keyURL) {
+            (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(second.keyReadState, .readable)
+    }
+
+    @MainActor
     func testSaveRefusesInvalidKeyAndNamesTheReason() throws {
         let (defaults, keyURL) = try fixture()
         let settings = APNsSettings(

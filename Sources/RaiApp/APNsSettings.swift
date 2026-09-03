@@ -179,11 +179,16 @@ final class APNsSettings: ObservableObject {
             defaults.set(true, forKey: Key.migrationAttempted)
             return
         }
-        guard !defaults.bool(forKey: Key.migrationAttempted) else { return }
-        defaults.set(true, forKey: Key.migrationAttempted)
+        let attempted = defaults.bool(forKey: Key.migrationAttempted)
+        guard !attempted || migrationProblem == .unreadable else { return }
 
         let (value, status) = keyReader()
-        guard status != errSecItemNotFound else { return }
+        guard status != errSecItemNotFound else {
+            migrationProblem = nil
+            defaults.removeObject(forKey: Key.migrationProblem)
+            defaults.set(true, forKey: Key.migrationAttempted)
+            return
+        }
         guard status == errSecSuccess else {
             recordMigrationProblem(.unreadable)
             return
@@ -193,10 +198,14 @@ final class APNsSettings: ObservableObject {
             key = try APNsKeyParser.privateKey(from: value)
         } catch {
             recordMigrationProblem(.invalid)
+            defaults.set(true, forKey: Key.migrationAttempted)
             return
         }
         do {
             try writeKeyFile(key.pemRepresentation)
+            migrationProblem = nil
+            defaults.removeObject(forKey: Key.migrationProblem)
+            defaults.set(true, forKey: Key.migrationAttempted)
         } catch {
             recordMigrationProblem(.unreadable)
         }
