@@ -1,0 +1,12 @@
+Claude Code v2.1.258
+/private/tmp/rai-herdr-lab-9edc55ff/work
+
+ Accessing workspace: /private/tmp/rai-herdr-lab-9edc55ff/work
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ No, exit because this folder is not one you
+     trust or created yourself
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel

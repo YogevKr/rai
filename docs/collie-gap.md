@@ -27,14 +27,13 @@ of what rai should absorb.
 
 ## July list — status
 
-Closed since the July audit: single-choice permission/trust prompt buttons
-with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac and phone
-notification retraction; push coalescing and grouping; triage groups with counts
-and a filter pulse line (Nightwatch); session follow.
+Closed since the July audit: structured permission, trust, plan, and
+AskUserQuestion prompt controls with a signature race guard; quick replies;
+an agent-aware slash palette; destructive-input confirm; push presence gate;
+Mac and phone notification retraction; push coalescing and grouping; triage
+groups with counts and a filter pulse line (Nightwatch); session follow.
 
-Still open from July: AskUserQuestion, plan, and wizard prompt blocks;
-draft take-over; per-pane display preferences.
+Still open from July: draft take-over; per-pane display preferences.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -143,10 +142,8 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
-(AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
-dialogs) on iOS; transcript history view; operator config files;
-LAN TLS.
+Wave 2: ✅ structured prompt blocks now use beacons and verified grid steps on iOS.
+Remaining work includes transcript history, operator config files, and LAN TLS.
 
 Wave 2 quality-of-life outcome (2026-09-03):
 

@@ -438,6 +438,8 @@ final class BridgeConnection: ObservableObject {
     }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private(set) var connectionGeneration: UInt64 = 0
+    private var connectionGenerationHandlers: [UUID: (UInt64) -> Void] = [:]
     private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     // A seed can land before the terminal view has registered its handler
@@ -486,6 +488,7 @@ final class BridgeConnection: ObservableObject {
 
     func retryNow() {
         guard pairing != nil || invitation != nil else { return }
+        advanceConnectionGeneration()
         task?.cancel(with: .goingAway, reason: nil)
         receiveTask?.cancel()
         reconnectTask?.cancel()
@@ -653,6 +656,19 @@ final class BridgeConnection: ObservableObject {
         let id = UUID()
         paneFrameHandlers[paneID, default: [:]][id] = handler
         return id
+    }
+
+    func addConnectionGenerationHandler(
+        _ handler: @escaping (UInt64) -> Void
+    ) -> UUID {
+        let id = UUID()
+        connectionGenerationHandlers[id] = handler
+        handler(connectionGeneration)
+        return id
+    }
+
+    func removeConnectionGenerationHandler(_ id: UUID) {
+        connectionGenerationHandlers.removeValue(forKey: id)
     }
 
     func removePaneFrameHandler(for paneID: String, id: UUID) {
@@ -1298,6 +1314,7 @@ final class BridgeConnection: ObservableObject {
     ) {
         NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
+        advanceConnectionGeneration()
         task = nil
         receiveTask = nil
         reconnectAttempt += 1
@@ -1315,6 +1332,7 @@ final class BridgeConnection: ObservableObject {
         // One line per hard failure so a simulator run (`log show`) or a
         // device console says why the phone gave up, not just that it did.
         NSLog("rai-ios: connection failed: %@ — %@", diagnosis.message, diagnosis.rawDetails)
+        advanceConnectionGeneration()
         shouldReconnect = false
         task?.cancel(with: .policyViolation, reason: nil)
         task = nil
@@ -1326,6 +1344,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func disconnect(clearPairing: Bool, clearSnapshot: Bool) {
+        advanceConnectionGeneration()
         shouldReconnect = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -1348,6 +1367,13 @@ final class BridgeConnection: ObservableObject {
             clearPendingPushPreferences()
             pairing = nil
             invitation = nil
+        }
+    }
+
+    private func advanceConnectionGeneration() {
+        connectionGeneration &+= 1
+        for handler in connectionGenerationHandlers.values {
+            handler(connectionGeneration)
         }
     }
 

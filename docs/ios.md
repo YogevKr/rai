@@ -79,8 +79,39 @@ them from **Settings → Integrations → Install Claude Code hooks** on the Mac
 Single-pane pushes use the current tool request, question, or completion line.
 Structured beacon pushes stay tap-only. The Mac keeps existing hook entries.
 
-The Mac adds an optional `beacon` to each bridge snapshot pane. The shared iOS
-model decodes it. A later iOS task will add structured prompt controls.
+The Mac adds an optional `beacon` to each bridge snapshot pane. The iPhone uses
+AskUserQuestion beacon data for question, header, option, and description text.
+The terminal grid still identifies the active step and confirms each key.
+An optional `request_id` identifies one prompt instance. Older beacons use a
+per-pane counter that changes after a prompt disappears or changes.
+Every full terminal reload invalidates all prompt instances for that pane.
+
+## Structured Claude prompts
+
+Rai Remote renders Claude permission, trust, plan, and AskUserQuestion dialogs
+as native controls. AskUserQuestion shows step chips, option descriptions,
+multi-select checkboxes, free-text entry, and a final Submit action.
+
+Each tap keeps its rendered signature, prompt instance, beacon request, and question.
+Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
+Rai hides prompt controls when a connection generation ends. A new frame must arrive before controls return.
+
+Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
+The sequence stops after four seconds or any unexpected change. Rai never sends
+an automatic Enter without visible proof of the selected row.
+Next sends Tab, and Previous sends Left. Previous appears on every later question.
+These navigation buttons never send Enter.
+An unconfirmed checkbox key stays pending until a newer terminal frame arrives.
+
+Controls only appear when the pane snapshot identifies Claude. A retained beacon
+cannot enable controls for Codex or shell panes. Dialog footers must own the grid bottom.
+Quoted dialogs above Claude's composer stay inert.
+Wrapped labels remain one logical option. Unknown wizard steps disable navigation.
+
+The detector accepts real single-question arrow-only and multi-question Tab/Arrow
+footers from Claude Code 2.1.259. A one-question wizard does not need Submit arrows.
+Plan approval uses the documented `Would you like to proceed?` shape, but lacks a real capture.
+Use the raw terminal when a new Claude dialog shape does not match.
 
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and
 Approve / Deny / Reply actions. A burst becomes one triage alert, such as
