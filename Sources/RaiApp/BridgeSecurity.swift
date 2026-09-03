@@ -15,6 +15,40 @@ struct BridgePairedDevice: Codable, Equatable, Identifiable {
     let tokenHash: Data
     let createdAt: Date
     var lastSeen: Date
+    var pushPreferences: PushPreferences
+
+    init(
+        id: String,
+        label: String,
+        tokenHash: Data,
+        createdAt: Date,
+        lastSeen: Date,
+        pushPreferences: PushPreferences = .default
+    ) {
+        self.id = id
+        self.label = label
+        self.tokenHash = tokenHash
+        self.createdAt = createdAt
+        self.lastSeen = lastSeen
+        self.pushPreferences = pushPreferences
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, tokenHash, createdAt, lastSeen, pushPreferences
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        tokenHash = try container.decode(Data.self, forKey: .tokenHash)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        lastSeen = try container.decode(Date.self, forKey: .lastSeen)
+        pushPreferences = try container.decodeIfPresent(
+            PushPreferences.self,
+            forKey: .pushPreferences
+        ) ?? .default
+    }
 }
 
 enum BridgePairingFailure: Error, Equatable {
@@ -125,7 +159,8 @@ final class BridgeDeviceCredentialStore {
                 label: pendingPairing.device.label,
                 tokenHash: tokenHash,
                 createdAt: pendingPairing.device.createdAt,
-                lastSeen: pendingPairing.device.lastSeen
+                lastSeen: pendingPairing.device.lastSeen,
+                pushPreferences: pendingPairing.device.pushPreferences
             )
         } else {
             let date = now()
@@ -182,6 +217,17 @@ final class BridgeDeviceCredentialStore {
         guard devices.count != oldCount else { return false }
         persistDevices()
         return true
+    }
+
+    @discardableResult
+    func updatePushPreferences(
+        _ preferences: PushPreferences,
+        deviceID: String
+    ) -> BridgePairedDevice? {
+        guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return nil }
+        devices[index].pushPreferences = preferences
+        persistDevices()
+        return devices[index]
     }
 
     static func hash(_ token: String) -> Data {
@@ -332,6 +378,12 @@ struct BridgeAuditEvent: Equatable {
             )
         case let .sendKeys(paneID, keys):
             self.init(action: "sendKeys", targets: ["pane_id": paneID], text: keys.joined(separator: " "))
+        case let .decide(paneID, requestID, decision):
+            self.init(
+                action: "decide",
+                targets: ["pane_id": paneID, "request_id": requestID],
+                text: decision.rawValue
+            )
         case let .sendImage(paneID, bytesBase64, _):
             self.init(
                 action: "sendImage",
@@ -369,11 +421,13 @@ struct BridgeAuditEvent: Equatable {
             self.init(action: "broadcastInput", targets: ["tab_id": tabID], text: text)
         case let .selectSession(name):
             self.init(action: "selectSession", targets: ["session": name])
+        case .pushPrefs:
+            self.init(action: "pushPrefs")
         case .pair, .hello, .subscribe, .attachStream, .detachStream, .readScrollback,
-             .history, .historyReceived,
+             .history, .historyReceived, .decisionAvailability,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
              .paneFrame, .scrollback, .backgroundWork, .sessions, .historyPage,
-             .historyError, .error:
+             .historyError, .pushPrefsState, .error, .paneError, .decisionResult:
             return nil
         }
     }

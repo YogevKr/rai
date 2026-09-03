@@ -9,6 +9,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
             subtitle: "rai",
             body: "Needs you",
             paneID: "pane-1",
+            requestID: "request-1",
             workspaceID: "workspace-1",
             workspace: "rai",
             category: "agent-attention",
@@ -17,6 +18,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
             summaryArgument: "rai",
             summaryArgumentCount: 1,
             occurredAt: Date(timeIntervalSince1970: 100),
+            interruptionLevel: .timeSensitive,
             badge: 2
         )
         let root = try json(data)
@@ -30,7 +32,9 @@ final class APNsPayloadBuilderTests: XCTestCase {
         XCTAssertEqual(root["notificationIDs"] as? [String], ["agent-pane-1"])
         XCTAssertEqual(root["notificationTimestamp"] as? Double, 100)
         XCTAssertEqual(root["paneID"] as? String, "pane-1")
+        XCTAssertEqual(root["request_id"] as? String, "request-1")
         XCTAssertEqual(aps["category"] as? String, "agent-attention")
+        XCTAssertEqual(aps["interruption-level"] as? String, "time-sensitive")
     }
 
     func testBurstPayloadHasNoPaneLinkOrActions() throws {
@@ -47,6 +51,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
             summaryArgument: "rai",
             summaryArgumentCount: 2,
             occurredAt: Date(timeIntervalSince1970: 100),
+            interruptionLevel: .timeSensitive,
             badge: 1
         )
         let root = try json(data)
@@ -57,6 +62,30 @@ final class APNsPayloadBuilderTests: XCTestCase {
         XCTAssertNil(aps["category"])
         XCTAssertEqual(root["triage"] as? Bool, true)
         XCTAssertEqual(alert["summary-arg-count"] as? Int, 2)
+        XCTAssertEqual(aps["interruption-level"] as? String, "time-sensitive")
+    }
+
+    func testFinishedAlertStaysActive() throws {
+        let data = try APNsPayloadBuilder.alert(
+            title: "Build",
+            subtitle: "rai",
+            body: "Finished",
+            paneID: "pane-1",
+            workspaceID: "workspace-1",
+            workspace: "rai",
+            category: nil,
+            notificationIDs: ["agent-pane-1"],
+            threadID: "workspace-1",
+            summaryArgument: "rai",
+            summaryArgumentCount: 1,
+            occurredAt: Date(timeIntervalSince1970: 100),
+            interruptionLevel: .active,
+            badge: 1
+        )
+        let root = try json(data)
+        let aps = try XCTUnwrap(root["aps"] as? [String: Any])
+
+        XCTAssertEqual(aps["interruption-level"] as? String, "active")
     }
 
     func testRetractionPayloadIsSilentBackgroundContent() throws {
@@ -89,6 +118,7 @@ final class APNsPayloadBuilderTests: XCTestCase {
             summaryArgument: "rai",
             summaryArgumentCount: 2,
             occurredAt: Date(timeIntervalSince1970: 100),
+            interruptionLevel: .timeSensitive,
             badge: 1
         )
 

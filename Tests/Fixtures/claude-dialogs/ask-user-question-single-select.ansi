@@ -1,0 +1,22 @@
+
+[0m[38;2;80;80;80m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse AskUserQuestion now with exactly one [0m[48;2;55;55;55m           [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55msingle-select question. Ask: Which color should the[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mtest use? Header: Color. Options: Red with [0m[48;2;55;55;55m         [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mdescription Warm; Blue with description Cool; Green[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mwith description Natural. Do not do anything else.[0m[48;2;55;55;55m  [0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────[0m
+[0m[38;2;0;0;0m[48;2;177;185;249m ☐ Color [0m
+
+[0m[1m[38;2;255;255;255mWhich color should the test use?[0m
+
+[0m[38;2;177;185;249m❯[0m [0m[38;2;153;153;153m1.[0m [0m[38;2;177;185;249mRed[0m
+     [0m[38;2;153;153;153mWarm[0m
+  [0m[38;2;153;153;153m2.[0m Blue
+     [0m[38;2;153;153;153mCool[0m
+  [0m[38;2;153;153;153m3. [0mGreen
+     [0m[38;2;153;153;153mNatural[0m
+  [0m[38;2;153;153;153m4. Type something.[0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

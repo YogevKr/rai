@@ -1,0 +1,6 @@
+Available models: gpt-5.6-sol · gpt-5.6-terra
+2026-09-03T12:00:00Z model=gpt-5.6-sol · effort=high
+› gpt-5.6-sol high · ~/rai
+$ echo "gpt-5.6-sol high · ~/rai"
+gpt-5.6-sol · high · ~/rai
+gpt-5.6-sol high · ~/rai · unexpected trailer

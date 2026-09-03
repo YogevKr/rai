@@ -182,6 +182,7 @@ actor APNsPusher {
         subtitle: String?,
         body: String,
         paneID: String?,
+        requestID: String? = nil,
         workspaceID: String?,
         workspace: String?,
         category: String?,
@@ -190,6 +191,7 @@ actor APNsPusher {
         summaryArgument: String,
         summaryArgumentCount: Int,
         occurredAt: Date,
+        interruptionLevel: APNsInterruptionLevel,
         badge: Int? = nil
     ) async -> Result {
         let payload: Data
@@ -199,6 +201,7 @@ actor APNsPusher {
                 subtitle: subtitle,
                 body: body,
                 paneID: paneID,
+                requestID: requestID,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 category: category,
@@ -207,6 +210,7 @@ actor APNsPusher {
                 summaryArgument: summaryArgument,
                 summaryArgumentCount: summaryArgumentCount,
                 occurredAt: occurredAt,
+                interruptionLevel: interruptionLevel,
                 badge: badge
             )
         } catch {
@@ -335,6 +339,11 @@ struct APNsRetractionBatch: Equatable, Sendable {
     let payload: Data
 }
 
+enum APNsInterruptionLevel: String, Encodable, Equatable, Sendable {
+    case active
+    case timeSensitive = "time-sensitive"
+}
+
 enum APNsPayloadBuilder {
     static let maximumPayloadBytes = 4_096
 
@@ -354,6 +363,7 @@ enum APNsPayloadBuilder {
         subtitle: String?,
         body: String,
         paneID: String?,
+        requestID: String? = nil,
         workspaceID: String?,
         workspace: String?,
         category: String?,
@@ -362,6 +372,7 @@ enum APNsPayloadBuilder {
         summaryArgument: String,
         summaryArgumentCount: Int,
         occurredAt: Date,
+        interruptionLevel: APNsInterruptionLevel,
         badge: Int?
     ) throws -> Data {
         let title = title.apnsPrefix(maxBytes: 256)
@@ -389,9 +400,11 @@ enum APNsPayloadBuilder {
                     sound: "default",
                     category: category,
                     badge: badge,
-                    threadID: threadID
+                    threadID: threadID,
+                    interruptionLevel: interruptionLevel
                 ),
                 paneID: paneID,
+                requestID: requestID,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 notificationID: notificationIDs.count == 1 ? notificationIDs[0] : nil,
@@ -515,21 +528,30 @@ enum APNsPayloadBuilder {
             let category: String?
             let badge: Int?
             let threadID: String
+            let interruptionLevel: APNsInterruptionLevel
 
             enum CodingKeys: String, CodingKey {
                 case alert, sound, category, badge
                 case threadID = "thread-id"
+                case interruptionLevel = "interruption-level"
             }
         }
 
         let aps: APS
         let paneID: String?
+        let requestID: String?
         let workspaceID: String?
         let workspace: String?
         let notificationID: String?
         let notificationIDs: [String]
         let notificationTimestamp: TimeInterval
         let triage: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case aps, paneID, workspaceID, workspace
+            case notificationID, notificationIDs, notificationTimestamp, triage
+            case requestID = "request_id"
+        }
     }
 
     private struct RetractionPayload: Encodable {

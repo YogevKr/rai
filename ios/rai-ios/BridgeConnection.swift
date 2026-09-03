@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Network
 import RaiCore
@@ -12,6 +13,80 @@ enum ConnectionRecoveryAction: Equatable {
         case .reconnect: "Reconnect"
         case .pairAgain: "Pair Again"
         }
+    }
+}
+
+enum BridgeErrorDestination: Equatable {
+    case reconnect
+    case pairAgain
+    case updateRequired
+    case actionError
+    case ignore
+}
+
+enum BridgeErrorPhase: Hashable {
+    case authentication
+    case operation
+}
+
+enum BridgeErrorPolicy {
+    private static let operationDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
+        .herdMissing: .reconnect,
+        .paneGone: .actionError,
+        .paneBusy: .actionError,
+        .auditUnavailable: .actionError,
+        .repairRequired: .pairAgain,
+        .pairingCodeInvalid: .pairAgain,
+        .protocolMismatch: .reconnect,
+        .unknownMessage: .actionError,
+        .invalidRequest: .actionError,
+        .operationFailed: .actionError,
+        .streamUnavailable: .actionError,
+        .scrollbackUnavailable: .ignore,
+    ]
+
+    private static let authenticationDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
+        .herdMissing: .reconnect,
+        .paneGone: .reconnect,
+        .paneBusy: .reconnect,
+        .auditUnavailable: .reconnect,
+        .repairRequired: .pairAgain,
+        .pairingCodeInvalid: .pairAgain,
+        .protocolMismatch: .updateRequired,
+        .unknownMessage: .reconnect,
+        .invalidRequest: .reconnect,
+        .operationFailed: .reconnect,
+        .streamUnavailable: .reconnect,
+        .scrollbackUnavailable: .reconnect,
+    ]
+
+    static let destinations: [BridgeErrorPhase: [BridgeErrorCode: BridgeErrorDestination]] = [
+        .authentication: authenticationDestinations,
+        .operation: operationDestinations,
+    ]
+
+    static func destination(
+        for code: BridgeErrorCode,
+        phase: BridgeErrorPhase
+    ) -> BridgeErrorDestination {
+        destinations[phase]?[code] ?? .actionError
+    }
+
+    static func authenticationProseDestination(_ message: String) -> BridgeErrorDestination {
+        let normalized = message.lowercased()
+        if normalized.contains("protocol") || normalized.contains("version mismatch") {
+            return .updateRequired
+        }
+        if normalized.contains("re-pair")
+            || normalized.contains("repair")
+            || normalized.contains("pairing code")
+            || normalized.contains("invalid token")
+            || normalized.contains("revoked")
+            || normalized.contains("unknown device")
+            || (normalized.contains("credential") && normalized.contains("missing")) {
+            return .pairAgain
+        }
+        return .reconnect
     }
 }
 
@@ -78,6 +153,35 @@ struct ConnectionDiagnosis: Equatable {
             rawDetails: reason,
             action: .pairAgain
         )
+    }
+
+    static func coded(
+        _ code: BridgeErrorCode,
+        message: String,
+        detail: String?,
+        host: String
+    ) -> ConnectionDiagnosis {
+        let rawDetails = detail ?? message
+        switch code {
+        case .herdMissing:
+            return herdMissing(rawDetails: rawDetails)
+        case .repairRequired, .pairingCodeInvalid:
+            return ConnectionDiagnosis(
+                message: code == .pairingCodeInvalid
+                    ? "The pairing code is invalid or expired"
+                    : "Pairing was rejected by the Mac",
+                rawDetails: rawDetails,
+                action: .pairAgain
+            )
+        case .protocolMismatch:
+            return ConnectionDiagnosis(
+                message: "Rai versions don't match — update Rai on the Mac or iPhone",
+                rawDetails: rawDetails,
+                action: .reconnect
+            )
+        default:
+            return serverError(message, host: host)
+        }
     }
 
     static func invalidPairingReply() -> ConnectionDiagnosis {
@@ -204,6 +308,23 @@ enum SnapshotFreshness {
     }
 }
 
+enum PushPreferencesTimeZoneSync {
+    static func applyingCurrentZone(
+        to preferences: PushPreferences,
+        timeZone: TimeZone
+    ) -> PushPreferences {
+        guard var dnd = preferences.dnd else { return preferences }
+        dnd.timeZoneIdentifier = timeZone.identifier
+        var updated = preferences
+        updated.dnd = dnd
+        return updated
+    }
+}
+
+private struct StoredPendingPushPreferences: Codable {
+    let preferences: PushPreferences
+}
+
 /// Grid dimensions of a streamed pane frame — the size the emulator must be
 /// for the frame's cell-addressed paints to land where herdr rendered them.
 struct PaneGridSize: Equatable {
@@ -211,8 +332,39 @@ struct PaneGridSize: Equatable {
     let rows: Int
 }
 
+enum DecisionWaiterRouting {
+    static func requestIDs(
+        waiterSocketIDs: [String: ObjectIdentifier],
+        failingSocketID: ObjectIdentifier
+    ) -> [String] {
+        waiterSocketIDs.compactMap { requestID, socketID in
+            socketID == failingSocketID ? requestID : nil
+        }
+    }
+}
+
+enum PushRegistrationPlan {
+    static func messages(
+        deviceToken: String,
+        environment: String,
+        availability: PermissionDecisionAvailability
+    ) -> [BridgeMessage] {
+        [
+            .registerPush(deviceToken: deviceToken, environment: environment),
+            .decisionAvailability(
+                available: availability.available,
+                pushAuthorized: availability.notificationAuthorized
+            ),
+        ]
+    }
+}
+
 @MainActor
 final class BridgeConnection: ObservableObject {
+    private struct DecisionWaiter {
+        let socket: URLSessionWebSocketTask
+        let continuation: CheckedContinuation<Bool, Never>
+    }
     enum Status: Equatable {
         case disconnected
         case connecting
@@ -249,6 +401,9 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var historyPages: [String: TranscriptHistoryPage] = [:]
     @Published private(set) var historyErrors: [String: String] = [:]
     @Published private(set) var historyFromPreviousSession: Set<String> = []
+    @Published private(set) var pushPreferences: PushPreferences = .default
+    @Published private(set) var pendingPushPreferences: PushPreferences?
+    @Published private(set) var supportsPushPreferences = false
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
     @Published private(set) var outbox: [QueuedLine] = []
@@ -260,6 +415,14 @@ final class BridgeConnection: ObservableObject {
 
     var requiresRepair: Bool {
         status.diagnosis?.action == .pairAgain
+    }
+
+    var hasPendingReconnect: Bool {
+        reconnectTask != nil
+    }
+
+    var pushPreferencesSyncStatus: String? {
+        pendingPushPreferences == nil ? nil : "Pending"
     }
 
     var shouldShowEmptyHerd: Bool {
@@ -279,8 +442,39 @@ final class BridgeConnection: ObservableObject {
     private var invitation: PairingInvitation?
     private var reconnectAttempt = 0
     private var shouldReconnect = false
+    private let currentTimeZone: () -> TimeZone
+    private let userDefaults: UserDefaults
+    private let messageSender: ((BridgeMessage) async throws -> Void)?
+    private var timeZoneObserver: AnyCancellable?
+    private static let pendingPushPreferencesKey = "bridge.pendingPushPreferences"
+
+    init(
+        notificationCenter: NotificationCenter = .default,
+        currentTimeZone: @escaping () -> TimeZone = { .current },
+        userDefaults: UserDefaults = .standard,
+        messageSender: ((BridgeMessage) async throws -> Void)? = nil
+    ) {
+        self.currentTimeZone = currentTimeZone
+        self.userDefaults = userDefaults
+        self.messageSender = messageSender
+        if let data = userDefaults.data(forKey: Self.pendingPushPreferencesKey),
+           let stored = try? JSONDecoder().decode(
+               StoredPendingPushPreferences.self,
+               from: data
+           ) {
+            pendingPushPreferences = stored.preferences
+        }
+        timeZoneObserver = notificationCenter.publisher(for: .NSSystemTimeZoneDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.synchronizePushPreferencesTimeZone()
+                }
+            }
+    }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private(set) var connectionGeneration: UInt64 = 0
+    private var connectionGenerationHandlers: [UUID: (UInt64) -> Void] = [:]
     private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     // A seed can land before the terminal view has registered its handler
@@ -301,10 +495,48 @@ final class BridgeConnection: ObservableObject {
     // while reconnecting is routine on a phone) is retried on the next
     // welcome instead of being skipped forever.
     private var seededPanes: Set<String> = []
+    private var decisionBeaconReceivedAt: [String: Date] = [:]
+    private var decisionWaiters: [String: DecisionWaiter] = [:]
+    private var notificationAuthorizationGranted = false
+    private var appIsForeground = false
+
+    func updateDecisionAvailability(
+        notificationAuthorized: Bool,
+        isForeground: Bool
+    ) {
+        let previous = decisionAvailability
+        notificationAuthorizationGranted = notificationAuthorized
+        appIsForeground = isForeground
+        let current = decisionAvailability
+        guard current != previous, status.isConnected else { return }
+        Task {
+            do {
+                try await send(
+                    .decisionAvailability(
+                        available: current.available,
+                        pushAuthorized: current.notificationAuthorized
+                    )
+                )
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
+    }
+
+    private var decisionAvailability: PermissionDecisionAvailability {
+        PermissionDecisionAvailability(
+            notificationAuthorized: notificationAuthorizationGranted,
+            appIsForeground: appIsForeground
+        )
+    }
 
     func connect(to pairing: Pairing) {
         let changesMac = self.pairing.map { $0 != pairing } ?? false
         disconnect(clearPairing: false, clearSnapshot: changesMac)
+        if changesMac {
+            clearPendingPushPreferences()
+            supportsPushPreferences = false
+        }
         self.pairing = pairing
         invitation = nil
         shouldReconnect = true
@@ -327,6 +559,8 @@ final class BridgeConnection: ObservableObject {
             $0.host != invitation.host || $0.port != invitation.port
         } ?? true
         disconnect(clearPairing: false, clearSnapshot: changesMac)
+        clearPendingPushPreferences()
+        supportsPushPreferences = false
         pairing = nil
         self.invitation = invitation
         shouldReconnect = true
@@ -340,6 +574,7 @@ final class BridgeConnection: ObservableObject {
 
     func retryNow() {
         guard pairing != nil || invitation != nil else { return }
+        advanceConnectionGeneration()
         task?.cancel(with: .goingAway, reason: nil)
         receiveTask?.cancel()
         reconnectTask?.cancel()
@@ -357,6 +592,16 @@ final class BridgeConnection: ObservableObject {
 
     func replaceWithLiveSnapshot(_ snapshot: SessionSnapshot, receivedAt: Date = Date()) {
         updateHistoryPaneSet(snapshot.panes, now: receivedAt)
+        let activeRequestIDs: Set<String> = Set(snapshot.panes.compactMap { pane -> String? in
+            guard pane.beacon?.awaitsDecision == true else { return nil }
+            return pane.beacon?.requestID
+        })
+        decisionBeaconReceivedAt = decisionBeaconReceivedAt.filter {
+            activeRequestIDs.contains($0.key)
+        }
+        for requestID in activeRequestIDs where decisionBeaconReceivedAt[requestID] == nil {
+            decisionBeaconReceivedAt[requestID] = receivedAt
+        }
         self.snapshot = snapshot
         lastSnapshotAt = receivedAt
         isShowingCachedSnapshot = false
@@ -400,6 +645,12 @@ final class BridgeConnection: ObservableObject {
         pruneHistory(now: now)
         scheduleHistoryPruneIfNeeded()
         historySessionName = sessionName
+    }
+
+    func receivedAt(for beacon: AgentBeacon) -> Date {
+        beacon.requestID.flatMap { decisionBeaconReceivedAt[$0] }
+            ?? lastSnapshotAt
+            ?? Date()
     }
 
     func refreshSnapshot() async {
@@ -453,6 +704,22 @@ final class BridgeConnection: ObservableObject {
             limit: limit,
             herdSessionName: sessionName
         ))
+    }
+
+    func setPushPreferences(_ preferences: PushPreferences) {
+        let preferences = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: preferences,
+            timeZone: currentTimeZone()
+        )
+        storePendingPushPreferences(preferences)
+        guard status.isConnected, supportsPushPreferences else { return }
+        Task {
+            do {
+                try await send(.pushPrefs(preferences))
+            } catch {
+                handleSocketFailure(error)
+            }
+        }
     }
 
     func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
@@ -571,6 +838,19 @@ final class BridgeConnection: ObservableObject {
         return id
     }
 
+    func addConnectionGenerationHandler(
+        _ handler: @escaping (UInt64) -> Void
+    ) -> UUID {
+        let id = UUID()
+        connectionGenerationHandlers[id] = handler
+        handler(connectionGeneration)
+        return id
+    }
+
+    func removeConnectionGenerationHandler(_ id: UUID) {
+        connectionGenerationHandlers.removeValue(forKey: id)
+    }
+
     func removePaneFrameHandler(for paneID: String, id: UUID) {
         paneFrameHandlers[paneID]?.removeValue(forKey: id)
         if paneFrameHandlers[paneID]?.isEmpty == true {
@@ -599,6 +879,14 @@ final class BridgeConnection: ObservableObject {
 
     func sendKeys(_ keys: [String], to paneID: String) {
         sendAction(.sendKeys(paneID: paneID, keys: keys))
+    }
+
+    func decide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String
+    ) {
+        sendAction(.decide(paneID: paneID, requestID: requestID, decision: decision))
     }
 
     func sendInput(_ bytes: [UInt8], to paneID: String) {
@@ -741,12 +1029,61 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func connectAndDecide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        guard let decisionSocket = task else { return false }
+        guard decisionWaiters[requestID] == nil else { return false }
+        return await withCheckedContinuation { continuation in
+            decisionWaiters[requestID] = DecisionWaiter(
+                socket: decisionSocket,
+                continuation: continuation
+            )
+            Task {
+                do {
+                    try await sendDecision(
+                        .decide(
+                            paneID: paneID,
+                            requestID: requestID,
+                            decision: decision
+                        ),
+                        over: decisionSocket
+                    )
+                } catch {
+                    resolveDecision(requestID: requestID, accepted: false)
+                    handleSocketFailure(error, from: decisionSocket)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(5))
+                resolveDecision(requestID: requestID, accepted: false)
+            }
+        }
+    }
+
     func registerPush(deviceToken: String, environment: String) {
         Task {
             do {
-                try await send(
-                    .registerPush(deviceToken: deviceToken, environment: environment)
-                )
+                let availability = decisionAvailability
+                for message in PushRegistrationPlan.messages(
+                    deviceToken: deviceToken,
+                    environment: environment,
+                    availability: availability
+                ) {
+                    try await send(message)
+                }
             } catch {
                 handleSocketFailure(error)
             }
@@ -817,7 +1154,8 @@ final class BridgeConnection: ObservableObject {
             deviceID: deviceID,
             name: UIDevice.current.name,
             platform: "iOS",
-            model: UIDevice.current.model
+            model: UIDevice.current.model,
+            capabilities: decisionAvailability.capabilities
         )
     }
 
@@ -856,9 +1194,9 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func handle(_ message: BridgeMessage) {
+    func handle(_ message: BridgeMessage) {
         switch message {
-        case let .paired(token, protocolVersion, sessionName):
+        case let .paired(token, protocolVersion, _):
             guard protocolVersion == bridgeProtocolVersion else {
                 stopWithFailure(.protocolMismatch(protocolVersion))
                 return
@@ -895,8 +1233,21 @@ final class BridgeConnection: ObservableObject {
                 return
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
-        case let .authFailed(reason):
-            stopWithFailure(.helloRejected(reason: reason))
+        case let .authFailed(reason, code, detail, unrecognizedCode):
+            if let code {
+                handleCodedError(
+                    code,
+                    message: reason,
+                    detail: detail,
+                    phase: .authentication
+                )
+            } else {
+                handleAuthenticationProse(
+                    reason: reason,
+                    detail: detail,
+                    unrecognizedCode: unrecognizedCode
+                )
+            }
         case let .snapshot(snapshot, snapshotSessionName):
             if let snapshotSessionName, sessionName != snapshotSessionName {
                 historyGeneration &+= 1
@@ -953,6 +1304,14 @@ final class BridgeConnection: ObservableObject {
                 message: message
             ) else { return }
             historyErrors[paneError.paneID] = paneError.message
+        case let .pushPrefsState(preferences):
+            pushPreferences = preferences
+            supportsPushPreferences = true
+            if pendingPushPreferences?.effective(at: Date()) == preferences {
+                clearPendingPushPreferences()
+            } else if pendingPushPreferences == nil {
+                synchronizePushPreferencesTimeZone()
+            }
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -986,7 +1345,11 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data)
             }
-        case let .error(message):
+        case let .error(message, code, detail):
+            if let code {
+                handleCodedError(code, message: message, detail: detail, phase: .operation)
+                return
+            }
             if Self.isPairingProtocolRejection(
                 message,
                 pairingInProgress: invitation != nil
@@ -1008,6 +1371,13 @@ final class BridgeConnection: ObservableObject {
             } else {
                 status = .failed(.bridgeError(message, host: host))
             }
+        case let .paneError(_, message):
+            actionError = message
+        case let .decisionResult(_, requestID, accepted, message):
+            if !accepted {
+                actionError = message ?? "That prompt already closed"
+            }
+            resolveDecision(requestID: requestID, accepted: accepted)
         case .event:
             break
         case .pair, .hello, .subscribe, .attachStream, .detachStream,
@@ -1015,7 +1385,8 @@ final class BridgeConnection: ObservableObject {
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
              .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
-             .listSessions, .selectSession, .history, .historyReceived:
+             .decide, .decisionAvailability, .listSessions, .selectSession,
+             .history, .historyReceived, .pushPrefs:
             break
         }
     }
@@ -1191,7 +1562,7 @@ final class BridgeConnection: ObservableObject {
         pairingInProgress && message.hasPrefix("Invalid bridge message")
     }
 
-    private func finishAuthentication(protocolVersion: Int, sessionName: String?) {
+    func finishAuthentication(protocolVersion: Int, sessionName: String?) {
         guard protocolVersion == bridgeProtocolVersion else {
             stopWithFailure(.protocolMismatch(protocolVersion))
             return
@@ -1212,6 +1583,9 @@ final class BridgeConnection: ObservableObject {
             guard let self else { return }
             do {
                 try await self.send(.subscribe)
+                if let pending = self.pendingPushPreferences {
+                    try await self.send(.pushPrefs(pending))
+                }
                 self.didConnect?()
                 self.requestSessions()
                 self.flushOutbox()
@@ -1278,7 +1652,108 @@ final class BridgeConnection: ObservableObject {
             || message.hasPrefix("Could not close ")
     }
 
+    private func handleCodedError(
+        _ code: BridgeErrorCode,
+        message: String,
+        detail: String?,
+        phase: BridgeErrorPhase
+    ) {
+        let destination = BridgeErrorPolicy.destination(for: code, phase: phase)
+        switch destination {
+        case .actionError:
+            actionError = message
+        case .reconnect, .pairAgain, .updateRequired:
+            let diagnosis = ConnectionDiagnosis.coded(
+                code,
+                message: message,
+                detail: detail,
+                host: host
+            )
+            if phase == .authentication, destination == .reconnect {
+                retryAuthentication(after: diagnosis)
+            } else if phase == .authentication {
+                stopWithFailure(diagnosis)
+            } else {
+                status = .failed(diagnosis)
+            }
+        case .ignore:
+            NSLog("rai-ios: optional bridge feature unavailable: %@", detail ?? message)
+        }
+    }
+
+    private func handleAuthenticationProse(
+        reason: String,
+        detail: String?,
+        unrecognizedCode: String?
+    ) {
+        let rawDetails = detail ?? reason
+        switch BridgeErrorPolicy.authenticationProseDestination(reason) {
+        case .pairAgain:
+            stopWithFailure(.helloRejected(reason: rawDetails))
+        case .updateRequired:
+            stopWithFailure(ConnectionDiagnosis(
+                message: "Rai versions don't match — update Rai on the Mac or iPhone",
+                rawDetails: rawDetails,
+                action: .reconnect
+            ))
+        case .reconnect:
+            let diagnosis = ConnectionDiagnosis.bridgeError(reason, host: host)
+            retryAuthentication(after: ConnectionDiagnosis(
+                message: diagnosis.message,
+                rawDetails: unrecognizedCode.map { "\($0): \(rawDetails)" } ?? rawDetails,
+                action: .reconnect
+            ))
+        case .actionError, .ignore:
+            break
+        }
+    }
+
+    private func retryAuthentication(after diagnosis: ConnectionDiagnosis) {
+        shouldReconnect = true
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        scheduleReconnect(
+            after: NSError(
+                domain: "RaiBridgeAuthentication",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: diagnosis.rawDetails]
+            ),
+            diagnosis: diagnosis
+        )
+    }
+
+    private func storePendingPushPreferences(_ preferences: PushPreferences) {
+        pendingPushPreferences = preferences
+        let stored = StoredPendingPushPreferences(preferences: preferences)
+        if let data = try? JSONEncoder().encode(stored) {
+            userDefaults.set(data, forKey: Self.pendingPushPreferencesKey)
+        }
+    }
+
+    private func clearPendingPushPreferences() {
+        pendingPushPreferences = nil
+        userDefaults.removeObject(forKey: Self.pendingPushPreferencesKey)
+    }
+
+    private func synchronizePushPreferencesTimeZone() {
+        guard supportsPushPreferences else { return }
+        let source = pendingPushPreferences ?? pushPreferences
+        guard source.dnd != nil else { return }
+        let localized = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: source,
+            timeZone: currentTimeZone()
+        )
+        guard localized != source else { return }
+        setPushPreferences(localized)
+    }
+
     private func send(_ message: BridgeMessage) async throws {
+        if let messageSender {
+            try await messageSender(message)
+            return
+        }
         guard let task else { throw URLError(.notConnectedToInternet) }
         let data = try encoder.encode(message)
         guard let text = String(data: data, encoding: .utf8) else {
@@ -1304,24 +1779,48 @@ final class BridgeConnection: ObservableObject {
         try await task.send(.string(text))
     }
 
+    private func sendDecision(
+        _ message: BridgeMessage,
+        over socket: URLSessionWebSocketTask
+    ) async throws {
+        guard task === socket, status.isConnected else {
+            throw URLError(.notConnectedToInternet)
+        }
+        let data = try encoder.encode(message)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        try await socket.send(.string(text))
+    }
+
     private func handleSocketFailure(
         _ error: Error,
         from socket: URLSessionWebSocketTask? = nil
     ) {
-        guard shouldReconnect, !(error is CancellationError) else { return }
         if let socket, task !== socket {
+            resolveDecisions(for: socket, accepted: false)
             return
         }
+        if let socket = socket ?? task {
+            resolveDecisions(for: socket, accepted: false)
+        } else {
+            resolveAllDecisions(accepted: false)
+        }
+        guard shouldReconnect, !(error is CancellationError) else { return }
         scheduleReconnect(after: error)
     }
 
-    private func scheduleReconnect(after error: Error) {
+    func scheduleReconnect(
+        after error: Error,
+        diagnosis: ConnectionDiagnosis? = nil
+    ) {
         NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
+        advanceConnectionGeneration()
         task = nil
         receiveTask = nil
         reconnectAttempt += 1
-        status = .failed(.transport(error, host: host))
+        status = .failed(diagnosis ?? .transport(error, host: host))
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -1335,6 +1834,7 @@ final class BridgeConnection: ObservableObject {
         // One line per hard failure so a simulator run (`log show`) or a
         // device console says why the phone gave up, not just that it did.
         NSLog("rai-ios: connection failed: %@ — %@", diagnosis.message, diagnosis.rawDetails)
+        advanceConnectionGeneration()
         shouldReconnect = false
         task?.cancel(with: .policyViolation, reason: nil)
         task = nil
@@ -1343,9 +1843,12 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .failed(diagnosis)
+        resolveAllDecisions(accepted: false)
     }
 
     private func disconnect(clearPairing: Bool, clearSnapshot: Bool) {
+        advanceConnectionGeneration()
+        resolveAllDecisions(accepted: false)
         shouldReconnect = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -1354,9 +1857,11 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .disconnected
+        supportsPushPreferences = false
         if clearSnapshot {
             snapshot = nil
             lastSnapshotAt = nil
+            decisionBeaconReceivedAt.removeAll()
             isShowingCachedSnapshot = false
             historyPages = [:]
             historyErrors = [:]
@@ -1376,8 +1881,41 @@ final class BridgeConnection: ObservableObject {
         desiredStreams.removeAll()
         seededPanes.removeAll()
         if clearPairing {
+            clearPendingPushPreferences()
             pairing = nil
             invitation = nil
+        }
+    }
+
+    private func resolveDecision(requestID: String, accepted: Bool) {
+        decisionWaiters.removeValue(forKey: requestID)?.continuation.resume(
+            returning: accepted
+        )
+    }
+
+    private func resolveDecisions(for socket: URLSessionWebSocketTask, accepted: Bool) {
+        let socketIDs = decisionWaiters.mapValues { ObjectIdentifier($0.socket) }
+        let requestIDs = DecisionWaiterRouting.requestIDs(
+            waiterSocketIDs: socketIDs,
+            failingSocketID: ObjectIdentifier(socket)
+        )
+        for requestID in requestIDs {
+            resolveDecision(requestID: requestID, accepted: accepted)
+        }
+    }
+
+    private func resolveAllDecisions(accepted: Bool) {
+        let waiters = Array(decisionWaiters.values.map(\.continuation))
+        decisionWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: accepted)
+        }
+    }
+
+    private func advanceConnectionGeneration() {
+        connectionGeneration &+= 1
+        for handler in connectionGenerationHandlers.values {
+            handler(connectionGeneration)
         }
     }
 

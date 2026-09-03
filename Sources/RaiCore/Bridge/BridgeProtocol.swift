@@ -6,17 +6,38 @@ import Foundation
 /// app can negotiate their wire contract without exposing daemon internals.
 public let bridgeProtocolVersion = 6
 
+public enum BridgeCapability {
+    public static let permissionDecisions = "permission_decisions"
+    public static let permissionDecisionPush = "permission_decision_push"
+}
+
 public struct ClientInfo: Codable, Equatable, Sendable {
     public let deviceID: String
     public let name: String
     public let platform: String
     public let model: String?
+    public let capabilities: [String]?
 
-    public init(deviceID: String, name: String, platform: String, model: String? = nil) {
+    public init(
+        deviceID: String,
+        name: String,
+        platform: String,
+        model: String? = nil,
+        capabilities: [String]? = nil
+    ) {
         self.deviceID = deviceID
         self.name = name
         self.platform = platform
         self.model = model
+        self.capabilities = capabilities
+    }
+
+    public var supportsPermissionDecisions: Bool {
+        capabilities?.contains(BridgeCapability.permissionDecisions) == true
+    }
+
+    public var supportsPermissionDecisionPush: Bool {
+        capabilities?.contains(BridgeCapability.permissionDecisionPush) == true
     }
 }
 
@@ -27,6 +48,82 @@ public struct BridgeEvent: Codable, Equatable, Sendable {
     public init(name: String, payload: [String: JSONValue] = [:]) {
         self.name = name
         self.payload = payload
+    }
+}
+
+public struct PushNotificationKinds: Codable, Equatable, Sendable {
+    public var needsYou: Bool
+    public var finished: Bool
+
+    public init(needsYou: Bool = true, finished: Bool = true) {
+        self.needsYou = needsYou
+        self.finished = finished
+    }
+}
+
+public struct PushDNDWindow: Codable, Equatable, Sendable {
+    /// Minutes after local midnight, in the range 0..<1440.
+    public var start: Int
+    public var end: Int
+    public var timeZoneIdentifier: String?
+
+    public init(start: Int, end: Int, timeZoneIdentifier: String? = nil) {
+        self.start = start
+        self.end = end
+        self.timeZoneIdentifier = timeZoneIdentifier
+    }
+
+    public func contains(_ date: Date, calendar: Calendar = .current) -> Bool {
+        guard (0..<1_440).contains(start), (0..<1_440).contains(end), start != end else {
+            return false
+        }
+        var localCalendar = calendar
+        if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+            localCalendar.timeZone = timeZone
+        }
+        let components = localCalendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = components.hour, let minute = components.minute else { return false }
+        let value = hour * 60 + minute
+        return start < end
+            ? value >= start && value < end
+            : value >= start || value < end
+    }
+}
+
+public struct PushPreferences: Codable, Equatable, Sendable {
+    public var kinds: PushNotificationKinds
+    public var snoozeUntil: Date?
+    public var dnd: PushDNDWindow?
+
+    public init(
+        kinds: PushNotificationKinds = .init(),
+        snoozeUntil: Date? = nil,
+        dnd: PushDNDWindow? = nil
+    ) {
+        self.kinds = kinds
+        self.snoozeUntil = snoozeUntil
+        self.dnd = dnd
+    }
+
+    public static let `default` = PushPreferences()
+
+    public func effective(at date: Date) -> PushPreferences {
+        let validDND: PushDNDWindow? = dnd.flatMap { window in
+            if let identifier = window.timeZoneIdentifier,
+               TimeZone(identifier: identifier) == nil {
+                return nil
+            }
+            guard (0..<1_440).contains(window.start),
+                  (0..<1_440).contains(window.end),
+                  window.start != window.end
+            else { return nil }
+            return window
+        }
+        return PushPreferences(
+            kinds: kinds,
+            snoozeUntil: snoozeUntil.flatMap { $0 > date ? $0 : nil },
+            dnd: validDND
+        )
     }
 }
 
@@ -202,6 +299,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// Named keypresses (herdr key names: "enter", "1", "ctrl+c", …) that must
     /// act as keystrokes, not pasted text — e.g. answering a Claude dialog.
     case sendKeys(paneID: String, keys: [String])
+    case decide(paneID: String, requestID: String, decision: RemotePermissionDecision)
+    case decisionAvailability(available: Bool, pushAuthorized: Bool)
     case renameWorkspace(workspaceID: String, label: String)
     case closeWorkspace(workspaceID: String)
     case broadcastInput(tabID: String, text: String)
@@ -222,11 +321,17 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         herdSessionName: String?,
         throughTurnIndex: Int?
     )
+    case pushPrefs(PushPreferences)
 
     // Server -> client
     case paired(token: String, protocolVersion: Int, sessionName: String?)
     case welcome(protocolVersion: Int, sessionName: String?)
-    case authFailed(reason: String)
+    case authFailed(
+        reason: String,
+        code: BridgeErrorCode? = nil,
+        detail: String? = nil,
+        unrecognizedCode: String? = nil
+    )
     case snapshot(SessionSnapshot, sessionName: String?)
     case event(BridgeEvent)
     /// `cols`/`rows` are the frame's grid dimensions (present on newer
@@ -242,7 +347,14 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case historyError(
         paneID: String, sessionID: String, requestID: String, message: String
     )
-    case error(message: String)
+    case pushPrefsState(PushPreferences)
+    case error(
+        message: String,
+        code: BridgeErrorCode? = nil,
+        detail: String? = nil
+    )
+    case paneError(paneID: String, message: String)
+    case decisionResult(paneID: String, requestID: String, accepted: Bool, message: String?)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -253,10 +365,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case cols, rows
         case full, seq
         case protocolVersion, sessionName
-        case reason, snapshot, event, message
+        case reason, detail, snapshot, event, message, accepted, available, pushAuthorized
         case deviceToken, environment
         case lines, keys
-        case text, name, work, sessions
+        case text, name, work, sessions, decision, kinds, snoozeUntil, dnd
         case beforeTurnIndex, limit, sessionID, resolvedSessionID, requestID
         case turns, hasMore, sinceLastSeen, historyState
         case throughTurnIndex, herdSessionName
@@ -267,11 +379,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case input, sendImage, focusPane, selectPane, resizePane
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
-        case readScrollback, scrollback, sendKeys
+        case readScrollback, scrollback, sendKeys, decide, decisionAvailability
         case renameWorkspace, closeWorkspace, broadcastInput
         case listSessions, selectSession, history, historyReceived, historyPage, historyError
+        case pushPrefs, pushPrefsState
         case backgroundWork, sessions
-        case paired, welcome, authFailed, snapshot, event, paneFrame, error
+        case paired, welcome, authFailed, snapshot, event, paneFrame, error, paneError
+        case decisionResult
     }
 
     public init(from decoder: Decoder) throws {
@@ -361,6 +475,20 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 paneID: try container.decode(String.self, forKey: .paneID),
                 keys: try container.decode([String].self, forKey: .keys)
             )
+        case .decide:
+            self = .decide(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                decision: try container.decode(
+                    RemotePermissionDecision.self,
+                    forKey: .decision
+                )
+            )
+        case .decisionAvailability:
+            self = .decisionAvailability(
+                available: try container.decode(Bool.self, forKey: .available),
+                pushAuthorized: try container.decode(Bool.self, forKey: .pushAuthorized)
+            )
         case .scrollback:
             self = .scrollback(
                 paneID: try container.decode(String.self, forKey: .paneID),
@@ -439,6 +567,18 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 requestID: try container.decode(String.self, forKey: .requestID),
                 message: try container.decode(String.self, forKey: .message)
             )
+        case .pushPrefs:
+            self = .pushPrefs(PushPreferences(
+                kinds: try container.decode(PushNotificationKinds.self, forKey: .kinds),
+                snoozeUntil: try container.decodeIfPresent(Date.self, forKey: .snoozeUntil),
+                dnd: try container.decodeIfPresent(PushDNDWindow.self, forKey: .dnd)
+            ))
+        case .pushPrefsState:
+            self = .pushPrefsState(PushPreferences(
+                kinds: try container.decode(PushNotificationKinds.self, forKey: .kinds),
+                snoozeUntil: try container.decodeIfPresent(Date.self, forKey: .snoozeUntil),
+                dnd: try container.decodeIfPresent(PushDNDWindow.self, forKey: .dnd)
+            ))
         case .backgroundWork:
             self = .backgroundWork(
                 try container.decode([PaneBackgroundWork].self, forKey: .work)
@@ -459,7 +599,14 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
             )
         case .authFailed:
-            self = .authFailed(reason: try container.decode(String.self, forKey: .reason))
+            let rawCode = try container.decodeIfPresent(String.self, forKey: .code)
+            let code = rawCode.flatMap(BridgeErrorCode.init(rawValue:))
+            self = .authFailed(
+                reason: try container.decode(String.self, forKey: .reason),
+                code: code,
+                detail: try container.decodeIfPresent(String.self, forKey: .detail),
+                unrecognizedCode: code == nil ? rawCode : nil
+            )
         case .snapshot:
             self = .snapshot(
                 try container.decode(SessionSnapshot.self, forKey: .snapshot),
@@ -477,7 +624,24 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 rows: try container.decodeIfPresent(Int.self, forKey: .rows)
             )
         case .error:
-            self = .error(message: try container.decode(String.self, forKey: .message))
+            self = .error(
+                message: try container.decode(String.self, forKey: .message),
+                code: try container.decodeIfPresent(String.self, forKey: .code)
+                    .flatMap(BridgeErrorCode.init(rawValue:)),
+                detail: try container.decodeIfPresent(String.self, forKey: .detail)
+            )
+        case .paneError:
+            self = .paneError(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                message: try container.decode(String.self, forKey: .message)
+            )
+        case .decisionResult:
+            self = .decisionResult(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                accepted: try container.decode(Bool.self, forKey: .accepted),
+                message: try container.decodeIfPresent(String.self, forKey: .message)
+            )
         }
     }
 
@@ -560,6 +724,15 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.sendKeys, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
             try container.encode(keys, forKey: .keys)
+        case let .decide(paneID, requestID, decision):
+            try container.encode(MessageType.decide, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(decision, forKey: .decision)
+        case let .decisionAvailability(available, pushAuthorized):
+            try container.encode(MessageType.decisionAvailability, forKey: .type)
+            try container.encode(available, forKey: .available)
+            try container.encode(pushAuthorized, forKey: .pushAuthorized)
         case let .scrollback(paneID, bytesBase64):
             try container.encode(MessageType.scrollback, forKey: .type)
             try container.encode(paneID, forKey: .paneID)
@@ -599,6 +772,16 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(requestID, forKey: .requestID)
             try container.encodeIfPresent(herdSessionName, forKey: .herdSessionName)
             try container.encodeIfPresent(throughTurnIndex, forKey: .throughTurnIndex)
+        case let .pushPrefs(preferences):
+            try container.encode(MessageType.pushPrefs, forKey: .type)
+            try container.encode(preferences.kinds, forKey: .kinds)
+            try container.encodeIfPresent(preferences.snoozeUntil, forKey: .snoozeUntil)
+            try container.encodeIfPresent(preferences.dnd, forKey: .dnd)
+        case let .pushPrefsState(preferences):
+            try container.encode(MessageType.pushPrefsState, forKey: .type)
+            try container.encode(preferences.kinds, forKey: .kinds)
+            try container.encodeIfPresent(preferences.snoozeUntil, forKey: .snoozeUntil)
+            try container.encodeIfPresent(preferences.dnd, forKey: .dnd)
         case let .backgroundWork(work):
             try container.encode(MessageType.backgroundWork, forKey: .type)
             try container.encode(work, forKey: .work)
@@ -631,9 +814,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)
             try container.encodeIfPresent(sessionName, forKey: .sessionName)
-        case let .authFailed(reason):
+        case let .authFailed(reason, code, detail, unrecognizedCode):
             try container.encode(MessageType.authFailed, forKey: .type)
             try container.encode(reason, forKey: .reason)
+            try container.encodeIfPresent(code?.rawValue ?? unrecognizedCode, forKey: .code)
+            try container.encodeIfPresent(detail, forKey: .detail)
         case let .snapshot(snapshot, sessionName):
             try container.encode(MessageType.snapshot, forKey: .type)
             try container.encode(snapshot, forKey: .snapshot)
@@ -649,9 +834,21 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(seq, forKey: .seq)
             try container.encodeIfPresent(cols, forKey: .cols)
             try container.encodeIfPresent(rows, forKey: .rows)
-        case let .error(message):
+        case let .error(message, code, detail):
             try container.encode(MessageType.error, forKey: .type)
             try container.encode(message, forKey: .message)
+            try container.encodeIfPresent(code, forKey: .code)
+            try container.encodeIfPresent(detail, forKey: .detail)
+        case let .paneError(paneID, message):
+            try container.encode(MessageType.paneError, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(message, forKey: .message)
+        case let .decisionResult(paneID, requestID, accepted, message):
+            try container.encode(MessageType.decisionResult, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(accepted, forKey: .accepted)
+            try container.encodeIfPresent(message, forKey: .message)
         }
     }
 }

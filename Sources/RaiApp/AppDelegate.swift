@@ -106,11 +106,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func startHookBeaconReceiver(model: RaiModel) {
-        let receiver = HookBeaconReceiver { [weak model] beacon in
+        let receiver = HookBeaconReceiver(onBeaconWithReply: { [weak model] beacon, reply in
             Task { @MainActor in
-                await model?.receiveAgentBeacon(beacon)
+                guard let model else {
+                    reply?.none()
+                    return
+                }
+                await model.receiveAgentBeacon(beacon, decisionReply: reply)
             }
-        }
+        })
         do {
             try receiver.start()
             hookBeaconReceiver = receiver
@@ -210,6 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func connect(to model: RaiModel) {
         self.model = model
         model.snapshotObserver = self
+        model.bridgeServer.pushPreferencesDidChange = { [weak self] deviceID, preferences in
+            guard let self else { return }
+            self.pendingPhonePushes = PushPreferenceGate.suppressDisabledKinds(
+                in: self.pendingPhonePushes,
+                for: deviceID,
+                preferences: preferences
+            )
+            self.updatePresenceStatus()
+        }
         updateDockBadge(count: model.blockedAgentCount)
         if let snapshot = model.snapshot {
             focusPendingPane(in: snapshot, model: model)
@@ -411,6 +424,12 @@ extension AppDelegate: RaiSnapshotObserver {
         notificationBodies[pane.paneID] = body
         NotifiedPaneStore.save(notifiedPaneStatuses)
         postNotification(for: transition, pane: pane, in: snapshot, body: body)
+        guard PhonePushQueuePolicy.queuesStatusPush(beacon: beacon) else {
+            pendingPhonePushes.removeValue(forKey: pane.paneID)
+            updatePresenceStatus()
+            return
+        }
+        let occurredAt = Date()
         pendingPhonePushes[pane.paneID] = PhonePushEvent(
             paneID: pane.paneID,
             paneName: title,
@@ -419,7 +438,11 @@ extension AppDelegate: RaiSnapshotObserver {
             status: transition.newStatus,
             notificationBody: body,
             allowsRemoteActions: allowsRemoteActions,
-            occurredAt: Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                status: transition.newStatus,
+                occurredAt: occurredAt
+            )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)
@@ -499,6 +522,27 @@ extension AppDelegate: RaiSnapshotObserver {
         didReceive beacon: AgentBeacon,
         forPane paneID: String
     ) {
+        if !model.notificationsMuted,
+           beacon.awaitsDecision,
+           let requestID = beacon.requestID,
+           let snapshot = model.snapshot,
+           let pane = snapshot.panes.first(where: { $0.paneID == paneID }) {
+            pendingPhonePushes.removeValue(forKey: paneID)
+            updatePresenceStatus()
+            let event = PhonePushEvent(
+                paneID: paneID,
+                paneName: snapshot.displayName(for: pane),
+                workspaceID: pane.workspaceID,
+                workspaceName: snapshot.workspaceLabel(for: pane),
+                status: .blocked,
+                notificationBody: AgentNotificationBody.composeDecision(beacon: beacon),
+                allowsRemoteActions: true,
+                requestID: requestID,
+                occurredAt: Date()
+            )
+            model.bridgeServer.sendPush(PhonePushBurst(events: [event]))
+            return
+        }
         guard !model.notificationsMuted,
               paneID != model.selectedPaneID,
               let snapshot = model.snapshot,
@@ -518,6 +562,7 @@ extension AppDelegate: RaiSnapshotObserver {
         )
 
         let prior = pendingPhonePushes[paneID]
+        let occurredAt = prior?.occurredAt ?? Date()
         pendingPhonePushes[paneID] = PhonePushEvent(
             paneID: paneID,
             paneName: snapshot.displayName(for: pane),
@@ -526,7 +571,12 @@ extension AppDelegate: RaiSnapshotObserver {
             status: pane.agentStatus,
             notificationBody: body,
             allowsRemoteActions: false,
-            occurredAt: prior?.occurredAt ?? Date()
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: prior?.suppressedDeviceIDs
+                ?? model.bridgeServer.deviceIDsSuppressingHeldEvent(
+                    status: pane.agentStatus,
+                    occurredAt: occurredAt
+                )
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)

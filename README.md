@@ -54,7 +54,7 @@ terminal widget**.
 - **Drag to reorder** tabs and spaces; **double-click** to rename a tab or pane.
 - **Native notifications** + dock badge when an agent goes *blocked* or *done*.
 - **Claude hook beacons** put real tool requests or questions in notifications
-  and blocked sidebar rows, with no permission decisions.
+  and blocked sidebar rows. Rai Remote can answer waiting permission requests.
 - **Command palette** (⌘K) for fuzzy navigation.
 - **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
@@ -85,9 +85,12 @@ crook for the herd:
   History uses the Claude hook's transcript path and session ID. Rai never guesses
   from a pane directory. Settings → Integrations explains how to enable the hook.
   Cached history must match the live beacon. Rai marks history without one as previous.
-- **Answer Claude without reading a TUI** — permission and choice dialogs
-  render as native tappable buttons, race-guarded so a stale tap can never
-  answer the wrong prompt.
+- **Answer Claude without reading a TUI** — permission, trust, plan, and
+  AskUserQuestion dialogs render as native controls. Wizards show steps,
+  descriptions, checkboxes, free-text entry, and Submit. Each key waits for
+  visible terminal proof. Permission hooks send data decisions, with keys as
+  the fallback for older Macs. Sensitive permission text stays off the lock
+  screen. Background decisions track notification permission and later grants.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
   rides herdr's key semantics, so Enter submits and Backspace erases.
@@ -95,6 +98,10 @@ crook for the herd:
   workspace or a fresh one at a chosen directory.
 - **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
   workspaces group, handled alerts retract, and single alerts keep actions.
+- **Phone notification controls** set blocked and finished alerts per paired device.
+  The phone also sets snooze periods and a daily do-not-disturb window.
+  Changes remain pending during reconnects and sync after the next welcome.
+- **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through

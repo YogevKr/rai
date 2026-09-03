@@ -60,6 +60,22 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var answerFromPhone: Bool {
+        didSet {
+            userDefaults.set(answerFromPhone, forKey: Self.answerFromPhoneKey)
+        }
+    }
+
+    @Published var answerFromPhoneHoldSeconds: Int {
+        didSet {
+            let value = Self.clampedDecisionHoldSeconds(answerFromPhoneHoldSeconds)
+            if value != answerFromPhoneHoldSeconds {
+                answerFromPhoneHoldSeconds = value
+            }
+            userDefaults.set(value, forKey: Self.answerFromPhoneHoldSecondsKey)
+        }
+    }
+
     @Published private(set) var systemThemeVariant: ThemeVariant
 
     private static let terminalFontFamilyKey = "terminalFontFamily"
@@ -70,6 +86,8 @@ final class SettingsStore: ObservableObject {
     private static let doneSoundKey = "doneNotificationSound"
     private static let copyOnSelectKey = "terminalCopyOnSelect"
     private static let holdPushesKey = "holdPushesWhileAtMac"
+    static let answerFromPhoneKey = "answerFromPhone"
+    static let answerFromPhoneHoldSecondsKey = "answerFromPhoneHoldSeconds"
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -90,11 +108,20 @@ final class SettingsStore: ObservableObject {
         ) ?? .default
         copyOnSelect = userDefaults.bool(forKey: Self.copyOnSelectKey)
         holdPushesWhileAtMac = userDefaults.object(forKey: Self.holdPushesKey) as? Bool ?? true
+        answerFromPhone = userDefaults.object(forKey: Self.answerFromPhoneKey) as? Bool ?? true
+        answerFromPhoneHoldSeconds = Self.clampedDecisionHoldSeconds(
+            userDefaults.object(forKey: Self.answerFromPhoneHoldSecondsKey) as? Int
+                ?? ClaudeHookSettings.defaultDecisionHoldSeconds
+        )
         colorOverrides = Self.loadColorOverrides(
             from: userDefaults.data(forKey: Self.colorOverridesKey)
         )
         systemThemeVariant = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
             == .darkAqua ? .dark : .light
+    }
+
+    static func clampedDecisionHoldSeconds(_ value: Int) -> Int {
+        ClaudeHookSettings.clampedDecisionHoldSeconds(value)
     }
 
     var activeThemeVariant: ThemeVariant {
@@ -320,7 +347,14 @@ private struct CompanionSettingsView: View {
             presenceGateIsAway: presenceStatus.isAway,
             pendingPushCount: presenceStatus.pendingCount,
             lastPushResult: server.lastPushResult,
-            lastPushSucceeded: server.lastPushSucceeded
+            lastPushSucceeded: server.lastPushSucceeded,
+            devicePreferences: server.pairedDevices.map {
+                DoctorDevicePreferences(
+                    id: $0.id,
+                    label: $0.label,
+                    preferences: $0.pushPreferences.effective(at: Date())
+                )
+            }
         ))
     }
 
@@ -1758,6 +1792,7 @@ private struct PluginInstallPreviewSheet: View {
 
 private struct IntegrationsSettingsView: View {
     @ObservedObject var model: RaiModel
+    @ObservedObject private var settings = SettingsStore.shared
 
     @State private var activeIntegration: String?
     @State private var hooksPreview: ClaudeHooksPreview?
@@ -1783,6 +1818,25 @@ private struct IntegrationsSettingsView: View {
                     )
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textSecondary)
+
+                    Toggle("Answer from the phone", isOn: $settings.answerFromPhone)
+
+                    HStack {
+                        Text("Hold a permission prompt")
+                        Spacer()
+                        Stepper(
+                            "\(settings.answerFromPhoneHoldSeconds) seconds",
+                            value: $settings.answerFromPhoneHoldSeconds,
+                            in: ClaudeHookSettings.minimumDecisionHoldSeconds...ClaudeHookSettings.maximumDecisionHoldSeconds
+                        )
+                    }
+                    .disabled(!settings.answerFromPhone)
+
+                    Text(
+                        "Reinstall hooks after changing the hold. The preview shows a \(ClaudeHookSettings.claudeTimeout(forHoldSeconds: settings.answerFromPhoneHoldSeconds))-second Claude timeout."
+                    )
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.textTertiary)
 
                     HStack(spacing: 8) {
                         TextField("Claude settings.json path", text: $claudeSettingsPath)
@@ -1866,7 +1920,8 @@ private struct IntegrationsSettingsView: View {
             let path = NSString(string: claudeSettingsPath).expandingTildeInPath
             hooksPreview = try ClaudeHooksInstaller.makePreview(
                 action: action,
-                settingsURL: URL(fileURLWithPath: path)
+                settingsURL: URL(fileURLWithPath: path),
+                decisionHoldSeconds: settings.answerFromPhoneHoldSeconds
             )
             status = "Review the settings preview before you confirm."
         } catch {

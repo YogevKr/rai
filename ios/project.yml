@@ -42,6 +42,11 @@ targets:
           CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
         Release:
           CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+    entitlements:
+      path: rai-ios/rai-ios.entitlements
+      properties:
+        aps-environment: development
+        com.apple.developer.usernotifications.time-sensitive: true
     info:
       path: rai-ios/Info.plist
       properties:

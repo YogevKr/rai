@@ -35,6 +35,7 @@ struct MonitorView: View {
     @State private var path: [String] = []
     @State private var didAutoOpen = false
     @State private var showingAgentLauncher = false
+    @State private var showingNotificationPreferences = false
     @State private var renameTarget: RenameTarget?
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
@@ -136,6 +137,17 @@ struct MonitorView: View {
                                 if !enabled { filter = nil }
                             }
                         ))
+                        Button("Notifications") {
+                            showingNotificationPreferences = true
+                        }
+                        .disabled(
+                            !connection.status.isConnected
+                                || !connection.supportsPushPreferences
+                        )
+                        if connection.status.isConnected,
+                           !connection.supportsPushPreferences {
+                            Text("Update Mac for notification controls")
+                        }
                         Divider()
                         if connection.requiresRepair {
                             Button("Pair Again", action: forgetPairing)
@@ -165,6 +177,9 @@ struct MonitorView: View {
             ) { workspaceID, agent, cwd in
                 connection.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd)
             }
+        }
+        .sheet(isPresented: $showingNotificationPreferences) {
+            NotificationPreferencesSheet(connection: connection)
         }
         .sheet(item: $backgroundWorkTarget) { target in
             BackgroundWorkSheet(target: target)
@@ -404,13 +419,14 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
-                            deny: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
                                 : nil
                         )
                     }
@@ -434,7 +450,16 @@ struct MonitorView: View {
                     NavigationLink(value: item.pane.paneID) {
                         NightAgentRow(
                             item: item,
-                            backgroundWork: backgroundWork(for: item.pane)
+                            backgroundWork: backgroundWork(for: item.pane),
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
+                                : nil,
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
+                                : nil
                         )
                     }
                     .listRowBackground(Night.row)
@@ -553,13 +578,14 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                            decisionReceivedAt: item.pane.beacon.map {
+                                connection.receivedAt(for: $0)
+                            },
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
-                            deny: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
                                 : nil
                         )
                     }
@@ -576,6 +602,27 @@ struct MonitorView: View {
                 hot: filter == .needsYou
             )
         }
+    }
+
+    private func answer(
+        _ pane: Pane,
+        decision: RemotePermissionDecision,
+        fallback: [UInt8]
+    ) {
+        if let requestID = pane.beacon?.requestID {
+            guard pane.beacon?.awaitsDecision == true else { return }
+            connection.decide(decision, requestID: requestID, paneID: pane.paneID)
+            return
+        }
+        connection.sendInput(fallback, to: pane.paneID)
+    }
+
+    private func canAnswer(_ pane: Pane) -> Bool {
+        guard connection.status.isConnected else { return false }
+        if pane.beacon?.requestID != nil {
+            return pane.beacon?.awaitsDecision == true
+        }
+        return pane.agentStatus == .blocked
     }
 }
 
@@ -931,6 +978,7 @@ private struct NightSectionHeader: View {
 private struct NightAgentRow: View {
     let item: NeedsYouAgent
     let backgroundWork: [String]
+    let decisionReceivedAt: Date?
     var approve: (() -> Void)?
     var deny: (() -> Void)?
 
@@ -959,6 +1007,19 @@ private struct NightAgentRow: View {
                             + Text(activity).foregroundStyle(Night.faint))
                             .font(.caption.monospaced())
                             .lineLimit(1)
+                    }
+                    if let beacon = item.pane.beacon,
+                       beacon.awaitsDecision {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let seconds = HeldDecisionCountdown.remainingSeconds(
+                                beacon: beacon,
+                                receivedAt: decisionReceivedAt ?? context.date,
+                                now: context.date
+                            )
+                            Text("held for you · \(seconds) s")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Night.amber)
+                        }
                     }
                 }
                 Spacer(minLength: 4)
@@ -1009,6 +1070,7 @@ private struct NightAgentRow: View {
     /// The terminal title doubles as the live activity when it says something
     /// beyond the row title (Claude keeps it set to the current step).
     private var activity: String? {
+        if let pending = item.pane.beacon?.pendingSummary { return pending }
         guard let stripped = item.pane.terminalTitleStripped, !stripped.isEmpty
         else { return nil }
         // The title is often the same text — or herdr's own "…"-truncated
@@ -1090,9 +1152,11 @@ private struct TabGroup: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Night.text)
                         .lineLimit(1)
-                        Text(Night.repoName(pane.cwd) ?? "")
+                        Text(PaneRowSecondaryText.resolve(pane) ?? "")
                             .font(.caption.monospaced())
-                            .foregroundStyle(Night.repoBlue)
+                            .foregroundStyle(
+                                pane.beacon?.pendingSummary == nil ? Night.repoBlue : Night.faint
+                            )
                             .lineLimit(1)
                     }
                     Spacer()
@@ -1180,15 +1244,23 @@ private struct PaneRow: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Night.text)
                     .lineLimit(1)
-                Text(Night.repoName(pane.cwd) ?? "")
+                Text(PaneRowSecondaryText.resolve(pane) ?? "")
                     .font(.caption.monospaced())
-                    .foregroundStyle(Night.repoBlue)
+                    .foregroundStyle(
+                        pane.beacon?.pendingSummary == nil ? Night.repoBlue : Night.faint
+                    )
                     .lineLimit(1)
             }
             Spacer()
             PaneStatus(status: pane.agentStatus, backgroundWorkCount: backgroundWork.count)
         }
         .padding(.vertical, 2)
+    }
+}
+
+enum PaneRowSecondaryText {
+    static func resolve(_ pane: Pane) -> String? {
+        pane.beacon?.pendingSummary ?? Night.repoName(pane.cwd)
     }
 }
 

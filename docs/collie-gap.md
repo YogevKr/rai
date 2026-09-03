@@ -27,15 +27,13 @@ of what rai should absorb.
 
 ## July list — status
 
-Closed since the July audit: single-choice permission/trust prompt buttons
-with a signature race guard; quick replies + agent-aware slash palette with
-two-tap danger; destructive-input confirm; push presence gate; Mac and phone
-notification retraction; push coalescing and grouping; triage groups with counts
-and a filter pulse line (Nightwatch); session follow.
+Closed since the July audit: structured permission, trust, plan, and
+AskUserQuestion prompt controls with a signature race guard; quick replies;
+an agent-aware slash palette; destructive-input confirm; push presence gate;
+Mac and phone notification retraction; push coalescing and grouping; triage
+groups with counts and a filter pulse line (Nightwatch); session follow.
 
-Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
-diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
+Still open from July: draft take-over; per-pane display preferences.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -47,7 +45,7 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    cheap. Carry two facts: Claude collapses pastes over ~400 chars into a
    `[Pasted text #N]` token (Collie ADR 0010), and Codex keeps only 1024
    chars of one send (`[Pasted Content N chars]`).
-2. **Agent hooks as the source of truth — LANDED on Mac (2026-09-02).** Rai
+2. **Agent hooks as the source of truth — LANDED (2026-09-03).** Rai
    installs Claude hooks so a
    pane reports its name, status and session ref ("beacons"). Collie admits
    its push body cannot carry the question because parsing is client-side
@@ -55,9 +53,10 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    `PreToolUse` hook posting tool name, tool input, `session_id` and
    `HERDR_PANE_ID` to the Mac gives the push a real body ("Run `bun run
    build` in ~/src/collie?") and gives AskUserQuestion its options as data.
-   Grid parsing stays as the fallback and as the race guard. The Mac receiver,
-   notification bodies, bridge field, and sidebar text now ship. Structured
-   phone prompt controls remain in wave 2.
+   Grid parsing stays as the fallback and as the race guard.
+   The Mac receiver, notification bodies, bridge field, and sidebar text ship.
+   Permission requests now use authenticated data decisions from the phone.
+   Request IDs, deadlines, audit records, and key fallback close stale-answer races.
 3. ✅ **History from the transcript, not the screen.** Claude runs on the
    alternate screen, so the grid has no scrollback ring. Collie reads the
    agent's own JSONL transcript (`bridge/journal/`) and offers
@@ -86,8 +85,8 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    `quick-replies.toml`, live-reloaded, with a `scope` so rows replace the
    shipped catalog on matching panes (ADR 0018). rai hardcodes both catalogs
    in `Composer.swift`.
-9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
-   TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
+9. ✅ **Stable error codes from the bridge.** The Mac sends codes and details.
+   The phone maps each code to a recovery action or an action error.
 10. **Push grouping. ✅ Landed 2026-09-02.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
@@ -148,8 +147,24 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2: structured prompt blocks fed by beacons
-(AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
-dialogs) on iOS; ✅ transcript history view; operator config files;
-phone-side notification prefs (per-kind, snooze) on top of protocol 6;
-bridge error codes on the Mac side; statusline strip; LAN TLS.
+Wave 2 decision hooks landed on 2026-09-03.
+
+They add structured permission decisions, direct pushes, and phone countdowns.
+
+Review hardening adds stale-tap checks, text redaction, dynamic phone capability, and clock-safe countdowns.
+
+It also tolerates brief reconnects and refreshes notification permission after each foreground transition.
+
+Later notification grants restart APNs registration. Token redaction now handles punctuation and non-path slash values.
+
+Wave 2 prompt blocks now use beacons and verified grid steps on iOS.
+Transcript history also ships and requires the Claude hook.
+Remaining work includes operator config files and LAN TLS.
+
+Wave 2 quality-of-life outcome (2026-09-03):
+
+| Item | Result |
+| --- | --- |
+| 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
+| 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
+| 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |

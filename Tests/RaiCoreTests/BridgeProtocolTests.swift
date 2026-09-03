@@ -19,7 +19,11 @@ final class BridgeProtocolTests: XCTestCase {
             deviceID: "phone-1",
             name: "Yogev’s iPhone",
             platform: "iOS",
-            model: "iPhone"
+            model: "iPhone",
+            capabilities: [
+                BridgeCapability.permissionDecisions,
+                BridgeCapability.permissionDecisionPush,
+            ]
         )
         let messages: [BridgeMessage] = [
             .pair(
@@ -61,6 +65,13 @@ final class BridgeProtocolTests: XCTestCase {
                 herdSessionName: "default",
                 throughTurnIndex: 12
             ),
+            .decide(paneID: "pane-1", requestID: "request-1", decision: .allow),
+            .decisionAvailability(available: false, pushAuthorized: false),
+            .pushPrefs(PushPreferences(
+                kinds: .init(needsYou: true, finished: false),
+                snoozeUntil: Date(timeIntervalSinceReferenceDate: 1_000),
+                dnd: .init(start: 22 * 60, end: 8 * 60)
+            )),
             .paired(
                 token: "device-token",
                 protocolVersion: bridgeProtocolVersion,
@@ -68,8 +79,13 @@ final class BridgeProtocolTests: XCTestCase {
             ),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: "default"),
             .welcome(protocolVersion: bridgeProtocolVersion, sessionName: nil),
-            .authFailed(reason: "Invalid pairing token"),
+            .authFailed(
+                reason: "Invalid pairing token",
+                code: .repairRequired,
+                detail: "Credential not found"
+            ),
             .snapshot(snapshot, sessionName: "default"),
+            .snapshot(snapshot, sessionName: nil),
             .event(BridgeEvent(
                 name: "layout.updated",
                 payload: ["tab_id": .string("tab-1")]
@@ -101,7 +117,25 @@ final class BridgeProtocolTests: XCTestCase {
                 paneID: "pane-1", sessionID: "session-1", requestID: "request-2",
                 message: "This pane is closed."
             ),
-            .error(message: "Herdr is unavailable"),
+            .pushPrefsState(.default),
+            .error(
+                message: "Herdr is unavailable",
+                code: .herdMissing,
+                detail: "No snapshot"
+            ),
+            .paneError(paneID: "pane-1", message: "That prompt already closed"),
+            .decisionResult(
+                paneID: "pane-1",
+                requestID: "request-1",
+                accepted: true,
+                message: nil
+            ),
+            .decisionResult(
+                paneID: "pane-1",
+                requestID: "request-2",
+                accepted: false,
+                message: "That prompt already closed"
+            ),
         ]
 
         let encoder = JSONEncoder()
@@ -116,6 +150,16 @@ final class BridgeProtocolTests: XCTestCase {
                 try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
             )
         }
+    }
+
+    func testOldClientInfoHasNoDecisionCapability() throws {
+        let data = Data(
+            #"{"deviceID":"phone-1","name":"Phone","platform":"iOS"}"#.utf8
+        )
+
+        let client = try JSONDecoder().decode(ClientInfo.self, from: data)
+
+        XCTAssertFalse(client.supportsPermissionDecisions)
     }
 
     // A message from an OLD peer (no full_grid / frame dimension keys)
@@ -168,6 +212,50 @@ final class BridgeProtocolTests: XCTestCase {
                 paneID: "pane-1", sessionID: "session-1", turns: [], hasMore: false
             ))
         )
+        let error = Data(#"{"type":"error","message":"Old Mac prose"}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: error),
+            .error(message: "Old Mac prose", code: nil, detail: nil)
+        )
+        let auth = Data(#"{"type":"authFailed","reason":"Old reason"}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: auth),
+            .authFailed(reason: "Old reason", code: nil, detail: nil)
+        )
+        let futureAuth = Data(
+            #"{"type":"authFailed","reason":"Mac is starting","code":"startup_pending","detail":"Herd not ready"}"#.utf8
+        )
+        let decodedFutureAuth = try JSONDecoder().decode(BridgeMessage.self, from: futureAuth)
+        XCTAssertEqual(
+            decodedFutureAuth,
+            .authFailed(
+                reason: "Mac is starting",
+                code: nil,
+                detail: "Herd not ready",
+                unrecognizedCode: "startup_pending"
+            )
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                BridgeMessage.self,
+                from: JSONEncoder().encode(decodedFutureAuth)
+            ),
+            decodedFutureAuth
+        )
+        let future = Data(
+            #"{"type":"error","message":"Future prose","code":"future_code","detail":"More"}"#.utf8
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: future),
+            .error(message: "Future prose", code: nil, detail: "More")
+        )
+        let preferences = Data(
+            #"{"type":"pushPrefs","kinds":{"needsYou":true,"finished":true},"dnd":{"start":1320,"end":480}}"#.utf8
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(BridgeMessage.self, from: preferences),
+            .pushPrefs(.init(dnd: .init(start: 1_320, end: 480)))
+        )
     }
 
     func testBridgeProtocolVersionIsSix() {
@@ -192,7 +280,9 @@ final class BridgeProtocolTests: XCTestCase {
                     "event":"PermissionRequest","pane_id":"w1:p1",
                     "session_id":"session-1","cwd":"/repo",
                     "transcript_path":"/tmp/session.jsonl","tool_name":"Bash",
-                    "tool_input":{"command":"swift test"},"ts":1780000000
+                    "tool_input":{"command":"swift test"},"ts":1780000000,
+                    "request_id":"request-1","awaits_decision":true,
+                    "deadline":780000000
                   }
                 }],
                 "layouts":[]
@@ -209,6 +299,9 @@ final class BridgeProtocolTests: XCTestCase {
         }
         XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
         XCTAssertNil(sessionName)
+        XCTAssertEqual(snapshot.panes.first?.beacon?.requestID, "request-1")
+        XCTAssertTrue(snapshot.panes.first?.beacon?.awaitsDecision == true)
+        XCTAssertNotNil(snapshot.panes.first?.beacon?.deadline)
     }
 
     // Additive-only messages (workspace ops, broadcast, sessions, background
@@ -220,6 +313,8 @@ final class BridgeProtocolTests: XCTestCase {
             .broadcastInput(tabID: "w7:t1", text: "git status"),
             .listSessions,
             .selectSession(name: "default"),
+            .pushPrefs(.default),
+            .pushPrefsState(.default),
             .backgroundWork([
                 PaneBackgroundWork(
                     paneID: "w7:p1",

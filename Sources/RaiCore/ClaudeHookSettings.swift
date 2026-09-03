@@ -19,6 +19,11 @@ public enum ClaudeHookSettingsError: LocalizedError {
 
 /// Adds and removes only Rai-owned handlers in Claude Code user settings.
 public enum ClaudeHookSettings {
+    public static let minimumDecisionHoldSeconds = 5
+    public static let defaultDecisionHoldSeconds = 45
+    public static let maximumDecisionHoldSeconds = 60
+    public static let hookReadGraceSeconds = 10
+    public static let claudeTimeoutGraceSeconds = 15
     public static let events = [
         "SessionStart",
         "UserPromptSubmit",
@@ -28,23 +33,38 @@ public enum ClaudeHookSettings {
         "Stop",
     ]
 
-    public static func merged(settings: Data?, scriptPath: String) throws -> Data {
+    public static func merged(
+        settings: Data?,
+        scriptPath: String,
+        decisionHoldSeconds: Int = defaultDecisionHoldSeconds
+    ) throws -> Data {
         var root = try rootObject(from: settings)
         var hooks = try hooksObject(from: root)
+        let holdSeconds = clampedDecisionHoldSeconds(decisionHoldSeconds)
 
         for event in events {
             var groups = try eventGroups(event, in: hooks)
-            let command = hookCommand(scriptPath: scriptPath, event: event)
-            guard !contains(command: command, in: groups) else { continue }
-            groups.append([
-                "matcher": "",
-                "hooks": [[
-                    "type": "command",
-                    "command": command,
-                    "async": true,
-                    "timeout": 2,
-                ]],
-            ])
+            groups = removingManagedHandlers(
+                from: groups,
+                scriptPath: scriptPath,
+                event: event
+            )
+            let command = hookCommand(
+                scriptPath: scriptPath,
+                event: event,
+                decisionHoldSeconds: holdSeconds
+            )
+            var handler: [String: Any] = [
+                "type": "command",
+                "command": command,
+                "timeout": event == "PermissionRequest"
+                    ? holdSeconds + claudeTimeoutGraceSeconds
+                    : 2,
+            ]
+            if event != "PermissionRequest" {
+                handler["async"] = true
+            }
+            groups.append(["hooks": [handler]])
             hooks[event] = groups
         }
         root["hooks"] = hooks
@@ -56,7 +76,6 @@ public enum ClaudeHookSettings {
         var hooks = try hooksObject(from: root)
 
         for event in events {
-            let command = hookCommand(scriptPath: scriptPath, event: event)
             let groups = try eventGroups(event, in: hooks)
             var keptGroups: [[String: Any]] = []
             for var group in groups {
@@ -65,7 +84,7 @@ public enum ClaudeHookSettings {
                     continue
                 }
                 let keptHandlers = handlers.filter {
-                    ($0["command"] as? String) != command
+                    !isManagedHandler($0, scriptPath: scriptPath, event: event)
                 }
                 if !keptHandlers.isEmpty {
                     group["hooks"] = keptHandlers
@@ -86,8 +105,27 @@ public enum ClaudeHookSettings {
         return try encoded(root)
     }
 
-    public static func hookCommand(scriptPath: String, event: String) -> String {
-        "\(shellQuote(scriptPath)) \(event)"
+    public static func hookCommand(
+        scriptPath: String,
+        event: String,
+        decisionHoldSeconds: Int = defaultDecisionHoldSeconds
+    ) -> String {
+        let base = "\(shellQuote(scriptPath)) \(event)"
+        return event == "PermissionRequest"
+            ? "\(base) \(clampedDecisionHoldSeconds(decisionHoldSeconds))"
+            : base
+    }
+
+    public static func clampedDecisionHoldSeconds(_ value: Int) -> Int {
+        min(max(value, minimumDecisionHoldSeconds), maximumDecisionHoldSeconds)
+    }
+
+    public static func hookReadTimeout(forHoldSeconds value: Int) -> Int {
+        clampedDecisionHoldSeconds(value) + hookReadGraceSeconds
+    }
+
+    public static func claudeTimeout(forHoldSeconds value: Int) -> Int {
+        clampedDecisionHoldSeconds(value) + claudeTimeoutGraceSeconds
     }
 
     private static func rootObject(from data: Data?) throws -> [String: Any] {
@@ -117,11 +155,31 @@ public enum ClaudeHookSettings {
         return groups
     }
 
-    private static func contains(command: String, in groups: [[String: Any]]) -> Bool {
-        groups.contains { group in
-            guard let handlers = group["hooks"] as? [[String: Any]] else { return false }
-            return handlers.contains { ($0["command"] as? String) == command }
+    private static func removingManagedHandlers(
+        from groups: [[String: Any]],
+        scriptPath: String,
+        event: String
+    ) -> [[String: Any]] {
+        groups.compactMap { group in
+            guard let handlers = group["hooks"] as? [[String: Any]] else { return group }
+            let kept = handlers.filter {
+                !isManagedHandler($0, scriptPath: scriptPath, event: event)
+            }
+            guard !kept.isEmpty else { return nil }
+            var updated = group
+            updated["hooks"] = kept
+            return updated
         }
+    }
+
+    private static func isManagedHandler(
+        _ handler: [String: Any],
+        scriptPath: String,
+        event: String
+    ) -> Bool {
+        guard let command = handler["command"] as? String else { return false }
+        let base = "\(shellQuote(scriptPath)) \(event)"
+        return command == base || command.hasPrefix(base + " ")
     }
 
     private static func encoded(_ object: [String: Any]) throws -> Data {

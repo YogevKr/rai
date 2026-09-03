@@ -32,6 +32,61 @@ enum AgentBeaconLifecycle {
     }
 }
 
+enum DecisionHoldPolicy {
+    static func shouldHold(
+        featureEnabled: Bool,
+        userIsAtMac: Bool,
+        phoneReachable: Bool,
+        paneCorrelated: Bool
+    ) -> Bool {
+        featureEnabled && !userIsAtMac && phoneReachable && paneCorrelated
+    }
+}
+
+struct PhoneReachabilityGrace {
+    static let duration: TimeInterval = 5
+
+    private(set) var unreachableSince: Date?
+
+    mutating func shouldEndHold(phoneReachable: Bool, now: Date) -> Bool {
+        if phoneReachable {
+            unreachableSince = nil
+            return false
+        }
+        guard let unreachableSince else {
+            self.unreachableSince = now
+            return false
+        }
+        return now.timeIntervalSince(unreachableSince) >= Self.duration
+    }
+
+    mutating func reset() {
+        unreachableSince = nil
+    }
+}
+
+enum PendingDecisionRouting {
+    static func canStart(_ pending: [PendingDecision], paneID: String) -> Bool {
+        !pending.contains { $0.paneID == paneID }
+    }
+
+    static func isOpen(
+        _ pending: PendingDecision?,
+        paneID: String,
+        requestID: String,
+        now: Date
+    ) -> Bool {
+        guard let pending else { return false }
+        return pending.requestID == requestID
+            && pending.paneID == paneID
+            && pending.deadline > now
+    }
+
+    static func isExpired(_ pending: PendingDecision?, now: Date) -> Bool {
+        (pending?.deadline ?? .distantFuture) <= now
+    }
+}
+
 @MainActor
 protocol RaiSnapshotObserver: AnyObject {
     func raiModel(
@@ -325,7 +380,10 @@ final class RaiModel: ObservableObject {
 
     @Published private(set) var snapshot: SessionSnapshot?
     @Published private(set) var agentBeacons: [String: AgentBeacon] = [:]
+    @Published private(set) var pendingDecisions: [String: PendingDecision] = [:]
     private var completionBeacons: [String: AgentBeacon] = [:]
+    private var decisionReplies: [String: HookDecisionReply] = [:]
+    private var decisionDeadlineTasks: [String: Task<Void, Never>] = [:]
     private var completionPresentationTimestamps: [String: TimeInterval] = [:]
     private var latestBeaconWorkTimestamps: [String: TimeInterval] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
@@ -354,6 +412,9 @@ final class RaiModel: ObservableObject {
                 notificationsMuted,
                 forKey: Self.notificationsMutedDefaultsKey
             )
+            if notificationsMuted {
+                reevaluatePendingDecisions()
+            }
         }
     }
     // Sidebar agents panel: how it sorts, whether it is collapsed, and how much
@@ -450,6 +511,9 @@ final class RaiModel: ObservableObject {
     private static let repoDepthKey = "repoDepth"
     static let sidebarSplitRange: ClosedRange<Double> = 0.2...0.85
     private let userDefaults: UserDefaults
+    private let userIdleSeconds: @Sendable () -> TimeInterval
+    private let phoneReachableOverride: (@Sendable () -> Bool)?
+    private var phoneReachabilityGrace = PhoneReachabilityGrace()
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private lazy var closedTabStore = ClosedTabStore(userDefaults: userDefaults)
 
@@ -483,7 +547,9 @@ final class RaiModel: ObservableObject {
     init(
         client: HerdrClient = HerdrClient(),
         userDefaults: UserDefaults = .standard,
-        closeCommandRunner: CloseCommandRunner? = nil
+        closeCommandRunner: CloseCommandRunner? = nil,
+        userIdleSeconds: @escaping @Sendable () -> TimeInterval = { UserPresence.idleSeconds },
+        phoneReachable: (@Sendable () -> Bool)? = nil
     ) {
         self.client = client
         self.closeCommandRunner = closeCommandRunner
@@ -491,6 +557,8 @@ final class RaiModel: ObservableObject {
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
         terminalPool = TerminalPool(socketPath: client.socketPath)
         self.userDefaults = userDefaults
+        self.userIdleSeconds = userIdleSeconds
+        phoneReachableOverride = phoneReachable
         collapsedSpaceKeys = Set(
             userDefaults.stringArray(forKey: Self.collapsedSpaceKeysDefaultsKey) ?? []
         )
@@ -533,6 +601,7 @@ final class RaiModel: ObservableObject {
         flushTask?.cancel()
         gitStatusTask?.cancel()
         client.disconnect()
+        for reply in decisionReplies.values { reply.none() }
     }
 
     var currentSessionDisplayName: String {
@@ -578,23 +647,77 @@ final class RaiModel: ObservableObject {
             .first
     }
 
-    func receiveAgentBeacon(_ incoming: AgentBeacon) async {
+    func receiveAgentBeacon(
+        _ incoming: AgentBeacon,
+        decisionReply: HookDecisionReply? = nil
+    ) async {
         let generation = connectionGeneration
-        guard let paneID = await correlatedPaneID(for: incoming) else { return }
-        guard generation == connectionGeneration else { return }
+        guard let paneID = await correlatedPaneID(for: incoming) else {
+            decisionReply?.none()
+            return
+        }
+        guard generation == connectionGeneration else {
+            decisionReply?.none()
+            return
+        }
         let status = snapshot?.panes.first(where: { $0.paneID == paneID })?.agentStatus
         let previous = agentBeacons[paneID]
         if let completion = completionBeacons[paneID],
            incoming.timestamp < completion.timestamp {
+            decisionReply?.none()
             return
         }
         var beacon = incoming.inheritingTool(from: previous)
-        if let previous, previous.timestamp > beacon.timestamp {
+        var heldDecision: PendingDecision?
+        if incoming.event == "PermissionRequest",
+           incoming.awaitsDecision,
+           let requestID = incoming.requestID,
+           let decisionReply {
+            if pendingDecisions[requestID] != nil {
+                decisionReply.none()
+                return
+            }
+            guard PendingDecisionRouting.canStart(
+                Array(pendingDecisions.values),
+                paneID: paneID
+            ) else {
+                decisionReply.none()
+                return
+            }
+            if shouldHoldDecision() {
+                let holdSeconds = min(
+                    max(
+                        incoming.decisionHoldSeconds
+                            ?? ClaudeHookSettings.defaultDecisionHoldSeconds,
+                        ClaudeHookSettings.minimumDecisionHoldSeconds
+                    ),
+                    ClaudeHookSettings.maximumDecisionHoldSeconds
+                )
+                let deadline = Date().addingTimeInterval(TimeInterval(holdSeconds))
+                heldDecision = PendingDecision(
+                    requestID: requestID,
+                    paneID: paneID,
+                    toolName: incoming.toolName,
+                    toolInput: incoming.toolInput,
+                    deadline: deadline
+                )
+                beacon = beacon.withDecisionState(awaiting: true, deadline: deadline)
+                pendingDecisions[requestID] = heldDecision
+                decisionReplies[requestID] = decisionReply
+            } else {
+                decisionReply.none()
+                beacon = beacon.withDecisionState(awaiting: false, deadline: nil)
+            }
+        }
+        if let previous,
+           previous.timestamp > beacon.timestamp,
+           !incoming.awaitsDecision {
             let merged = previous.inheritingTool(from: incoming)
             guard merged != previous else { return }
             beacon = merged
         }
-        if status == .blocked,
+        if !beacon.awaitsDecision,
+           status == .blocked,
            beacon.pendingSummary == nil,
            previous?.pendingSummary != nil,
            beacon.event != "PreToolUse",
@@ -629,6 +752,146 @@ final class RaiModel: ObservableObject {
         }
         if let snapshot {
             bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+        }
+        if let heldDecision {
+            scheduleDecisionDeadline(heldDecision)
+        }
+    }
+
+    @discardableResult
+    func decide(
+        paneID: String,
+        requestID: String,
+        decision: RemotePermissionDecision,
+        now: Date = Date()
+    ) -> Bool {
+        guard PendingDecisionRouting.isOpen(
+            pendingDecisions[requestID],
+            paneID: paneID,
+            requestID: requestID,
+            now: now
+        ) else {
+            if PendingDecisionRouting.isExpired(pendingDecisions[requestID], now: now) {
+                finishDecision(requestID: requestID, decision: nil)
+            }
+            return false
+        }
+        return finishDecision(requestID: requestID, decision: decision)
+    }
+
+    private func shouldHoldDecision() -> Bool {
+        let inputs = decisionHoldInputs()
+        return DecisionHoldPolicy.shouldHold(
+            featureEnabled: inputs.featureEnabled,
+            userIsAtMac: inputs.userIsAtMac,
+            phoneReachable: inputs.phoneReachable,
+            paneCorrelated: true
+        )
+    }
+
+    private func shouldEndDecisionHold(now: Date) -> Bool {
+        let inputs = decisionHoldInputs()
+        guard DecisionHoldPolicy.shouldHold(
+            featureEnabled: inputs.featureEnabled,
+            userIsAtMac: inputs.userIsAtMac,
+            phoneReachable: true,
+            paneCorrelated: true
+        ) else {
+            phoneReachabilityGrace.reset()
+            return true
+        }
+        return phoneReachabilityGrace.shouldEndHold(
+            phoneReachable: inputs.phoneReachable,
+            now: now
+        )
+    }
+
+    private func decisionHoldInputs() -> (
+        featureEnabled: Bool,
+        userIsAtMac: Bool,
+        phoneReachable: Bool
+    ) {
+        let answerEnabled = userDefaults.object(
+            forKey: SettingsStore.answerFromPhoneKey
+        ) as? Bool ?? true
+        return (
+            featureEnabled: answerEnabled && !notificationsMuted,
+            userIsAtMac: userIdleSeconds() < UserPresence.awayAfter,
+            phoneReachable: phoneReachableOverride?() ?? bridgeServer.hasDecisionCapablePhone
+        )
+    }
+
+    private func scheduleDecisionDeadline(_ pending: PendingDecision) {
+        decisionDeadlineTasks[pending.requestID]?.cancel()
+        decisionDeadlineTasks[pending.requestID] = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self,
+                      self.pendingDecisions[pending.requestID] != nil
+                else { return }
+                let now = Date()
+                if pending.deadline <= now || self.shouldEndDecisionHold(now: now) {
+                    self.finishDecision(requestID: pending.requestID, decision: nil)
+                    return
+                }
+                let duration = min(1, max(0, pending.deadline.timeIntervalSinceNow))
+                try? await Task.sleep(for: .seconds(duration))
+            }
+        }
+    }
+
+    func reevaluatePendingDecisions() {
+        guard !pendingDecisions.isEmpty else {
+            phoneReachabilityGrace.reset()
+            return
+        }
+        if shouldEndDecisionHold(now: Date()) {
+            finishAllPendingDecisions()
+        }
+    }
+
+    @discardableResult
+    private func finishDecision(
+        requestID: String,
+        decision: RemotePermissionDecision?,
+        relaySnapshot: Bool = true
+    ) -> Bool {
+        guard let pending = pendingDecisions.removeValue(forKey: requestID) else {
+            return false
+        }
+        decisionDeadlineTasks.removeValue(forKey: requestID)?.cancel()
+        let reply = decisionReplies.removeValue(forKey: requestID)
+        let delivered = switch decision {
+        case .allow: reply?.allow() ?? false
+        case .deny: reply?.deny() ?? false
+        case nil: reply?.none() ?? false
+        }
+        if let beacon = agentBeacons[pending.paneID], beacon.requestID == requestID {
+            agentBeacons[pending.paneID] = beacon.withDecisionState(
+                awaiting: false,
+                deadline: nil
+            )
+        }
+        bridgeServer.retractPushNotifications(
+            identifiers: [
+                PushNotificationIdentity.decision(
+                    pending.paneID,
+                    requestID: requestID
+                ),
+            ]
+        )
+        if relaySnapshot, let snapshot {
+            bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+        }
+        if pendingDecisions.isEmpty {
+            phoneReachabilityGrace.reset()
+        }
+        return delivered
+    }
+
+    private func finishAllPendingDecisions() {
+        let requestIDs = Array(pendingDecisions.keys)
+        for requestID in requestIDs {
+            finishDecision(requestID: requestID, decision: nil, relaySnapshot: false)
         }
     }
 
@@ -1161,6 +1424,7 @@ final class RaiModel: ObservableObject {
 
     private func tearDownCurrentConnection(stopRemote: Bool) {
         connectionGeneration = UUID()
+        finishAllPendingDecisions()
         // Their closes can never land now, and a stale ID would hide a row of
         // the same name in the next herd.
         closingTabIDs.removeAll()
@@ -2883,6 +3147,12 @@ final class RaiModel: ObservableObject {
                 }
             }
             let livePaneIDs = Set(newSnapshot.panes.map(\.paneID))
+            let closedRequestIDs = pendingDecisions.values.compactMap { pending in
+                livePaneIDs.contains(pending.paneID) ? nil : pending.requestID
+            }
+            for requestID in closedRequestIDs {
+                finishDecision(requestID: requestID, decision: nil, relaySnapshot: false)
+            }
             agentBeacons = agentBeacons.filter { livePaneIDs.contains($0.key) }
             completionBeacons = completionBeacons.filter { livePaneIDs.contains($0.key) }
             completionPresentationTimestamps = completionPresentationTimestamps.filter {
