@@ -205,6 +205,18 @@ final class APNsKeyReadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
     }
 
+    @MainActor
+    func testEmptySaveDeletesTheKeyFile() throws {
+        let (defaults, keyURL) = try fixture()
+        let settings = APNsSettings(defaults: defaults, keyFileURL: keyURL)
+        try settings.setKeyP8(Self.pem)
+
+        try settings.setKeyP8("  \n")
+
+        XCTAssertEqual(settings.keyReadState, .missing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
+    }
+
     func testEmptyKeyIsNamedNotAnASN1Error() {
         let configuration = APNsConfiguration(
             teamID: "T", keyID: "K", bundleID: "b", keyP8: "",

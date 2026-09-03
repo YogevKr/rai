@@ -163,6 +163,15 @@ final class APNsSettings: ObservableObject {
     }
 
     func setKeyP8(_ value: String) throws {
+        if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if FileManager.default.fileExists(atPath: keyFileURL.path) {
+                try FileManager.default.removeItem(at: keyFileURL)
+            }
+            migrationProblem = nil
+            defaults.removeObject(forKey: Key.migrationProblem)
+            defaults.set(true, forKey: Key.migrationAttempted)
+            return
+        }
         let key: P256.Signing.PrivateKey
         do {
             key = try APNsKeyParser.privateKey(from: value)
