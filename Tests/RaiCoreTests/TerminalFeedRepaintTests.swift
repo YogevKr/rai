@@ -70,6 +70,21 @@ final class TerminalFeedRepaintTests: XCTestCase {
         XCTAssertEqual(repaintCount, 0)
     }
 
+    func testPostFeedSynchronizedOutputCancelsImmediateRepaint() {
+        XCTAssertFalse(
+            TerminalFeedRepaintPolicy.allowsImmediateRepaintAfterFeed(
+                requested: true,
+                synchronizedOutputActive: true
+            )
+        )
+        XCTAssertTrue(
+            TerminalFeedRepaintPolicy.allowsImmediateRepaintAfterFeed(
+                requested: true,
+                synchronizedOutputActive: false
+            )
+        )
+    }
+
     func testSmallStreamWithoutRecentInputKeepsThrottle() {
         var repaintCount = 0
         let repainted = TerminalFeedRepaintPolicy.repaintIfNeeded(

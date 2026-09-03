@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// Paints not-yet-confirmed predicted keystrokes over a terminal pane, starting
@@ -10,16 +11,19 @@ import AppKit
 /// composites fine over the default CoreGraphics terminal renderer; the
 /// opt-in Metal renderer paints over subviews and would hide it (a known
 /// limitation of that experimental path, alongside find-bar z-order).
-final class PredictionOverlayView: NSView {
-    var glyphs: [Character] = []
-    var cellWidth: CGFloat = 0
-    var glyphFont: NSFont = TerminalPaneView.font
-    var textColor: NSColor = .textColor
-    var cellBackground: NSColor = .clear
+public final class PredictionOverlayView: NSView {
+    public var glyphs: [Character] = []
+    public var cellWidth: CGFloat = 0
+    public var glyphFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    public var textColor: NSColor = .textColor
+    public var cellBackground: NSColor = .clear
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    /// The latency harness uses this callback after the production draw completes.
+    public var onDraw: (() -> Void)?
 
-    override func draw(_ dirtyRect: NSRect) {
+    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    public override func draw(_ dirtyRect: NSRect) {
         guard !glyphs.isEmpty, cellWidth > 0 else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: glyphFont,
@@ -43,5 +47,7 @@ final class PredictionOverlayView: NSView {
                 withAttributes: attributes
             )
         }
+        onDraw?()
     }
 }
+#endif

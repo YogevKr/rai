@@ -6,6 +6,15 @@ public enum TerminalFeedRepaintPolicy {
     /// Keep 512-byte and larger chunks on the throttled output path.
     public static let immediateByteLimit = 512
 
+    /// A feed can enable synchronized output after the caller selects its path.
+    /// Never force that partially buffered frame onto the screen.
+    public static func allowsImmediateRepaintAfterFeed(
+        requested: Bool,
+        synchronizedOutputActive: Bool
+    ) -> Bool {
+        requested && !synchronizedOutputActive
+    }
+
     @discardableResult
     public static func repaintIfNeeded(
         byteCount: Int,

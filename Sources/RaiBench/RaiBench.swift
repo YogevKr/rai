@@ -135,22 +135,6 @@ private final class LatencyTerminalDelegate: NSObject, @preconcurrency TerminalV
     }
 }
 
-@MainActor
-private final class LatencyOverlayView: NSView {
-    var character: Character = "x"
-    var onDraw: (() -> Void)?
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        dirtyRect.fill()
-        String(character).draw(
-            at: NSPoint(x: 2, y: 2),
-            withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)]
-        )
-        onDraw?()
-    }
-}
-
 /// Measures the two latency paths controlled by rai. Both results end at a
 /// draw callback after the terminal or prediction overlay draws. Each sample
 /// waits for its own callback, so a prior frame cannot satisfy a later sample.
@@ -168,7 +152,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
     private let prediction = PredictiveEchoEngine(displayLatencyThreshold: 0.008)
     private var window: NSWindow!
     private var terminalView: TerminalView!
-    private var overlay: LatencyOverlayView!
+    private var overlay: PredictionOverlayView!
     private var phase = Phase.settling
     private var sampleStart: UInt64?
     private var currentByte: UInt8 = 0x61
@@ -220,7 +204,13 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         terminalView.terminalDelegate = terminalDelegate
         content.addSubview(terminalView)
 
-        overlay = LatencyOverlayView(frame: NSRect(x: 10, y: 10, width: 24, height: 24))
+        overlay = PredictionOverlayView(
+            frame: NSRect(x: 10, y: 10, width: 24, height: 24)
+        )
+        overlay.cellWidth = 12
+        overlay.glyphFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        overlay.textColor = .labelColor
+        overlay.cellBackground = .windowBackgroundColor
         overlay.isHidden = true
         content.addSubview(overlay)
 
@@ -351,7 +341,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
             )
             exit(2)
         }
-        overlay.character = character
+        overlay.glyphs = [character]
         overlay.isHidden = false
         overlay.needsDisplay = true
         overlay.displayIfNeeded()

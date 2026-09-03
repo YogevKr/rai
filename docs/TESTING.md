@@ -46,7 +46,7 @@ The delegate feeds the sent byte back as its echo. The timer stops in
 SwiftTerm's `rangeChanged` display-update callback.
 
 The prediction path starts its timer before the same synthetic key dispatch.
-It stops in the real prediction overlay's `draw` callback.
+It uses the production `PredictionOverlayView` and stops after its `draw` callback.
 
 Use the app's default CoreGraphics renderer:
 
@@ -82,19 +82,18 @@ Results from 2026-09-03 used a debug build on the same Mac:
 
 | Path | Samples | Baseline median / p90 | Guarded median / p90 |
 | --- | ---: | ---: | ---: |
-| terminal key to display update | 200 | 0.239 / 0.407 ms | 0.281 / 0.403 ms |
-| key to prediction overlay draw | 200 | 0.157 / 0.218 ms | 0.169 / 0.231 ms |
+| terminal key to display update | 200 | 0.372 / 0.495 ms | 0.237 / 0.393 ms |
+| key to prediction overlay draw | 200 | 0.434 / 0.567 ms | 0.406 / 0.518 ms |
 
 The baseline command used `--no-fast-path`. The guarded command omitted it.
-The prediction flag does not change the prediction path. Its difference is
+The fast-path flag does not change the prediction path. Its difference is
 run noise.
 
-The terminal fast path did not improve the median. It was 0.042 ms slower.
-Its p90 was 0.004 ms faster. SwiftTerm already updates immediately after a
-key event. Rai's guard now limits that behavior by feed size and frame rate.
+The guarded terminal path cut the median by 0.135 ms, or 36%.
+It cut p90 by 0.102 ms, or 21%. The prediction differences are run noise.
 
-The baseline terminal range was 0.146–0.642 ms. The guarded range was
-0.156–0.480 ms.
+The baseline terminal range was 0.163–3.010 ms. The guarded range was
+0.150–0.548 ms.
 
 Three fresh isolated-lab runs used 60 samples each:
 

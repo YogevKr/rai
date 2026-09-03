@@ -438,6 +438,12 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .focusLost))
     }
 
+    func testApplicationResignActiveInvalidatesPresentation() {
+        XCTAssertTrue(
+            PredictiveEchoViewPolicy.shouldClear(for: .applicationResignedActive)
+        )
+    }
+
     func testWindowRemovalAndHideInvalidatePresentation() {
         XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .removedFromWindow))
         XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .hidden))

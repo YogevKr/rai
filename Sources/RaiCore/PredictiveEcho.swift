@@ -273,6 +273,7 @@ public enum PredictiveEchoViewPolicy {
         case enterCopyMode
         case scroll(offsetFromBottom: Int)
         case focusLost
+        case applicationResignedActive
         case removedFromWindow
         case hidden
         case reattach
@@ -291,7 +292,8 @@ public enum PredictiveEchoViewPolicy {
 
     public static func shouldClear(for event: Invalidation) -> Bool {
         switch event {
-        case .resize, .enterCopyMode, .focusLost, .removedFromWindow, .hidden, .reattach:
+        case .resize, .enterCopyMode, .focusLost, .applicationResignedActive,
+             .removedFromWindow, .hidden, .reattach:
             return true
         case .scroll(let offsetFromBottom):
             return offsetFromBottom != 0

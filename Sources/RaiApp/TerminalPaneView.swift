@@ -208,6 +208,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var mouseIsDown = false
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
+    private var applicationResignObserverInstalled = false
     /// Bounded retry rather than a one-shot latch. SwiftTerm turns Metal OFF
     /// without throwing when a cross-window CAMetalLayer rebind fails
     /// (disableMetalRendererAfterRebindFailure), so a latch would strand a
@@ -327,6 +328,10 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
         guard predictiveEcho == nil else { return }
         predictiveEcho = PredictiveEchoEngine(herdLocation: herdLocation)
+    }
+
+    var pendingPredictionCountForTesting: Int {
+        predictiveEcho?.pending.count ?? 0
     }
 
     private var predictiveTerminalMode: PredictiveEchoEngine.TerminalMode {
@@ -469,6 +474,23 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         overlay.isHidden = false
         overlay.needsDisplay = true
         overlay.displayIfNeeded()
+    }
+
+    private func installApplicationResignObserverIfNeeded() {
+        guard !applicationResignObserverInstalled else { return }
+        applicationResignObserverInstalled = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidResignActive(_:)),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func applicationDidResignActive(_ notification: Notification) {
+        if PredictiveEchoViewPolicy.shouldClear(for: .applicationResignedActive) {
+            resetPredictions()
+        }
     }
 
     func resetPredictions() {
@@ -792,14 +814,19 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if drainsDeferredBytes {
             predictionDecisionsDeferred = false
         }
+        let canRepaintImmediately = TerminalFeedRepaintPolicy
+            .allowsImmediateRepaintAfterFeed(
+                requested: immediateRepaintAllowed,
+                synchronizedOutputActive: getTerminal().synchronizedOutputActive
+            )
         let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
         let reconciliation = reconcilePredictions(updateOverlay: false)
         let drawDecision = PredictiveEchoViewPolicy.coordinatedDraw(
             needsCoordination: reconciliation?.needsTerminalCoordination == true,
             terminalPaintedDuringFeed: terminalPaintedDuringFeed,
-            immediateRepaintAllowed: immediateRepaintAllowed
+            immediateRepaintAllowed: canRepaintImmediately
         )
-        if immediateRepaintAllowed && !terminalPaintedDuringFeed {
+        if canRepaintImmediately && !terminalPaintedDuringFeed {
             prepareOverlayForImmediateDraw(
                 reconciliation,
                 terminalCaretIsFresh: false
@@ -1042,6 +1069,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             }
             return
         }
+        installApplicationResignObserverIfNeeded()
         enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true
