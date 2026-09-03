@@ -1381,6 +1381,9 @@ final class RaiBridgeServer: ObservableObject {
         pairingCode = active?.value
         pairingCodeExpiresAt = active?.expiresAt
         pairedDevices = credentialStore.devices
+        if let exportURL = PairingCodeExport.configuredURL {
+            try? PairingCodeExport.write(code: active?.value, to: exportURL)
+        }
     }
 
     private func schedulePairingExpiry() {
