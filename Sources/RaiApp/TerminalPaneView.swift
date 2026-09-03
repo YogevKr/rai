@@ -208,7 +208,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var mouseIsDown = false
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
-    private var applicationResignObserverInstalled = false
+    private var focusObserversInstalled = false
     /// Bounded retry rather than a one-shot latch. SwiftTerm turns Metal OFF
     /// without throwing when a cross-window CAMetalLayer rebind fails
     /// (disableMetalRendererAfterRebindFailure), so a latch would strand a
@@ -391,7 +391,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 
     @discardableResult
     private func reconcilePredictions(
-        updateOverlay: Bool = true
+        updateOverlay: Bool = true,
+        outputBytes: ArraySlice<UInt8>? = nil
     ) -> PredictionReconcileResult? {
         guard let engine = predictiveEcho else { return nil }
         guard scrolledOffset == 0 else {
@@ -403,7 +404,8 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         let terminal = getTerminal()
         engine.reconcile(
             cursor: terminal.getCursorLocation(),
-            terminalMode: predictiveTerminalMode
+            terminalMode: predictiveTerminalMode,
+            outputBytes: outputBytes
         ) { column, row in
             guard let cell = terminal.getCharData(col: column, row: row) else {
                 return nil
@@ -476,19 +478,48 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         overlay.displayIfNeeded()
     }
 
-    private func installApplicationResignObserverIfNeeded() {
-        guard !applicationResignObserverInstalled else { return }
-        applicationResignObserverInstalled = true
+    private func installFocusObserversIfNeeded() {
+        guard !focusObserversInstalled else { return }
+        focusObserversInstalled = true
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationDidResignActive(_:)),
             name: NSApplication.didResignActiveNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidResignKey(_:)),
+            name: NSWindow.didResignKeyNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidUpdate(_:)),
+            name: NSWindow.didUpdateNotification,
+            object: nil
+        )
     }
 
     @objc private func applicationDidResignActive(_ notification: Notification) {
         if PredictiveEchoViewPolicy.shouldClear(for: .applicationResignedActive) {
+            resetPredictions()
+        }
+    }
+
+    @objc private func windowDidResignKey(_ notification: Notification) {
+        guard let observedWindow = notification.object as? NSWindow,
+              observedWindow === window else { return }
+        if PredictiveEchoViewPolicy.shouldClear(for: .windowResignedKey) {
+            resetPredictions()
+        }
+    }
+
+    @objc private func windowDidUpdate(_ notification: Notification) {
+        guard let observedWindow = notification.object as? NSWindow,
+              observedWindow === window,
+              observedWindow.firstResponder !== self else { return }
+        if PredictiveEchoViewPolicy.shouldClear(for: .firstResponderLost) {
             resetPredictions()
         }
     }
@@ -820,7 +851,10 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
                 synchronizedOutputActive: getTerminal().synchronizedOutputActive
             )
         let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
-        let reconciliation = reconcilePredictions(updateOverlay: false)
+        let reconciliation = reconcilePredictions(
+            updateOverlay: false,
+            outputBytes: slice
+        )
         let drawDecision = PredictiveEchoViewPolicy.coordinatedDraw(
             needsCoordination: reconciliation?.needsTerminalCoordination == true,
             terminalPaintedDuringFeed: terminalPaintedDuringFeed,
@@ -1069,7 +1103,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             }
             return
         }
-        installApplicationResignObserverIfNeeded()
+        installFocusObserversIfNeeded()
         enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true

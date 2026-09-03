@@ -299,8 +299,12 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
             guard let self else { return }
-            self.terminalView.feed(byteArray: [UInt8(ascii: "p")][...])
-            self.reconcilePrediction(at: now.addingTimeInterval(0.020))
+            let echo = [UInt8(ascii: "p")]
+            self.terminalView.feed(byteArray: echo[...])
+            self.reconcilePrediction(
+                outputBytes: echo[...],
+                at: now.addingTimeInterval(0.020)
+            )
             self.phase = .prediction
             self.runNextPredictionSample()
         }
@@ -355,8 +359,9 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         let byte = currentByte
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
             guard let self else { return }
-            self.terminalView.feed(byteArray: [byte][...])
-            self.reconcilePrediction(at: Date())
+            let echo = [byte]
+            self.terminalView.feed(byteArray: echo[...])
+            self.reconcilePrediction(outputBytes: echo[...], at: Date())
             // Keep every sample on one cell. A real line wrap ends prediction
             // confidence by design, which would turn this into a safety test.
             self.terminalView.feed(byteArray: [0x08][...])
@@ -366,11 +371,12 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func reconcilePrediction(at now: Date) {
+    private func reconcilePrediction(outputBytes: ArraySlice<UInt8>, at now: Date) {
         let terminal = terminalView.getTerminal()
         prediction.reconcile(
             cursor: terminal.getCursorLocation(),
             terminalMode: terminalMode,
+            outputBytes: outputBytes,
             readCell: { column, row in
                 guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
                 let character = cell.getCharacter()

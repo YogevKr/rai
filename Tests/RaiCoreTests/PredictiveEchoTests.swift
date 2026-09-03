@@ -104,6 +104,67 @@ final class PredictiveEchoTests: XCTestCase {
         }
     }
 
+    func testUnsolicitedOutputRequiresFreshEchoBeforeDisplay() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: Array("secret prompt".utf8)[...],
+            readCell: { _, _ in nil },
+            now: start.addingTimeInterval(0.021)
+        )
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+
+        type("s", cursorX: 1, at: start.addingTimeInterval(0.022))
+        XCTAssertEqual(engine.displayGlyphs(), [])
+
+        engine.reconcile(
+            cursor: (x: 2, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "s")][...],
+            readCell: { column, _ in column == 1 ? "s" : nil },
+            now: start.addingTimeInterval(0.042)
+        )
+        type("x", cursorX: 2, at: start.addingTimeInterval(0.043))
+        XCTAssertEqual(engine.displayGlyphs(), ["x"])
+    }
+
+    func testOutputThatDoesNotMatchPendingPredictionClearsConfidence() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
+
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "z")][...],
+            readCell: { _, _ in nil },
+            now: start.addingTimeInterval(0.022)
+        )
+
+        XCTAssertTrue(engine.pending.isEmpty)
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
     func testConfirmedPredictionVanishesOnReconcile() {
         engine = PredictiveEchoEngine(herdLocation: .local)
         type("a", cursorX: 0)
@@ -221,7 +282,7 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.displayGlyphs(now: next), ["b"])
     }
 
-    func testExtraOutputFeedKeepsCurrentBurstConfidence() {
+    func testTimerReconcileWithoutOutputKeepsCurrentBurstConfidence() {
         type("a", cursorX: 0)
         engine.reconcile(
             cursor: (x: 1, y: 5),
@@ -231,7 +292,7 @@ final class PredictiveEchoTests: XCTestCase {
         )
         XCTAssertTrue(engine.echoConfirmedThisBurst)
 
-        // Shells can split one echo and its redraw controls across PTY feeds.
+        // The periodic screen check has no new output to invalidate confidence.
         engine.reconcile(
             cursor: (x: 1, y: 5),
             terminalMode: .plain,

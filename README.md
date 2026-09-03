@@ -51,7 +51,8 @@ terminal widget**.
 - **Low-latency typing** — confirmed shell echo predicts safe ASCII bursts.
   TUI modes, copy mode, resizing, and scrollback always clear the prediction.
   Focus, visibility, and reconnect changes also clear it. A recent 20-confirm
-  tail detects the daemon's bimodal delay. Small echoes bypass the display throttle.
+  tail detects the daemon's bimodal delay. Unmatched output revokes confidence.
+  Small echoes bypass the display throttle.
 - **Nested splits** — rendered from the daemon's own split geometry and ratios.
 - **Split &amp; launch an agent** — spawn Claude or Codex directly into a new pane.
 - **Broadcast input** — send one command to every pane in a tab.

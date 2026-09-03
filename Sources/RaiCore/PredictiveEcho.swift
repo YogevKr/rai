@@ -17,6 +17,8 @@ import Foundation
 /// - A cell that comes back from the server with *different* visible content
 ///   than predicted clears everything (a misprediction flash, exactly like
 ///   mosh).
+/// - Any output that does not fully confirm queued predictions clears burst
+///   confidence. Later input must prove echo again before display.
 /// - Predictions expire unconditionally after `ttl`.
 ///
 /// Display is gated adaptively, also like mosh, and *conservatively for
@@ -178,14 +180,27 @@ public final class PredictiveEchoEngine {
         }
     }
 
-    /// Prunes the queue against the authoritative screen. `readCell` returns
-    /// the visible character at (column, row) or nil for blank/unknown.
+    /// Prunes the queue against the authoritative screen. `outputBytes` lets
+    /// an authoritative feed prove that it contains only queued echoes.
+    /// Any other output ends burst confidence before the next prediction.
+    /// `readCell` returns the visible character at (column, row), or nil.
     public func reconcile(
         cursor: (x: Int, y: Int),
         terminalMode: TerminalMode,
+        outputBytes: ArraySlice<UInt8>? = nil,
         readCell: (_ column: Int, _ row: Int) -> Character?,
         now: Date = Date()
     ) {
+        let outputByteCount = outputBytes?.count ?? 0
+        let outputMatchesQueue = outputBytes.map(outputMatchesPendingPrefix) ?? true
+        var confirmedPredictionCount = 0
+        defer {
+            if outputByteCount > 0
+                && (!outputMatchesQueue || confirmedPredictionCount != outputByteCount) {
+                pending.removeAll()
+                echoConfirmedThisBurst = false
+            }
+        }
         if !terminalMode.permitsPrediction {
             pending.removeAll()
             echoConfirmedThisBurst = false
@@ -214,6 +229,7 @@ public final class PredictiveEchoEngine {
             let cell = readCell(first.column, first.row)
             if cell == first.character, cursor.x > first.column {
                 recordConfirmLatency(now.timeIntervalSince(first.madeAt))
+                confirmedPredictionCount += 1
                 pending.removeFirst()
             } else if let cell, cell != first.character, cell != " " {
                 // The server put something else there — misprediction.
@@ -224,6 +240,20 @@ public final class PredictiveEchoEngine {
                 return
             }
         }
+    }
+
+    private func outputMatchesPendingPrefix(_ bytes: ArraySlice<UInt8>) -> Bool {
+        guard !bytes.isEmpty, bytes.count <= pending.count else { return false }
+        for (byte, prediction) in zip(bytes, pending) {
+            let scalars = prediction.character.unicodeScalars
+            guard scalars.count == 1,
+                  let scalar = scalars.first,
+                  scalar.value < 0x80,
+                  byte == UInt8(scalar.value) else {
+                return false
+            }
+        }
+        return true
     }
 
     /// The glyphs the overlay should draw right now, offset in cells from the
@@ -274,6 +304,8 @@ public enum PredictiveEchoViewPolicy {
         case scroll(offsetFromBottom: Int)
         case focusLost
         case applicationResignedActive
+        case windowResignedKey
+        case firstResponderLost
         case removedFromWindow
         case hidden
         case reattach
@@ -293,7 +325,8 @@ public enum PredictiveEchoViewPolicy {
     public static func shouldClear(for event: Invalidation) -> Bool {
         switch event {
         case .resize, .enterCopyMode, .focusLost, .applicationResignedActive,
-             .removedFromWindow, .hidden, .reattach:
+             .windowResignedKey, .firstResponderLost, .removedFromWindow,
+             .hidden, .reattach:
             return true
         case .scroll(let offsetFromBottom):
             return offsetFromBottom != 0
