@@ -272,6 +272,7 @@ Later reconnects do not send another line until that pane queue becomes empty.
 Remaining lines show as `N queued — Send next` in that pane.
 Each tap checks the current grid and sends exactly one line.
 Notification replies join an existing pane queue instead of passing it.
+At a password prompt, Rai refuses the reply and drops that pane queue.
 Held lines still expire after 15 minutes when a frame or manual send checks the queue.
 
 The match is anchored to the last non-empty row.

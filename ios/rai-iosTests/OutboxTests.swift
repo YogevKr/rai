@@ -311,6 +311,38 @@ final class OutboxTests: XCTestCase {
         XCTAssertEqual(connection.outbox.map(\.text), ["second\r", "reply\r"])
     }
 
+    func testNotificationReplyAtPasswordPromptDropsExistingPaneQueue() async throws {
+        var sentInputs: [String] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .input(_, bytesBase64) = message,
+               let data = Data(base64Encoded: bytesBase64) {
+                sentInputs.append(String(decoding: data, as: UTF8.self))
+            }
+        })
+        _ = await connection.sendComposedLine(line("first"), to: "pane-a")
+        _ = await connection.sendComposedLine(line("second"), to: "pane-a")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        connection.handle(frame("Password:", paneID: "pane-a"))
+        let pairing = try Pairing(host: "studio.local", port: 9_876, token: "secret")
+
+        let delivered = await connection.connectAndSendComposedLine(
+            line("reply"), to: "pane-a", pairing: pairing
+        )
+
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertTrue(connection.outbox.isEmpty)
+        XCTAssertEqual(
+            connection.actionError,
+            PasswordPromptGuard.refusal + " 1 queued line for this pane was dropped."
+        )
+    }
+
     func testReplyDeadlineIncludesSlowAttachStep() async throws {
         let clearFrame = frame("$", paneID: "pane-a")
         var connection: BridgeConnection!
@@ -319,7 +351,9 @@ final class OutboxTests: XCTestCase {
             messageSender: { message in
                 switch message {
                 case .attachStream:
-                    try await Task.sleep(for: .milliseconds(150))
+                    await Task.detached {
+                        try? await Task.sleep(for: .seconds(1))
+                    }.value
                     await MainActor.run { connection.handle(clearFrame) }
                 case let .input(_, bytesBase64):
                     if let data = Data(base64Encoded: bytesBase64) {
@@ -337,11 +371,14 @@ final class OutboxTests: XCTestCase {
             sessionName: nil
         )
 
+        let clock = ContinuousClock()
+        let startedAt = clock.now
         let delivered = await connection.connectAndSendComposedLine(
             line("late reply"), to: "pane-a", pairing: pairing
         )
 
         XCTAssertFalse(delivered)
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(500))
         XCTAssertTrue(sentInputs.isEmpty)
         XCTAssertEqual(connection.actionError, PasswordPromptGuard.verificationFailure)
         XCTAssertEqual(connection.takePendingComposedDraft(for: "pane-a"), "late reply")
