@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import RaiCore
 import SwiftTerm
 
 /// Renderer A/B harness for the terminal panes.
@@ -34,6 +35,8 @@ struct Options {
     var aggregated = true
     var cols = 100
     var rows = 32
+    var latency = false
+    var latencySamples = 200
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -54,6 +57,8 @@ struct Options {
             case "--buffering": o.aggregated = (value() ?? "aggregated") != "per-row"
             case "--cols": o.cols = Int(value() ?? "") ?? o.cols
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
+            case "--latency": o.latency = true
+            case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
             case "--help", "-h":
                 print("""
                 rai-bench — CoreGraphics vs Metal pane rendering
@@ -67,6 +72,8 @@ struct Options {
                   --buffering B    aggregated | per-row (default aggregated,
                                    matching what the app enables)
                   --cols / --rows  per-pane grid size (default 100x32)
+                  --latency        measure byte feed and predictive overlay latency
+                  --samples N      samples per latency path (default 200)
                 """)
                 exit(0)
             default: break
@@ -74,6 +81,237 @@ struct Options {
             i += 1
         }
         return o
+    }
+}
+
+// MARK: - Typing latency
+
+@MainActor
+private final class LatencyTerminalDelegate: NSObject, @preconcurrency TerminalViewDelegate {
+    var onRangeChanged: (() -> Void)?
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {}
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        onRangeChanged?()
+    }
+}
+
+@MainActor
+private final class LatencyOverlayView: NSView {
+    var character: Character = "x"
+    var onDraw: (() -> Void)?
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+        String(character).draw(
+            at: NSPoint(x: 2, y: 2),
+            withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)]
+        )
+        onDraw?()
+    }
+}
+
+/// Measures the two latency paths controlled by rai. The terminal result ends
+/// at SwiftTerm's `updateDisplay` callback. The prediction result ends when the
+/// overlay's `draw` callback runs. Each sample waits for its own callback, so a
+/// prior frame cannot satisfy a later sample.
+@MainActor
+final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
+    private enum Phase {
+        case settling
+        case terminal
+        case prediction
+        case finished
+    }
+
+    private let options: Options
+    private let terminalDelegate = LatencyTerminalDelegate()
+    private let prediction = PredictiveEchoEngine(displayLatencyThreshold: 0.008)
+    private var window: NSWindow!
+    private var terminalView: TerminalView!
+    private var overlay: LatencyOverlayView!
+    private var phase = Phase.settling
+    private var sampleStart: UInt64?
+    private var currentByte: UInt8 = 0x61
+    private var terminalSamples: [Double] = []
+    private var predictionSamples: [Double] = []
+
+    nonisolated init(options: Options) {
+        self.options = options
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildWindow()
+        terminalDelegate.onRangeChanged = { [weak self] in
+            self?.terminalDisplayDidUpdate()
+        }
+        overlay.onDraw = { [weak self] in
+            self?.predictionOverlayDidDraw()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.startTerminalSamples()
+        }
+    }
+
+    private func buildWindow() {
+        let size = NSSize(width: 720, height: 420)
+        window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "rai-bench latency"
+        let content = NSView(frame: NSRect(origin: .zero, size: size))
+        window.contentView = content
+
+        terminalView = TerminalView(frame: content.bounds)
+        terminalView.autoresizingMask = [.width, .height]
+        terminalView.notifyUpdateChanges = true
+        terminalView.terminalDelegate = terminalDelegate
+        content.addSubview(terminalView)
+
+        overlay = LatencyOverlayView(frame: NSRect(x: 10, y: 10, width: 24, height: 24))
+        overlay.isHidden = true
+        content.addSubview(overlay)
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func startTerminalSamples() {
+        phase = .terminal
+        runNextTerminalSample()
+    }
+
+    private func runNextTerminalSample() {
+        guard terminalSamples.count < max(1, options.latencySamples) else {
+            report("terminal-feed-update", samples: terminalSamples)
+            primePrediction()
+            return
+        }
+        currentByte = 0x61 + UInt8(terminalSamples.count % 26)
+        sampleStart = DispatchTime.now().uptimeNanoseconds
+        terminalView.feed(byteArray: [currentByte][...])
+    }
+
+    private func terminalDisplayDidUpdate() {
+        guard phase == .terminal, let start = sampleStart else { return }
+        sampleStart = nil
+        terminalSamples.append(milliseconds(since: start))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
+            self?.runNextTerminalSample()
+        }
+    }
+
+    private func primePrediction() {
+        phase = .settling
+        let now = Date()
+        let cursor = terminalView.getTerminal().getCursorLocation()
+        prediction.noteKey(
+            .printable("p"),
+            cursor: cursor,
+            columns: terminalView.getTerminal().cols,
+            alternateBufferActive: false,
+            now: now
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            guard let self else { return }
+            self.terminalView.feed(byteArray: [UInt8(ascii: "p")][...])
+            self.reconcilePrediction(at: now.addingTimeInterval(0.020))
+            self.phase = .prediction
+            self.runNextPredictionSample()
+        }
+    }
+
+    private func runNextPredictionSample() {
+        guard predictionSamples.count < max(1, options.latencySamples) else {
+            report("predictive-overlay-draw", samples: predictionSamples)
+            phase = .finished
+            NSApp.terminate(nil)
+            return
+        }
+        currentByte = 0x61 + UInt8(predictionSamples.count % 26)
+        let character = Character(UnicodeScalar(currentByte))
+        let terminal = terminalView.getTerminal()
+        prediction.noteKey(
+            .printable(character),
+            cursor: terminal.getCursorLocation(),
+            columns: terminal.cols,
+            alternateBufferActive: terminal.isCurrentBufferAlternate
+        )
+        guard prediction.displayGlyphs() == [character] else {
+            FileHandle.standardError.write(
+                Data(
+                    "rai-bench: prediction confidence gate did not open "
+                        .appending("pending=\(prediction.pending.count) ")
+                        .appending("confirmed=\(prediction.echoConfirmedThisBurst) ")
+                        .appending("latency=\(prediction.smoothedConfirmLatency)\n")
+                        .utf8
+                )
+            )
+            exit(2)
+        }
+        overlay.character = character
+        overlay.isHidden = false
+        sampleStart = DispatchTime.now().uptimeNanoseconds
+        overlay.needsDisplay = true
+        overlay.displayIfNeeded()
+    }
+
+    private func predictionOverlayDidDraw() {
+        guard phase == .prediction, let start = sampleStart else { return }
+        sampleStart = nil
+        predictionSamples.append(milliseconds(since: start))
+        overlay.isHidden = true
+        let byte = currentByte
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+            guard let self else { return }
+            self.terminalView.feed(byteArray: [byte][...])
+            self.reconcilePrediction(at: Date())
+            // Keep every sample on one cell. A real line wrap ends prediction
+            // confidence by design, which would turn this into a safety test.
+            self.terminalView.feed(byteArray: [0x08][...])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
+                self?.runNextPredictionSample()
+            }
+        }
+    }
+
+    private func reconcilePrediction(at now: Date) {
+        let terminal = terminalView.getTerminal()
+        prediction.reconcile(
+            cursor: terminal.getCursorLocation(),
+            alternateBufferActive: terminal.isCurrentBufferAlternate,
+            readCell: { column, row in
+                guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
+                let character = cell.getCharacter()
+                return character == "\u{0}" ? nil : character
+            },
+            now: now
+        )
+    }
+
+    private func milliseconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    private func report(_ name: String, samples: [Double]) {
+        let sorted = samples.sorted()
+        let middle = sorted.count / 2
+        let median = sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
+        let p90 = sorted[max(0, Int(ceil(Double(sorted.count) * 0.9)) - 1)]
+        print(String(
+            format: "latency=%@ samples=%d median=%.3fms p90=%.3fms min=%.3fms max=%.3fms",
+            name, sorted.count, median, p90, sorted[0], sorted[sorted.count - 1]
+        ))
     }
 }
 
@@ -273,4 +511,3 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 }
-
