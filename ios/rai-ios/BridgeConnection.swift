@@ -341,7 +341,6 @@ enum ComposedLineSendResult: Equatable {
 private struct PasswordPromptGridEvidence {
     let generation: UInt64
     let grid: String
-    let receivedAt: Date
 }
 
 enum DecisionWaiterRouting {
@@ -493,8 +492,7 @@ final class BridgeConnection: ObservableObject {
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     private var latestGridByPaneID: [String: PasswordPromptGridEvidence] = [:]
     private let passwordPromptGridReader = PasswordPromptGridReader()
-    private var lastOutboxSendAtByPaneID: [String: Date] = [:]
-    private var outboxQuietPeriodTask: Task<Void, Never>?
+    private var autoReplayedPaneIDs: Set<String> = []
     // A seed can land before the terminal view has registered its handler
     // (openPane fires from onAppear, which can precede makeUIView). Hold the
     // payload and deliver it on registration instead of dropping it.
@@ -884,9 +882,15 @@ final class BridgeConnection: ObservableObject {
 
     func discardOutbox() {
         outbox.removeAll()
-        lastOutboxSendAtByPaneID.removeAll()
-        outboxQuietPeriodTask?.cancel()
-        outboxQuietPeriodTask = nil
+        autoReplayedPaneIDs.removeAll()
+    }
+
+    func discardOutbox(for paneID: String) {
+        outbox.removeAll(where: { $0.paneID == paneID })
+    }
+
+    func queuedLineCount(for paneID: String) -> Int {
+        outbox.count(where: { $0.paneID == paneID })
     }
 
     func takePendingComposedDraft(for paneID: String) -> String? {
@@ -900,22 +904,41 @@ final class BridgeConnection: ObservableObject {
     func updateVisibleGrid(_ grid: String, for paneID: String) {
         latestGridByPaneID[paneID] = PasswordPromptGridEvidence(
             generation: connectionGeneration,
-            grid: grid,
-            receivedAt: now()
+            grid: grid
         )
         if !outbox.isEmpty {
-            flushOutbox()
+            flushOutbox(for: paneID)
         }
     }
 
-    /// Delivered oldest-first on the next authenticated welcome. Lines older
-    /// than the staleness window are dropped rather than replayed: the pane
-    /// they were typed for has moved on, and a late line is worse than none.
-    private func flushOutbox() {
+    /// Replay at most one line per pane after a reconnect. Later lines need a
+    /// user tap, because output timing cannot prove that a prompt did not open.
+    private func flushOutbox(for paneID: String? = nil) {
         guard status.isConnected, !outbox.isEmpty else { return }
-        outboxQuietPeriodTask?.cancel()
-        outboxQuietPeriodTask = nil
+        let expired = expireOutbox()
+        guard !outbox.isEmpty else { return }
 
+        let paneIDs = paneID.map { Set([$0]) } ?? Set(outbox.map(\.paneID))
+        for candidatePaneID in paneIDs where !autoReplayedPaneIDs.contains(candidatePaneID) {
+            switch passwordPromptState(for: candidatePaneID) {
+            case .prompt:
+                refusePasswordPromptSend(to: candidatePaneID)
+            case .unknown:
+                if expired == 0 {
+                    actionError = PasswordPromptGuard.waiting
+                }
+            case .clear:
+                guard let index = outbox.firstIndex(where: { $0.paneID == candidatePaneID }) else {
+                    continue
+                }
+                autoReplayedPaneIDs.insert(candidatePaneID)
+                sendQueuedLine(at: index)
+            }
+        }
+    }
+
+    @discardableResult
+    private func expireOutbox() -> Int {
         let currentTime = now()
         let expired = outbox.count(where: {
             currentTime.timeIntervalSince($0.queuedAt) > Self.outboxStaleness
@@ -926,35 +949,14 @@ final class BridgeConnection: ObservableObject {
         if expired > 0 {
             actionError = "\(expired) queued line\(expired == 1 ? "" : "s") expired unsent"
         }
-        guard !outbox.isEmpty else { return }
+        return expired
+    }
 
-        for paneID in Set(outbox.map(\.paneID)) {
-            if passwordPromptState(for: paneID) == .prompt {
-                refusePasswordPromptSend(to: paneID)
-            }
-        }
-        guard !outbox.isEmpty else { return }
-
-        guard let index = outbox.firstIndex(where: { line in
-            passwordPromptState(for: line.paneID) == .clear
-                && outboxQuietDeadline(for: line.paneID) <= currentTime
-        }) else {
-            let hasClearGrid = outbox.contains {
-                passwordPromptState(for: $0.paneID) == .clear
-            }
-            scheduleNextOutboxQuietPeriodCheck(currentTime: currentTime)
-            if !hasClearGrid, expired == 0,
-               actionError?.hasPrefix(PasswordPromptGuard.refusal) != true {
-                actionError = PasswordPromptGuard.waiting
-            }
-            return
-        }
+    private func sendQueuedLine(at index: Int) {
         let line = outbox.remove(at: index)
-        lastOutboxSendAtByPaneID[line.paneID] = currentTime
         if actionError == PasswordPromptGuard.waiting {
             actionError = nil
         }
-        scheduleNextOutboxQuietPeriodCheck(currentTime: currentTime)
         Task {
             do {
                 try await send(
@@ -970,6 +972,44 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func sendNextQueuedLine(for paneID: String) async -> ComposedLineSendResult {
+        expireOutbox()
+        guard let index = outbox.firstIndex(where: { $0.paneID == paneID }) else {
+            return .queued
+        }
+        switch passwordPromptState(for: paneID) {
+        case .prompt:
+            refusePasswordPromptSend(to: paneID)
+            return .refused
+        case .unknown:
+            actionError = PasswordPromptGuard.waiting
+            return .queued
+        case .clear:
+            break
+        }
+        guard status.isConnected else {
+            actionError = PasswordPromptGuard.waiting
+            return .queued
+        }
+        let line = outbox.remove(at: index)
+        do {
+            try await send(
+                .input(
+                    paneID: line.paneID,
+                    bytesBase64: Data(line.bytes).base64EncodedString()
+                )
+            )
+            if actionError == PasswordPromptGuard.waiting {
+                actionError = nil
+            }
+            return .accepted
+        } catch {
+            outbox.insert(line, at: min(index, outbox.endIndex))
+            handleSocketFailure(error)
+            return .queued
+        }
+    }
+
     struct QueuedLine: Identifiable, Equatable {
         let id = UUID()
         let paneID: String
@@ -980,7 +1020,6 @@ final class BridgeConnection: ObservableObject {
 
     private static let outboxLimit = 20
     private static let outboxStaleness: TimeInterval = 15 * 60
-    private static let outboxQuietPeriod: TimeInterval = 0.75
 
     @discardableResult
     private func refusePasswordPromptSend(to paneID: String) -> Bool {
@@ -989,9 +1028,6 @@ final class BridgeConnection: ObservableObject {
         }
         let dropped = outbox.count(where: { $0.paneID == paneID })
         outbox.removeAll(where: { $0.paneID == paneID })
-        if !outbox.contains(where: { $0.paneID == paneID }) {
-            lastOutboxSendAtByPaneID.removeValue(forKey: paneID)
-        }
         actionError = PasswordPromptGuard.refusalMessage(droppedQueuedLines: dropped)
         return true
     }
@@ -1002,30 +1038,6 @@ final class BridgeConnection: ObservableObject {
             return .unknown
         }
         return PasswordPromptGuard.isPasswordPrompt(evidence.grid) ? .prompt : .clear
-    }
-
-    private func outboxQuietDeadline(for paneID: String) -> Date {
-        guard let sentAt = lastOutboxSendAtByPaneID[paneID],
-              let frameAt = latestGridByPaneID[paneID]?.receivedAt else {
-            return .distantPast
-        }
-        return max(sentAt, frameAt).addingTimeInterval(Self.outboxQuietPeriod)
-    }
-
-    private func scheduleNextOutboxQuietPeriodCheck(currentTime: Date) {
-        let deadline = outbox.lazy.compactMap { line -> Date? in
-            guard self.passwordPromptState(for: line.paneID) == .clear else { return nil }
-            return self.outboxQuietDeadline(for: line.paneID)
-        }.min()
-        guard let deadline else { return }
-        outboxQuietPeriodTask?.cancel()
-        let delay = max(0, deadline.timeIntervalSince(currentTime))
-        outboxQuietPeriodTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, let self else { return }
-            self.outboxQuietPeriodTask = nil
-            self.flushOutbox()
-        }
     }
 
     func sendImage(_ data: Data, filename: String, to paneID: String) async throws {
@@ -1076,22 +1088,40 @@ final class BridgeConnection: ObservableObject {
         to paneID: String,
         pairing: Pairing
     ) async -> Bool {
-        var remainingWaitIterations = replyFrameWaitIterations
+        if queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
+            return false
+        }
+        let clock = ContinuousClock()
+        let waitDuration = Duration.milliseconds(
+            Int64(max(replyFrameWaitIterations, 0)) * 100
+        )
+        let deadline = clock.now.advanced(by: waitDuration)
         if !status.isConnected {
+            guard clock.now < deadline else {
+                return replyVerificationTimedOut(bytes, paneID: paneID)
+            }
             connect(to: pairing)
-            while remainingWaitIterations > 0 {
-                if status.isConnected { break }
+            while !status.isConnected {
                 if requiresRepair { return false }
-                try? await Task.sleep(for: .milliseconds(100))
+                guard clock.now < deadline else {
+                    return replyVerificationTimedOut(bytes, paneID: paneID)
+                }
+                let nextCheck = min(
+                    deadline,
+                    clock.now.advanced(by: .milliseconds(100))
+                )
+                try? await clock.sleep(until: nextCheck)
                 if Task.isCancelled { return false }
-                remainingWaitIterations -= 1
             }
         }
-        guard status.isConnected else {
+        guard status.isConnected, clock.now < deadline else {
             return replyVerificationTimedOut(bytes, paneID: paneID)
         }
         var attachedTemporaryStream = false
         if passwordPromptState(for: paneID) == .unknown, desiredStreams[paneID] == nil {
+            guard clock.now < deadline else {
+                return replyVerificationTimedOut(bytes, paneID: paneID)
+            }
             do {
                 try await send(
                     .attachStream(paneID: paneID, cols: 80, rows: 24, fullGrid: true)
@@ -1102,16 +1132,39 @@ final class BridgeConnection: ObservableObject {
                 return false
             }
         }
+        guard clock.now < deadline else {
+            if attachedTemporaryStream {
+                Task { try? await send(.detachStream(paneID: paneID)) }
+            }
+            return replyVerificationTimedOut(bytes, paneID: paneID)
+        }
         actionError = PasswordPromptGuard.waiting
-        while remainingWaitIterations > 0, passwordPromptState(for: paneID) == .unknown {
+        while passwordPromptState(for: paneID) == .unknown {
             guard status.isConnected else {
                 return replyVerificationTimedOut(bytes, paneID: paneID)
             }
-            try? await Task.sleep(for: .milliseconds(100))
+            guard clock.now < deadline else { break }
+            let nextCheck = min(
+                deadline,
+                clock.now.advanced(by: .milliseconds(100))
+            )
+            try? await clock.sleep(until: nextCheck)
             if Task.isCancelled { return false }
-            remainingWaitIterations -= 1
         }
-        guard passwordPromptState(for: paneID) != .unknown else {
+        guard clock.now < deadline,
+              passwordPromptState(for: paneID) != .unknown else {
+            if attachedTemporaryStream {
+                Task { try? await send(.detachStream(paneID: paneID)) }
+            }
+            return replyVerificationTimedOut(bytes, paneID: paneID)
+        }
+        if queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
+            if attachedTemporaryStream {
+                Task { try? await send(.detachStream(paneID: paneID)) }
+            }
+            return false
+        }
+        guard clock.now < deadline else {
             if attachedTemporaryStream {
                 Task { try? await send(.detachStream(paneID: paneID)) }
             }
@@ -1120,6 +1173,15 @@ final class BridgeConnection: ObservableObject {
         let result = await sendComposedLine(bytes, to: paneID)
         if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
         return result == .accepted
+    }
+
+    private func queueNotificationReplyBehindOutboxIfNeeded(
+        _ bytes: [UInt8],
+        paneID: String
+    ) -> Bool {
+        guard outbox.contains(where: { $0.paneID == paneID }) else { return false }
+        enqueue(bytes, to: paneID)
+        return true
     }
 
     private static func composedDraft(from bytes: [UInt8]) -> String {
@@ -1782,9 +1844,7 @@ final class BridgeConnection: ObservableObject {
         connectionGeneration &+= 1
         latestGridByPaneID.removeAll()
         passwordPromptGridReader.removeAll()
-        lastOutboxSendAtByPaneID.removeAll()
-        outboxQuietPeriodTask?.cancel()
-        outboxQuietPeriodTask = nil
+        autoReplayedPaneIDs.removeAll()
         for handler in connectionGenerationHandlers.values {
             handler(connectionGeneration)
         }

@@ -267,9 +267,11 @@ Notification replies use one five-second budget for connection and live-grid ver
 On timeout, Rai opens the pane, keeps the reply draft, and reports that verification failed.
 The guard accepts only grids received after the current connection welcome.
 Outbox lines stay queued until their pane receives a current grid.
-After one queued line sends, the next line waits for 750 milliseconds of pane silence.
-It sends only when 750 milliseconds passed since the prior send and the latest grid remains clear.
-Held lines still expire after 15 minutes when a later frame starts another flush.
+After reconnecting, Rai sends only the first queued line for each pane.
+Remaining lines show as `N queued — Send next` in that pane.
+Each tap checks the current grid and sends exactly one line.
+Notification replies join an existing pane queue instead of passing it.
+Held lines still expire after 15 minutes when a frame or manual send checks the queue.
 
 The match is anchored to the last non-empty row.
 Quoted password text does not match when an agent composer row appears below it.
