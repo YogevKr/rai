@@ -372,7 +372,7 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertNotNil(pending["p2"])
     }
 
-    func testAnyLegacyErrorCompletesPendingHistoryRequests() {
+    func testAnyErrorCompletesPendingHistoryRequests() {
         var pending = [
             "p1": PendingHistoryRequest(
                 generation: 1, replacesPage: true, sessionName: "herd",
@@ -384,13 +384,41 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             ),
         ]
 
-        let errors = TranscriptHistoryErrorRouter.consumeAnyLegacyError(
+        let errors = TranscriptHistoryErrorRouter.consumeAnyError(
             pending: &pending,
             message: "Invalid bridge message."
         )
 
         XCTAssertEqual(Set(errors?.keys.map { $0 } ?? []), Set(["p1", "p2"]))
         XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testUnknownMessageErrorCompletesHistoryRequestAndAllowsRetry() async {
+        let historySent = expectation(description: "history requests sent")
+        historySent.expectedFulfillmentCount = 2
+        let connection = BridgeConnection(messageSender: { message in
+            if case .history = message { historySent.fulfill() }
+        })
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: "herd"
+        )
+
+        connection.requestHistory(paneID: "p1", sessionID: "session")
+        connection.handle(.error(
+            message: "Invalid bridge message.",
+            code: .unknownMessage,
+            detail: "The Mac does not recognize history."
+        ))
+        XCTAssertEqual(
+            connection.historyErrors["p1"],
+            "History is not supported by this Mac."
+        )
+        XCTAssertTrue(connection.status.isConnected)
+
+        connection.requestHistory(paneID: "p1", sessionID: "session")
+
+        await fulfillment(of: [historySent], timeout: 1)
     }
 
     func testUnsupportedHistoryReplyCompletesItsPendingRequest() {

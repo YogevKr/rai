@@ -1346,6 +1346,16 @@ final class BridgeConnection: ObservableObject {
                 handler(data)
             }
         case let .error(message, code, detail):
+            let historyMessage = code == .unknownMessage
+                ? "History is not supported by this Mac."
+                : detail ?? message
+            if let paneErrors = TranscriptHistoryErrorRouter.consumeAnyError(
+                pending: &pendingHistoryRequests,
+                message: historyMessage
+            ) {
+                historyErrors.merge(paneErrors) { _, latest in latest }
+                return
+            }
             if let code {
                 handleCodedError(code, message: message, detail: detail, phase: .operation)
                 return
@@ -1355,11 +1365,6 @@ final class BridgeConnection: ObservableObject {
                 pairingInProgress: invitation != nil
             ) {
                 stopWithFailure(.macPredatesPairing())
-            } else if let paneErrors = TranscriptHistoryErrorRouter.consumeAnyLegacyError(
-                pending: &pendingHistoryRequests,
-                message: message
-            ) {
-                historyErrors.merge(paneErrors) { _, latest in latest }
             } else if message.hasPrefix("Invalid bridge message")
                 || message.hasPrefix("Could not read scrollback") {
                 // Old Mac that predates readScrollback, or a transient history
@@ -2094,7 +2099,7 @@ struct TranscriptHistoryErrorRouter {
         return (paneID, message)
     }
 
-    static func consumeAnyLegacyError(
+    static func consumeAnyError(
         pending: inout [String: PendingHistoryRequest],
         message: String
     ) -> [String: String]? {

@@ -91,7 +91,7 @@ All additive, no version bump (old phones skip unknown message types):
 - Rai never scans by cwd or selects an unkeyed transcript.
 - A missing beacon points the phone user to Settings → Integrations.
 - History errors remain local to one pane. They do not change bridge status.
-- Any legacy error reply completes pending history requests.
+- Any plain or coded error reply completes pending history requests.
 - Memory and disk history caches have pane and byte limits.
 - The Mac caps delivery cursors and connection markers at 64 panes.
 - Restored history must match a live beacon session before it becomes current.
