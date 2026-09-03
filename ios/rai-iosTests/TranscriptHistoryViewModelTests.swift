@@ -372,7 +372,7 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertNotNil(pending["p2"])
     }
 
-    func testAnyErrorCompletesPendingHistoryRequests() {
+    func testErrorCompletesOnlyItsMatchingHistoryRequest() {
         var pending = [
             "p1": PendingHistoryRequest(
                 generation: 1, replacesPage: true, sessionName: "herd",
@@ -384,13 +384,17 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             ),
         ]
 
-        let errors = TranscriptHistoryErrorRouter.consumeAnyError(
+        let error = TranscriptHistoryErrorRouter.consumeError(
             pending: &pending,
+            paneID: nil,
+            requestID: "r1",
+            allowPaneOnly: true,
             message: "Invalid bridge message."
         )
 
-        XCTAssertEqual(Set(errors?.keys.map { $0 } ?? []), Set(["p1", "p2"]))
-        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(error?.paneID, "p1")
+        XCTAssertNil(pending["p1"])
+        XCTAssertNotNil(pending["p2"])
     }
 
     func testUnknownMessageErrorCompletesHistoryRequestAndAllowsRetry() async {
@@ -408,7 +412,8 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         connection.handle(.error(
             message: "Invalid bridge message.",
             code: .unknownMessage,
-            detail: "The Mac does not recognize history."
+            detail: "The Mac does not recognize history.",
+            paneID: "p1"
         ))
         XCTAssertEqual(
             connection.historyErrors["p1"],

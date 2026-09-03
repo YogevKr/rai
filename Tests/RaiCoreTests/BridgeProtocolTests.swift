@@ -121,7 +121,9 @@ final class BridgeProtocolTests: XCTestCase {
             .error(
                 message: "Herdr is unavailable",
                 code: .herdMissing,
-                detail: "No snapshot"
+                detail: "No snapshot",
+                paneID: "pane-1",
+                requestID: "request-2"
             ),
             .paneError(paneID: "pane-1", message: "That prompt already closed"),
             .decisionResult(
