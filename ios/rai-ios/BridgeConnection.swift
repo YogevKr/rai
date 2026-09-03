@@ -763,13 +763,22 @@ final class BridgeConnection: ObservableObject {
                 stopWithFailure(.invalidPairingReply())
                 return
             }
+            // The Mac closes the socket if anything but `hello` follows
+            // `pair`. Publishing the pairing first lets the monitor screen
+            // appear and fire its own requests (list sessions, refresh) in a
+            // separate task that can beat the hello onto the wire, so the
+            // pairing then fails with "Pair Again". Send hello, and only
+            // then publish the pairing and let the UI switch.
+            // The connection's own `pairing` is set now so a fast `welcome`
+            // finds it; the UI switch (`didPair`) waits for the hello send.
             self.pairing = pairing
             self.invitation = nil
-            didPair?(pairing)
+            let hello = BridgeMessage.hello(token: pairing.token, client: clientInfo())
             Task { [weak self] in
                 guard let self else { return }
                 do {
-                    try await self.send(.hello(token: pairing.token, client: self.clientInfo()))
+                    try await self.send(hello)
+                    self.didPair?(pairing)
                 } catch {
                     self.handleSocketFailure(error)
                 }
@@ -940,6 +949,23 @@ final class BridgeConnection: ObservableObject {
         guard let text = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
         }
+        // Until `welcome`, the Mac accepts only `pair` and `hello`; anything
+        // else makes it close the socket, and the pairing fails with "Pair
+        // Again". The monitor screen is already on screen while a pairing is
+        // pending and fires requests (list sessions, refresh) of its own, so
+        // drop those here. `finishAuthentication` re-issues subscribe, the
+        // session list, and the outbox once the Mac has said welcome.
+        let isHandshake: Bool
+        switch message {
+        case .pair, .hello: isHandshake = true
+        default: isHandshake = false
+        }
+        if !status.isConnected, !isHandshake {
+            if let range = text.range(of: #""type":"[A-Za-z]+""#, options: .regularExpression) {
+                NSLog("rai-ios: dropped %@ before welcome", String(text[range]))
+            }
+            return
+        }
         try await task.send(.string(text))
     }
 
@@ -971,6 +997,9 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func stopWithFailure(_ diagnosis: ConnectionDiagnosis) {
+        // One line per hard failure so a simulator run (`log show`) or a
+        // device console says why the phone gave up, not just that it did.
+        NSLog("rai-ios: connection failed: %@ — %@", diagnosis.message, diagnosis.rawDetails)
         shouldReconnect = false
         task?.cancel(with: .policyViolation, reason: nil)
         task = nil
