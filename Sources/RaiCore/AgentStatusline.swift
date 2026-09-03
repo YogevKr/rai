@@ -31,7 +31,6 @@ public struct AgentStatusline: Equatable, Sendable {
 }
 
 public enum AgentStatuslineParser {
-    private static let effortValues = ["low", "medium", "high", "xhigh", "max", "ultra"]
     private static let modeExpression = expression(
         #"(?:⏸\s*)?([A-Za-z][A-Za-z -]*?)\s+mode on"#
     )
@@ -40,6 +39,9 @@ public enum AgentStatuslineParser {
         #"(?:◉\s*)?(low|medium|high|xhigh|max|ultra)(?:\s+effort)?\b"#
     )
     private static let modelExpression = expression(#"\b(gpt-[A-Za-z0-9._-]+)\b"#)
+    private static let codexStatusExpression = expression(
+        #"^(gpt-[A-Za-z0-9._-]+)\s+(low|medium|high|xhigh|max|ultra)\s+·\s+(~|~/[^·]*|/[^·]*)(?:\s+·\s+(?:branch|git)\s*[:=]\s*(.+))?$"#
+    )
     private static let branchExpression = expression(#"(?:branch|git)\s*[:=]\s*([^·│]+)"#)
     private static let claudeModelExpression = expression(
         #"(?:^|\s{2,})([A-Za-z][A-Za-z0-9 ._-]*?)\s+with\s+(?:low|medium|high|xhigh|max|ultra)\s+effort"#
@@ -73,9 +75,12 @@ public enum AgentStatuslineParser {
             let claudeStatus = line.contains("/effort")
                 || agents != nil
                 || (line.contains("? for shortcuts") && line.contains("mode on"))
-            let codexModel = capture(modelExpression, in: line)
-            let codexStatus = codexModel != nil
-                && (line.contains("·") || line.hasPrefix("model:"))
+            let codexMatch = looksLikeTranscriptOrEcho(line)
+                ? nil
+                : codexStatusExpression.firstMatch(
+                    in: line,
+                    range: NSRange(line.startIndex..., in: line)
+                )
 
             if claudeStatus {
                 if let value = capture(modeExpression, in: line) {
@@ -88,25 +93,15 @@ public enum AgentStatuslineParser {
                     effort = value.lowercased()
                 }
             }
-            if codexStatus, let codexModel {
-                model = codexModel
-                if let value = capture(effortExpression, in: line) {
-                    effort = value.lowercased()
+            if let codexMatch {
+                model = capture(codexMatch, group: 1, in: line)
+                effort = capture(codexMatch, group: 2, in: line)?.lowercased()
+                cwd = capture(codexMatch, group: 3, in: line).flatMap(clean)
+                if let value = capture(codexMatch, group: 4, in: line) {
+                    branch = clean(value)
                 }
             }
-
-            let segments = line.split(separator: "·").map {
-                $0.trimmingCharacters(in: .whitespaces)
-            }
-            if codexStatus, segments.count >= 2 {
-                effort = segments.compactMap { segment in
-                    effortValues.first { segment.lowercased() == $0 }
-                }.first ?? effort
-                if let path = segments.reversed().first(where: isPath) {
-                    cwd = clean(path)
-                }
-            }
-            sawBottomStatus = sawBottomStatus || claudeStatus || codexStatus
+            sawBottomStatus = sawBottomStatus || claudeStatus || codexMatch != nil
             if sawBottomStatus {
                 if let value = capture(branchExpression, in: line) {
                     branch = clean(value)
@@ -133,7 +128,7 @@ public enum AgentStatuslineParser {
                 }
             }
         }
-        if header.contains(where: { $0.contains("OpenAI Codex") }) {
+        if sawBottomStatus, header.contains(where: { $0.contains("OpenAI Codex") }) {
             for line in header where !line.isEmpty {
                 if let value = capture(modelExpression, in: line) {
                     model = value
@@ -173,6 +168,22 @@ public enum AgentStatuslineParser {
               let range = Range(match.range(at: 1), in: value)
         else { return nil }
         return String(value[range])
+    }
+
+    private static func capture(
+        _ match: NSTextCheckingResult,
+        group: Int,
+        in value: String
+    ) -> String? {
+        guard match.numberOfRanges > group,
+              let range = Range(match.range(at: group), in: value)
+        else { return nil }
+        return String(value[range])
+    }
+
+    private static func looksLikeTranscriptOrEcho(_ value: String) -> Bool {
+        let prefixes = [">", "›", "❯", "$", "echo ", "printf "]
+        return prefixes.contains { value.hasPrefix($0) }
     }
 
     private static func clean(_ value: String) -> String? {

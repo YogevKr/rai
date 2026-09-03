@@ -14,6 +14,8 @@ twins keep the styling for renderer work.
 
 `codex-statusline.txt` holds a Codex 0.152.0 grid from the same isolated lab.
 It includes the model, effort, and directory rows.
+`codex-statusline-negative.txt` holds transcript and output shapes that must not
+become a status strip.
 
 The numbered tool-permission dialog (`❯ 1. Yes … 4. No`, footer
 `Esc to cancel · Tab to amend`) is inline in

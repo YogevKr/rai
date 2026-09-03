@@ -181,6 +181,7 @@ final class RaiBridgeServer: ObservableObject {
     private let tailscaleServe = TailscaleServeController()
     private var tailscaleTask: Task<Void, Never>?
     private var registeredBonjourEndpoints: Set<NWEndpoint> = []
+    var pushPreferencesDidChange: ((String, PushPreferences) -> Void)?
 
     init(
         model: RaiModel,
@@ -1009,6 +1010,7 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             syncCredentialState()
+            pushPreferencesDidChange?(deviceID, device.pushPreferences)
             send(.pushPrefsState(device.pushPreferences), to: client)
         case let .selectPane(paneID):
             guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {

@@ -210,6 +210,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func connect(to model: RaiModel) {
         self.model = model
         model.snapshotObserver = self
+        model.bridgeServer.pushPreferencesDidChange = { [weak self] deviceID, preferences in
+            guard let self else { return }
+            self.pendingPhonePushes = PushPreferenceGate.suppressDisabledKinds(
+                in: self.pendingPhonePushes,
+                for: deviceID,
+                preferences: preferences
+            )
+            self.updatePresenceStatus()
+        }
         updateDockBadge(count: model.blockedAgentCount)
         if let snapshot = model.snapshot {
             focusPendingPane(in: snapshot, model: model)

@@ -73,12 +73,15 @@ All additive, no version bump (old phones skip unknown message types):
 ## Wave 2 quality of life LANDED (2026-09-03)
 
 - `pushPrefs` sends per-device kinds, snooze time, DND minutes, and the phone time zone.
+- The phone refreshes the DND time zone after system time-zone changes.
 - `pushPrefsState` returns the effective stored settings after `welcome` and each update.
 - The Mac audits each preference write before it stores the change.
 - The push gate drops disabled, snoozed, and DND events for each registered device.
+- Disabling a kind also drops matching events that the presence gate already holds.
 - A snoozed event stays dropped after the presence gate releases its burst.
 - The Doctor reports each paired device's effective controls.
 - The phone parses Claude and Codex status rows from each live grid.
+- Codex parsing requires the captured model, effort, separator, and path order.
 - A strip above the compose bar shows fields that the parser finds.
 - The terminal keeps the source status rows.
 

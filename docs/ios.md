@@ -123,11 +123,14 @@ You can enable needs-you and finished alerts separately.
 You can snooze alerts for 15 minutes, one hour, or until tomorrow at 08:00.
 The same sheet sets a daily do-not-disturb window.
 The Mac evaluates this window in the iPhone time zone.
+The phone sends its current time zone with each preference update.
+The phone sends another update when the system time zone changes.
 The Mac stores these settings with that device credential.
 The Doctor shows the effective settings for every paired device.
 Older protocol-6 Macs do not send preference state.
 The phone disables these controls and asks for a Mac update.
 
+The Mac drops disabled kinds when events arrive or when a kind becomes disabled.
 The Mac drops events that occur during snooze or do-not-disturb.
 It does not send those events when the quiet period ends.
 

@@ -66,6 +66,30 @@ final class NotificationPreferencesTests: XCTestCase {
         )
     }
 
+    func testTimeZoneSyncKeepsWallClockMinutesAndUsesCurrentZone() throws {
+        let original = PushPreferences(dnd: .init(
+            start: 22 * 60,
+            end: 8 * 60,
+            timeZoneIdentifier: "Asia/Jerusalem"
+        ))
+
+        let newYork = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: original,
+            timeZone: try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        )
+        let tokyo = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: newYork,
+            timeZone: try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        )
+
+        XCTAssertEqual(newYork.dnd?.start, 22 * 60)
+        XCTAssertEqual(newYork.dnd?.end, 8 * 60)
+        XCTAssertEqual(newYork.dnd?.timeZoneIdentifier, "America/New_York")
+        XCTAssertEqual(tokyo.dnd?.start, 22 * 60)
+        XCTAssertEqual(tokyo.dnd?.end, 8 * 60)
+        XCTAssertEqual(tokyo.dnd?.timeZoneIdentifier, "Asia/Tokyo")
+    }
+
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

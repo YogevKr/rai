@@ -45,7 +45,7 @@ final class AgentStatuslineTests: XCTestCase {
 
     func testBranchSegmentIsOptional() throws {
         let status = try XCTUnwrap(AgentStatuslineParser.parse(
-            "gpt-5.6-sol · high · ~/rai · branch: codexspin/qol"
+            "gpt-5.6-sol high · ~/rai · branch: codexspin/qol"
         ))
         XCTAssertEqual(status.branch, "codexspin/qol")
     }
@@ -62,7 +62,7 @@ final class AgentStatuslineTests: XCTestCase {
     }
 
     func testCodexUltraEffortIsSupported() throws {
-        let status = try XCTUnwrap(AgentStatuslineParser.parse("gpt-5.6-sol · ultra · ~/rai"))
+        let status = try XCTUnwrap(AgentStatuslineParser.parse("gpt-5.6-sol ultra · ~/rai"))
 
         XCTAssertEqual(status.effort, "ultra")
     }
@@ -74,11 +74,18 @@ final class AgentStatuslineTests: XCTestCase {
         /Users/me/My Project
         """))
         let codex = try XCTUnwrap(AgentStatuslineParser.parse(
-            "gpt-5.6-sol · high · /Users/me/My Project"
+            "gpt-5.6-sol high · /Users/me/My Project"
         ))
 
         XCTAssertEqual(claude.cwd, "/Users/me/My Project")
         XCTAssertEqual(codex.cwd, "/Users/me/My Project")
+    }
+
+    func testCodexRejectsTranscriptAndOrdinaryOutputFixtures() throws {
+        for line in try fixture("codex-statusline-negative").components(separatedBy: .newlines)
+        where !line.isEmpty {
+            XCTAssertNil(AgentStatuslineParser.parse(line), line)
+        }
     }
 
     private func fixture(_ name: String) throws -> String {

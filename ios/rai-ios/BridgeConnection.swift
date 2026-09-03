@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Network
 import RaiCore
@@ -22,8 +23,13 @@ enum BridgeErrorDestination: Equatable {
     case ignore
 }
 
+enum BridgeErrorPhase: Hashable {
+    case authentication
+    case operation
+}
+
 enum BridgeErrorPolicy {
-    static let destinations: [BridgeErrorCode: BridgeErrorDestination] = [
+    private static let codeDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
         .herdMissing: .reconnect,
         .paneGone: .actionError,
         .paneBusy: .actionError,
@@ -37,6 +43,18 @@ enum BridgeErrorPolicy {
         .streamUnavailable: .actionError,
         .scrollbackUnavailable: .ignore,
     ]
+
+    static let destinations: [BridgeErrorPhase: [BridgeErrorCode: BridgeErrorDestination]] = [
+        .authentication: codeDestinations,
+        .operation: codeDestinations,
+    ]
+
+    static func destination(
+        for code: BridgeErrorCode,
+        phase: BridgeErrorPhase
+    ) -> BridgeErrorDestination {
+        destinations[phase]?[code] ?? .actionError
+    }
 }
 
 struct ConnectionDiagnosis: Equatable {
@@ -102,34 +120,6 @@ struct ConnectionDiagnosis: Equatable {
             rawDetails: reason,
             action: .pairAgain
         )
-    }
-
-    static func authFailure(
-        code: BridgeErrorCode?,
-        reason: String,
-        detail: String?
-    ) -> ConnectionDiagnosis {
-        let rawDetails = detail ?? reason
-        switch code {
-        case .pairingCodeInvalid:
-            return ConnectionDiagnosis(
-                message: "The pairing code is invalid or expired",
-                rawDetails: rawDetails,
-                action: .pairAgain
-            )
-        case .protocolMismatch:
-            return ConnectionDiagnosis(
-                message: "Rai versions don't match — update Rai on the Mac or iPhone",
-                rawDetails: rawDetails,
-                action: .reconnect
-            )
-        case .repairRequired:
-            return helloRejected(reason: rawDetails)
-        case let code?:
-            return coded(code, message: reason, detail: detail, host: "Mac")
-        case nil:
-            return helloRejected(reason: reason)
-        }
     }
 
     static func coded(
@@ -285,6 +275,19 @@ enum SnapshotFreshness {
     }
 }
 
+enum PushPreferencesTimeZoneSync {
+    static func applyingCurrentZone(
+        to preferences: PushPreferences,
+        timeZone: TimeZone
+    ) -> PushPreferences {
+        guard var dnd = preferences.dnd else { return preferences }
+        dnd.timeZoneIdentifier = timeZone.identifier
+        var updated = preferences
+        updated.dnd = dnd
+        return updated
+    }
+}
+
 /// Grid dimensions of a streamed pane frame — the size the emulator must be
 /// for the frame's cell-addressed paints to land where herdr rendered them.
 struct PaneGridSize: Equatable {
@@ -358,6 +361,21 @@ final class BridgeConnection: ObservableObject {
     private var invitation: PairingInvitation?
     private var reconnectAttempt = 0
     private var shouldReconnect = false
+    private let currentTimeZone: () -> TimeZone
+    private var timeZoneObserver: AnyCancellable?
+
+    init(
+        notificationCenter: NotificationCenter = .default,
+        currentTimeZone: @escaping () -> TimeZone = { .current }
+    ) {
+        self.currentTimeZone = currentTimeZone
+        timeZoneObserver = notificationCenter.publisher(for: .NSSystemTimeZoneDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.synchronizePushPreferencesTimeZone()
+                }
+            }
+    }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
@@ -446,6 +464,10 @@ final class BridgeConnection: ObservableObject {
             actionError = "Update Rai on the Mac to change notification settings."
             return
         }
+        let preferences = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: preferences,
+            timeZone: currentTimeZone()
+        )
         Task {
             do {
                 try await send(.pushPrefs(preferences))
@@ -888,11 +910,16 @@ final class BridgeConnection: ObservableObject {
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
         case let .authFailed(reason, code, detail):
-            stopWithFailure(ConnectionDiagnosis.authFailure(
-                code: code,
-                reason: reason,
-                detail: detail
-            ))
+            if let code {
+                handleCodedError(
+                    code,
+                    message: reason,
+                    detail: detail,
+                    phase: .authentication
+                )
+            } else {
+                stopWithFailure(.helloRejected(reason: reason))
+            }
         case let .snapshot(snapshot):
             replaceWithLiveSnapshot(snapshot)
         case let .sessions(list):
@@ -905,6 +932,7 @@ final class BridgeConnection: ObservableObject {
         case let .pushPrefsState(preferences):
             pushPreferences = preferences
             supportsPushPreferences = true
+            synchronizePushPreferencesTimeZone()
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -940,7 +968,7 @@ final class BridgeConnection: ObservableObject {
             }
         case let .error(message, code, detail):
             if let code {
-                handleCodedError(code, message: message, detail: detail)
+                handleCodedError(code, message: message, detail: detail, phase: .operation)
                 return
             }
             if Self.isPairingProtocolRejection(
@@ -1055,9 +1083,10 @@ final class BridgeConnection: ObservableObject {
     private func handleCodedError(
         _ code: BridgeErrorCode,
         message: String,
-        detail: String?
+        detail: String?,
+        phase: BridgeErrorPhase
     ) {
-        switch BridgeErrorPolicy.destinations[code] ?? .actionError {
+        switch BridgeErrorPolicy.destination(for: code, phase: phase) {
         case .actionError:
             actionError = message
         case .reconnect, .pairAgain:
@@ -1065,6 +1094,16 @@ final class BridgeConnection: ObservableObject {
         case .ignore:
             NSLog("rai-ios: optional bridge feature unavailable: %@", detail ?? message)
         }
+    }
+
+    private func synchronizePushPreferencesTimeZone() {
+        guard supportsPushPreferences, pushPreferences.dnd != nil else { return }
+        let localized = PushPreferencesTimeZoneSync.applyingCurrentZone(
+            to: pushPreferences,
+            timeZone: currentTimeZone()
+        )
+        guard localized != pushPreferences else { return }
+        setPushPreferences(localized)
     }
 
     private func send(_ message: BridgeMessage) async throws {

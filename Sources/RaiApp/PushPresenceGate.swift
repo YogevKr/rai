@@ -42,16 +42,29 @@ enum PushPreferenceGate {
         preferences: PushPreferences,
         calendar: Calendar = .current
     ) -> Bool {
-        var quietPreferences = preferences
-        quietPreferences.kinds = .init()
-        let decision = evaluate(
+        evaluate(
             status: status,
             occurredAt: occurredAt,
-            preferences: quietPreferences,
+            preferences: preferences,
             now: occurredAt,
             calendar: calendar
-        )
-        return decision == .snoozed || decision == .doNotDisturb
+        ) != .allow
+    }
+
+    static func suppressDisabledKinds(
+        in events: [String: PhonePushEvent],
+        for deviceID: String,
+        preferences: PushPreferences
+    ) -> [String: PhonePushEvent] {
+        events.mapValues { event in
+            guard evaluate(
+                status: event.status,
+                occurredAt: event.occurredAt,
+                preferences: PushPreferences(kinds: preferences.kinds),
+                now: event.occurredAt
+            ) == .kindDisabled else { return event }
+            return event.suppressing(deviceID: deviceID)
+        }
     }
 
     static func evaluate(
@@ -116,6 +129,20 @@ struct PhonePushEvent: Equatable, Sendable {
         self.allowsRemoteActions = allowsRemoteActions
         self.occurredAt = occurredAt
         self.suppressedDeviceIDs = suppressedDeviceIDs
+    }
+
+    func suppressing(deviceID: String) -> PhonePushEvent {
+        PhonePushEvent(
+            paneID: paneID,
+            paneName: paneName,
+            workspaceID: workspaceID,
+            workspaceName: workspaceName,
+            status: status,
+            notificationBody: notificationBody,
+            allowsRemoteActions: allowsRemoteActions,
+            occurredAt: occurredAt,
+            suppressedDeviceIDs: suppressedDeviceIDs.union([deviceID])
+        )
     }
 }
 
