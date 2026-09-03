@@ -502,13 +502,15 @@ final class RaiBridgeServer: ObservableObject {
         now: Date,
         calendar: Calendar
     ) -> PhonePushBurst? {
-        let preferences = registration.deviceID.flatMap { deviceID in
-            pairedDevices.first(where: { $0.id == deviceID })?.pushPreferences
-        } ?? .default
+        guard let deviceID = registration.deviceID,
+              let device = pairedDevices.first(where: { $0.id == deviceID }) else {
+            pruneStalePushRegistration(registration)
+            return nil
+        }
         return PushPreferenceGate.allowedBurst(
             burst,
-            deviceID: registration.deviceID,
-            preferences: preferences,
+            deviceID: deviceID,
+            preferences: device.pushPreferences,
             now: now,
             calendar: calendar
         )
@@ -1588,6 +1590,19 @@ final class RaiBridgeServer: ObservableObject {
         let oldCount = pushRegistrations.count
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         if pushRegistrations.count != oldCount {
+            persistPushRegistrations()
+        }
+    }
+
+    private func pruneStalePushRegistration(_ stale: PushRegistration) {
+        let oldCount = pushRegistrations.count
+        pushRegistrations = Set(pushRegistrations.filter {
+            !($0.deviceToken == stale.deviceToken
+                && $0.environment == stale.environment
+                && $0.deviceID == stale.deviceID)
+        })
+        if pushRegistrations.count != oldCount {
+            pushBadgeLedger.removeDevices { $0.deviceToken == stale.deviceToken }
             persistPushRegistrations()
         }
     }

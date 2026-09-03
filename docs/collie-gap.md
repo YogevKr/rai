@@ -152,6 +152,6 @@ Wave 2 quality-of-life outcome (2026-09-03):
 
 | Item | Result |
 | --- | --- |
-| 4. Phone notification preferences | ✅ Per-device kinds, snooze, DND, state reply, audit, and Doctor summary |
-| 5. Stable bridge error codes | ✅ Shared code set, details, phone actions, and drift test |
-| 6. Phone statusline strip | ✅ Claude and Codex parser, live per-pane strip, and fixture tests |
+| 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
+| 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
+| 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |

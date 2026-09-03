@@ -189,7 +189,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case authFailed(
         reason: String,
         code: BridgeErrorCode? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        unrecognizedCode: String? = nil
     )
     case snapshot(SessionSnapshot)
     case event(BridgeEvent)
@@ -379,11 +380,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
             )
         case .authFailed:
+            let rawCode = try container.decodeIfPresent(String.self, forKey: .code)
+            let code = rawCode.flatMap(BridgeErrorCode.init(rawValue:))
             self = .authFailed(
                 reason: try container.decode(String.self, forKey: .reason),
-                code: try container.decodeIfPresent(String.self, forKey: .code)
-                    .flatMap(BridgeErrorCode.init(rawValue:)),
-                detail: try container.decodeIfPresent(String.self, forKey: .detail)
+                code: code,
+                detail: try container.decodeIfPresent(String.self, forKey: .detail),
+                unrecognizedCode: code == nil ? rawCode : nil
             )
         case .snapshot:
             self = .snapshot(try container.decode(SessionSnapshot.self, forKey: .snapshot))
@@ -532,10 +535,10 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.welcome, forKey: .type)
             try container.encode(protocolVersion, forKey: .protocolVersion)
             try container.encodeIfPresent(sessionName, forKey: .sessionName)
-        case let .authFailed(reason, code, detail):
+        case let .authFailed(reason, code, detail, unrecognizedCode):
             try container.encode(MessageType.authFailed, forKey: .type)
             try container.encode(reason, forKey: .reason)
-            try container.encodeIfPresent(code, forKey: .code)
+            try container.encodeIfPresent(code?.rawValue ?? unrecognizedCode, forKey: .code)
             try container.encodeIfPresent(detail, forKey: .detail)
         case let .snapshot(snapshot):
             try container.encode(MessageType.snapshot, forKey: .type)

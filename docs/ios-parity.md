@@ -78,10 +78,13 @@ All additive, no version bump (old phones skip unknown message types):
 - The Mac audits each preference write before it stores the change.
 - The push gate drops disabled, snoozed, and DND events for each registered device.
 - The delivery queue checks these controls again before it calls APNs.
+- A missing paired-device record drops the alert and removes its push token.
 - Disabling a kind also drops matching events that the presence gate already holds.
 - A snoozed event stays dropped after the presence gate releases its burst.
 - The Doctor reports each paired device's effective controls.
+- Preference changes persist through reconnects until the Mac confirms them.
 - The phone parses status rows only when the snapshot identifies an agent.
+- Claude panes use Claude grammar. Codex panes use Codex grammar.
 - Codex parsing requires the captured model, effort, separator, and path order.
 - A strip above the compose bar shows fields that the parser finds.
 - The terminal keeps the source status rows.
@@ -89,7 +92,11 @@ All additive, no version bump (old phones skip unknown message types):
 Bridge `error` and `authFailed` replies now include optional `code` and `detail` fields.
 Older phones ignore these added fields.
 New phones use old `message` or `reason` prose when a Mac omits `code`.
-Authentication diagnoses stop automatic retries when the user must act.
+Repair codes stop retries and show Pair Again.
+Transient authentication codes keep retrying with backoff.
+Protocol mismatch stops retries without clearing the pairing.
+Unknown authentication codes keep their raw value and default to transient retry.
+The table below describes codes during normal authenticated operations.
 
 | Code | Phone result |
 | --- | --- |
@@ -151,4 +158,5 @@ This change is not compatible with protocol version 5. Old phones receive
   routinely coexist — additive protocol changes only, or version-gate.
 - New Macs report a missing herd with `herd_missing`.
   New phones still accept the old `Herdr is not connected.` prose.
+- Unknown `authFailed.code` values must not decode as an absent repair code.
 - APNs custom keys are additive. Old iOS builds ignore new push fields.

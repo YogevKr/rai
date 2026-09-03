@@ -19,6 +19,7 @@ enum ConnectionRecoveryAction: Equatable {
 enum BridgeErrorDestination: Equatable {
     case reconnect
     case pairAgain
+    case updateRequired
     case actionError
     case ignore
 }
@@ -29,7 +30,7 @@ enum BridgeErrorPhase: Hashable {
 }
 
 enum BridgeErrorPolicy {
-    private static let codeDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
+    private static let operationDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
         .herdMissing: .reconnect,
         .paneGone: .actionError,
         .paneBusy: .actionError,
@@ -44,9 +45,24 @@ enum BridgeErrorPolicy {
         .scrollbackUnavailable: .ignore,
     ]
 
+    private static let authenticationDestinations: [BridgeErrorCode: BridgeErrorDestination] = [
+        .herdMissing: .reconnect,
+        .paneGone: .reconnect,
+        .paneBusy: .reconnect,
+        .auditUnavailable: .reconnect,
+        .repairRequired: .pairAgain,
+        .pairingCodeInvalid: .pairAgain,
+        .protocolMismatch: .updateRequired,
+        .unknownMessage: .reconnect,
+        .invalidRequest: .reconnect,
+        .operationFailed: .reconnect,
+        .streamUnavailable: .reconnect,
+        .scrollbackUnavailable: .reconnect,
+    ]
+
     static let destinations: [BridgeErrorPhase: [BridgeErrorCode: BridgeErrorDestination]] = [
-        .authentication: codeDestinations,
-        .operation: codeDestinations,
+        .authentication: authenticationDestinations,
+        .operation: operationDestinations,
     ]
 
     static func destination(
@@ -54,6 +70,23 @@ enum BridgeErrorPolicy {
         phase: BridgeErrorPhase
     ) -> BridgeErrorDestination {
         destinations[phase]?[code] ?? .actionError
+    }
+
+    static func authenticationProseDestination(_ message: String) -> BridgeErrorDestination {
+        let normalized = message.lowercased()
+        if normalized.contains("protocol") || normalized.contains("version mismatch") {
+            return .updateRequired
+        }
+        if normalized.contains("re-pair")
+            || normalized.contains("repair")
+            || normalized.contains("pairing code")
+            || normalized.contains("invalid token")
+            || normalized.contains("revoked")
+            || normalized.contains("unknown device")
+            || (normalized.contains("credential") && normalized.contains("missing")) {
+            return .pairAgain
+        }
+        return .reconnect
     }
 }
 
@@ -288,6 +321,10 @@ enum PushPreferencesTimeZoneSync {
     }
 }
 
+private struct StoredPendingPushPreferences: Codable {
+    let preferences: PushPreferences
+}
+
 /// Grid dimensions of a streamed pane frame — the size the emulator must be
 /// for the frame's cell-addressed paints to land where herdr rendered them.
 struct PaneGridSize: Equatable {
@@ -331,6 +368,7 @@ final class BridgeConnection: ObservableObject {
     @Published private(set) var sessionName: String?
     @Published private(set) var sessions: [BridgeSessionInfo] = []
     @Published private(set) var pushPreferences: PushPreferences = .default
+    @Published private(set) var pendingPushPreferences: PushPreferences?
     @Published private(set) var supportsPushPreferences = false
     /// Composed lines waiting for a connection, oldest first. Surfaced so the
     /// compose bar can say a line is held rather than silently swallowing it.
@@ -346,6 +384,10 @@ final class BridgeConnection: ObservableObject {
 
     var hasPendingReconnect: Bool {
         reconnectTask != nil
+    }
+
+    var pushPreferencesSyncStatus: String? {
+        pendingPushPreferences == nil ? nil : "Pending"
     }
 
     var shouldShowEmptyHerd: Bool {
@@ -366,13 +408,27 @@ final class BridgeConnection: ObservableObject {
     private var reconnectAttempt = 0
     private var shouldReconnect = false
     private let currentTimeZone: () -> TimeZone
+    private let userDefaults: UserDefaults
+    private let messageSender: ((BridgeMessage) async throws -> Void)?
     private var timeZoneObserver: AnyCancellable?
+    private static let pendingPushPreferencesKey = "bridge.pendingPushPreferences"
 
     init(
         notificationCenter: NotificationCenter = .default,
-        currentTimeZone: @escaping () -> TimeZone = { .current }
+        currentTimeZone: @escaping () -> TimeZone = { .current },
+        userDefaults: UserDefaults = .standard,
+        messageSender: ((BridgeMessage) async throws -> Void)? = nil
     ) {
         self.currentTimeZone = currentTimeZone
+        self.userDefaults = userDefaults
+        self.messageSender = messageSender
+        if let data = userDefaults.data(forKey: Self.pendingPushPreferencesKey),
+           let stored = try? JSONDecoder().decode(
+               StoredPendingPushPreferences.self,
+               from: data
+           ) {
+            pendingPushPreferences = stored.preferences
+        }
         timeZoneObserver = notificationCenter.publisher(for: .NSSystemTimeZoneDidChange)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -398,6 +454,10 @@ final class BridgeConnection: ObservableObject {
     func connect(to pairing: Pairing) {
         let changesMac = self.pairing.map { $0 != pairing } ?? false
         disconnect(clearPairing: false, clearSnapshot: changesMac)
+        if changesMac {
+            clearPendingPushPreferences()
+            supportsPushPreferences = false
+        }
         self.pairing = pairing
         invitation = nil
         shouldReconnect = true
@@ -411,6 +471,8 @@ final class BridgeConnection: ObservableObject {
             $0.host != invitation.host || $0.port != invitation.port
         } ?? true
         disconnect(clearPairing: false, clearSnapshot: changesMac)
+        clearPendingPushPreferences()
+        supportsPushPreferences = false
         pairing = nil
         self.invitation = invitation
         shouldReconnect = true
@@ -464,14 +526,12 @@ final class BridgeConnection: ObservableObject {
     }
 
     func setPushPreferences(_ preferences: PushPreferences) {
-        guard supportsPushPreferences else {
-            actionError = "Update Rai on the Mac to change notification settings."
-            return
-        }
         let preferences = PushPreferencesTimeZoneSync.applyingCurrentZone(
             to: preferences,
             timeZone: currentTimeZone()
         )
+        storePendingPushPreferences(preferences)
+        guard status.isConnected, supportsPushPreferences else { return }
         Task {
             do {
                 try await send(.pushPrefs(preferences))
@@ -790,7 +850,6 @@ final class BridgeConnection: ObservableObject {
         }
 
         reconnectTask?.cancel()
-        supportsPushPreferences = false
         if status.diagnosis == nil {
             status = .connecting
         }
@@ -913,7 +972,7 @@ final class BridgeConnection: ObservableObject {
                 return
             }
             finishAuthentication(protocolVersion: protocolVersion, sessionName: sessionName)
-        case let .authFailed(reason, code, detail):
+        case let .authFailed(reason, code, detail, unrecognizedCode):
             if let code {
                 handleCodedError(
                     code,
@@ -922,7 +981,11 @@ final class BridgeConnection: ObservableObject {
                     phase: .authentication
                 )
             } else {
-                stopWithFailure(.helloRejected(reason: reason))
+                handleAuthenticationProse(
+                    reason: reason,
+                    detail: detail,
+                    unrecognizedCode: unrecognizedCode
+                )
             }
         case let .snapshot(snapshot):
             replaceWithLiveSnapshot(snapshot)
@@ -936,7 +999,11 @@ final class BridgeConnection: ObservableObject {
         case let .pushPrefsState(preferences):
             pushPreferences = preferences
             supportsPushPreferences = true
-            synchronizePushPreferencesTimeZone()
+            if pendingPushPreferences?.effective(at: Date()) == preferences {
+                clearPendingPushPreferences()
+            } else if pendingPushPreferences == nil {
+                synchronizePushPreferencesTimeZone()
+            }
         case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
@@ -1014,7 +1081,7 @@ final class BridgeConnection: ObservableObject {
         pairingInProgress && message.hasPrefix("Invalid bridge message")
     }
 
-    private func finishAuthentication(protocolVersion: Int, sessionName: String?) {
+    func finishAuthentication(protocolVersion: Int, sessionName: String?) {
         guard protocolVersion == bridgeProtocolVersion else {
             stopWithFailure(.protocolMismatch(protocolVersion))
             return
@@ -1026,6 +1093,9 @@ final class BridgeConnection: ObservableObject {
             guard let self else { return }
             do {
                 try await self.send(.subscribe)
+                if let pending = self.pendingPushPreferences {
+                    try await self.send(.pushPrefs(pending))
+                }
                 self.didConnect?()
                 self.requestSessions()
                 self.flushOutbox()
@@ -1094,14 +1164,16 @@ final class BridgeConnection: ObservableObject {
         switch destination {
         case .actionError:
             actionError = message
-        case .reconnect, .pairAgain:
+        case .reconnect, .pairAgain, .updateRequired:
             let diagnosis = ConnectionDiagnosis.coded(
                 code,
                 message: message,
                 detail: detail,
                 host: host
             )
-            if phase == .authentication {
+            if phase == .authentication, destination == .reconnect {
+                retryAuthentication(after: diagnosis)
+            } else if phase == .authentication {
                 stopWithFailure(diagnosis)
             } else {
                 status = .failed(diagnosis)
@@ -1111,17 +1183,79 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    private func handleAuthenticationProse(
+        reason: String,
+        detail: String?,
+        unrecognizedCode: String?
+    ) {
+        let rawDetails = detail ?? reason
+        switch BridgeErrorPolicy.authenticationProseDestination(reason) {
+        case .pairAgain:
+            stopWithFailure(.helloRejected(reason: rawDetails))
+        case .updateRequired:
+            stopWithFailure(ConnectionDiagnosis(
+                message: "Rai versions don't match — update Rai on the Mac or iPhone",
+                rawDetails: rawDetails,
+                action: .reconnect
+            ))
+        case .reconnect:
+            let diagnosis = ConnectionDiagnosis.bridgeError(reason, host: host)
+            retryAuthentication(after: ConnectionDiagnosis(
+                message: diagnosis.message,
+                rawDetails: unrecognizedCode.map { "\($0): \(rawDetails)" } ?? rawDetails,
+                action: .reconnect
+            ))
+        case .actionError, .ignore:
+            break
+        }
+    }
+
+    private func retryAuthentication(after diagnosis: ConnectionDiagnosis) {
+        shouldReconnect = true
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        scheduleReconnect(
+            after: NSError(
+                domain: "RaiBridgeAuthentication",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: diagnosis.rawDetails]
+            ),
+            diagnosis: diagnosis
+        )
+    }
+
+    private func storePendingPushPreferences(_ preferences: PushPreferences) {
+        pendingPushPreferences = preferences
+        let stored = StoredPendingPushPreferences(preferences: preferences)
+        if let data = try? JSONEncoder().encode(stored) {
+            userDefaults.set(data, forKey: Self.pendingPushPreferencesKey)
+        }
+    }
+
+    private func clearPendingPushPreferences() {
+        pendingPushPreferences = nil
+        userDefaults.removeObject(forKey: Self.pendingPushPreferencesKey)
+    }
+
     private func synchronizePushPreferencesTimeZone() {
-        guard supportsPushPreferences, pushPreferences.dnd != nil else { return }
+        guard supportsPushPreferences else { return }
+        let source = pendingPushPreferences ?? pushPreferences
+        guard source.dnd != nil else { return }
         let localized = PushPreferencesTimeZoneSync.applyingCurrentZone(
-            to: pushPreferences,
+            to: source,
             timeZone: currentTimeZone()
         )
-        guard localized != pushPreferences else { return }
+        guard localized != source else { return }
         setPushPreferences(localized)
     }
 
     private func send(_ message: BridgeMessage) async throws {
+        if let messageSender {
+            try await messageSender(message)
+            return
+        }
         guard let task else { throw URLError(.notConnectedToInternet) }
         let data = try encoder.encode(message)
         guard let text = String(data: data, encoding: .utf8) else {
@@ -1158,13 +1292,16 @@ final class BridgeConnection: ObservableObject {
         scheduleReconnect(after: error)
     }
 
-    func scheduleReconnect(after error: Error) {
+    func scheduleReconnect(
+        after error: Error,
+        diagnosis: ConnectionDiagnosis? = nil
+    ) {
         NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
         task = nil
         receiveTask = nil
         reconnectAttempt += 1
-        status = .failed(.transport(error, host: host))
+        status = .failed(diagnosis ?? .transport(error, host: host))
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -1208,6 +1345,7 @@ final class BridgeConnection: ObservableObject {
         desiredStreams.removeAll()
         seededPanes.removeAll()
         if clearPairing {
+            clearPendingPushPreferences()
             pairing = nil
             invitation = nil
         }

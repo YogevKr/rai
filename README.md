@@ -92,6 +92,7 @@ crook for the herd:
   workspaces group, handled alerts retract, and single alerts keep actions.
 - **Phone notification controls** set blocked and finished alerts per paired device.
   The phone also sets snooze periods and a daily do-not-disturb window.
+  Changes remain pending during reconnects and sync after the next welcome.
 - **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge

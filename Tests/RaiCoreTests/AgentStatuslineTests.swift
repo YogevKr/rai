@@ -111,6 +111,18 @@ final class AgentStatuslineTests: XCTestCase {
         XCTAssertNil(AgentStatuslineParser.parse(grid, agent: nil))
     }
 
+    func testPaneAgentSelectsOnlyItsOwnStatusGrammar() {
+        let codexRow = "gpt-5.6-sol high · ~/rai"
+        let claudeRows = """
+        ⏸ manual mode on · ? for shortcuts · ← 3 agents
+        ◉ xhigh · /effort
+        """
+
+        XCTAssertNil(AgentStatuslineParser.parse(codexRow, agent: "claude"))
+        XCTAssertNil(AgentStatuslineParser.parse(claudeRows, agent: "codex"))
+        XCTAssertNil(AgentStatuslineParser.parse(codexRow, agent: "shell"))
+    }
+
     private func fixture(_ name: String) throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -138,6 +138,26 @@ final class BridgeProtocolTests: XCTestCase {
             try JSONDecoder().decode(BridgeMessage.self, from: auth),
             .authFailed(reason: "Old reason", code: nil, detail: nil)
         )
+        let futureAuth = Data(
+            #"{"type":"authFailed","reason":"Mac is starting","code":"startup_pending","detail":"Herd not ready"}"#.utf8
+        )
+        let decodedFutureAuth = try JSONDecoder().decode(BridgeMessage.self, from: futureAuth)
+        XCTAssertEqual(
+            decodedFutureAuth,
+            .authFailed(
+                reason: "Mac is starting",
+                code: nil,
+                detail: "Herd not ready",
+                unrecognizedCode: "startup_pending"
+            )
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                BridgeMessage.self,
+                from: JSONEncoder().encode(decodedFutureAuth)
+            ),
+            decodedFutureAuth
+        )
         let future = Data(
             #"{"type":"error","message":"Future prose","code":"future_code","detail":"More"}"#.utf8
         )

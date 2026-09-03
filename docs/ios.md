@@ -127,9 +127,12 @@ The Mac evaluates this window in the iPhone time zone.
 The phone sends its current time zone with each preference update.
 The phone sends another update when the system time zone changes.
 The Mac stores these settings with that device credential.
+The Mac drops and removes push tokens whose paired-device record is missing.
 The Doctor shows the effective settings for every paired device.
 Older protocol-6 Macs do not send preference state.
 The phone disables these controls and asks for a Mac update.
+Changes made during a reconnect stay on the phone and show as pending.
+The phone sends them after the next welcome and clears pending after confirmation.
 
 The Mac drops disabled kinds when events arrive or when a kind becomes disabled.
 The Mac drops events that occur during snooze or do-not-disturb.
@@ -184,12 +187,15 @@ Tap the diagnosis to show the raw system or bridge error.
 
 New Mac replies include stable bridge error codes and technical details.
 The phone uses the code to select Reconnect, Pair Again, or an action error.
-Authentication failures that need user action stop automatic reconnect attempts.
-It uses the old prose rules when a Mac omits the code.
+Authentication repair failures stop retries and show Pair Again.
+Transient authentication failures keep the reconnect backoff.
+A protocol mismatch stops retries, keeps the pairing, and asks for an app update.
+Unknown authentication codes use the prose rules and default to a transient retry.
 
 The live pane shows a status strip above the compose bar.
 It reads Claude and Codex status rows from the terminal grid.
 It only parses panes that the herd snapshot identifies as agents.
+Each pane uses only the grammar for its detected agent kind.
 The strip can show mode, model, effort, agent count, directory, and branch.
 The terminal keeps its original rows.
 

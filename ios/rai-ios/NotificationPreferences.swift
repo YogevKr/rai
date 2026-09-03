@@ -87,13 +87,18 @@ struct NotificationPreferencesSheet: View {
     init(connection: BridgeConnection) {
         self.connection = connection
         _model = StateObject(wrappedValue: NotificationPreferencesViewModel(
-            preferences: connection.pushPreferences
+            preferences: connection.pendingPushPreferences ?? connection.pushPreferences
         ))
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if let syncStatus = connection.pushPreferencesSyncStatus {
+                    Section {
+                        LabeledContent("Sync", value: syncStatus)
+                    }
+                }
                 Section("Kinds") {
                     Toggle("Needs you", isOn: $model.needsYou)
                     Toggle("Finished", isOn: $model.finished)

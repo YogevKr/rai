@@ -53,17 +53,47 @@ final class NotificationPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testUnconfirmedWriteDoesNotReplaceStoredState() {
-        let connection = BridgeConnection()
+    func testDisconnectedWritePersistsAndSendsOnWelcomeUntilConfirmed() async throws {
+        let defaultsName = "NotificationPreferencesTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defaults.removePersistentDomain(forName: defaultsName)
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
         let proposed = PushPreferences(kinds: .init(needsYou: false, finished: true))
+        let sentPreferences = expectation(description: "pending preferences sent")
+        let connection = BridgeConnection(
+            userDefaults: defaults,
+            messageSender: { message in
+                if case let .pushPrefs(preferences) = message,
+                   preferences == proposed {
+                    sentPreferences.fulfill()
+                }
+            }
+        )
+        connection.handle(.pushPrefsState(.default))
+        connection.scheduleReconnect(after: URLError(.networkConnectionLost))
 
         connection.setPushPreferences(proposed)
 
         XCTAssertEqual(connection.pushPreferences, .default)
+        XCTAssertEqual(connection.pendingPushPreferences, proposed)
+        XCTAssertEqual(connection.pushPreferencesSyncStatus, "Pending")
         XCTAssertEqual(
-            connection.actionError,
-            "Update Rai on the Mac to change notification settings."
+            BridgeConnection(userDefaults: defaults).pendingPushPreferences,
+            proposed
         )
+
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        await fulfillment(of: [sentPreferences], timeout: 1)
+        XCTAssertEqual(connection.pendingPushPreferences, proposed)
+
+        connection.handle(.pushPrefsState(proposed))
+
+        XCTAssertNil(connection.pendingPushPreferences)
+        XCTAssertNil(connection.pushPreferencesSyncStatus)
+        XCTAssertNil(BridgeConnection(userDefaults: defaults).pendingPushPreferences)
     }
 
     func testTimeZoneSyncKeepsWallClockMinutesAndUsesCurrentZone() throws {

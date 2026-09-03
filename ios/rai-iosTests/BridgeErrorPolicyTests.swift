@@ -6,7 +6,7 @@ import XCTest
 
 final class BridgeErrorPolicyTests: XCTestCase {
     func testEverySharedBridgeCodeHasAPhonePolicy() {
-        let expected: [BridgeErrorCode: BridgeErrorDestination] = [
+        let operationExpected: [BridgeErrorCode: BridgeErrorDestination] = [
             .herdMissing: .reconnect,
             .paneGone: .actionError,
             .paneBusy: .actionError,
@@ -20,10 +20,25 @@ final class BridgeErrorPolicyTests: XCTestCase {
             .streamUnavailable: .actionError,
             .scrollbackUnavailable: .ignore,
         ]
+        let authenticationExpected: [BridgeErrorCode: BridgeErrorDestination] = [
+            .herdMissing: .reconnect,
+            .paneGone: .reconnect,
+            .paneBusy: .reconnect,
+            .auditUnavailable: .reconnect,
+            .repairRequired: .pairAgain,
+            .pairingCodeInvalid: .pairAgain,
+            .protocolMismatch: .updateRequired,
+            .unknownMessage: .reconnect,
+            .invalidRequest: .reconnect,
+            .operationFailed: .reconnect,
+            .streamUnavailable: .reconnect,
+            .scrollbackUnavailable: .reconnect,
+        ]
 
-        XCTAssertEqual(Set(expected.keys), Set(BridgeErrorCode.allCases))
-        XCTAssertEqual(BridgeErrorPolicy.destinations[.authentication], expected)
-        XCTAssertEqual(BridgeErrorPolicy.destinations[.operation], expected)
+        XCTAssertEqual(Set(operationExpected.keys), Set(BridgeErrorCode.allCases))
+        XCTAssertEqual(Set(authenticationExpected.keys), Set(BridgeErrorCode.allCases))
+        XCTAssertEqual(BridgeErrorPolicy.destinations[.authentication], authenticationExpected)
+        XCTAssertEqual(BridgeErrorPolicy.destinations[.operation], operationExpected)
     }
 
     func testCodedDiagnosesUseStableActionsAndDetail() {
@@ -47,10 +62,10 @@ final class BridgeErrorPolicyTests: XCTestCase {
         XCTAssertEqual(repair.rawDetails, "Token revoked")
     }
 
-    func testAuthenticationOperationFailureUsesActionErrorPolicy() {
+    func testAuthenticationOperationFailureUsesTransientRetryPolicy() {
         XCTAssertEqual(
             BridgeErrorPolicy.destination(for: .operationFailed, phase: .authentication),
-            .actionError
+            .reconnect
         )
     }
 
@@ -72,5 +87,49 @@ final class BridgeErrorPolicyTests: XCTestCase {
         XCTAssertEqual(diagnosis.action, .pairAgain)
         XCTAssertTrue(connection.requiresRepair)
         XCTAssertFalse(connection.hasPendingReconnect)
+    }
+
+    @MainActor
+    func testTransientAuthenticationFailureKeepsReconnectBackoff() {
+        let connection = BridgeConnection()
+
+        connection.handle(.authFailed(
+            reason: "Herdr is not connected.",
+            code: .herdMissing,
+            detail: "Mac startup is still in progress."
+        ))
+
+        XCTAssertTrue(connection.hasPendingReconnect)
+        XCTAssertFalse(connection.requiresRepair)
+        XCTAssertEqual(connection.status.diagnosis?.action, .reconnect)
+    }
+
+    @MainActor
+    func testProtocolMismatchStopsWithoutRequiringRepair() {
+        let connection = BridgeConnection()
+
+        connection.handle(.authFailed(
+            reason: "Protocol mismatch",
+            code: .protocolMismatch,
+            detail: "Phone protocol 6; Mac protocol 7."
+        ))
+
+        XCTAssertFalse(connection.hasPendingReconnect)
+        XCTAssertFalse(connection.requiresRepair)
+        XCTAssertTrue(connection.status.label.contains("update Rai"))
+    }
+
+    @MainActor
+    func testUnknownAuthenticationCodeDefaultsToTransientRetry() throws {
+        let data = Data(
+            #"{"type":"authFailed","reason":"Mac is starting","code":"startup_pending","detail":"Herd not ready"}"#.utf8
+        )
+        let connection = BridgeConnection()
+
+        connection.handle(try JSONDecoder().decode(BridgeMessage.self, from: data))
+
+        XCTAssertTrue(connection.hasPendingReconnect)
+        XCTAssertFalse(connection.requiresRepair)
+        XCTAssertTrue(connection.status.diagnosis?.rawDetails.contains("startup_pending") == true)
     }
 }

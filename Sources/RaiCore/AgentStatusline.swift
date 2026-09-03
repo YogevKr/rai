@@ -54,7 +54,18 @@ public enum AgentStatuslineParser {
     )
 
     public static func parse(_ grid: String, agent: String?) -> AgentStatusline? {
-        guard agent != nil else { return nil }
+        let parsesClaude: Bool
+        let parsesCodex: Bool
+        switch agent?.lowercased() {
+        case "claude":
+            parsesClaude = true
+            parsesCodex = false
+        case "codex":
+            parsesClaude = false
+            parsesCodex = true
+        default:
+            return nil
+        }
         let lines = grid.components(separatedBy: .newlines)
             .map {
                 $0.trimmingCharacters(
@@ -72,11 +83,13 @@ public enum AgentStatuslineParser {
         var sawBottomStatus = false
 
         for line in lines.suffix(12) where !line.isEmpty {
-            let agents = capture(agentsExpression, in: line)
-            let claudeStatus = line.contains("/effort")
-                || agents != nil
-                || (line.contains("? for shortcuts") && line.contains("mode on"))
-            let codexMatch = looksLikeTranscriptOrEcho(line)
+            let agents = parsesClaude ? capture(agentsExpression, in: line) : nil
+            let claudeStatus = parsesClaude && (
+                line.contains("/effort")
+                    || agents != nil
+                    || (line.contains("? for shortcuts") && line.contains("mode on"))
+            )
+            let codexMatch = !parsesCodex || looksLikeTranscriptOrEcho(line)
                 ? nil
                 : codexStatusExpression.firstMatch(
                     in: line,
@@ -116,7 +129,7 @@ public enum AgentStatuslineParser {
         }
 
         let header = Array(lines.prefix(6))
-        if header.contains(where: { $0.contains("Claude Code") }) {
+        if parsesClaude, header.contains(where: { $0.contains("Claude Code") }) {
             for line in header where !line.isEmpty {
                 if let value = capture(claudeModelExpression, in: line) {
                     model = clean(value)
@@ -129,7 +142,9 @@ public enum AgentStatuslineParser {
                 }
             }
         }
-        if sawBottomStatus, header.contains(where: { $0.contains("OpenAI Codex") }) {
+        if parsesCodex,
+           sawBottomStatus,
+           header.contains(where: { $0.contains("OpenAI Codex") }) {
             for line in header where !line.isEmpty {
                 if let value = capture(modelExpression, in: line) {
                     model = value

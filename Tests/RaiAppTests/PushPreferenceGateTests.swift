@@ -244,6 +244,58 @@ final class PushPreferenceGateTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRegistrationForMissingPairedDeviceIsDroppedAndPruned() throws {
+        _ = NSApplication.shared
+        let defaultsName = "PushPreferenceGateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defaults.removePersistentDomain(forName: defaultsName)
+        defaults.set(true, forKey: "companionBridgeCredentialMigrationV1")
+        defaults.set(
+            try JSONEncoder().encode([TestPushRegistration(
+                deviceToken: "revoked-token",
+                environment: "sandbox",
+                deviceID: "missing-device"
+            )]),
+            forKey: "companionBridgePushRegistrations"
+        )
+        addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
+
+        let auditDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-push-gate-tests-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: auditDirectory) }
+        let model = RaiModel(
+            client: HerdrClient(socketPath: "/nonexistent/herdr.sock"),
+            userDefaults: defaults
+        )
+        let server = RaiBridgeServer(
+            model: model,
+            userDefaults: defaults,
+            apnsSettings: APNsSettings(defaults: defaults) { ("", errSecItemNotFound) },
+            auditLogURL: auditDirectory.appendingPathComponent("audit.jsonl")
+        )
+        XCTAssertEqual(server.registeredPushDeviceCount, 1)
+
+        server.sendPush(PhonePushBurst(events: [PhonePushEvent(
+            paneID: "pane-1",
+            paneName: "Agent",
+            workspaceID: "workspace-1",
+            workspaceName: "Work",
+            status: .blocked,
+            occurredAt: date(hour: 12)
+        )]), now: date(hour: 12), calendar: calendar)
+
+        XCTAssertEqual(server.registeredPushDeviceCount, 0)
+        let savedRegistrations = try XCTUnwrap(
+            defaults.data(forKey: "companionBridgePushRegistrations")
+        )
+        XCTAssertFalse(String(decoding: savedRegistrations, as: UTF8.self).contains("revoked-token"))
+        XCTAssertEqual(
+            server.lastPushResult,
+            "Push dropped by device notification preferences."
+        )
+    }
+
     func testEffectivePreferencesRemoveExpiredAndInvalidValues() {
         let now = date(hour: 12)
         let preferences = PushPreferences(
