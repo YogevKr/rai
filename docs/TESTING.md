@@ -21,6 +21,7 @@ Env overrides:
 | `RAI_UNIVERSAL=1` | universal arm64 + x86_64 binary (used by the release workflow) |
 | `RAI_APP_DEST` | install into this dir instead of `/Applications` |
 | `RAI_SIGN_IDENTITY` | codesign identity. A stable local identity (e.g. a self-signed `rai-dev-signing`) keeps macOS TCC grants — like Input Monitoring for the Codex Micro — alive across rebuilds, because the code requirement stays constant. Falls back to ad-hoc when the identity is absent (CI, other machines). |
+| `RAI_PAIRING_CODE_FILE` | Test harness only: the bridge mirrors its current pairing code (one line; empty once spent) to this owner-only file, so an isolated end-to-end run can pair a simulator without driving Settings. Unset in normal use. Pair the simulator with `SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=<RAI_BRIDGE_PORT>&code=<code>"`. Run the isolated instance with `open -n -a <bundle> --env HOME=<scratch> …` so its UserDefaults stay out of the real ones (its Application Support folder is still the real one — delete `bridge-audit.jsonl` and `hooks.sock` afterwards). |
 
 For a quick loop without bundling, `swift run rai` runs straight from the package.
 
