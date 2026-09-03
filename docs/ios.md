@@ -89,10 +89,15 @@ Rai Remote renders Claude permission, trust, plan, and AskUserQuestion dialogs
 as native controls. AskUserQuestion shows step chips, option descriptions,
 multi-select checkboxes, free-text entry, and a final Submit action.
 
-Each action starts with an exact grid signature check. Rai sends one key, then
-waits for the marker, checkbox, tab, or dialog to change. The sequence stops
-after four seconds or any unexpected change. Rai never sends an automatic Enter
-without visible proof of the selected row.
+Each tap keeps the exact prompt signature and beacon request shown with its controls.
+Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
+
+Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
+The sequence stops after four seconds or any unexpected change. Rai never sends
+an automatic Enter without visible proof of the selected row.
+
+Unnumbered controls only appear for a modal at the grid bottom. Quoted dialogs
+above Claude's composer stay inert. Wrapped labels remain one logical option.
 
 The detector uses Claude Code 2.1.258 and 2.1.259 captures. Plan approval uses
 the documented `Would you like to proceed?` shape, but lacks a real capture.

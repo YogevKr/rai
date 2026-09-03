@@ -88,31 +88,37 @@ struct PaneTerminalView: View {
                             }
                             if prompt.kind == .numberedPermission {
                                 promptController.sendLegacy(
+                                    renderedPrompt: prompt,
                                     option: option,
                                     through: { bytes in
                                         sendKey(String(decoding: bytes, as: UTF8.self))
                                     }
                                 )
                             } else {
-                                promptController.select(option: option, through: sendKey)
+                                promptController.select(
+                                    renderedPrompt: prompt,
+                                    option: option,
+                                    through: sendKey
+                                )
                             }
                         },
                         advance: {
-                            promptController.advance {
+                            promptController.advance(renderedPrompt: prompt) {
                                 connection.sendKeys([$0], to: pane.paneID)
                             }
                         },
                         submit: {
-                            promptController.submit {
+                            promptController.submit(renderedPrompt: prompt) {
                                 connection.sendKeys([$0], to: pane.paneID)
                             }
                         },
                         escape: {
                             promptController.sendEscape(
+                                renderedPrompt: prompt,
                                 through: { connection.sendInput($0, to: pane.paneID) }
                             )
                         },
-                        dismiss: promptController.dismiss
+                        dismiss: { promptController.dismiss(renderedPrompt: prompt) }
                     )
                 }
 
@@ -677,7 +683,7 @@ final class GridReadableTerminalView: TerminalView {
 }
 
 @MainActor
-private final class TerminalPromptController: ObservableObject {
+final class TerminalPromptController: ObservableObject {
     @Published private(set) var prompt: PromptModel?
     @Published private(set) var isBusy = false
     @Published private(set) var focusComposerRequest = 0
@@ -705,78 +711,97 @@ private final class TerminalPromptController: ObservableObject {
         prompt = detected?.signature == dismissedSignature ? nil : detected
     }
 
-    func dismiss() {
-        dismissedSignature = prompt?.signature
+    func dismiss(renderedPrompt: PromptModel) {
+        guard prompt?.actionIdentity == renderedPrompt.actionIdentity else {
+            refresh()
+            return
+        }
+        dismissedSignature = renderedPrompt.signature
         prompt = nil
         cancelChoreography()
     }
 
     /// Keep the original numbered permission path as one guarded digit key.
-    func sendLegacy(option: PromptOption, through send: ([UInt8]) -> Void) {
-        guard let current = prompt,
-              current.kind == .numberedPermission,
+    func sendLegacy(
+        renderedPrompt: PromptModel,
+        option: PromptOption,
+        through send: ([UInt8]) -> Void
+    ) {
+        guard renderedPrompt.kind == .numberedPermission,
               let digit = option.digit,
+              renderedPrompt.options.contains(where: {
+                  $0.digit == digit && $0.label == option.label
+              }),
+              prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
-              PromptDetector.signatureMatches(
-                  current,
-                  currentGridText: grid,
-                  beacon: beacon
-              )
+              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              current.actionIdentity == renderedPrompt.actionIdentity,
+              current.options.contains(where: {
+                  $0.digit == digit && $0.label == option.label
+              })
         else {
             refresh()
             return
         }
         send(Array(String(digit).utf8))
-        dismiss()
+        dismiss(renderedPrompt: renderedPrompt)
     }
 
-    func select(option: PromptOption, through sendKey: @escaping (String) -> Void) {
-        let action: PromptChoreography.Action = prompt?.multiSelect == true
+    func select(
+        renderedPrompt: PromptModel,
+        option: PromptOption,
+        through sendKey: @escaping (String) -> Void
+    ) {
+        let action: PromptChoreography.Action = renderedPrompt.multiSelect
             && !option.isFreeText && !option.isChat
             ? .toggle(optionID: option.id)
             : .choose(optionID: option.id)
         begin(
             action,
+            renderedPrompt: renderedPrompt,
             focusComposer: option.isFreeText,
             through: sendKey
         )
     }
 
-    func advance(through sendKey: @escaping (String) -> Void) {
-        begin(.advance, through: sendKey)
+    func advance(
+        renderedPrompt: PromptModel,
+        through sendKey: @escaping (String) -> Void
+    ) {
+        begin(.advance, renderedPrompt: renderedPrompt, through: sendKey)
     }
 
-    func submit(through sendKey: @escaping (String) -> Void) {
-        begin(.submit, through: sendKey)
+    func submit(
+        renderedPrompt: PromptModel,
+        through sendKey: @escaping (String) -> Void
+    ) {
+        begin(.submit, renderedPrompt: renderedPrompt, through: sendKey)
     }
 
-    func sendEscape(through send: ([UInt8]) -> Void) {
-        guard let current = prompt,
+    func sendEscape(renderedPrompt: PromptModel, through send: ([UInt8]) -> Void) {
+        guard prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
-              PromptDetector.signatureMatches(
-                  current,
-                  currentGridText: grid,
-                  beacon: beacon
-              )
+              let current = PromptDetector.detect(in: grid, beacon: beacon),
+              current.actionIdentity == renderedPrompt.actionIdentity
         else {
             refresh()
             return
         }
         send([0x1B])
-        dismiss()
+        dismiss(renderedPrompt: renderedPrompt)
     }
 
     private func begin(
         _ action: PromptChoreography.Action,
+        renderedPrompt: PromptModel,
         focusComposer: Bool = false,
         through sendKey: @escaping (String) -> Void
     ) {
         guard choreography == nil,
-              let displayed = prompt,
+              prompt?.actionIdentity == renderedPrompt.actionIdentity,
               let grid = readGrid?(),
               let current = PromptDetector.detect(in: grid, beacon: beacon),
-              current.signature == displayed.signature,
-              current.dialogSignature == displayed.dialogSignature
+              current.actionIdentity == renderedPrompt.actionIdentity
         else {
             refresh()
             return

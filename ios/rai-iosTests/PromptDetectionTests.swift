@@ -241,6 +241,190 @@ final class PromptDetectionTests: XCTestCase {
         )
     }
 
+    func testStaleSingleSelectBeaconCannotChangeGridMultiselectState() throws {
+        let grid = try fixture("ask-user-question-q2-multiselect.txt")
+        let beacon = askBeacon(questions: [
+            question(
+                text: "Which color should the badge use?",
+                header: "Color",
+                options: [("Red", nil), ("Blue", nil), ("Green", nil)],
+                multiSelect: false
+            ),
+            question(
+                text: "Which toppings do you want?",
+                header: "Toppings",
+                options: [
+                    ("Cheese from beacon", nil),
+                    ("Olives from beacon", nil),
+                    ("Ham from beacon", nil),
+                ],
+                multiSelect: false
+            ),
+        ])
+
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid, beacon: beacon))
+
+        XCTAssertEqual(prompt.options[0].label, "Cheese from beacon")
+        XCTAssertTrue(prompt.multiSelect)
+        XCTAssertEqual(prompt.options.prefix(3).map(\.isChecked), [false, false, false])
+    }
+
+    func testBeaconLabelsRequireTheCurrentGridHeader() throws {
+        let grid = try fixture("ask-user-question-q2-multiselect.txt")
+        let beacon = askBeacon(questions: [
+            question(
+                text: "Which color should the badge use?",
+                header: "Color",
+                options: [("Red", nil), ("Blue", nil), ("Green", nil)],
+                multiSelect: false
+            ),
+            question(
+                text: "Which toppings do you want?",
+                header: "Checks",
+                options: [("Cheese from beacon", nil), ("Olives", nil), ("Ham", nil)],
+                multiSelect: true
+            ),
+        ])
+
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid, beacon: beacon))
+
+        XCTAssertEqual(prompt.options[0].label, "Cheese")
+        XCTAssertEqual(prompt.steps[1].label, "Toppings")
+    }
+
+    @MainActor
+    func testControllerRefusesSubmitRenderedForAReplacedWizard() throws {
+        var liveGrid = try fixture("ask-user-question-submit.txt").replacingOccurrences(
+            of: "⚠ You have not answered all questions\n\n",
+            with: ""
+        )
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+        XCTAssertEqual(rendered.submitState, .ready)
+
+        liveGrid = liveGrid.replacingOccurrences(
+            of: "Ready to submit your answers?",
+            with: "Ready to submit this replacement?"
+        )
+        controller.refresh()
+        var keys: [String] = []
+        controller.submit(renderedPrompt: rendered) { keys.append($0) }
+
+        XCTAssertTrue(keys.isEmpty)
+        XCTAssertEqual(controller.prompt?.question, "Ready to submit this replacement?")
+    }
+
+    @MainActor
+    func testControllerRefusesLegacyOptionAfterPromptReplacement() throws {
+        var liveGrid = Self.permissionGrid
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+        let staleOption = rendered.options[1]
+
+        liveGrid = Self.permissionGrid.replacingOccurrences(
+            of: "2. Yes, and don't ask again",
+            with: "2. No, reject this request"
+        )
+        controller.refresh()
+        var keys: [String] = []
+        controller.sendLegacy(renderedPrompt: rendered, option: staleOption) {
+            keys.append(String(decoding: $0, as: UTF8.self))
+        }
+
+        XCTAssertTrue(keys.isEmpty)
+        XCTAssertEqual(controller.prompt?.options[1].label, "No, reject this request")
+    }
+
+    @MainActor
+    func testControllerRejectsLegacyOptionOutsideRenderedPrompt() throws {
+        let controller = TerminalPromptController()
+        controller.readGrid = { Self.permissionGrid }
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+        let invalid = PromptOption(digit: 2, label: "Stale label")
+        var keys: [String] = []
+
+        controller.sendLegacy(renderedPrompt: rendered, option: invalid) {
+            keys.append(String(decoding: $0, as: UTF8.self))
+        }
+
+        XCTAssertTrue(keys.isEmpty)
+    }
+
+    @MainActor
+    func testControllerRefusesTapAfterBeaconRequestChanges() throws {
+        let grid = try fixture("ask-user-question-q1.txt")
+        let questions = [
+            question(
+                text: "Which color should the badge use?",
+                header: "Color",
+                options: [("Red", nil), ("Blue", nil), ("Green", nil)],
+                multiSelect: false
+            ),
+            question(
+                text: "Which toppings do you want?",
+                header: "Toppings",
+                options: [("Cheese", nil), ("Olives", nil), ("Ham", nil)],
+                multiSelect: true
+            ),
+        ]
+        let controller = TerminalPromptController()
+        controller.readGrid = { grid }
+        controller.beacon = askBeacon(questions: questions, timestamp: 1)
+        controller.refresh()
+        let rendered = try XCTUnwrap(controller.prompt)
+
+        controller.beacon = askBeacon(questions: questions, timestamp: 2)
+        controller.refresh()
+        var keys: [String] = []
+        controller.select(
+            renderedPrompt: rendered,
+            option: rendered.options[1],
+            through: { keys.append($0) }
+        )
+
+        XCTAssertTrue(keys.isEmpty)
+    }
+
+    func testQuotedTrustDialogAboveComposerStaysInert() throws {
+        XCTAssertNil(
+            PromptDetector.detect(in: try fixture("quoted-trust-dialog.txt"))
+        )
+    }
+
+    func testWrappedUnnumberedLabelCountsAsOneArrowStep() throws {
+        let grid = try fixture("trust-dialog-wrapped.txt")
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid))
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "No, exit because this folder is not one you trust or created yourself",
+            "Yes, I trust this folder",
+        ])
+        XCTAssertEqual(prompt.selectedOptionIndex, 0)
+
+        var machine = PromptChoreography(
+            action: .choose(optionID: prompt.options[1].id),
+            prompt: prompt,
+            now: 19
+        )
+        XCTAssertEqual(machine.next(prompt: prompt, now: 19), .sendKey("Down"))
+
+        let movedGrid = grid
+            .replacingOccurrences(
+                of: " ❯ No, exit because this folder is not one you",
+                with: "   No, exit because this folder is not one you"
+            )
+            .replacingOccurrences(
+                of: "   Yes, I trust this folder",
+                with: " ❯ Yes, I trust this folder"
+            )
+        let moved = try XCTUnwrap(PromptDetector.detect(in: movedGrid))
+        XCTAssertEqual(machine.next(prompt: moved, now: 20), .sendKey("Enter"))
+    }
+
     func testSingleChoiceChoreographyVerifiesMarkerThenTabAdvance() throws {
         let firstGrid = try fixture("ask-user-question-q1.txt")
         let first = try XCTUnwrap(PromptDetector.detect(in: firstGrid))
@@ -264,6 +448,22 @@ final class PromptDetectionTests: XCTestCase {
             PromptDetector.detect(in: try fixture("ask-user-question-q2-multiselect.txt"))
         )
         XCTAssertEqual(machine.next(prompt: next, now: 12), .complete)
+    }
+
+    func testChoreographyRefusesANewerFrameBeforeItsFirstKey() throws {
+        let grid = try fixture("ask-user-question-q1.txt")
+        let rendered = try XCTUnwrap(PromptDetector.detect(in: grid))
+        var machine = PromptChoreography(
+            action: .choose(optionID: rendered.options[1].id),
+            prompt: rendered,
+            now: 12
+        )
+        let newerGrid = grid
+            .replacingOccurrences(of: "❯ 1. Red", with: "  1. Red")
+            .replacingOccurrences(of: "  2. Blue", with: "❯ 2. Blue")
+        let newer = try XCTUnwrap(PromptDetector.detect(in: newerGrid))
+
+        XCTAssertEqual(machine.next(prompt: newer, now: 12), .refused)
     }
 
     func testDigitSelectionRefusesAnUnexpectedQuestionAdvance() throws {

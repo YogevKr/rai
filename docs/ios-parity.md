@@ -78,6 +78,8 @@ All additive, no version bump (old phones skip unknown message types):
 - Unnumbered trust and confirm dialogs use verified arrow movement before Enter.
 - Numbered permission dialogs keep their prior digit-only action.
 - Each structured action stops after four seconds or an unexpected grid change.
+- Each tap stays bound to its rendered grid signature, beacon request, and question index.
+- Quoted dialogs above a live composer do not create controls.
 - The raw terminal remains available for unknown dialog forms.
 - Plan approval follows its documented shape. No real plan capture verified this grammar.
 - This work adds no bridge message and keeps protocol version 6.

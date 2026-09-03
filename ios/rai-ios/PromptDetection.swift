@@ -79,6 +79,21 @@ struct PromptModel: Equatable {
     var isFreeTextEntryActive: Bool {
         kind == .askUserQuestion && submitState == .none && !showsSelectionFooter
     }
+
+    var actionIdentity: PromptActionIdentity {
+        PromptActionIdentity(
+            signature: signature,
+            dialogSignature: dialogSignature,
+            questionIndex: currentQuestionIndex
+        )
+    }
+}
+
+struct PromptActionIdentity: Equatable {
+    let signature: String
+    /// Includes the beacon session and timestamp when a hook request supplied labels.
+    let dialogSignature: String
+    let questionIndex: Int?
 }
 
 enum PromptDetector {
@@ -170,6 +185,12 @@ enum PromptDetector {
                 && $0.localizedCaseInsensitiveContains("Esc to cancel")
         }) else { return nil }
 
+        // A real modal owns the bottom of the live grid. Quoted modal text has
+        // Claude's composer or status rows below it and must stay inert.
+        guard lines.distance(from: footerIndex, to: lines.endIndex) <= 5,
+              lines[(footerIndex + 1)..<lines.endIndex].allSatisfy({ trimmed($0).isEmpty })
+        else { return nil }
+
         var optionEnd = footerIndex
         while optionEnd > 0, trimmed(lines[optionEnd - 1]).isEmpty { optionEnd -= 1 }
         var optionStart = optionEnd
@@ -178,7 +199,11 @@ enum PromptDetector {
         }
         guard optionEnd - optionStart >= 2 else { return nil }
 
-        let options = lines[optionStart..<optionEnd].compactMap(parseUnnumberedOption)
+        let optionLines = lines[optionStart..<optionEnd]
+        guard let markerLine = optionLines.firstIndex(where: hasSelectionMarker),
+              footerIndex - markerLine <= 12
+        else { return nil }
+        let options = parseUnnumberedOptions(optionLines)
         guard options.count >= 2,
               options.filter(\.isSelected).count == 1
         else { return nil }
@@ -300,8 +325,13 @@ enum PromptDetector {
             }
             return nil
         }()
-        let definition = currentIndex.map { questions[$0] }.flatMap {
-            optionsMatchGrid(question: $0, grid: grid) ? $0 : nil
+        let definition = currentIndex.flatMap { index -> AskQuestion? in
+            guard grid.currentQuestionIndex == index,
+                  grid.steps.indices.contains(index),
+                  textIsCompatible(grid.steps[index].label, questions[index].header),
+                  optionsMatchGrid(question: questions[index], grid: grid)
+            else { return nil }
+            return questions[index]
         }
         if grid.submitState == .none, definition == nil { return grid }
         var options: [PromptOption] = []
@@ -313,7 +343,7 @@ enum PromptDetector {
                     label: source.label,
                     description: source.description,
                     isSelected: visible?.isSelected ?? false,
-                    isChecked: definition.multiSelect ? visible?.isChecked ?? false : nil
+                    isChecked: visible?.isChecked
                 ))
             }
             options.append(contentsOf: grid.options.dropFirst(definition.options.count))
@@ -341,7 +371,7 @@ enum PromptDetector {
             steps: steps,
             currentQuestionIndex: currentIndex,
             options: options,
-            multiSelect: definition?.multiSelect ?? grid.multiSelect,
+            multiSelect: grid.multiSelect,
             submitState: grid.submitState,
             showsSelectionFooter: grid.showsSelectionFooter,
             signature: grid.signature,
@@ -504,19 +534,43 @@ enum PromptDetector {
         )
     }
 
-    private static func parseUnnumberedOption(_ line: String) -> PromptOption? {
-        let value = trimmed(line)
-        guard !value.isEmpty else { return nil }
+    private static func parseUnnumberedOptions(
+        _ lines: ArraySlice<String>
+    ) -> [PromptOption] {
         let markers = ["❯", ">", "›"]
-        let marker = markers.first(where: { value.hasPrefix($0) })
-        let label = marker.map { trimmed(String(value.dropFirst($0.count))) } ?? value
-        guard !label.isEmpty else { return nil }
-        return PromptOption(
-            digit: nil,
-            label: label,
-            isSelected: marker != nil,
-            isFreeText: isInputOption(label)
-        )
+        let rows = lines.compactMap { line -> (text: String, indent: Int, marker: String?)? in
+            let value = trimmed(line)
+            guard !value.isEmpty else { return nil }
+            let marker = markers.first(where: { value.hasPrefix($0) })
+            let text = marker.map { trimmed(String(value.dropFirst($0.count))) } ?? value
+            guard !text.isEmpty else { return nil }
+            return (text, line.prefix(while: { $0 == " " || $0 == "\t" }).count, marker)
+        }
+        guard let optionIndent = rows.filter({ $0.marker == nil }).map(\.indent).min() else {
+            return []
+        }
+
+        var grouped: [(label: String, selected: Bool)] = []
+        for row in rows {
+            if row.marker != nil || row.indent <= optionIndent {
+                grouped.append((row.text, row.marker != nil))
+            } else if !grouped.isEmpty {
+                grouped[grouped.count - 1].label += " " + row.text
+            }
+        }
+        return grouped.map { row in
+            PromptOption(
+                digit: nil,
+                label: row.label,
+                isSelected: row.selected,
+                isFreeText: isInputOption(row.label)
+            )
+        }
+    }
+
+    private static func hasSelectionMarker(_ line: String) -> Bool {
+        let value = trimmed(line)
+        return value.hasPrefix("❯") || value.hasPrefix(">") || value.hasPrefix("›")
     }
 
     private static func isInputOption(_ label: String) -> Bool {
@@ -673,6 +727,7 @@ struct PromptChoreography {
     static let maximumKeys = 16
 
     let action: Action
+    let renderedIdentity: PromptActionIdentity
     let dialogSignature: String
     let kind: PromptKind
     let expiresAt: TimeInterval
@@ -683,6 +738,7 @@ struct PromptChoreography {
 
     init(action: Action, prompt: PromptModel, now: TimeInterval) {
         self.action = action
+        renderedIdentity = prompt.actionIdentity
         dialogSignature = prompt.dialogSignature
         kind = prompt.kind
         expiresAt = now + Self.responseWindow
@@ -724,6 +780,10 @@ struct PromptChoreography {
 
         switch phase {
         case .ready:
+            guard prompt.actionIdentity == renderedIdentity else {
+                phase = .finished
+                return .refused
+            }
             return start(with: prompt)
         case let .awaitingPosition(expected, target, previous, question, frame):
             guard prompt.signature != frame else { return .wait }

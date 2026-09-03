@@ -11,6 +11,8 @@ twins keep the styling for renderer work.
 | `ask-user-question-q2-multiselect.txt` | 2.1.259 | Second question after Tab, multi-select checkboxes |
 | `ask-user-question-submit.txt` | 2.1.259 | The Submit tab |
 | `trust-dialog.txt` | 2.1.258 | Folder trust dialog: unnumbered rows, `❯` marks the selection, footer `Enter to confirm · Esc to cancel`. Transcribed from a live read, not byte-captured |
+| `trust-dialog-wrapped.txt` | synthetic | Trust shape with one wrapped option label for parser regression coverage |
+| `quoted-trust-dialog.txt` | synthetic | Inert quoted trust text above Claude's live composer and status line |
 
 The numbered tool-permission dialog (`❯ 1. Yes … 4. No`, footer
 `Esc to cancel · Tab to amend`) is inline in
