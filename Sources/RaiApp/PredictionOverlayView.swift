@@ -1,6 +1,6 @@
 import AppKit
 
-/// Paints not-yet-confirmed predicted keystrokes over a remote pane, starting
+/// Paints not-yet-confirmed predicted keystrokes over a terminal pane, starting
 /// at the terminal's caret cell (see `PredictiveEchoEngine`). Underlined, like
 /// mosh, so unconfirmed text is honest about being a guess. Draws per-glyph on
 /// the cell grid — attributed-string layout would drift off the terminal's

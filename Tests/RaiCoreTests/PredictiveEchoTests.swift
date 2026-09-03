@@ -37,6 +37,68 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.displayGlyphs(now: start), [])
     }
 
+    func testLocalThresholdDisplaysAfterMeasuredDaemonTick() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            alternateBufferActive: false,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
+    }
+
+    func testRemoteThresholdDoesNotDisplayAfterLocalDaemonTick() {
+        engine = PredictiveEchoEngine(herdLocation: .remote)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            alternateBufferActive: false,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
+    func testNonEchoingPaneNeverDisplaysPrediction() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("agent", cursorX: 0)
+
+        for delay in [0.010, 0.050, 0.250, 1.0] {
+            XCTAssertEqual(
+                engine.displayGlyphs(now: start.addingTimeInterval(delay)),
+                []
+            )
+        }
+    }
+
+    func testConfirmedPredictionVanishesOnReconcile() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            alternateBufferActive: false,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
+
+        engine.reconcile(
+            cursor: (x: 2, y: 5),
+            alternateBufferActive: false,
+            readCell: { column, _ in column == 1 ? "b" : nil },
+            now: start.addingTimeInterval(0.041)
+        )
+        XCTAssertEqual(engine.displayGlyphs(), [])
+        XCTAssertTrue(engine.pending.isEmpty)
+    }
+
     /// The password guard: after Enter, a hidden-input prompt (`sudo`,
     /// `read -s`) echoes nothing — no waiting period may ever paint the
     /// secret.
@@ -128,6 +190,30 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertGreaterThan(engine.smoothedConfirmLatency, 0.06)
 
         let next = start.addingTimeInterval(0.3)
+        type("b", cursorX: 1, at: next)
+        XCTAssertEqual(engine.displayGlyphs(now: next), ["b"])
+    }
+
+    func testExtraOutputFeedKeepsCurrentBurstConfidence() {
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            alternateBufferActive: false,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.2)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        // Shells can split one echo and its redraw controls across PTY feeds.
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            alternateBufferActive: false,
+            readCell: { _, _ in nil },
+            now: start.addingTimeInterval(0.21)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        let next = start.addingTimeInterval(0.22)
         type("b", cursorX: 1, at: next)
         XCTAssertEqual(engine.displayGlyphs(now: next), ["b"])
     }

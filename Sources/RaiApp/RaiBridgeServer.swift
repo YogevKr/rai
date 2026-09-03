@@ -861,6 +861,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "input bytesBase64 is invalid."), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 try await self.model.client.sendInput(paneID: paneID, bytes: [UInt8](data))
             }
@@ -873,6 +875,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "Images must be 5 MB or smaller."), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 let url = try self.writeTemporaryImage(data, filename: filename)
                 let path = url.path.replacingOccurrences(of: " ", with: "\\ ")
@@ -967,6 +971,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(message: "sendKeys takes 1-8 keys."), to: client)
                 return
             }
+            model.beginExternalInput(paneID: paneID)
+            defer { model.endExternalInput(paneID: paneID) }
             await perform(for: client) {
                 try await self.model.client.sendKeys(paneID: paneID, keys: keys)
             }

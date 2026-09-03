@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mosh-style predictive local echo for remote herds.
+/// Mosh-style predictive local echo for local and remote herds.
 ///
 /// Over a high-latency link every keystroke's echo pays a full round trip
 /// (211 ms via a relayed transatlantic tunnel, measured), so typing feels
@@ -29,6 +29,22 @@ import Foundation
 /// flips echo off without a boundary key), the unconfirmed queue is retracted
 /// after `max(2 × smoothed latency, retractionFloor)` and confidence drops.
 public final class PredictiveEchoEngine {
+    public enum HerdLocation {
+        case local
+        case remote
+
+        /// Local herdr flushes input on a measured ~20 ms tick. Eight
+        /// milliseconds stays below that tick while keeping sub-frame echoes
+        /// on the authoritative rendering path. Remote links retain the prior
+        /// 60 ms threshold to avoid prediction on fast network connections.
+        public var displayLatencyThreshold: TimeInterval {
+            switch self {
+            case .local: 0.008
+            case .remote: 0.060
+            }
+        }
+    }
+
     public struct Prediction: Equatable {
         public let character: Character
         /// Zero-based buffer column where the echo is expected to land.
@@ -69,6 +85,10 @@ public final class PredictiveEchoEngine {
         self.displayLatencyThreshold = displayLatencyThreshold
         self.retractionFloor = retractionFloor
         self.maxPending = maxPending
+    }
+
+    public convenience init(herdLocation: HerdLocation) {
+        self.init(displayLatencyThreshold: herdLocation.displayLatencyThreshold)
     }
 
     /// Records a keystroke aimed at the pty. `cursor` is the terminal's

@@ -1,4 +1,5 @@
 import AppKit
+import MetalKit
 import RaiCore
 import SwiftTerm
 import SwiftUI
@@ -291,24 +292,33 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// Extends drag-selections into herdr-side scrollback (see the controller).
     let scrollbackSelection = ScrollbackSelectionController()
 
-    // MARK: predictive echo (remote herds)
+    // MARK: predictive echo
 
-    /// Non-nil only when this pane belongs to a remote herd. The engine's own
-    /// latency gate keeps the overlay invisible on fast links, so enabling it
-    /// for every remote pane is safe.
+    /// Enabled for every pane. The engine uses an 8 ms local threshold and a
+    /// 60 ms remote threshold, then requires a confirmed echo in each burst.
     private var predictiveEcho: PredictiveEchoEngine?
     private var predictionOverlay: PredictionOverlayView?
     private var predictionReconcileTimer: Timer?
+    private var feedRepaintState = TerminalFeedRepaintState()
+    private var userInputEventPending = false
+    private var externalInputDepth = 0
+    private var externalInputBlockedUntil: UInt64 = 0
+    private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
-    func enablePredictiveEcho() {
+    func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
         guard predictiveEcho == nil else { return }
-        predictiveEcho = PredictiveEchoEngine()
+        predictiveEcho = PredictiveEchoEngine(herdLocation: herdLocation)
     }
 
     /// Classifies a keystroke that is on its way to the pty and records it.
     /// Copy-mode keys never reach the pty, so callers skip those.
     private func notePredictionKey(_ event: NSEvent) {
         guard let engine = predictiveEcho else { return }
+        guard externalInputDepth == 0,
+              DispatchTime.now().uptimeNanoseconds >= externalInputBlockedUntil else {
+            resetPredictions()
+            return
+        }
         let terminal = getTerminal()
         let mods = event.modifierFlags.intersection(
             [.command, .control, .option, .function])
@@ -393,13 +403,33 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         )
         overlay.isHidden = false
         overlay.needsDisplay = true
+        overlay.displayIfNeeded()
     }
 
-    private func resetPredictions() {
+    func resetPredictions() {
         predictiveEcho?.clear()
         predictionOverlay?.isHidden = true
         predictionReconcileTimer?.invalidate()
         predictionReconcileTimer = nil
+    }
+
+    func beginExternalInput() {
+        externalInputDepth += 1
+        extendExternalInputFence()
+        resetPredictions()
+    }
+
+    func endExternalInput() {
+        externalInputDepth = max(0, externalInputDepth - 1)
+        extendExternalInputFence()
+        resetPredictions()
+    }
+
+    private func extendExternalInputFence(
+        from uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        externalInputBlockedUntil = uptimeNanoseconds
+            &+ Self.externalInputQuietPeriodNanoseconds
     }
 
     /// The herdr pane this terminal is attached to, for pane.read/snapshot.
@@ -460,6 +490,10 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         // Every branch below ends with bytes in the pty (directly or via
         // SwiftTerm's own keyDown), so record the keystroke for predictive
         // echo before it is dispatched.
+        userInputEventPending = true
+        DispatchQueue.main.async { [weak self] in
+            self?.userInputEventPending = false
+        }
         notePredictionKey(event)
 
         // Ghostty line-editing parity — the same ⌘/⌥ combos Ghostty sends,
@@ -508,6 +542,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     // protocol before rai attaches, so terminal state doesn't reflect it — and
     // pasting into an agent is the overwhelmingly common case.)
     override func paste(_ sender: Any) {
+        resetPredictions()
         let clipboard = NSPasteboard.general
         if clipboard.string(forType: .string) == nil,
            clipboard.canReadObject(forClasses: [NSImage.self], options: nil) {
@@ -532,6 +567,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         if !text.isEmpty,
            text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
            text.unicodeScalars.contains(where: { $0.value > 0x7f }) {
+            resetPredictions()
             send(txt: text)
             return
         }
@@ -556,6 +592,46 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         allowMouseReporting = false
         // Keep a finalized selection glued to its text while content scrolls.
         scrollbackSelection.noteWheel()
+    }
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if userInputEventPending {
+            userInputEventPending = false
+            feedRepaintState.noteUserInput()
+        } else {
+            // File drops, menu actions, and terminal-generated replies bypass
+            // the key monitor. They cannot safely retain prediction state.
+            resetPredictions()
+        }
+        super.send(source: source, data: data)
+    }
+
+    /// The attach process delivers its reads on the main queue. Reconcile the
+    /// overlay as soon as the authoritative bytes enter SwiftTerm. A focused,
+    /// visible shell echo below 512 bytes also draws now. Larger agent bursts
+    /// retain SwiftTerm's 60 Hz coalescing path.
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if externalInputDepth > 0 || now < externalInputBlockedUntil {
+            // Keep old external echoes from confirming a new local burst.
+            extendExternalInputFence(from: now)
+        }
+        super.dataReceived(slice: slice)
+        reconcilePredictions()
+        feedRepaintState.repaintIfNeeded(
+            byteCount: slice.count,
+            isFocused: window?.firstResponder === self,
+            isVisible: window != nil && !isHiddenOrHasHiddenAncestor,
+            synchronizedOutputActive: getTerminal().synchronizedOutputActive
+        ) { [self] in
+            if isUsingMetalRenderer,
+               let metalView = subviews.first(where: { $0 is MTKView }) as? MTKView {
+                metalView.draw()
+            } else {
+                needsDisplay = true
+                displayIfNeeded()
+            }
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

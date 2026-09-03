@@ -48,6 +48,8 @@ terminal widget**.
   `session.snapshot`, kept live by herdr's event stream (no polling loop).
 - **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
   type, watch output, search the scrollback (⌘F).
+- **Low-latency typing** — confirmed local echo predicts safe ASCII bursts.
+  Small focused-pane echoes bypass the normal display throttle.
 - **Nested splits** — rendered from the daemon's own split geometry and ratios.
 - **Split &amp; launch an agent** — spawn Claude or Codex directly into a new pane.
 - **Broadcast input** — send one command to every pane in a tab.

@@ -18,9 +18,9 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
-    /// Set alongside `switchSocket` when the herd is remote. New views enable
-    /// predictive echo; existing views were already reaped by the switch.
-    var predictiveEchoEnabled = false
+    /// Set alongside `switchSocket`. New local and remote views use different
+    /// display thresholds; existing views were already reaped by the switch.
+    var predictiveEchoHerdLocation = PredictiveEchoEngine.HerdLocation.local
     private var themeObserver: AnyCancellable?
     /// Terminals herdr reported in the last snapshot, once one has been seen.
     /// Closing a pane evicts its terminal, but SwiftUI still updates the
@@ -102,9 +102,7 @@ final class TerminalPool {
         // client points at the default socket, which is wrong the moment the
         // app is attached to another session (remote herd, herd switch).
         view.scrollbackSelection.client = HerdrClient(socketPath: socketPath)
-        if predictiveEchoEnabled {
-            view.enablePredictiveEcho()
-        }
+        view.enablePredictiveEcho(for: predictiveEchoHerdLocation)
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
@@ -159,6 +157,22 @@ final class TerminalPool {
     func removeAll() {
         for terminalID in Array(entries.keys) {
             evict(terminalID)
+        }
+    }
+
+    /// External input bypasses the pane's key monitor. Suppress prediction
+    /// until the full operation, including a delayed Enter, has finished.
+    func beginExternalInput(forPaneIDs paneIDs: Set<String>) {
+        guard !paneIDs.isEmpty else { return }
+        for entry in entries.values where entry.view.paneID.map(paneIDs.contains) == true {
+            entry.view.beginExternalInput()
+        }
+    }
+
+    func endExternalInput(forPaneIDs paneIDs: Set<String>) {
+        guard !paneIDs.isEmpty else { return }
+        for entry in entries.values where entry.view.paneID.map(paneIDs.contains) == true {
+            entry.view.endExternalInput()
         }
     }
 

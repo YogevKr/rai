@@ -1,5 +1,7 @@
 import AppKit
 import Foundation
+import MetalKit
+import QuartzCore
 import RaiCore
 import SwiftTerm
 
@@ -37,6 +39,9 @@ struct Options {
     var rows = 32
     var latency = false
     var latencySamples = 200
+    var rendererSpecified = false
+    var metalPresentsWithTransaction = false
+    var metalDisplaySync = true
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -49,7 +54,9 @@ struct Options {
             }
             switch arg {
             case "--panes": o.panes = Int(value() ?? "") ?? o.panes
-            case "--renderer": o.useMetal = (value() ?? "metal") != "cg"
+            case "--renderer":
+                o.useMetal = (value() ?? "metal") != "cg"
+                o.rendererSpecified = true
             case "--seconds": o.seconds = Double(value() ?? "") ?? o.seconds
             case "--warmup": o.warmup = Double(value() ?? "") ?? o.warmup
             case "--rate": o.bytesPerSecond = Int(value() ?? "") ?? o.bytesPerSecond
@@ -59,6 +66,8 @@ struct Options {
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
             case "--latency": o.latency = true
             case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
+            case "--metal-presents-with-transaction": o.metalPresentsWithTransaction = true
+            case "--metal-display-sync": o.metalDisplaySync = (value() ?? "on") != "off"
             case "--help", "-h":
                 print("""
                 rai-bench — CoreGraphics vs Metal pane rendering
@@ -74,17 +83,39 @@ struct Options {
                   --cols / --rows  per-pane grid size (default 100x32)
                   --latency        measure byte feed and predictive overlay latency
                   --samples N      samples per latency path (default 200)
+                  --metal-presents-with-transaction
+                                   present Metal frames with Core Animation transactions
+                  --metal-display-sync on|off
+                                   Metal display synchronization (default on)
                 """)
                 exit(0)
             default: break
             }
             i += 1
         }
+        if o.latency && !o.rendererSpecified {
+            // The app defaults to CoreGraphics. Keep bare --latency aligned
+            // with production while preserving Metal as the CPU-mode default.
+            o.useMetal = false
+        }
         return o
     }
 }
 
 // MARK: - Typing latency
+
+@MainActor
+private func metalView(in view: NSView) -> MTKView? {
+    for child in view.subviews {
+        if let metal = child as? MTKView {
+            return metal
+        }
+        if let nested = metalView(in: child) {
+            return nested
+        }
+    }
+    return nil
+}
 
 @MainActor
 private final class LatencyTerminalDelegate: NSObject, @preconcurrency TerminalViewDelegate {
@@ -116,10 +147,9 @@ private final class LatencyOverlayView: NSView {
     }
 }
 
-/// Measures the two latency paths controlled by rai. The terminal result ends
-/// at SwiftTerm's `updateDisplay` callback. The prediction result ends when the
-/// overlay's `draw` callback runs. Each sample waits for its own callback, so a
-/// prior frame cannot satisfy a later sample.
+/// Measures the two latency paths controlled by rai. Both results end at a
+/// draw callback after the terminal or prediction overlay draws. Each sample
+/// waits for its own callback, so a prior frame cannot satisfy a later sample.
 @MainActor
 final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
     private enum Phase {
@@ -147,11 +177,16 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildWindow()
+        print(
+            "latency-config renderer=\(options.useMetal ? "metal" : "coregraphics") "
+                + "presentsWithTransaction=\(options.metalPresentsWithTransaction) "
+                + "displaySync=\(options.metalDisplaySync)"
+        )
         terminalDelegate.onRangeChanged = { [weak self] in
             self?.terminalDisplayDidUpdate()
         }
         overlay.onDraw = { [weak self] in
-            self?.predictionOverlayDidDraw()
+            self?.displayProbeDidDraw()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.startTerminalSamples()
@@ -182,6 +217,26 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        configureMetalIfNeeded()
+    }
+
+    private func configureMetalIfNeeded() {
+        guard options.useMetal else { return }
+        do {
+            terminalView.metalBufferingMode = options.aggregated
+                ? .perFrameAggregated
+                : .perRowPersistent
+            try terminalView.setUseMetal(true)
+        } catch {
+            FileHandle.standardError.write(Data("rai-bench: Metal unavailable: \(error)\n".utf8))
+            exit(2)
+        }
+        guard let layer = metalView(in: terminalView)?.layer as? CAMetalLayer else {
+            FileHandle.standardError.write(Data("rai-bench: Metal layer unavailable\n".utf8))
+            exit(2)
+        }
+        layer.presentsWithTransaction = options.metalPresentsWithTransaction
+        layer.displaySyncEnabled = options.metalDisplaySync
     }
 
     private func startTerminalSamples() {
@@ -198,15 +253,34 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         currentByte = 0x61 + UInt8(terminalSamples.count % 26)
         sampleStart = DispatchTime.now().uptimeNanoseconds
         terminalView.feed(byteArray: [currentByte][...])
+        TerminalFeedRepaintPolicy.repaintIfNeeded(
+            byteCount: 1,
+            isFocused: true,
+            isVisible: true,
+            hasRecentUnpaintedUserInput: true,
+            synchronizedOutputActive: false
+        ) { [self] in
+            drawTerminalAndProbe()
+        }
     }
 
     private func terminalDisplayDidUpdate() {
-        guard phase == .terminal, let start = sampleStart else { return }
-        sampleStart = nil
-        terminalSamples.append(milliseconds(since: start))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
-            self?.runNextTerminalSample()
+        guard phase == .terminal, sampleStart != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.phase == .terminal, self.sampleStart != nil else { return }
+            self.drawTerminalAndProbe()
         }
+    }
+
+    private func drawTerminalAndProbe() {
+        if terminalView.isUsingMetalRenderer, let metal = metalView(in: terminalView) {
+            metal.draw()
+        } else {
+            terminalView.needsDisplay = true
+        }
+        overlay.isHidden = false
+        overlay.needsDisplay = true
+        window.contentView?.displayIfNeeded()
     }
 
     private func primePrediction() {
@@ -264,8 +338,20 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         overlay.displayIfNeeded()
     }
 
-    private func predictionOverlayDidDraw() {
-        guard phase == .prediction, let start = sampleStart else { return }
+    private func displayProbeDidDraw() {
+        guard let start = sampleStart else { return }
+        if phase == .terminal {
+            sampleStart = nil
+            terminalSamples.append(milliseconds(since: start))
+            overlay.isHidden = true
+            // SwiftTerm's queued update still fires after the direct draw.
+            // Start the next sample only after that callback drains.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
+                self?.runNextTerminalSample()
+            }
+            return
+        }
+        guard phase == .prediction else { return }
         sampleStart = nil
         predictionSamples.append(milliseconds(since: start))
         overlay.isHidden = true
@@ -449,6 +535,10 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
                 // the screen each frame — which a scrolling agent pane is.
                 if options.aggregated { view.metalBufferingMode = .perFrameAggregated }
                 try view.setUseMetal(true)
+                if let layer = metalView(in: view)?.layer as? CAMetalLayer {
+                    layer.presentsWithTransaction = options.metalPresentsWithTransaction
+                    layer.displaySyncEnabled = options.metalDisplaySync
+                }
                 metalActive = true
             } catch {
                 FileHandle.standardError.write(
@@ -477,6 +567,16 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
                 if start >= corpus.count { start = 0 }
                 let chunk = min(remaining, corpus.count - start)
                 view.feed(byteArray: corpus[start..<(start + chunk)])
+                TerminalFeedRepaintPolicy.repaintIfNeeded(
+                    byteCount: chunk,
+                    isFocused: index == 0,
+                    isVisible: true,
+                    hasRecentUnpaintedUserInput: false,
+                    synchronizedOutputActive: view.getTerminal().synchronizedOutputActive
+                ) {
+                    view.needsDisplay = true
+                    view.displayIfNeeded()
+                }
                 start += chunk
                 remaining -= chunk
                 if measuring { bytesFed += chunk }

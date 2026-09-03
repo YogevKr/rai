@@ -149,3 +149,7 @@ Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
 dialogs) on iOS; transcript history view; operator config files;
 phone-side notification prefs (per-kind, snooze) on top of protocol 6;
 bridge error codes on the Mac side; statusline strip; LAN TLS.
+
+Wave 2 Mac typing latency landed on 2026-09-03. Local panes now use safe
+predictive echo after burst confirmation. Small focused-pane feeds also draw
+without SwiftTerm's frame delay. The bridge protocol and iOS path did not change.
