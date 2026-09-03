@@ -15,6 +15,7 @@ struct PaneTerminalView: View {
     @State private var imageError: String?
     @State private var showingCommandPalette = false
     @State private var destructiveArmed = false
+    @State private var lineSendMessage: String?
     @FocusState private var composeFocused: Bool
     @StateObject private var terminalSearch = TerminalSearchController()
     @StateObject private var promptController = TerminalPromptController()
@@ -320,6 +321,16 @@ struct PaneTerminalView: View {
                 .padding(.vertical, 8)
                 .background(.bar)
 
+                if let lineSendMessage {
+                    Text(lineSendMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                        .background(.bar)
+                }
+
                 if pane.agent != nil, promptController.prompt == nil {
                     QuickReplyRow { text in
                         sendLine(text)
@@ -359,6 +370,7 @@ struct PaneTerminalView: View {
             }
         }
         .onAppear {
+            restorePendingDraft()
             connection.openPane(paneID: pane.paneID)
             // Testing/automation affordance mirroring RAI_OPEN_PANE: put the
             // keyboard in the compose field so an end-to-end run can screenshot
@@ -395,6 +407,9 @@ struct PaneTerminalView: View {
             guard let item else { return }
             Task { await sendPhoto(item) }
         }
+        .onChange(of: connection.pendingComposedDrafts[pane.paneID]) { _, _ in
+            restorePendingDraft()
+        }
         .sheet(isPresented: $showingCommandPalette) {
             CommandPaletteSheet(
                 agent: pane.agent,
@@ -428,20 +443,37 @@ struct PaneTerminalView: View {
             return
         }
         destructiveArmed = false
-        // Clear only once the line is actually on the wire. It used to clear
-        // unconditionally, so typing with no signal wiped the text and dropped
-        // it — the send failure was swallowed into handleSocketFailure and the
-        // user was never told. A queued line keeps the field's contents until
-        // it lands.
+        // Sent and queued lines clear the draft. Refused lines remain editable.
         Task {
-            let delivered = await connection.sendComposedLine(
+            let result = await connection.sendComposedLine(
                 Array(text.utf8) + [0x0D], to: pane.paneID)
-            if delivered { composedLine = "" }
+            if ComposedLineDraftPolicy.shouldClear(after: result), composedLine == text {
+                composedLine = ""
+            }
+            lineSendMessage = result == .refused
+                ? connection.actionError ?? PasswordPromptGuard.refusal
+                : nil
         }
     }
 
+    private func restorePendingDraft() {
+        guard composedLine.isEmpty,
+              let draft = connection.takePendingComposedDraft(for: pane.paneID) else {
+            return
+        }
+        composedLine = draft
+    }
+
     private func sendLine(_ text: String) {
-        connection.sendInput(Array(text.utf8) + [0x0D], to: pane.paneID)
+        Task {
+            let result = await connection.sendComposedLine(
+                Array(text.utf8) + [0x0D],
+                to: pane.paneID
+            )
+            lineSendMessage = result == .refused
+                ? connection.actionError ?? PasswordPromptGuard.refusal
+                : nil
+        }
     }
 
 
@@ -483,6 +515,12 @@ struct PaneTerminalView: View {
         }
         guard let data, data.count <= 5 * 1_024 * 1_024 else { return nil }
         return data
+    }
+}
+
+enum ComposedLineDraftPolicy {
+    static func shouldClear(after result: ComposedLineSendResult) -> Bool {
+        result == .accepted || result == .queued
     }
 }
 

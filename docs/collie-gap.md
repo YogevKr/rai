@@ -163,3 +163,11 @@ Wave 2 quality-of-life outcome (2026-09-03):
 | 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
 | 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
 | 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |
+
+### Wave 2 hardening
+
+| Item | Result |
+| --- | --- |
+| 7. APNs key file | ✅ Validated P-256 file with owner-only modes and Keychain migration |
+| 8. First attach frame | ✅ Native visible-grid paint before observe |
+| 1b. Password prompt guard | ✅ Anchored phone guard; direct Type mode stays available |

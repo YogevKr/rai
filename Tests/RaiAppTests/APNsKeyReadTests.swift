@@ -12,55 +12,301 @@ final class APNsKeyReadTests: XCTestCase {
     -----END PRIVATE KEY-----
     """
 
-    private func makeDefaults() -> UserDefaults {
-        let suite = "apns-key-read-\(UUID().uuidString)"
+    private func fixture() throws -> (UserDefaults, URL) {
+        let suite = "apns-key-file-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
-        defaults.set(true, forKey: "apns.hasKey")
-        return defaults
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(suite, isDirectory: true)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        return (defaults, root.appendingPathComponent("Rai/apns-key.p8"))
     }
 
     @MainActor
-    func testFailedReadIsNotCachedAndRetries() {
-        var attempts = 0
-        let settings = APNsSettings(defaults: makeDefaults()) {
-            attempts += 1
-            // Two failures (the first read, and keyProblem's own retry), then
-            // the Keychain answers.
-            return attempts <= 2 ? ("", errSecAuthFailed) : (Self.pem, errSecSuccess)
+    func testSaveWritesNormalizedKeyWithOwnerOnlyPermissions() throws {
+        let (defaults, keyURL) = try fixture()
+        let settings = APNsSettings(
+            defaults: defaults,
+            keyFileURL: keyURL,
+            keyReader: { ("", errSecItemNotFound) }
+        )
+
+        try settings.setKeyP8(Self.pem.replacingOccurrences(of: "\n", with: ""))
+
+        XCTAssertEqual(settings.keyReadState, .readable)
+        XCTAssertTrue(settings.keyP8.contains("-----BEGIN PRIVATE KEY-----"))
+        XCTAssertEqual(permissions(at: keyURL), 0o600)
+        XCTAssertEqual(permissions(at: keyURL.deletingLastPathComponent()), 0o700)
+    }
+
+    @MainActor
+    func testMissingLegacyItemLeavesFileMissing() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let gate = APNsMigrationAttemptGate()
+
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
+            reads += 1
+            return ("", errSecItemNotFound)
         }
 
-        XCTAssertEqual(settings.keyP8, "")
-        XCTAssertEqual(settings.lastKeyReadStatus, errSecAuthFailed)
-        let problem = settings.keyProblem
-        XCTAssertNotNil(problem)
-        XCTAssertTrue(problem?.contains("OSStatus \(errSecAuthFailed)") == true, problem ?? "nil")
+        XCTAssertEqual(settings.keyReadState, .missing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
+        XCTAssertEqual(reads, 1)
 
-        // The next read retries and the success is cached.
-        XCTAssertEqual(settings.keyP8, Self.pem)
+        _ = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
+            reads += 1
+            return (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(reads, 1, "Migration must run only once")
+    }
+
+    @MainActor
+    func testValidLegacyItemMigratesOnce() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let gate = APNsMigrationAttemptGate()
+
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
+            reads += 1
+            return (Self.pem, errSecSuccess)
+        }
+
+        XCTAssertEqual(settings.keyReadState, .readable)
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(permissions(at: keyURL), 0o600)
+
+        _ = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: gate
+        ) {
+            reads += 1
+            return ("not a key", errSecSuccess)
+        }
+        XCTAssertEqual(reads, 1)
+    }
+
+    @MainActor
+    func testInvalidLegacyItemSurfacesPasteAgainFix() throws {
+        let (defaults, keyURL) = try fixture()
+
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            ("not a key", errSecSuccess)
+        }
+
+        XCTAssertEqual(settings.keyReadState, .unreadable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
+        XCTAssertTrue(settings.keyProblem?.contains("Paste the key again") == true)
+    }
+
+    @MainActor
+    func testTemporaryLegacyReadFailureRetriesOnNextLaunch() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+
+        let first = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return ("", errSecInteractionNotAllowed)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        let second = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(second.keyReadState, .readable)
+        XCTAssertEqual(reads, 2)
+    }
+
+    @MainActor
+    func testTransientFailureAttemptsOnlyOncePerLaunchGate() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return ("", errSecInteractionNotAllowed)
+        }
+
+        settings.migrateLegacyKeyIfNeeded()
+
+        XCTAssertEqual(reads, 1)
+        XCTAssertTrue(settings.canRetryLegacyKeyMigration)
+    }
+
+    @MainActor
+    func testExplicitRetryCanRepeatMigrationAfterTransientFailure() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            reads += 1
+            return reads == 1 ? ("", errSecInteractionNotAllowed) : (Self.pem, errSecSuccess)
+        }
+
+        settings.retryLegacyKeyMigration()
+
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(settings.keyReadState, .readable)
+        XCTAssertFalse(settings.canRetryLegacyKeyMigration)
+    }
+
+    @MainActor
+    func testPriorReleaseUnreadableMigrationRetries() throws {
+        let (defaults, keyURL) = try fixture()
+        defaults.set(true, forKey: "apns.keyFileMigrationAttempted")
+        defaults.set("unreadable", forKey: "apns.keyFileMigrationProblem")
+
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            (Self.pem, errSecSuccess)
+        }
+
+        XCTAssertEqual(settings.keyReadState, .readable)
         XCTAssertNil(settings.keyProblem)
-        XCTAssertEqual(settings.keyP8, Self.pem)
-        XCTAssertEqual(attempts, 3)
+    }
+
+    @MainActor
+    func testMissingLegacyItemClearsTemporaryReadFailure() throws {
+        let (defaults, keyURL) = try fixture()
+
+        let first = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            ("", errSecInteractionNotAllowed)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        let second = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            ("", errSecItemNotFound)
+        }
+        XCTAssertEqual(second.keyReadState, .missing)
+        XCTAssertEqual(
+            second.keyProblem,
+            "No APNs key file exists. Paste the .p8 in Settings → iPhone."
+        )
+    }
+
+    @MainActor
+    func testTemporaryFileWriteFailureRetriesOnNextLaunch() throws {
+        let (defaults, keyURL) = try fixture()
+        let blockedDirectory = keyURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: blockedDirectory.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("blocked".utf8).write(to: blockedDirectory)
+
+        let first = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(first.keyReadState, .unreadable)
+
+        try FileManager.default.removeItem(at: blockedDirectory)
+        let second = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL, migrateImmediately: true,
+            migrationAttemptGate: APNsMigrationAttemptGate()
+        ) {
+            (Self.pem, errSecSuccess)
+        }
+        XCTAssertEqual(second.keyReadState, .readable)
+    }
+
+    @MainActor
+    func testSaveRefusesInvalidKeyAndNamesTheReason() throws {
+        let (defaults, keyURL) = try fixture()
+        let settings = APNsSettings(
+            defaults: defaults,
+            keyFileURL: keyURL,
+            keyReader: { ("", errSecItemNotFound) }
+        )
+
+        XCTAssertThrowsError(try settings.setKeyP8("not a key")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("not a valid .p8 PEM"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
+    }
+
+    @MainActor
+    func testEmptySaveDeletesTheKeyFile() throws {
+        let (defaults, keyURL) = try fixture()
+        let settings = APNsSettings(defaults: defaults, keyFileURL: keyURL)
+        try settings.setKeyP8(Self.pem)
+
+        try settings.setKeyP8("  \n")
+
+        XCTAssertEqual(settings.keyReadState, .missing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
     }
 
     func testEmptyKeyIsNamedNotAnASN1Error() {
-        let configuration = APNsConfiguration(teamID: "T", keyID: "K", bundleID: "b", keyP8: "", defaultEnvironment: "sandbox")
+        let configuration = APNsConfiguration(
+            teamID: "T", keyID: "K", bundleID: "b", keyP8: "",
+            defaultEnvironment: "sandbox"
+        )
         XCTAssertThrowsError(try APNsProviderJWT.make(configuration: configuration)) { error in
             XCTAssertEqual(error as? APNsKeyError, .missing)
-            XCTAssertTrue(error.localizedDescription.contains("Keychain"))
+            XCTAssertTrue(error.localizedDescription.contains("key file"))
         }
     }
 
     func testParserAcceptsPastedKeyShapes() throws {
         let clean = try APNsKeyParser.privateKey(from: Self.pem)
-        let crlf = try APNsKeyParser.privateKey(from: Self.pem.replacingOccurrences(of: "\n", with: "\r\n"))
+        let crlf = try APNsKeyParser.privateKey(
+            from: Self.pem.replacingOccurrences(of: "\n", with: "\r\n")
+        )
         let quoted = try APNsKeyParser.privateKey(from: "\"" + Self.pem + "\"\n")
-        let oneLine = try APNsKeyParser.privateKey(from: Self.pem.replacingOccurrences(of: "\n", with: ""))
+        let oneLine = try APNsKeyParser.privateKey(
+            from: Self.pem.replacingOccurrences(of: "\n", with: "")
+        )
         let bodyOnly = try APNsKeyParser.privateKey(from: Self.pem
-            .components(separatedBy: "\n").filter { !$0.contains("-----") }.joined(separator: "\n"))
-        let hexEncoded = try APNsKeyParser.privateKey(from: Data(Self.pem.utf8).map { String(format: "%02x", $0) }.joined())
+            .components(separatedBy: "\n")
+            .filter { !$0.contains("-----") }
+            .joined(separator: "\n"))
+        let hexEncoded = try APNsKeyParser.privateKey(
+            from: Data(Self.pem.utf8).map { String(format: "%02x", $0) }.joined()
+        )
         for key in [crlf, quoted, oneLine, bodyOnly, hexEncoded] {
             XCTAssertEqual(key.rawRepresentation, clean.rawRepresentation)
         }
         XCTAssertThrowsError(try APNsKeyParser.privateKey(from: "not a key"))
+    }
+
+    private func permissions(at url: URL) -> Int {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue ?? -1
     }
 }

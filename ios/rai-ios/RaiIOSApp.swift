@@ -89,6 +89,15 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             if let deviceToken {
                 Task { @MainActor in appModel?.setPushDeviceToken(deviceToken) }
             }
+            if let pendingComposedDraft {
+                Task { @MainActor in
+                    appModel?.connection.keepPendingComposedDraft(
+                        pendingComposedDraft.text,
+                        for: pendingComposedDraft.paneID
+                    )
+                    self.pendingComposedDraft = nil
+                }
+            }
             if let pendingPaneID {
                 Task { @MainActor in
                     appModel?.pendingOpenPaneID = pendingPaneID
@@ -101,12 +110,20 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     self.pendingTriage = false
                 }
             }
+            if let pendingActionError {
+                Task { @MainActor in
+                    appModel?.showActionError(pendingActionError)
+                    self.pendingActionError = nil
+                }
+            }
         }
     }
 
     private var deviceToken: String?
     private var pendingPaneID: String?
+    private var pendingComposedDraft: (paneID: String, text: String)?
     private var pendingTriage = false
+    private var pendingActionError: String?
     private(set) var notificationAuthorizationGranted = false
     private var appIsForeground = false
     private let notificationAuthorizationReader: any PhoneNotificationAuthorizationReading
@@ -316,14 +333,34 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         case let .input(bytes):
             let delivered: Bool
             if let appModel {
-                delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+                if response.actionIdentifier == PhoneNotificationAction.reply {
+                    delivered = await appModel.sendNotificationReply(bytes, to: paneID)
+                } else {
+                    delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+                }
             } else if let pairing = PairingStore().load() {
                 let connection = await MainActor.run { BridgeConnection() }
-                delivered = await connection.connectAndSendInput(
-                    bytes,
-                    to: paneID,
-                    pairing: pairing
-                )
+                if response.actionIdentifier == PhoneNotificationAction.reply {
+                    delivered = await connection.connectAndSendComposedLine(
+                        bytes, to: paneID, pairing: pairing
+                    )
+                    if !delivered {
+                        let (message, draft) = await MainActor.run {
+                            (
+                                connection.actionError,
+                                connection.takePendingComposedDraft(for: paneID)
+                            )
+                        }
+                        if let draft {
+                            await keepPendingComposedDraft(draft, for: paneID)
+                        }
+                        if let message { await showActionError(message) }
+                    }
+                } else {
+                    delivered = await connection.connectAndSendInput(
+                        bytes, to: paneID, pairing: pairing
+                    )
+                }
             } else {
                 delivered = false
             }
@@ -342,11 +379,29 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         }
     }
 
+    private func keepPendingComposedDraft(_ text: String, for paneID: String) async {
+        await MainActor.run {
+            if let appModel {
+                appModel.connection.keepPendingComposedDraft(text, for: paneID)
+            } else {
+                pendingComposedDraft = (paneID, text)
+            }
+        }
+    }
+
     private func openTriage() async {
         pendingTriage = true
         await MainActor.run {
             appModel?.openTriage()
             if appModel != nil { pendingTriage = false }
+        }
+    }
+
+    private func showActionError(_ message: String) async {
+        pendingActionError = message
+        await MainActor.run {
+            appModel?.showActionError(message)
+            if appModel != nil { pendingActionError = nil }
         }
     }
 }

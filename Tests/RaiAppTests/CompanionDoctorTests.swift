@@ -10,6 +10,10 @@ final class CompanionDoctorTests: XCTestCase {
         XCTAssertTrue(findings.allSatisfy { $0.severity == .green })
         XCTAssertEqual(findings.first { $0.id == "bridge" }?.detail,
                        "Port 47837; Bonjour _rai._tcp advertised.")
+        XCTAssertEqual(
+            findings.first { $0.id == "apns-key" }?.title,
+            "APNs key file readable · P-256"
+        )
     }
 
     func testFailuresNameTheirFixes() {
@@ -27,6 +31,7 @@ final class CompanionDoctorTests: XCTestCase {
         XCTAssertEqual(findings.first { $0.id == "tailscale" }?.severity, .red)
         XCTAssertTrue(findings.first { $0.id == "tailscale" }?.fix.contains("8443") == true)
         XCTAssertEqual(findings.first { $0.id == "apns-key" }?.severity, .red)
+        XCTAssertEqual(findings.first { $0.id == "apns-key" }?.fix, "Paste the key again.")
         XCTAssertTrue(findings.first { $0.id == "last-push" }?.fix.contains("bundle ID") == true)
     }
 
