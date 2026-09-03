@@ -18,13 +18,16 @@ struct PaneTerminalView: View {
     @FocusState private var composeFocused: Bool
     @StateObject private var terminalSearch = TerminalSearchController()
     @StateObject private var promptController = TerminalPromptController()
+    @StateObject private var statuslineController = TerminalStatuslineController()
 
     var body: some View {
         StreamingTerminalView(
             paneID: pane.paneID,
+            agent: pane.agent,
             connection: connection,
             search: terminalSearch,
             prompts: promptController,
+            statusline: statuslineController,
             send: { connection.sendInput($0, to: pane.paneID) }
         )
         // Breathing room between the last terminal row and the compose
@@ -42,6 +45,10 @@ struct PaneTerminalView: View {
         // its own esc/ctrl accessory bar).
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                if let statusline = statuslineController.statusline {
+                    StatuslineStrip(statusline: statusline)
+                }
+
                 if isSearching {
                     HStack(spacing: 8) {
                         TextField("Find in scrollback", text: $searchText)
@@ -385,9 +392,11 @@ enum TerminalPaneLayout {
 
 private struct StreamingTerminalView: UIViewRepresentable {
     let paneID: String
+    let agent: String?
     let connection: BridgeConnection
     let search: TerminalSearchController
     let prompts: TerminalPromptController
+    let statusline: TerminalStatuslineController
     let send: ([UInt8]) -> Void
 
     // Render the pane at a faithful MINIMUM width (agent TUIs assume ~80 cols):
@@ -406,9 +415,11 @@ private struct StreamingTerminalView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             paneID: paneID,
+            agent: agent,
             connection: connection,
             search: search,
             prompts: prompts,
+            statusline: statusline,
             send: send
         )
     }
@@ -431,6 +442,9 @@ private struct StreamingTerminalView: UIViewRepresentable {
         context.coordinator.terminal = terminal
         search.terminal = terminal
         prompts.readGrid = { [weak terminal] in
+            terminal?.liveGridText() ?? ""
+        }
+        statusline.readGrid = { [weak terminal] in
             terminal?.liveGridText() ?? ""
         }
 
@@ -468,6 +482,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
             context.coordinator.prompts.refresh()
+            context.coordinator.statusline.refresh(agent: context.coordinator.agent)
             if full {
                 // A stream (re)start means "show me the live screen": follow
                 // the cursor region (NOT the geometric bottom — a pinned grid
@@ -476,6 +491,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 DispatchQueue.main.async { [weak terminal] in
                     terminal?.scrollToLive()
                     context.coordinator.prompts.refresh()
+                    context.coordinator.statusline.refresh(agent: context.coordinator.agent)
                 }
             }
         }
@@ -527,6 +543,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
+        context.coordinator.agent = agent
+        context.coordinator.statusline.refresh(agent: agent)
     }
 
     static func dismantleUIView(_ scroll: UIScrollView, coordinator: Coordinator) {
@@ -541,6 +559,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
         coordinator.search.terminal = nil
         coordinator.prompts.readGrid = nil
+        coordinator.statusline.readGrid = nil
     }
 
     /// History text uses bare `\n`; the emulator needs `\r\n` or every line
@@ -561,6 +580,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     final class Coordinator: NSObject, TerminalViewDelegate {
         let paneID: String
+        var agent: String?
         let connection: BridgeConnection
         var send: ([UInt8]) -> Void
         var frameHandlerID: UUID?
@@ -568,6 +588,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         weak var terminal: TerminalView?
         let search: TerminalSearchController
         let prompts: TerminalPromptController
+        let statusline: TerminalStatuslineController
         var widthFloor: NSLayoutConstraint?
         var baseWidthFloor: CGFloat = 0
         var charWidth: CGFloat = 0
@@ -591,15 +612,19 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
         init(
             paneID: String,
+            agent: String?,
             connection: BridgeConnection,
             search: TerminalSearchController,
             prompts: TerminalPromptController,
+            statusline: TerminalStatuslineController,
             send: @escaping ([UInt8]) -> Void
         ) {
             self.paneID = paneID
+            self.agent = agent
             self.connection = connection
             self.search = search
             self.prompts = prompts
+            self.statusline = statusline
             self.send = send
         }
 
@@ -699,6 +724,57 @@ private final class TerminalPromptController: ObservableObject {
         }
         send([0x1B])
         dismiss()
+    }
+}
+
+@MainActor
+private final class TerminalStatuslineController: ObservableObject {
+    @Published private(set) var statusline: AgentStatusline?
+    var readGrid: (() -> String)?
+
+    func refresh(agent: String?) {
+        statusline = readGrid.flatMap { AgentStatuslineParser.parse($0(), agent: agent) }
+    }
+}
+
+private struct StatuslineStrip: View {
+    let statusline: AgentStatusline
+
+    private var values: [String] {
+        var values: [String] = []
+        if let mode = statusline.mode { values.append(mode) }
+        if let model = statusline.model, let effort = statusline.effort {
+            values.append("\(model) · \(effort)")
+        } else {
+            if let model = statusline.model { values.append(model) }
+            if let effort = statusline.effort { values.append(effort) }
+        }
+        if let count = statusline.agentCount {
+            values.append("\(count) agent\(count == 1 ? "" : "s")")
+        }
+        if let cwd = statusline.cwd { values.append(cwd) }
+        if let branch = statusline.branch { values.append("git \(branch)") }
+        return values
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(values, id: \.self) { value in
+                    Text(value)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.secondary.opacity(0.14), in: Capsule())
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 5)
+        }
+        .background(.bar)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Agent status: \(values.joined(separator: ", "))")
     }
 }
 

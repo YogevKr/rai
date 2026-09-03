@@ -33,9 +33,8 @@ two-tap danger; destructive-input confirm; push presence gate; Mac and phone
 notification retraction; push coalescing and grouping; triage groups with counts
 and a filter pulse line (Nightwatch); session follow.
 
-Still open from July: AskUserQuestion / multi-select / plan / wizard prompt
-blocks; per-kind toggles; DND/snooze; statusline strip; connection-cause
-diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
+Still open from July: AskUserQuestion, plan, and wizard prompt blocks;
+draft take-over; per-pane display preferences.
 
 ## New in Collie 1.x worth borrowing (ranked for rai)
 
@@ -82,8 +81,8 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    `quick-replies.toml`, live-reloaded, with a `scope` so rows replace the
    shipped catalog on matching panes (ADR 0018). rai hardcodes both catalogs
    in `Composer.swift`.
-9. ◐ **Stable error codes from the bridge.** The phone now maps transport,
-   TLS, pairing, and missing-herdr failures. Stable Mac codes remain wave 2.
+9. ✅ **Stable error codes from the bridge.** The Mac sends codes and details.
+   The phone maps each code to a recovery action or an action error.
 10. **Push grouping. ✅ Landed 2026-09-02.** Collie batches simultaneous blocks into one summary.
     APNs `thread-id` per workspace + `summary-arg` give this natively; a
     background push can wake the app to remove a delivered notification once
@@ -147,5 +146,12 @@ Claude and a real shell pane before merge. The password-prompt guard
 Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
 (AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
 dialogs) on iOS; transcript history view; operator config files;
-phone-side notification prefs (per-kind, snooze) on top of protocol 6;
-bridge error codes on the Mac side; statusline strip; LAN TLS.
+LAN TLS.
+
+Wave 2 quality-of-life outcome (2026-09-03):
+
+| Item | Result |
+| --- | --- |
+| 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
+| 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
+| 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |

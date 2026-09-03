@@ -117,6 +117,26 @@ every registered device and shows each APNs status and reason. The read-only
 Doctor checks the bridge, Bonjour, Tailscale, APNs, devices, gate, and last push.
 Each device has an independent delivery queue. One stalled device cannot delay
 alerts, retractions, or test pushes for another device.
+The Mac checks notification preferences again before a queued alert reaches APNs.
+
+Open the connection menu and select **Notifications** to control one paired device.
+You can enable needs-you and finished alerts separately.
+You can snooze alerts for 15 minutes, one hour, or until tomorrow at 08:00.
+The same sheet sets a daily do-not-disturb window.
+The Mac evaluates this window in the iPhone time zone.
+The phone sends its current time zone with each preference update.
+The phone sends another update when the system time zone changes.
+The Mac stores these settings with that device credential.
+The Mac drops and removes push tokens whose paired-device record is missing.
+The Doctor shows the effective settings for every paired device.
+Older protocol-6 Macs do not send preference state.
+The phone disables these controls and asks for a Mac update.
+Changes made during a reconnect stay on the phone and show as pending.
+The phone sends them after the next welcome and clears pending after confirmation.
+
+The Mac drops disabled kinds when events arrive or when a kind becomes disabled.
+The Mac drops events that occur during snooze or do-not-disturb.
+It does not send those events when the quiet period ends.
 
 ## 4. Pair
 
@@ -164,6 +184,20 @@ After a socket failure, the connection bar shows the last sync age.
 The age updates each second while the connection remains down.
 The bar maps DNS, route, listener, TLS, pairing, and missing-herdr failures to actions.
 Tap the diagnosis to show the raw system or bridge error.
+
+New Mac replies include stable bridge error codes and technical details.
+The phone uses the code to select Reconnect, Pair Again, or an action error.
+Authentication repair failures stop retries and show Pair Again.
+Transient authentication failures keep the reconnect backoff.
+A protocol mismatch stops retries, keeps the pairing, and asks for an app update.
+Unknown authentication codes use the prose rules and default to a transient retry.
+
+The live pane shows a status strip above the compose bar.
+It reads Claude and Codex status rows from the terminal grid.
+It only parses panes that the herd snapshot identifies as agents.
+Each pane uses only the grammar for its detected agent kind.
+The strip can show mode, model, effort, agent count, directory, and branch.
+The terminal keeps its original rows.
 
 ## Simulator e2e (for development)
 
@@ -228,6 +262,7 @@ Caveats learned end to end:
 
 Working end to end in builds and simulator tests: pair, monitor, cached herd
 display, diagnosed reconnects, raw terminal streaming, input, push links, burst
-planning, grouping payloads, and retraction handling. Real APNs delivery,
+planning, grouping payloads, retraction handling, notification controls, and
+statusline parsing. Real APNs delivery,
 background wake timing, grouping display, and notification actions need a
 signed build, valid credentials, and a physical iPhone.

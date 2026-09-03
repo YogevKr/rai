@@ -6,7 +6,7 @@ final class CompanionDoctorTests: XCTestCase {
     func testHealthyInjectedStateProducesGreenFindings() {
         let findings = CompanionDoctor.findings(for: state())
 
-        XCTAssertEqual(findings.count, 7)
+        XCTAssertEqual(findings.count, 8)
         XCTAssertTrue(findings.allSatisfy { $0.severity == .green })
         XCTAssertEqual(findings.first { $0.id == "bridge" }?.detail,
                        "Port 47837; Bonjour _rai._tcp advertised.")
@@ -53,7 +53,14 @@ final class CompanionDoctorTests: XCTestCase {
             presenceGateIsAway: true,
             pendingPushCount: 0,
             lastPushResult: lastPushResult,
-            lastPushSucceeded: lastPushSucceeded
+            lastPushSucceeded: lastPushSucceeded,
+            devicePreferences: [
+                DoctorDevicePreferences(
+                    id: "phone-1",
+                    label: "Phone",
+                    preferences: .default
+                ),
+            ]
         )
     }
 }

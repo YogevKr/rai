@@ -6,7 +6,7 @@ bridge, and what *should* exist on the phone. The phone is deliberately a
 "everything you'd want while away from the Mac", not a 1:1 clone of a
 30-inch-display UI.
 
-Audited 2026-09-02 against `main` (bridge protocol v6).
+Audited 2026-09-03 against `main` (bridge protocol v6).
 
 ## Parity matrix
 
@@ -15,13 +15,13 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Live herd (spaces → tabs → panes, statuses) | sidebar | list + "Needs you" section | ✅ parity |
 | Herd before connection | current in-memory snapshot | saved snapshot with `last seen HH:MM` | ✅ phone offline support |
 | Connection diagnosis | Mac connection state | cause, action, raw details, sync age | ✅ phone remote support |
-| Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar | ✅ parity |
+| Live terminal (view, type, control keys) | full SwiftTerm pane | streamed 80-col SwiftTerm + compose bar and status strip | ✅ parity |
 | Scrollback search | ⌘F find bar | find bar with match count | ✅ parity |
 | Send image to agent | paste screenshot | photo picker → temp file path | ✅ parity |
 | Launch agent (claude/codex) | split-and-launch, palette | launcher sheet: agent + workspace + optional directory | ✅ parity |
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
-| Notifications on blocked/done | native macOS + dock badge | APNs bursts, workspace groups, actions, retraction, tap-to-open | ✅ parity (physical delivery not verified) |
+| Notifications on blocked/done | native macOS + dock badge | APNs bursts, per-device controls, groups, actions, and retraction | ✅ parity (physical delivery not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -70,6 +70,53 @@ All additive, no version bump (old phones skip unknown message types):
   The shared iOS model decodes it, but phone prompt controls remain in wave 2.
 - The beacon field is additive within protocol v6. It does not require another bump.
 
+## Wave 2 quality of life LANDED (2026-09-03)
+
+- `pushPrefs` sends per-device kinds, snooze time, DND minutes, and the phone time zone.
+- The phone refreshes the DND time zone after system time-zone changes.
+- `pushPrefsState` returns the effective stored settings after `welcome` and each update.
+- The Mac audits each preference write before it stores the change.
+- The push gate drops disabled, snoozed, and DND events for each registered device.
+- The delivery queue checks these controls again before it calls APNs.
+- A missing paired-device record drops the alert and removes its push token.
+- Disabling a kind also drops matching events that the presence gate already holds.
+- A snoozed event stays dropped after the presence gate releases its burst.
+- The Doctor reports each paired device's effective controls.
+- Preference changes persist through reconnects until the Mac confirms them.
+- The phone parses status rows only when the snapshot identifies an agent.
+- Claude panes use Claude grammar. Codex panes use Codex grammar.
+- Codex parsing requires the captured model, effort, separator, and path order.
+- A strip above the compose bar shows fields that the parser finds.
+- The terminal keeps the source status rows.
+
+Bridge `error` and `authFailed` replies now include optional `code` and `detail` fields.
+Older phones ignore these added fields.
+New phones use old `message` or `reason` prose when a Mac omits `code`.
+Repair codes stop retries and show Pair Again.
+Transient authentication codes keep retrying with backoff.
+Protocol mismatch stops retries without clearing the pairing.
+Unknown authentication codes keep their raw value and default to transient retry.
+The table below describes codes during normal authenticated operations.
+
+| Code | Phone result |
+| --- | --- |
+| `herd_missing` | Reconnect diagnosis |
+| `pane_gone` | Action error |
+| `pane_busy` | Action error |
+| `audit_unavailable` | Action error |
+| `repair_required` | Pair Again diagnosis |
+| `pairing_code_invalid` | Pair Again diagnosis |
+| `protocol_mismatch` | Update guidance and Reconnect |
+| `unknown_message` | Action error |
+| `invalid_request` | Action error |
+| `operation_failed` | Action error |
+| `stream_unavailable` | Action error |
+| `scrollback_unavailable` | Silent optional-feature fallback |
+
+`BridgeErrorCode` lives in RaiCore.
+The Mac can only send values from this shared set.
+An iOS drift test requires one phone policy for every shared code.
+
 ## Backlog (value order)
 
 1. **Workspace ops over the bridge** — `renameWorkspace` / `closeWorkspace`
@@ -109,6 +156,7 @@ This change is not compatible with protocol version 5. Old phones receive
   asks the user to update Rai without clearing the pairing.
 - A dev Mac app (rebuilt from a feature branch) and a released phone build
   routinely coexist — additive protocol changes only, or version-gate.
-- The current Mac reports a missing herd as `Herdr is not connected.`
-  The phone maps this existing error, so offline resilience needs no protocol change.
+- New Macs report a missing herd with `herd_missing`.
+  New phones still accept the old `Herdr is not connected.` prose.
+- Unknown `authFailed.code` values must not decode as an absent repair code.
 - APNs custom keys are additive. Old iOS builds ignore new push fields.

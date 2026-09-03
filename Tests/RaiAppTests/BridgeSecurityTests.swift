@@ -84,6 +84,55 @@ final class BridgeCredentialTests: XCTestCase {
         XCTAssertEqual(restoredStore.authenticate(token: result.token)?.id, result.device.id)
     }
 
+    func testPushPreferencesPersistPerPairedDevice() throws {
+        let defaults = makeDefaults()
+        let store = BridgeDeviceCredentialStore(
+            defaults: defaults,
+            randomBytes: deterministicBytes
+        )
+        let code = try XCTUnwrap(store.pairingCode?.value)
+        let result = try XCTUnwrap(store.exchange(code: code, client: client).success)
+        let device = try XCTUnwrap(store.authenticate(token: result.token))
+        let preferences = PushPreferences(
+            kinds: .init(needsYou: false, finished: true),
+            snoozeUntil: Date(timeIntervalSinceReferenceDate: 2_000),
+            dnd: .init(start: 22 * 60, end: 8 * 60)
+        )
+
+        XCTAssertEqual(
+            store.updatePushPreferences(preferences, deviceID: device.id)?.pushPreferences,
+            preferences
+        )
+        let restored = BridgeDeviceCredentialStore(
+            defaults: defaults,
+            randomBytes: deterministicBytes,
+            mintInitialCode: false
+        )
+        XCTAssertEqual(restored.devices.first?.pushPreferences, preferences)
+    }
+
+    func testLegacyPairedDeviceDefaultsNotificationPreferences() throws {
+        struct LegacyDevice: Encodable {
+            let id: String
+            let label: String
+            let tokenHash: Data
+            let createdAt: Date
+            let lastSeen: Date
+        }
+        let date = Date(timeIntervalSinceReferenceDate: 1_000)
+        let data = try JSONEncoder().encode(LegacyDevice(
+            id: "phone-1",
+            label: "Phone",
+            tokenHash: Data([1, 2, 3]),
+            createdAt: date,
+            lastSeen: date
+        ))
+
+        let device = try JSONDecoder().decode(BridgePairedDevice.self, from: data)
+
+        XCTAssertEqual(device.pushPreferences, .default)
+    }
+
     func testPairingDoesNotTrustClientIdentifierAsCredentialIdentity() throws {
         let store = BridgeDeviceCredentialStore(
             defaults: makeDefaults(),
@@ -211,6 +260,13 @@ final class BridgeCredentialTests: XCTestCase {
 }
 
 final class BridgeAuditTests: XCTestCase {
+    func testPushPreferencesCreateAnAuditEvent() throws {
+        let event = try XCTUnwrap(BridgeAuditEvent(.pushPrefs(.default)))
+
+        XCTAssertEqual(event.action, "pushPrefs")
+        XCTAssertEqual(event.content, .none)
+    }
+
     func testAuditLineShapeBoundsTextAndRedactsCredentials() async throws {
         let directory = temporaryDirectory()
         let url = directory.appendingPathComponent("bridge-audit.jsonl")
