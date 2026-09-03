@@ -229,9 +229,12 @@ final class RaiBridgeServer: ObservableObject {
         guard listener == nil else { return }
         if credentialStore.validPairingCode() == nil {
             _ = credentialStore.regeneratePairingCode()
-            syncCredentialState()
-            schedulePairingExpiry()
         }
+        // The store mints its first code in its initializer, so sync here
+        // unconditionally: the published code, its expiry timer, and the
+        // harness export must reflect whatever code is live at start.
+        syncCredentialState()
+        schedulePairingExpiry()
         tailscaleServeState = .checking
         do {
             let webSocket = NWProtocolWebSocket.Options()
