@@ -157,7 +157,8 @@ An iOS drift test requires one phone policy for every shared code.
 - The phone blocks composed lines when the last non-empty grid row is a password prompt.
 - The guard covers quick replies, slash commands, outbox flush, and notification replies.
 - Notification replies use one five-second budget for connection and current-grid verification.
-- Reconnect sends one guarded queued line per pane. Later lines need guarded `Send next` taps.
+- Reconnect sends one guarded queued line per pane queue. Later reconnects do not reset that allowance.
+- Later lines need guarded `Send next` taps. A new queue gets one new automatic allowance.
 - Notification replies join an existing pane queue.
 - Type mode stays available for direct keyboard input.
 - The guard does not change the bridge protocol.

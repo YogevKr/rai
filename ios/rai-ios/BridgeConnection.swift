@@ -492,7 +492,6 @@ final class BridgeConnection: ObservableObject {
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     private var latestGridByPaneID: [String: PasswordPromptGridEvidence] = [:]
     private let passwordPromptGridReader = PasswordPromptGridReader()
-    private var autoReplayedPaneIDs: Set<String> = []
     // A seed can land before the terminal view has registered its handler
     // (openPane fires from onAppear, which can precede makeUIView). Hold the
     // payload and deliver it on registration instead of dropping it.
@@ -871,18 +870,25 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func enqueue(_ bytes: [UInt8], to paneID: String) {
+        let autoReplayUsed = outbox.first(where: { $0.paneID == paneID })?.autoReplayUsed ?? false
         // A bounded queue: a phone left offline should not accumulate an
         // unbounded replay that lands all at once hours later.
         if outbox.count >= Self.outboxLimit {
             outbox.removeFirst(outbox.count - Self.outboxLimit + 1)
         }
-        outbox.append(QueuedLine(paneID: paneID, bytes: bytes, queuedAt: now()))
+        outbox.append(
+            QueuedLine(
+                paneID: paneID,
+                bytes: bytes,
+                queuedAt: now(),
+                autoReplayUsed: autoReplayUsed
+            )
+        )
         if !status.isConnected { retryNow() }
     }
 
     func discardOutbox() {
         outbox.removeAll()
-        autoReplayedPaneIDs.removeAll()
     }
 
     func discardOutbox(for paneID: String) {
@@ -919,7 +925,11 @@ final class BridgeConnection: ObservableObject {
         guard !outbox.isEmpty else { return }
 
         let paneIDs = paneID.map { Set([$0]) } ?? Set(outbox.map(\.paneID))
-        for candidatePaneID in paneIDs where !autoReplayedPaneIDs.contains(candidatePaneID) {
+        for candidatePaneID in paneIDs {
+            guard let index = outbox.firstIndex(where: { $0.paneID == candidatePaneID }),
+                  !outbox[index].autoReplayUsed else {
+                continue
+            }
             switch passwordPromptState(for: candidatePaneID) {
             case .prompt:
                 refusePasswordPromptSend(to: candidatePaneID)
@@ -928,10 +938,9 @@ final class BridgeConnection: ObservableObject {
                     actionError = PasswordPromptGuard.waiting
                 }
             case .clear:
-                guard let index = outbox.firstIndex(where: { $0.paneID == candidatePaneID }) else {
-                    continue
+                for queuedIndex in outbox.indices where outbox[queuedIndex].paneID == candidatePaneID {
+                    outbox[queuedIndex].autoReplayUsed = true
                 }
-                autoReplayedPaneIDs.insert(candidatePaneID)
                 sendQueuedLine(at: index)
             }
         }
@@ -1015,6 +1024,7 @@ final class BridgeConnection: ObservableObject {
         let paneID: String
         let bytes: [UInt8]
         let queuedAt: Date
+        var autoReplayUsed: Bool
         var text: String { String(decoding: bytes, as: UTF8.self) }
     }
 
@@ -1844,7 +1854,6 @@ final class BridgeConnection: ObservableObject {
         connectionGeneration &+= 1
         latestGridByPaneID.removeAll()
         passwordPromptGridReader.removeAll()
-        autoReplayedPaneIDs.removeAll()
         for handler in connectionGenerationHandlers.values {
             handler(connectionGeneration)
         }

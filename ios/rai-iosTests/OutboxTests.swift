@@ -171,6 +171,53 @@ final class OutboxTests: XCTestCase {
         XCTAssertTrue(connection.actionError?.hasPrefix(PasswordPromptGuard.refusal) == true)
     }
 
+    func testAutoReplayAllowancePersistsAcrossReconnectsUntilQueueEmpties() async throws {
+        var sentInputs: [String] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .input(_, bytesBase64) = message,
+               let data = Data(base64Encoded: bytesBase64) {
+                sentInputs.append(String(decoding: data, as: UTF8.self))
+            }
+        })
+        _ = await connection.sendComposedLine(line("first"), to: "pane-a")
+        _ = await connection.sendComposedLine(line("second"), to: "pane-a")
+
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        connection.disconnect()
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r"])
+        XCTAssertEqual(connection.outbox.map(\.text), ["second\r"])
+
+        let manualResult = await connection.sendNextQueuedLine(for: "pane-a")
+        XCTAssertEqual(manualResult, .accepted)
+        XCTAssertEqual(sentInputs, ["first\r", "second\r"])
+        XCTAssertTrue(connection.outbox.isEmpty)
+
+        connection.disconnect()
+        _ = await connection.sendComposedLine(line("third"), to: "pane-a")
+        connection.finishAuthentication(
+            protocolVersion: bridgeProtocolVersion,
+            sessionName: nil
+        )
+        connection.handle(frame("$", paneID: "pane-a"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sentInputs, ["first\r", "second\r", "third\r"])
+        XCTAssertTrue(connection.outbox.isEmpty)
+    }
+
     func testUnknownGridHoldStillExpiresOnANewFrame() async throws {
         var currentTime = Date(timeIntervalSince1970: 1_000)
         var sentInputs: [String] = []

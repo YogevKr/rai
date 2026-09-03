@@ -268,6 +268,7 @@ On timeout, Rai opens the pane, keeps the reply draft, and reports that verifica
 The guard accepts only grids received after the current connection welcome.
 Outbox lines stay queued until their pane receives a current grid.
 After reconnecting, Rai sends only the first queued line for each pane.
+Later reconnects do not send another line until that pane queue becomes empty.
 Remaining lines show as `N queued — Send next` in that pane.
 Each tap checks the current grid and sends exactly one line.
 Notification replies join an existing pane queue instead of passing it.
