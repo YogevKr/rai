@@ -366,19 +366,21 @@ final class BridgeConnection: ObservableObject {
 
     func restoreCachedHistory(
         _ pages: [String: TranscriptHistoryPage],
-        sessionName: String
+        sessionName: String,
+        now: Date = Date()
     ) {
         guard historyPages.isEmpty else { return }
-        let liveSessions: [String: String] = if !isShowingCachedSnapshot {
-            Dictionary(uniqueKeysWithValues: (snapshot?.panes ?? []).compactMap { pane in
+        let hasLiveSnapshot = snapshot != nil && !isShowingCachedSnapshot
+        let livePanes = hasLiveSnapshot ? snapshot?.panes ?? [] : []
+        let livePaneIDs = Set(livePanes.map(\.paneID))
+        let liveSessions: [String: String] = Dictionary(
+            uniqueKeysWithValues: livePanes.compactMap { pane in
                 guard let beacon = pane.beacon,
                       !beacon.sessionID.isEmpty,
                       !beacon.transcriptPath.isEmpty else { return nil }
                 return (pane.paneID, beacon.sessionID)
-            })
-        } else {
-            [:]
-        }
+            }
+        )
         historyPages = pages.filter { paneID, page in
             guard !page.agentSessionID.isEmpty else { return false }
             return liveSessions[paneID].map { $0 == page.agentSessionID } ?? true
@@ -386,14 +388,17 @@ final class BridgeConnection: ObservableObject {
         historyFromPreviousSession = Set(historyPages.keys.filter {
             liveSessions[$0] == nil
         })
-        let now = Date()
         for (paneID, page) in historyPages {
             historyLastAccess[paneID] = now
             if !page.agentSessionID.isEmpty {
                 knownHistorySessions[paneID] = page.agentSessionID
             }
+            if hasLiveSnapshot, !livePaneIDs.contains(paneID) {
+                historyMissingSince[paneID] = now
+            }
         }
         pruneHistory(now: now)
+        scheduleHistoryPruneIfNeeded()
         historySessionName = sessionName
     }
 
@@ -836,6 +841,13 @@ final class BridgeConnection: ObservableObject {
             do {
                 handle(try decoder.decode(BridgeMessage.self, from: data))
             } catch {
+                if let paneError = TranscriptHistoryErrorRouter.consumeUnsupportedReply(
+                    data: data,
+                    pending: &pendingHistoryRequests
+                ) {
+                    historyErrors[paneError.paneID] = paneError.message
+                    continue
+                }
                 NSLog(
                     "rai-ios: skipping undecodable bridge message: %@",
                     String(describing: error)
@@ -1507,6 +1519,29 @@ struct TranscriptHistoryRetentionPolicy {
 }
 
 struct TranscriptHistoryErrorRouter {
+    private struct ReplyEnvelope: Decodable {
+        let type: String
+        let paneID: String
+        let sessionID: String
+        let requestID: String
+    }
+
+    static func consumeUnsupportedReply(
+        data: Data,
+        pending: inout [String: PendingHistoryRequest]
+    ) -> (paneID: String, message: String)? {
+        guard let reply = try? JSONDecoder().decode(ReplyEnvelope.self, from: data),
+              reply.type == "historyPage" || reply.type == "historyError",
+              let request = pending[reply.paneID],
+              request.matches(
+                  paneID: reply.paneID,
+                  sessionID: reply.sessionID,
+                  requestID: reply.requestID
+              ) else { return nil }
+        pending.removeValue(forKey: reply.paneID)
+        return (reply.paneID, "Unsupported history reply.")
+    }
+
     static func consume(
         pending: inout [String: PendingHistoryRequest],
         paneID: String,

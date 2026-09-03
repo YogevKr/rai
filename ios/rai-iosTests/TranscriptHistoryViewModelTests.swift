@@ -393,6 +393,50 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         XCTAssertTrue(pending.isEmpty)
     }
 
+    func testUnsupportedHistoryReplyCompletesItsPendingRequest() {
+        let request = PendingHistoryRequest(
+            generation: 1, replacesPage: true, sessionName: "herd",
+            paneID: "p1", sessionID: "session", requestID: "request"
+        )
+        let other = PendingHistoryRequest(
+            generation: 1, replacesPage: true, sessionName: "herd",
+            paneID: "p2", sessionID: "other-session", requestID: "other-request"
+        )
+        var pending = ["p1": request, "p2": other]
+        let data = Data("""
+        {"type":"historyPage","paneID":"p1","sessionID":"session",
+         "requestID":"request","turns":[],"hasMore":false,
+         "historyState":"future_state"}
+        """.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(BridgeMessage.self, from: data))
+
+        let routed = TranscriptHistoryErrorRouter.consumeUnsupportedReply(
+            data: data,
+            pending: &pending
+        )
+
+        XCTAssertEqual(routed?.paneID, "p1")
+        XCTAssertEqual(routed?.message, "Unsupported history reply.")
+        XCTAssertNil(pending["p1"])
+        XCTAssertNotNil(pending["p2"])
+    }
+
+    func testCachedPaneMissingFromFirstLiveSnapshotStartsGrace() throws {
+        let connection = BridgeConnection()
+        let now = Date(timeIntervalSince1970: 1_000)
+        connection.replaceWithLiveSnapshot(try emptySnapshot(), receivedAt: now)
+        connection.restoreCachedHistory(
+            ["p1": page(turns: [turn(1, .assistant, "cached")], hasMore: false)],
+            sessionName: "herd",
+            now: now
+        )
+
+        connection.pruneHistory(now: now.addingTimeInterval(29))
+        XCTAssertNotNil(connection.historyPages["p1"])
+        connection.pruneHistory(now: now.addingTimeInterval(31))
+        XCTAssertNil(connection.historyPages["p1"])
+    }
+
     private func page(
         turns: [TranscriptTurn],
         hasMore: Bool
