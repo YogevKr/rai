@@ -46,12 +46,41 @@ final class APNsSettings: ObservableObject {
     /// then, and cached for the rest of the process.
     var keyP8: String {
         if let cachedKeyP8 { return cachedKeyP8 }
-        let value = Self.readKey()
-        cachedKeyP8 = value
+        let (value, status) = keyReader()
+        lastKeyReadStatus = status
+        // Cache only a successful read. A failed one (ACL prompt denied, item
+        // locked, a rebuilt binary the ACL does not trust yet) must not poison
+        // every later push for the life of the process; the next send retries.
+        if status == errSecSuccess {
+            cachedKeyP8 = value
+        }
         return value
     }
 
     private var cachedKeyP8: String?
+
+    /// OSStatus of the most recent Keychain read of the key, for the Doctor
+    /// and the push error text. `nil` until a read has been attempted.
+    private(set) var lastKeyReadStatus: OSStatus?
+
+    /// Reads the key: `(pem, status)`. Injectable for tests.
+    typealias KeyReader = () -> (String, OSStatus)
+    private let keyReader: KeyReader
+
+    /// One line naming why the key cannot be used, or nil when it can.
+    var keyProblem: String? {
+        guard hasStoredKey else { return "No APNs key is stored. Paste the .p8 in Settings → iPhone." }
+        let value = keyP8.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty {
+            let status = lastKeyReadStatus ?? errSecItemNotFound
+            return "The APNs key could not be read from the Keychain (OSStatus \(status)). "
+                + "If macOS asked whether rai may use the key, choose Always Allow and send again."
+        }
+        guard (try? P256.Signing.PrivateKey(pemRepresentation: value)) != nil else {
+            return "The stored APNs key is not a valid .p8 PEM."
+        }
+        return nil
+    }
 
     /// True when a key has been stored, WITHOUT reading it back: the flag is a
     /// plain default, so asking "is push set up?" never opens the keychain.
@@ -98,8 +127,9 @@ final class APNsSettings: ObservableObject {
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, keyReader: @escaping KeyReader = APNsSettings.readKey) {
         self.defaults = defaults
+        self.keyReader = keyReader
         teamID = defaults.string(forKey: Key.teamID) ?? ""
         keyID = defaults.string(forKey: Key.keyID) ?? ""
         bundleID = defaults.string(forKey: Key.bundleID) ?? "com.whetstone.rai.ios"
@@ -160,7 +190,7 @@ final class APNsSettings: ObservableObject {
         return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
     }
 
-    private static func readKey() -> String {
+    private static func readKey() -> (String, OSStatus) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Key.keychainService,
@@ -169,10 +199,9 @@ final class APNsSettings: ObservableObject {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
-        else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return ("", status) }
+        return (String(data: data, encoding: .utf8) ?? "", status)
     }
 }
 

@@ -36,6 +36,22 @@ final class APNsDeliveryQueue {
     }
 }
 
+/// Why a push could not be signed, in words the Settings pane can show.
+enum APNsKeyError: LocalizedError, Equatable {
+    case missing
+    case invalid(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missing:
+            return "The APNs key is empty: it could not be read from the Keychain. "
+                + "If macOS asked whether rai may use the key, choose Always Allow and send again."
+        case let .invalid(detail):
+            return "The stored APNs key is not a valid .p8 PEM (\(detail))."
+        }
+    }
+}
+
 struct APNsProviderJWT {
     static func make(
         configuration: APNsConfiguration,
@@ -49,7 +65,14 @@ struct APNsProviderJWT {
             iat: Int(issuedAt.timeIntervalSince1970)
         ))
         let signingInput = "\(header.base64URLEncoded()).\(claims.base64URLEncoded())"
-        let key = try P256.Signing.PrivateKey(pemRepresentation: configuration.keyP8)
+        let pem = configuration.keyP8.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pem.isEmpty else { throw APNsKeyError.missing }
+        let key: P256.Signing.PrivateKey
+        do {
+            key = try P256.Signing.PrivateKey(pemRepresentation: pem)
+        } catch {
+            throw APNsKeyError.invalid(String(describing: error))
+        }
         let signature = try key.signature(for: Data(signingInput.utf8))
         return "\(signingInput).\(signature.rawRepresentation.base64URLEncoded())"
     }
