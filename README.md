@@ -79,7 +79,8 @@ crook for the herd:
   pairing, and missing-herdr failures. Raw connection details remain available.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
-  while you were away.
+  while you were away. A visible-grid frame paints the pane before streaming
+  starts.
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
   answer the wrong prompt.

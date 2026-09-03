@@ -118,6 +118,12 @@ The table below describes codes during normal authenticated operations.
 The Mac can only send values from this shared set.
 An iOS drift test requires one phone policy for every shared code.
 
+## Attach hardening LANDED (2026-09-03)
+
+- Each phone attach gets one native-size visible frame before the observe stream.
+- The history seed still arrives first. Both live paints use full replacement frames.
+- This behavior changes no bridge message shape and needs no protocol version change.
+
 ## Backlog (value order)
 
 1. **Workspace ops over the bridge** — `renameWorkspace` / `closeWorkspace`
