@@ -22,6 +22,7 @@ final class TerminalPool {
     /// display thresholds; existing views were already reaped by the switch.
     var predictiveEchoHerdLocation = PredictiveEchoEngine.HerdLocation.local
     private var themeObserver: AnyCancellable?
+    private var predictiveEchoSettingObserver: AnyCancellable?
     /// Terminals herdr reported in the last snapshot, once one has been seen.
     /// Closing a pane evicts its terminal, but SwiftUI still updates the
     /// outgoing pane's container once on its way out; without this the pool
@@ -48,6 +49,15 @@ final class TerminalPool {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.reapplyTheme() }
+            }
+        predictiveEchoSettingObserver = SettingsStore.shared.$predictiveEchoLocalEnabled
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                MainActor.assumeIsolated {
+                    self?.applyLocalPredictiveEchoSetting(enabled: enabled)
+                }
             }
     }
 
@@ -103,7 +113,12 @@ final class TerminalPool {
         // client points at the default socket, which is wrong the moment the
         // app is attached to another session (remote herd, herd switch).
         view.scrollbackSelection.client = HerdrClient(socketPath: socketPath)
-        view.enablePredictiveEcho(for: predictiveEchoHerdLocation)
+        view.configurePredictiveEcho(
+            for: Self.enabledPredictiveEchoLocation(
+                herdLocation: predictiveEchoHerdLocation,
+                localEnabled: SettingsStore.shared.predictiveEchoLocalEnabled
+            )
+        )
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
@@ -117,6 +132,25 @@ final class TerminalPool {
             evict(evictedID)
         }
         return view
+    }
+
+    nonisolated static func enabledPredictiveEchoLocation(
+        herdLocation: PredictiveEchoEngine.HerdLocation,
+        localEnabled: Bool
+    ) -> PredictiveEchoEngine.HerdLocation? {
+        switch herdLocation {
+        case .local:
+            localEnabled ? .local : nil
+        case .remote:
+            .remote
+        }
+    }
+
+    private func applyLocalPredictiveEchoSetting(enabled: Bool) {
+        guard predictiveEchoHerdLocation == .local else { return }
+        for entry in entries.values {
+            entry.view.configurePredictiveEcho(for: enabled ? .local : nil)
+        }
     }
 
     func retain(terminalIDs liveTerminalIDs: Set<String>) {

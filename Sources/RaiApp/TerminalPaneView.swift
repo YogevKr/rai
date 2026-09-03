@@ -209,6 +209,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var frameObserverInstalled = false
     private var dragTypesRegistered = false
     private var focusObserversInstalled = false
+    private var firstResponderObservation: NSKeyValueObservation?
     /// Bounded retry rather than a one-shot latch. SwiftTerm turns Metal OFF
     /// without throwing when a cross-window CAMetalLayer rebind fails
     /// (disableMetalRendererAfterRebindFailure), so a latch would strand a
@@ -328,6 +329,13 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
         guard predictiveEcho == nil else { return }
         predictiveEcho = PredictiveEchoEngine(herdLocation: herdLocation)
+    }
+
+    func configurePredictiveEcho(
+        for herdLocation: PredictiveEchoEngine.HerdLocation?
+    ) {
+        resetPredictions()
+        predictiveEcho = herdLocation.map { PredictiveEchoEngine(herdLocation: $0) }
     }
 
     var pendingPredictionCountForTesting: Int {
@@ -521,6 +529,20 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
               observedWindow.firstResponder !== self else { return }
         if PredictiveEchoViewPolicy.shouldClear(for: .firstResponderLost) {
             resetPredictions()
+        }
+    }
+
+    private func observeFirstResponder(in window: NSWindow) {
+        firstResponderObservation = window.observe(\.firstResponder, options: [.new]) {
+            [weak self, weak window] _, _ in
+            MainActor.assumeIsolated {
+                guard let self, let window,
+                      self.window === window,
+                      window.firstResponder !== self else { return }
+                if PredictiveEchoViewPolicy.shouldClear(for: .firstResponderLost) {
+                    self.resetPredictions()
+                }
+            }
         }
     }
 
@@ -1098,12 +1120,16 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         // the first-time enable below.
         super.viewDidMoveToWindow()
         if window == nil {
+            firstResponderObservation = nil
             if PredictiveEchoViewPolicy.shouldClear(for: .removedFromWindow) {
                 resetPredictions()
             }
             return
         }
         installFocusObserversIfNeeded()
+        if let window {
+            observeFirstResponder(in: window)
+        }
         enableMetalRendererIfNeeded()
         if !dragTypesRegistered {
             dragTypesRegistered = true

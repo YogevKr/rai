@@ -75,10 +75,6 @@ final class TerminalPredictionLifecycleTests: XCTestCase {
         window.contentView?.addSubview(textField)
         XCTAssertTrue(window.makeFirstResponder(textField))
         XCTAssertTrue(window.firstResponder !== view)
-        NotificationCenter.default.post(
-            name: NSWindow.didUpdateNotification,
-            object: window
-        )
         XCTAssertEqual(view.pendingPredictionCountForTesting, 0)
     }
 }

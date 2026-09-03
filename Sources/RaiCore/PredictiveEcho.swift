@@ -25,11 +25,11 @@ import Foundation
 /// secrets*: glyphs are shown only when the link has demonstrated slowness
 /// (recent tail latency above `displayLatencyThreshold`) AND the current
 /// input burst has at least one server-confirmed echo. Every Enter/control
-/// key starts a new burst with no confidence, so typing at a hidden-input
-/// prompt (`sudo`, `ssh`, `read -s`) — always preceded by Enter — never
-/// paints a single secret character. If echo stops mid-burst (a program
-/// flips echo off without a boundary key), the unconfirmed queue is retracted
-/// after `max(2 × smoothed latency, retractionFloor)` and confidence drops.
+/// key starts a new burst with no confidence. Confidence also expires 300 ms
+/// after the last confirmed echo. This limits silent echo-off transitions,
+/// but cannot detect one within that window. The app therefore disables local
+/// prediction by default. If echo stops mid-burst, the unconfirmed queue is
+/// retracted after `max(2 × smoothed latency, retractionFloor)`.
 public final class PredictiveEchoEngine {
     /// Public terminal state which separates a shell prompt from an agent TUI.
     public struct TerminalMode: Equatable, Sendable {
@@ -62,7 +62,7 @@ public final class PredictiveEchoEngine {
         }
     }
 
-    public enum HerdLocation {
+    public enum HerdLocation: Equatable, Sendable {
         case local
         case remote
 
@@ -113,7 +113,10 @@ public final class PredictiveEchoEngine {
     private let retractionFloor: TimeInterval
     private let maxPending: Int
     private var recentConfirmLatencies: [TimeInterval] = []
+    private var lastConfirmedEchoAt: Date?
     private static let confirmLatencyWindowSize = 20
+    /// Maximum idle time before the next key must prove that echo remains on.
+    public static let confidenceCarryWindow: TimeInterval = 0.300
 
     public init(
         ttl: TimeInterval = 5.0,
@@ -147,6 +150,10 @@ public final class PredictiveEchoEngine {
         }
         switch key {
         case .printable(let character):
+            if let lastConfirmedEchoAt,
+               now.timeIntervalSince(lastConfirmedEchoAt) > Self.confidenceCarryWindow {
+                echoConfirmedThisBurst = false
+            }
             let column = pending.last.map { $0.column + 1 } ?? cursor.x
             let row = pending.first?.row ?? cursor.y
             // A prediction that would wrap the line is unpredictable (the
@@ -228,7 +235,10 @@ public final class PredictiveEchoEngine {
         while let first = pending.first {
             let cell = readCell(first.column, first.row)
             if cell == first.character, cursor.x > first.column {
-                recordConfirmLatency(now.timeIntervalSince(first.madeAt))
+                recordConfirmLatency(
+                    now.timeIntervalSince(first.madeAt),
+                    confirmedAt: now
+                )
                 confirmedPredictionCount += 1
                 pending.removeFirst()
             } else if let cell, cell != first.character, cell != " " {
@@ -279,10 +289,12 @@ public final class PredictiveEchoEngine {
         smoothedConfirmLatency = 0
         recentTailConfirmLatency = 0
         recentConfirmLatencies.removeAll(keepingCapacity: true)
+        lastConfirmedEchoAt = nil
     }
 
-    private func recordConfirmLatency(_ latency: TimeInterval) {
+    private func recordConfirmLatency(_ latency: TimeInterval, confirmedAt: Date) {
         echoConfirmedThisBurst = true
+        lastConfirmedEchoAt = confirmedAt
         smoothedConfirmLatency = smoothedConfirmLatency == 0
             ? latency
             : smoothedConfirmLatency * 0.7 + latency * 0.3

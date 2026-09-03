@@ -288,6 +288,13 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
 
     private func primePrediction() {
         phase = .settling
+        establishPredictionConfidence { [weak self] in
+            self?.phase = .prediction
+            self?.runNextPredictionSample()
+        }
+    }
+
+    private func establishPredictionConfidence(completion: @escaping () -> Void) {
         let now = Date()
         let cursor = terminalView.getTerminal().getCursorLocation()
         prediction.noteKey(
@@ -300,13 +307,8 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
             guard let self else { return }
             let echo = [UInt8(ascii: "p")]
-            self.terminalView.feed(byteArray: echo[...])
-            self.reconcilePrediction(
-                outputBytes: echo[...],
-                at: now.addingTimeInterval(0.020)
-            )
-            self.phase = .prediction
-            self.runNextPredictionSample()
+            self.predictionDataReceived(echo[...], at: now.addingTimeInterval(0.020))
+            completion()
         }
     }
 
@@ -360,23 +362,27 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
             guard let self else { return }
             let echo = [byte]
-            self.terminalView.feed(byteArray: echo[...])
-            self.reconcilePrediction(outputBytes: echo[...], at: Date())
+            self.predictionDataReceived(echo[...], at: Date())
             // Keep every sample on one cell. A real line wrap ends prediction
             // confidence by design, which would turn this into a safety test.
-            self.terminalView.feed(byteArray: [0x08][...])
+            let cursorReset: [UInt8] = [0x0d]
+            self.predictionDataReceived(cursorReset[...], at: Date())
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
-                self?.runNextPredictionSample()
+                self?.establishPredictionConfidence { [weak self] in
+                    self?.runNextPredictionSample()
+                }
             }
         }
     }
 
-    private func reconcilePrediction(outputBytes: ArraySlice<UInt8>, at now: Date) {
+    /// Matches production's dataReceived order: feed, then reconcile those bytes.
+    private func predictionDataReceived(_ bytes: ArraySlice<UInt8>, at now: Date) {
+        terminalView.feed(byteArray: bytes)
         let terminal = terminalView.getTerminal()
         prediction.reconcile(
             cursor: terminal.getCursorLocation(),
             terminalMode: terminalMode,
-            outputBytes: outputBytes,
+            outputBytes: bytes,
             readCell: { column, row in
                 guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
                 let character = cell.getCharacter()

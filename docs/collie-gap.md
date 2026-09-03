@@ -151,7 +151,9 @@ phone-side notification prefs (per-kind, snooze) on top of protocol 6;
 bridge error codes on the Mac side; statusline strip; LAN TLS.
 
 Wave 2 Mac typing latency landed on 2026-09-03. Local panes now use safe
-predictive echo after burst confirmation. TUI mode evidence disables prediction.
+predictive echo after burst confirmation when the user enables it. Local
+prediction stays off by default because silent echo-off cannot be detected.
+TUI mode evidence disables prediction.
 Resize, copy mode, focus loss, hiding, reconnect, and scrollback also clear it.
 A 20-confirm tail window detects herdr's bimodal delay. Unmatched output
 revokes burst confidence. Small focused-pane feeds draw without SwiftTerm's

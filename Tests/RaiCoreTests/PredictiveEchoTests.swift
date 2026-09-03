@@ -139,6 +139,53 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.displayGlyphs(), ["x"])
     }
 
+    func testSilentEchoOffAfterInterKeyPauseDoesNotDisplaySecondByte() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("a", cursorX: 0, at: start)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "a")][...],
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        let hiddenKeyTime = start.addingTimeInterval(
+            0.020 + PredictiveEchoEngine.confidenceCarryWindow + 0.001
+        )
+        type("s", cursorX: 1, at: hiddenKeyTime)
+
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+        XCTAssertEqual(engine.pending.map(\.character), ["s"])
+        XCTAssertEqual(engine.displayGlyphs(now: hiddenKeyTime), [])
+    }
+
+    func testHarnessCursorResetOutputRequiresFreshConfirmation() {
+        engine = PredictiveEchoEngine(herdLocation: .local)
+        type("p", cursorX: 0, at: start)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(ascii: "p")][...],
+            readCell: { column, _ in column == 0 ? "p" : nil },
+            now: start.addingTimeInterval(0.020)
+        )
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+
+        engine.reconcile(
+            cursor: (x: 0, y: 5),
+            terminalMode: .plain,
+            outputBytes: [UInt8(0x0d)][...],
+            readCell: { _, _ in nil },
+            now: start.addingTimeInterval(0.021)
+        )
+        XCTAssertFalse(engine.echoConfirmedThisBurst)
+
+        type("a", cursorX: 0, at: start.addingTimeInterval(0.022))
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
     func testOutputThatDoesNotMatchPendingPredictionClearsConfidence() {
         engine = PredictiveEchoEngine(herdLocation: .local)
         type("a", cursorX: 0)
