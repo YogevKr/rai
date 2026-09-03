@@ -307,6 +307,20 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var predictionOverlayUpdatePending = false
     private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
+    private struct PredictionReconcileResult {
+        let pendingChanged: Bool
+        let wasVisible: Bool
+        let isVisible: Bool
+
+        var needsTerminalCoordination: Bool {
+            pendingChanged && (wasVisible || isVisible)
+        }
+
+        var needsFreshCaret: Bool {
+            pendingChanged && isVisible
+        }
+    }
+
     func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
         guard predictiveEcho == nil else { return }
         predictiveEcho = PredictiveEchoEngine(herdLocation: herdLocation)
@@ -358,10 +372,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     }
 
     @discardableResult
-    private func reconcilePredictions(updateOverlay: Bool = true) -> Bool {
-        guard let engine = predictiveEcho else { return false }
+    private func reconcilePredictions(
+        updateOverlay: Bool = true
+    ) -> PredictionReconcileResult? {
+        guard let engine = predictiveEcho else { return nil }
         let pendingBefore = engine.pending
-        let hadVisiblePrediction = !engine.displayGlyphs().isEmpty
+        let wasVisible = !engine.displayGlyphs().isEmpty
         let terminal = getTerminal()
         engine.reconcile(
             cursor: terminal.getCursorLocation(),
@@ -380,7 +396,11 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             predictionReconcileTimer?.invalidate()
             predictionReconcileTimer = nil
         }
-        return hadVisiblePrediction && engine.pending != pendingBefore
+        return PredictionReconcileResult(
+            pendingChanged: engine.pending != pendingBefore,
+            wasVisible: wasVisible,
+            isVisible: !engine.displayGlyphs().isEmpty
+        )
     }
 
     private func updatePredictionOverlay() {
@@ -646,18 +666,21 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         let displayGenerationBeforeFeed = terminalDisplayGeneration
         super.dataReceived(slice: slice)
         let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
-        let reconciledVisiblePrediction = reconcilePredictions(updateOverlay: false)
+        let reconciliation = reconcilePredictions(updateOverlay: false)
         let repainted = feedRepaintState.repaintIfNeeded(
             byteCount: slice.count,
             isFocused: window?.firstResponder === self,
             isVisible: window != nil && !isHiddenOrHasHiddenAncestor,
             synchronizedOutputActive: getTerminal().synchronizedOutputActive
         ) { [self] in
-            updatePredictionOverlay()
+            prepareOverlayForImmediateDraw(
+                reconciliation,
+                terminalCaretIsFresh: terminalPaintedDuringFeed
+            )
             drawTerminalNow()
         }
         guard !repainted else { return }
-        guard reconciledVisiblePrediction else {
+        guard reconciliation?.needsTerminalCoordination == true else {
             updatePredictionOverlay()
             return
         }
@@ -672,10 +695,24 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             hasRecentUnpaintedUserInput: true,
             synchronizedOutputActive: getTerminal().synchronizedOutputActive
         ) { [self] in
-            updatePredictionOverlay()
+            prepareOverlayForImmediateDraw(reconciliation, terminalCaretIsFresh: false)
             drawTerminalNow()
         }
-        predictionOverlayUpdatePending = !confirmationRepainted
+        if !confirmationRepainted {
+            predictionOverlayUpdatePending = true
+        }
+    }
+
+    private func prepareOverlayForImmediateDraw(
+        _ reconciliation: PredictionReconcileResult?,
+        terminalCaretIsFresh: Bool
+    ) {
+        if reconciliation?.needsFreshCaret == true && !terminalCaretIsFresh {
+            predictionOverlay?.isHidden = true
+            predictionOverlayUpdatePending = true
+        } else {
+            updatePredictionOverlay()
+        }
     }
 
     private func drawTerminalNow() {

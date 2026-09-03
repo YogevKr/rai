@@ -2,7 +2,7 @@
 """Measure keystroke -> echo latency through `herdr terminal attach` on a pane at a shell prompt.
 Usage: attach_latency.py <socket_path> <terminal_id> [n]
 """
-import os, pty, sys, time, select, statistics, signal, fcntl, termios, struct
+import math, os, pty, sys, time, select, statistics, signal, fcntl, termios, struct
 
 sock, term = sys.argv[1], sys.argv[2]
 n = int(sys.argv[3]) if len(sys.argv) > 3 else 25
@@ -41,7 +41,7 @@ for i in range(n):
 os.write(fd, b"\x15"); drain(0.5)
 good = sorted(x for x in lat if x == x)
 if good:
-    p90 = good[max(0, int(len(good) * 0.9) - 1)]
+    p90 = good[max(0, math.ceil(len(good) * 0.9) - 1)]
     print(f"keystroke -> echo via herdr attach: n={len(good)} median={statistics.median(good):.1f} ms p90={p90:.1f} ms min={good[0]:.1f} ms max={good[-1]:.1f} ms")
 else:
     print("no echoes seen; last sample:", sample)
