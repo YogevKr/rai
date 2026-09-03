@@ -145,50 +145,65 @@ enum PromptDetector {
     }
 
     private static func detectAskUserQuestion(_ lines: [String]) -> PromptModel? {
-        guard let headerIndex = lines.lastIndex(where: isQuestionHeader) else { return nil }
-        let parsedSteps = parseSteps(lines[headerIndex])
-        let stepLabels = parsedSteps.map(\.label)
-        guard stepLabels.count >= 2,
-              stepLabels.last?.localizedCaseInsensitiveContains("submit") == true
-        else { return nil }
-
-        let footerIndex = lines[headerIndex...].firstIndex {
-            $0.localizedCaseInsensitiveContains("Enter to select")
-                && $0.localizedCaseInsensitiveContains("Tab/Arrow keys")
-                && $0.localizedCaseInsensitiveContains("Esc")
-        }
+        let footerIndex = lines.lastIndex(where: isAskSelectionFooter)
         if let footerIndex,
            !lines[(footerIndex + 1)..<lines.endIndex].allSatisfy({ trimmed($0).isEmpty }) {
             return nil
         }
+        let headerSearchEnd = footerIndex ?? lines.endIndex
+        let headerIndex = lines[..<headerSearchEnd].lastIndex(where: isQuestionHeader)
+        guard headerIndex != nil || footerIndex != nil else { return nil }
+
+        let parsedSteps = headerIndex.map { parseSteps(lines[$0]) } ?? []
+        let parsedStepLabels = parsedSteps.map(\.label)
+        let hasSubmitStep = parsedStepLabels.last?.localizedCaseInsensitiveContains("submit")
+            == true
+        guard parsedSteps.isEmpty
+                || hasSubmitStep
+                || parsedSteps.count == 1
+        else { return nil }
+
         let endIndex = footerIndex ?? lines.endIndex
+        let optionSearchStart = headerIndex.map { $0 + 1 } ?? 0
         let optionRows = parseAskOptionCluster(
             lines: lines,
-            range: (headerIndex + 1)..<endIndex
+            range: optionSearchStart..<endIndex
         )
         guard optionRows.count >= 2 else { return nil }
+        if !hasSubmitStep,
+           (!optionRows.contains(where: { $0.option.isFreeText })
+            || !optionRows.contains(where: { $0.option.isChat })) {
+            return nil
+        }
 
         let firstOptionLine = optionRows[0].line
-        let questionRegion = lines[(headerIndex + 1)..<firstOptionLine]
+        let promptStart = headerIndex
+            ?? lines[..<firstOptionLine].lastIndex(where: isRule).map { $0 + 1 }
+            ?? max(0, firstOptionLine - 8)
+        let questionStart = headerIndex.map { $0 + 1 } ?? promptStart
+        let questionRegion = lines[questionStart..<firstOptionLine]
         let questionLines = questionRegion
             .map(trimmed)
             .filter { !$0.isEmpty && !isRule($0) && !$0.hasPrefix("⚠") }
         let question = lastTextBlock(in: questionRegion)
-        let submitIndex = stepLabels.count - 1
-        let isSubmit = questionLines.contains {
+        let isSubmit = hasSubmitStep && questionLines.contains {
             $0.localizedCaseInsensitiveContains("Review your answers")
-        } || question?.localizedCaseInsensitiveContains("submit your answers") == true
+        } || (hasSubmitStep
+            && question?.localizedCaseInsensitiveContains("submit your answers") == true)
+        let questionSteps = hasSubmitStep ? Array(parsedSteps.dropLast()) : parsedSteps
         let currentIndex: Int? = isSubmit
             ? nil
-            : inferQuestionIndex(
+            : (questionSteps.count <= 1 ? 0 : inferQuestionIndex(
                 question: question,
-                steps: Array(parsedSteps.dropLast())
-            )
+                steps: questionSteps
+            ))
         let submitState: PromptSubmitState = isSubmit
-            ? (lines[headerIndex..<endIndex].contains {
+            ? (lines[promptStart..<endIndex].contains {
                 $0.localizedCaseInsensitiveContains("not answered all questions")
             } ? .unavailable : .ready)
             : .none
+        let stepLabels = parsedStepLabels.isEmpty ? ["Question"] : parsedStepLabels
+        let submitIndex = hasSubmitStep ? stepLabels.count - 1 : stepLabels.count
         let steps = stepLabels.enumerated().map { index, label in
             PromptStep(
                 index: index,
@@ -202,7 +217,7 @@ enum PromptDetector {
             )
         }
         let regionEnd = footerIndex.map { $0 + 1 } ?? endIndex
-        let region = Array(lines[headerIndex..<regionEnd])
+        let region = Array(lines[promptStart..<regionEnd])
         return PromptModel(
             kind: .askUserQuestion,
             question: question,
@@ -356,20 +371,12 @@ enum PromptDetector {
               beaconStepsMatchGrid(questions: questions, grid: grid)
         else { return grid }
 
-        let currentIndex: Int? = {
-            guard grid.submitState == .none else { return nil }
-            if let question = grid.question,
-               let exact = questions.firstIndex(where: {
-                   normalized($0.question) == normalized(question)
-               }) {
-                return exact
-            }
-            return nil
-        }()
+        let currentIndex = grid.submitState == .none ? grid.currentQuestionIndex : nil
         let definition = currentIndex.flatMap { index -> AskQuestion? in
-            guard grid.currentQuestionIndex == index,
+            guard questions.indices.contains(index),
                   grid.steps.indices.contains(index),
-                  textIsCompatible(grid.steps[index].label, questions[index].header),
+                  (grid.steps[index].label == "Question"
+                    || textIsCompatible(grid.steps[index].label, questions[index].header)),
                   optionsMatchGrid(question: questions[index], grid: grid)
             else { return nil }
             return questions[index]
@@ -392,8 +399,10 @@ enum PromptDetector {
             options = grid.options
         }
 
-        let stepLabels = questions.map(\.header) + ["Submit"]
-        let submitIndex = stepLabels.count - 1
+        let hasSubmitStep = grid.steps.last?.label.localizedCaseInsensitiveContains("submit")
+            == true
+        let stepLabels = questions.map(\.header) + (hasSubmitStep ? ["Submit"] : [])
+        let submitIndex = hasSubmitStep ? stepLabels.count - 1 : stepLabels.count
         let steps = stepLabels.enumerated().map { index, label in
             PromptStep(
                 index: index,
@@ -656,10 +665,12 @@ enum PromptDetector {
         questions: [AskQuestion],
         grid: PromptModel
     ) -> Bool {
-        let visible = grid.steps.dropLast().map(\.label)
+        let hasSubmitStep = grid.steps.last?.label.localizedCaseInsensitiveContains("submit")
+            == true
+        let visible = (hasSubmitStep ? grid.steps.dropLast() : grid.steps[...]).map(\.label)
         guard visible.count == questions.count else { return false }
         return zip(visible, questions.map(\.header)).allSatisfy {
-            textIsCompatible($0.0, $0.1)
+            $0.0 == "Question" || textIsCompatible($0.0, $0.1)
         }
     }
 
@@ -721,8 +732,17 @@ enum PromptDetector {
 
     private static func isQuestionHeader(_ line: String) -> Bool {
         let value = trimmed(line)
-        return value.hasPrefix("←") && value.hasSuffix("→")
-            && value.localizedCaseInsensitiveContains("submit")
+        if value.hasPrefix("←") && value.hasSuffix("→")
+            && value.localizedCaseInsensitiveContains("submit") {
+            return true
+        }
+        let markers = ["☐", "□", "✔", "✓"]
+        return markers.contains(where: value.hasPrefix) && parseSteps(line).count == 1
+    }
+
+    private static func isAskSelectionFooter(_ line: String) -> Bool {
+        line.localizedCaseInsensitiveContains("Enter to select")
+            && line.localizedCaseInsensitiveContains("Esc to cancel")
     }
 
     private static func isRule(_ line: String) -> Bool {

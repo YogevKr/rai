@@ -1,0 +1,22 @@
+
+❯ Use AskUserQuestion now with exactly one
+  single-select question. Ask: Which color should the
+  test use? Header: Color. Options: Red with
+  description Warm; Blue with description Cool; Green
+  with description Natural. Do not do anything else.
+──────────────────────────────────────────────────────
+ ☐ Color
+
+Which color should the test use?
+
+❯ 1. Red
+     Warm
+  2. Blue
+     Cool
+  3. Green
+     Natural
+  4. Type something.
+──────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

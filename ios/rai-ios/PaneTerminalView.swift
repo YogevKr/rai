@@ -80,7 +80,7 @@ struct PaneTerminalView: View {
                 }
 
                 if let prompt = promptController.prompt,
-                   ClaudePromptGate.allows(agent: pane.agent, beacon: pane.beacon) {
+                   ClaudePromptGate.allows(agent: pane.agent) {
                     PromptBar(
                         prompt: prompt,
                         isBusy: promptController.isBusy,
@@ -465,7 +465,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             terminal?.liveGridText() ?? ""
         }
         prompts.beacon = beacon
-        prompts.allowsPrompts = ClaudePromptGate.allows(agent: agent, beacon: beacon)
+        prompts.allowsPrompts = ClaudePromptGate.allows(agent: agent)
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
@@ -561,7 +561,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
         context.coordinator.send = send
-        let allowsPrompts = ClaudePromptGate.allows(agent: agent, beacon: beacon)
+        let allowsPrompts = ClaudePromptGate.allows(agent: agent)
         if prompts.beacon != beacon || prompts.allowsPrompts != allowsPrompts {
             prompts.beacon = beacon
             prompts.allowsPrompts = allowsPrompts
@@ -695,8 +695,8 @@ final class GridReadableTerminalView: TerminalView {
 }
 
 enum ClaudePromptGate {
-    static func allows(agent: String?, beacon: AgentBeacon?) -> Bool {
-        agent?.caseInsensitiveCompare("claude") == .orderedSame || beacon != nil
+    static func allows(agent: String?) -> Bool {
+        agent?.caseInsensitiveCompare("claude") == .orderedSame
     }
 }
 

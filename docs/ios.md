@@ -102,12 +102,14 @@ Next sends Tab, and Previous sends Left. Previous appears on every later questio
 These navigation buttons never send Enter.
 An unconfirmed checkbox key stays pending until a newer terminal frame arrives.
 
-Controls only appear for Claude panes or panes with a beacon. Dialog footers must
-own the grid bottom. Quoted dialogs above Claude's composer stay inert.
+Controls only appear when the pane snapshot identifies Claude. A retained beacon
+cannot enable controls for Codex or shell panes. Dialog footers must own the grid bottom.
+Quoted dialogs above Claude's composer stay inert.
 Wrapped labels remain one logical option. Unknown wizard steps disable navigation.
 
-The detector uses Claude Code 2.1.258 and 2.1.259 captures. Plan approval uses
-the documented `Would you like to proceed?` shape, but lacks a real capture.
+The detector accepts real single-question arrow-only and multi-question Tab/Arrow
+footers from Claude Code 2.1.259. A one-question wizard does not need Submit arrows.
+Plan approval uses the documented `Would you like to proceed?` shape, but lacks a real capture.
 Use the raw terminal when a new Claude dialog shape does not match.
 
 rai waits 15 seconds to collect a push burst. One event keeps its pane link and

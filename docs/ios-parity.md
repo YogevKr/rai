@@ -85,7 +85,9 @@ All additive, no version bump (old phones skip unknown message types):
 - Next sends Tab. Previous appears on every later question and sends Left.
 - Enter only confirms an option or Submit.
 - Checkbox retries wait for a newer grid frame and confirm the wanted state.
-- Controls require a Claude pane or a beacon.
+- Controls require a Claude agent in the pane snapshot. A retained beacon cannot override Codex or shell.
+- Real one-question captures cover single-select and multi-select arrow-only footers.
+- A one-question single-select wizard can use one header chip without Submit arrows.
 - Quoted dialogs above a live composer do not create controls.
 - Unknown hookless wizard steps disable step navigation.
 - The raw terminal remains available for unknown dialog forms.

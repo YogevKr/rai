@@ -43,6 +43,56 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertEqual(prompt.submitState, .none)
     }
 
+    func testDetectsSingleQuestionWithoutSubmitHeader() throws {
+        let grid = try fixture("ask-user-question-single-select.txt")
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid))
+
+        XCTAssertEqual(prompt.kind, .askUserQuestion)
+        XCTAssertEqual(prompt.currentQuestionIndex, 0)
+        XCTAssertEqual(prompt.question, "Which color should the test use?")
+        XCTAssertEqual(prompt.steps, [PromptStep(index: 0, label: "Color", state: .current)])
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Red", "Blue", "Green", "Type something.", "Chat about this",
+        ])
+        XCTAssertEqual(prompt.options.map(\.description), [
+            "Warm", "Cool", "Natural", nil, nil,
+        ])
+        XCTAssertFalse(prompt.multiSelect)
+        XCTAssertEqual(prompt.selectedOptionIndex, 0)
+
+        let headerless = try XCTUnwrap(PromptDetector.detect(
+            in: grid.replacingOccurrences(of: " ☐ Color\n\n", with: "")
+        ))
+        XCTAssertEqual(
+            headerless.steps,
+            [PromptStep(index: 0, label: "Question", state: .current)]
+        )
+        XCTAssertEqual(headerless.currentQuestionIndex, 0)
+    }
+
+    func testAcceptsCapturedAskUserQuestionFooterVariants() throws {
+        let fixtureNames = [
+            "ask-user-question-single-select.txt",
+            "ask-user-question-single-multiselect.txt",
+            "ask-user-question-q1.txt",
+        ]
+
+        for name in fixtureNames {
+            let grid = try fixture(name)
+            XCTAssertTrue(grid.contains("Enter to select"), name)
+            XCTAssertTrue(grid.contains("Esc to cancel"), name)
+            XCTAssertNotNil(PromptDetector.detect(in: grid), name)
+        }
+
+        XCTAssertTrue(
+            try fixture("ask-user-question-single-select.txt").contains("↑/↓ to navigate")
+        )
+        XCTAssertTrue(
+            try fixture("ask-user-question-single-multiselect.txt").contains("↑/↓ to navigate")
+        )
+        XCTAssertTrue(try fixture("ask-user-question-q1.txt").contains("Tab/Arrow keys"))
+    }
+
     func testAskQuestionNumberedTextDoesNotBecomeAnOption() throws {
         let grid = try fixture("ask-user-question-q1.txt").replacingOccurrences(
             of: "Which color should the badge use?",
@@ -198,6 +248,42 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertEqual(prompt.options.prefix(3).map(\.label), [
             "Cheese from beacon", "Olives from beacon", "Ham from beacon",
         ])
+    }
+
+    func testHeaderMarkerKeepsLaterStepWhenBeaconQuestionTextDiffers() throws {
+        let grid = try fixture("ask-user-question-q2-multiselect.txt")
+            .replacingOccurrences(
+                of: "←  ☐ Color  ☐ Toppings  ✔ Submit  →",
+                with: "←  ✔ Choice  ❯ Choice  ✔ Submit  →"
+            )
+            .replacingOccurrences(
+                of: "Which toppings do you want?",
+                with: "Select all required checks."
+            )
+        let beacon = askBeacon(questions: [
+            question(
+                text: "What color should appear?",
+                header: "Choice",
+                options: [("Red", nil), ("Blue", nil), ("Green", nil)],
+                multiSelect: false
+            ),
+            question(
+                text: "Which toppings should the build include?",
+                header: "Choice",
+                options: [
+                    ("Cheese from beacon", nil),
+                    ("Olives from beacon", nil),
+                    ("Ham from beacon", nil),
+                ],
+                multiSelect: true
+            ),
+        ])
+
+        let prompt = try XCTUnwrap(PromptDetector.detect(in: grid, beacon: beacon))
+
+        XCTAssertEqual(prompt.currentQuestionIndex, 1)
+        XCTAssertTrue(prompt.showsPreviousAction)
+        XCTAssertEqual(prompt.options[0].label, "Cheese from beacon")
     }
 
     func testStaleBeaconCannotReplaceGridLabels() throws {
@@ -525,13 +611,34 @@ final class PromptDetectionTests: XCTestCase {
     @MainActor
     func testShellPaneDoesNotExposeClaudeControls() {
         let controller = TerminalPromptController()
-        controller.allowsPrompts = ClaudePromptGate.allows(agent: nil, beacon: nil)
+        controller.allowsPrompts = ClaudePromptGate.allows(agent: nil)
         controller.readGrid = { Self.permissionGrid }
 
         controller.refresh()
 
         XCTAssertNil(controller.prompt)
-        XCTAssertFalse(ClaudePromptGate.allows(agent: "codex", beacon: nil))
+        XCTAssertFalse(ClaudePromptGate.allows(agent: "codex"))
+    }
+
+    @MainActor
+    func testRetainedClaudeBeaconDoesNotEnableCodexPromptControls() {
+        let controller = TerminalPromptController()
+        controller.beacon = askBeacon(questions: [
+            question(
+                text: "Old Claude question?",
+                header: "Old",
+                options: [("Yes", nil), ("No", nil)],
+                multiSelect: false
+            ),
+        ])
+        controller.allowsPrompts = ClaudePromptGate.allows(agent: "codex")
+        controller.readGrid = { Self.permissionGrid }
+
+        controller.refresh()
+
+        XCTAssertNil(controller.prompt)
+        XCTAssertFalse(ClaudePromptGate.allows(agent: nil))
+        XCTAssertTrue(ClaudePromptGate.allows(agent: "CLAUDE"))
     }
 
     @MainActor
