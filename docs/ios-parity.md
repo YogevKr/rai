@@ -90,9 +90,12 @@ All additive, no version bump (old phones skip unknown message types):
 - History errors remain local to one pane. They do not change bridge status.
 - Any legacy error reply completes pending history requests.
 - Memory and disk history caches have pane and byte limits.
+- The Mac caps delivery cursors and connection markers at 64 panes.
+- Restored history must match a live beacon session before it becomes current.
+- History without a live beacon stays marked as a previous session.
 - The memory limit protects the viewed pane and trims its oldest turns.
 - Disk restore requires the cached and live herd identities to match.
-- Delivery cursors keep at most 64 panes per device and clear on revocation.
+- Device revocation clears its delivery cursors.
 - Old phones skip `historyPage`. Old Macs return one message error for `history`.
 - Codex and remote-host transcript history are not supported.
 

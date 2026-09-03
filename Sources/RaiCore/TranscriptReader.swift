@@ -454,6 +454,7 @@ public struct TranscriptPaneIdentity: Equatable, Sendable {
 
 public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
     public static var defaultMaximumPanesPerDevice: Int { 64 }
+    public static var defaultMaximumPanesPerConnection: Int { 64 }
 
     private struct Cursor {
         let sessionID: String
@@ -462,12 +463,17 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
     }
 
     private let maximumPanesPerDevice: Int
+    private let maximumPanesPerConnection: Int
     private var lastDelivered: [Device: [String: Cursor]] = [:]
-    private var deliveredPanes: [Connection: Set<String>] = [:]
+    private var deliveredPanes: [Connection: [String: UInt64]] = [:]
     private var accessSequence: UInt64 = 0
 
-    public init(maximumPanesPerDevice: Int = defaultMaximumPanesPerDevice) {
+    public init(
+        maximumPanesPerDevice: Int = defaultMaximumPanesPerDevice,
+        maximumPanesPerConnection: Int = defaultMaximumPanesPerConnection
+    ) {
         self.maximumPanesPerDevice = max(1, maximumPanesPerDevice)
+        self.maximumPanesPerConnection = max(1, maximumPanesPerConnection)
     }
 
     public mutating func sinceLastSeen(
@@ -477,7 +483,11 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
         sessionID: String
     ) -> Int? {
         let key = paneID + "\u{1F}" + sessionID
-        guard deliveredPanes[connection]?.contains(key) != true else { return nil }
+        if var markers = deliveredPanes[connection], markers[key] != nil {
+            markers[key] = nextAccess()
+            deliveredPanes[connection] = markers
+            return nil
+        }
         guard var cursor = lastDelivered[device]?[paneID],
               cursor.sessionID == sessionID else { return nil }
         cursor.lastAccess = nextAccess()
@@ -493,7 +503,13 @@ public struct HistoryDeliveryTracker<Device: Hashable, Connection: Hashable> {
         highestTurnIndex: Int?
     ) {
         let key = paneID + "\u{1F}" + sessionID
-        deliveredPanes[connection, default: []].insert(key)
+        var markers = deliveredPanes[connection, default: [:]]
+        markers[key] = nextAccess()
+        if markers.count > maximumPanesPerConnection,
+           let oldest = markers.min(by: { $0.value < $1.value })?.key {
+            markers.removeValue(forKey: oldest)
+        }
+        deliveredPanes[connection] = markers
         if let highestTurnIndex {
             var cursors = lastDelivered[device, default: [:]]
             let old = cursors[paneID]

@@ -130,12 +130,23 @@ struct TranscriptHistoryView: View {
         let displayedTurns = model.filteredTurns
         ScrollViewReader { proxy in
             Group {
-                if needsClaudeHook || model.turns.isEmpty {
+                if (needsClaudeHook && !showsPreviousSession) || model.turns.isEmpty {
                     emptyState
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
-                            if let before = model.olderBeforeTurnIndex {
+                            if showsPreviousSession {
+                                Label(
+                                    "From a previous session",
+                                    systemImage: "clock.arrow.circlepath"
+                                )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+
+                            if let before = model.olderBeforeTurnIndex,
+                               !paneSessionID.isEmpty {
                                 Button("Load older") {
                                     connection.requestHistory(
                                         paneID: pane.paneID,
@@ -191,17 +202,18 @@ struct TranscriptHistoryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
+                    requestCurrentHistory()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .accessibilityLabel("Refresh conversation history")
+                .disabled(paneSessionID.isEmpty)
             }
         }
         .searchable(text: $model.query, prompt: "Find in conversation")
         .onAppear {
             if let page = connection.historyPages[pane.paneID] { model.apply(page) }
-            connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
+            requestCurrentHistory()
         }
         .onReceive(connection.$historyPages) { pages in
             if let page = pages[pane.paneID] {
@@ -212,7 +224,7 @@ struct TranscriptHistoryView: View {
         }
         .onChange(of: connection.status.isConnected) { _, connected in
             if connected {
-                connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
+                requestCurrentHistory()
             }
         }
         .preferredColorScheme(.dark)
@@ -244,6 +256,15 @@ struct TranscriptHistoryView: View {
 
     private var paneSessionID: String {
         needsClaudeHook ? "" : pane.beacon?.sessionID ?? ""
+    }
+
+    private var showsPreviousSession: Bool {
+        connection.historyFromPreviousSession.contains(pane.paneID)
+    }
+
+    private func requestCurrentHistory() {
+        guard !paneSessionID.isEmpty else { return }
+        connection.requestHistory(paneID: pane.paneID, sessionID: paneSessionID)
     }
 
     private var needsClaudeHook: Bool {

@@ -1153,10 +1153,25 @@ final class RaiBridgeServer: ObservableObject {
             paneID: pane.paneID,
             sessionID: sessionID
         )
-        return TranscriptHistoryPage(
+        return Self.historyPage(
+            basePage,
+            requestedSessionID: requestedSessionID,
+            requestID: requestID,
+            sinceLastSeen: sinceLastSeen
+        )
+    }
+
+    static func historyPage(
+        _ basePage: TranscriptHistoryPage,
+        requestedSessionID: String,
+        requestID: String,
+        sinceLastSeen: Int?
+    ) -> TranscriptHistoryPage {
+        TranscriptHistoryPage(
             paneID: basePage.paneID,
             sessionID: requestedSessionID,
-            resolvedSessionID: basePage.sessionID,
+            resolvedSessionID: basePage.agentSessionID.isEmpty
+                ? nil : basePage.agentSessionID,
             requestID: requestID,
             herdSessionName: basePage.herdSessionName,
             turns: basePage.turns,

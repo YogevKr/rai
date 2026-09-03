@@ -84,6 +84,7 @@ crook for the herd:
   results as cards. Search, refresh, load older turns, or jump to your last prompt.
   History uses the Claude hook's transcript path and session ID. Rai never guesses
   from a pane directory. Settings → Integrations explains how to enable the hook.
+  Cached history must match the live beacon. Rai marks history without one as previous.
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
   answer the wrong prompt.

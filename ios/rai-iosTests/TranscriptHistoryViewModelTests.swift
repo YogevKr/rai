@@ -172,16 +172,39 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         ))
     }
 
-    func testLivePaneWithoutBeaconDropsCachedHistory() throws {
+    func testCacheRestoreUsesLiveBeaconAndMarksUnknownSession() throws {
         let connection = BridgeConnection()
+        connection.replaceWithLiveSnapshot(try snapshot(
+            sessionID: "session-2", beaconSessionID: "session-2"
+        ))
         connection.restoreCachedHistory(
-            ["p1": page(turns: [turn(1, .assistant, "old")], hasMore: false)],
+            [
+                "p1": page(turns: [turn(1, .assistant, "old")], hasMore: false),
+                "untagged": TranscriptHistoryPage(
+                    paneID: "untagged", sessionID: "", turns: [], hasMore: false
+                ),
+            ],
             sessionName: "herd"
         )
 
-        connection.replaceWithLiveSnapshot(try snapshot(sessionID: "session-1"))
-
         XCTAssertNil(connection.historyPages["p1"])
+        XCTAssertNil(connection.historyPages["untagged"])
+
+        let pendingBeacon = BridgeConnection()
+        pendingBeacon.replaceWithLiveSnapshot(try snapshot(sessionID: "session-1"))
+        pendingBeacon.restoreCachedHistory(
+            ["p1": page(turns: [turn(1, .assistant, "old")], hasMore: false)],
+            sessionName: "herd"
+        )
+        XCTAssertNotNil(pendingBeacon.historyPages["p1"])
+        XCTAssertTrue(pendingBeacon.historyFromPreviousSession.contains("p1"))
+
+        pendingBeacon.replaceWithLiveSnapshot(try snapshot(
+            sessionID: "session-2", beaconSessionID: "session-2"
+        ))
+
+        XCTAssertNil(pendingBeacon.historyPages["p1"])
+        XCTAssertFalse(pendingBeacon.historyFromPreviousSession.contains("p1"))
     }
 
     func testHistoryRetentionEvictsClosedAndLeastRecentlyUsedPanes() {
@@ -220,6 +243,25 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             closedPaneGrace: 30
         )
         XCTAssertEqual(pages.count - byteEvictions.count, 2)
+    }
+
+    func testClosedPaneWithoutPageEntersRetentionSet() throws {
+        let connection = BridgeConnection()
+        let now = Date(timeIntervalSince1970: 1_000)
+        connection.replaceWithLiveSnapshot(
+            try snapshot(sessionID: "session-1", beaconSessionID: "session-1"),
+            receivedAt: now
+        )
+        XCTAssertNil(connection.historyPages["p1"])
+        XCTAssertTrue(connection.trackedHistoryPaneIDs.contains("p1"))
+
+        connection.replaceWithLiveSnapshot(
+            try emptySnapshot(),
+            receivedAt: now
+        )
+        connection.pruneHistory(now: now.addingTimeInterval(31))
+
+        XCTAssertFalse(connection.trackedHistoryPaneIDs.contains("p1"))
     }
 
     func testHistoryRetentionTrimsButNeverEvictsActivePane() {
@@ -364,7 +406,17 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
         )
     }
 
-    private func snapshot(sessionID: String) throws -> SessionSnapshot {
+    private func snapshot(
+        sessionID: String,
+        beaconSessionID: String? = nil
+    ) throws -> SessionSnapshot {
+        let beacon = beaconSessionID.map { sessionID in
+            """
+            ,"beacon":{"event":"Stop","pane_id":"p1",
+              "session_id":"\(sessionID)","cwd":"/repo",
+              "transcript_path":"/tmp/\(sessionID).jsonl","ts":1}
+            """
+        } ?? ""
         let json = """
         {
           "version":"0.7.5","protocol":16,
@@ -376,9 +428,19 @@ final class TranscriptHistoryViewModelTests: XCTestCase {
             "agent":"claude","agent_status":"working","revision":1,
             "agent_session":{"agent":"claude","kind":"id",
               "source":"herdr:claude","value":"\(sessionID)"}
+            \(beacon)
           }],
           "layouts":[]
         }
+        """
+        return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+    }
+
+    private func emptySnapshot() throws -> SessionSnapshot {
+        let json = """
+        {"version":"0.7.5","protocol":16,
+         "focused_workspace_id":null,"focused_tab_id":null,"focused_pane_id":null,
+         "workspaces":[],"tabs":[],"panes":[],"layouts":[]}
         """
         return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
     }

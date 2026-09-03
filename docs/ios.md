@@ -103,6 +103,7 @@ Use **Jump to my last prompt** to return to your latest prompt.
 The pane title shows the first eight session ID characters.
 
 The phone keeps at most eight in-memory pane histories or 16 MiB.
+The Mac keeps at most 64 pane markers per device and connection.
 It keeps the viewed pane and trims its oldest turns when needed.
 It removes closed panes after 30 seconds. Its disk cache uses smaller per-pane and total limits.
 Disk history loads run after launch outside the main actor.
@@ -198,6 +199,9 @@ The cache belongs to one pairing and never crosses to another Mac.
 The phone also saves the latest 50 transcript turns for each pane.
 This history cache belongs to one pairing and stays out of device backups.
 It also belongs to one selected herdr session.
+The phone restores only history that matches each live beacon session.
+It marks history without a live beacon as **From a previous session**.
+The first conflicting beacon removes that restored history.
 Forget Mac removes both caches.
 
 On cold launch, the saved herd appears before the socket connects.

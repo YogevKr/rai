@@ -270,6 +270,35 @@ final class TranscriptReaderTests: XCTestCase {
         ))
     }
 
+    func testConnectionDeliveryMarkersUseLRUCap() {
+        var tracker = HistoryDeliveryTracker<String, String>(
+            maximumPanesPerConnection: 2
+        )
+        for pane in ["p0", "p1"] {
+            tracker.recordDelivery(
+                device: "phone", connection: "connection", paneID: pane,
+                sessionID: "session", highestTurnIndex: 1
+            )
+        }
+        XCTAssertNil(tracker.sinceLastSeen(
+            device: "phone", connection: "connection", paneID: "p0",
+            sessionID: "session"
+        ))
+        tracker.recordDelivery(
+            device: "phone", connection: "connection", paneID: "p2",
+            sessionID: "session", highestTurnIndex: 2
+        )
+
+        XCTAssertEqual(tracker.sinceLastSeen(
+            device: "phone", connection: "connection", paneID: "p1",
+            sessionID: "session"
+        ), 1)
+        XCTAssertNil(tracker.sinceLastSeen(
+            device: "phone", connection: "connection", paneID: "p0",
+            sessionID: "session"
+        ))
+    }
+
     func testHistoryReceiptsMustMatchSentPagesAndStayBounded() {
         var ledger = HistoryReceiptLedger<String>()
         let expected = HistoryPageReceipt(
