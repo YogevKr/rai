@@ -1,18 +1,40 @@
 Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Silicon + Intel), macOS 14+.
 
-### Fixed in this release
+### New in this release
 
-- **Pushes work again with a pasted or migrated APNs key.** The Mac now loads
-  the `.p8` from its DER whatever shape it was stored in (CRLF line ends,
-  one line, quotes, body only, or a hex-encoded PEM), never caches a failed
-  Keychain read, and the test push and Doctor say why a key cannot be used
-  instead of an ASN.1 error. A dead device token (410) is pruned on the spot.
-- **Pairing a fresh phone no longer fails with "Pair Again".** Fixed on the
-  phone in Rai Remote build 32; this release carries the harness affordance
-  (`RAI_PAIRING_CODE_FILE`) and the start-time publish of the pairing code.
+- **Answer Claude permission prompts from the phone.** The Claude hook now
+  waits (up to a configurable 5–60 s, default 45 s) for an Allow/Deny from
+  Rai Remote when you are away from the Mac, delivered as a time-sensitive
+  push with Approve/Deny actions. No decision, or you back at the Mac, and
+  Claude draws its normal dialog. Settings → Integrations has the toggle and
+  the hold time; the hooks installer writes the matching timeout.
+- **Time-sensitive "needs you" pushes.** Blocked-agent pushes break through
+  Focus modes; "finished" pushes stay ordinary.
+- **Phone-side notification preferences.** Per device: kinds, snooze
+  (15 min / 1 h / until 8:00), and a daily do-not-disturb window, enforced on
+  the Mac before anything is sent and shown in the Doctor.
+- **Stable bridge error codes.** `error` / `authFailed` carry a code the
+  phone maps to the right action (retry, Pair Again, update).
+- **APNs key as a validated file.** The `.p8` lives in
+  `~/Library/Application Support/Rai/apns-key.p8` (0600), migrated once from
+  the Keychain item, validated on Save, and named in the Doctor.
+- **First frame on attach.** A phone attaching to an alt-screen agent pane
+  gets the visible grid immediately instead of waiting for the next repaint.
+- **Typing latency, measured.** `rai-bench --latency` drives a real keystroke
+  through the terminal and times it to the display update; the daemon echo
+  measures median ~4 ms with a p90 of ~22 ms (bimodal: one keystroke in ten
+  waits a daemon tick). Predictive local echo can now cover that tail, but it
+  ships **off by default** (Settings → "Predict local typing") because a prompt
+  that silently disables echo can show one typed character before retraction.
+  Remote-herd prediction is unchanged and gains the same lifecycle guards.
 
-Ships with **Rai Remote build 32** (TestFlight). Both sides use bridge
-protocol 6: existing phones pair again with the code from Settings → iPhone.
+Ships with **Rai Remote build 33** (TestFlight): structured Claude prompt
+controls (AskUserQuestion wizard, trust dialogs), Approve/Deny decisions,
+transcript history for hook-enabled panes, a statusline strip, notification
+preferences, and a password-prompt guard on every typed send.
+
+Bridge protocol stays 6 (all additions are optional fields); existing
+pairings keep working.
 
 ### Install
 

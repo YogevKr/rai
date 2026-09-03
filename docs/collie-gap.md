@@ -147,32 +147,23 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2 decision hooks landed on 2026-09-03.
+## Wave 2 outcome (2026-09-03)
 
-They add structured permission decisions, direct pushes, and phone countdowns.
-
-Review hardening adds stale-tap checks, text redaction, dynamic phone capability, and clock-safe countdowns.
-
-It also tolerates brief reconnects and refreshes notification permission after each foreground transition.
-
-Later notification grants restart APNs registration. Token redaction now handles punctuation and non-path slash values.
-
-Wave 2 prompt blocks now use beacons and verified grid steps on iOS.
-Transcript history also ships and requires the Claude hook.
-Remaining work includes operator config files and LAN TLS.
-
-Wave 2 quality-of-life outcome (2026-09-03):
+Seven Codex branches, each reviewed by detached read-only jobs to a clean
+verdict (or parked), merged behind full Mac + iOS gates.
 
 | Item | Result |
 | --- | --- |
-| 4. Phone notification preferences | ✅ Per-device controls, queued sync, stale-token pruning, audit, and Doctor summary |
-| 5. Stable bridge error codes | ✅ Shared codes, phase-aware retry policy, unknown-code fallback, and drift test |
-| 6. Phone statusline strip | ✅ Agent-specific Claude and Codex parsing, live strip, and fixture tests |
-
-### Wave 2 hardening
-
-| Item | Result |
-| --- | --- |
-| 7. APNs key file | ✅ Validated P-256 file with owner-only modes and Keychain migration |
-| 8. First attach frame | ✅ Native visible-grid paint before observe |
-| 1b. Password prompt guard | ✅ Anchored phone guard; direct Type mode stays available |
+| 1. Structured prompt blocks (AskUserQuestion, trust, wizard) | ✅ shipped — 6 review rounds; taps bound to the rendered prompt instance; real 2.1.259 fixtures |
+| 2. Decision hooks (phone Allow/Deny) | ✅ shipped — 4 rounds + integration review; hook-side timeout ordering, redaction, presence re-check |
+| 3. Transcript history | ✅ shipped hook-only — the cwd fallback was cut after three rounds of wrong-transcript P1s |
+| 4. Phone notification preferences | ✅ shipped |
+| 5. Stable bridge error codes | ✅ shipped |
+| 6. Phone statusline strip | ✅ shipped |
+| 7. APNs key file | ✅ shipped |
+| 8. First attach frame | ✅ shipped |
+| 1b. Password-prompt guard | ✅ shipped on interactive sends; queued offline lines replay ONE line automatically, the rest by tap — automatic multi-line replay could not be made safe against delayed password prompts (5 review rounds) |
+| 9. Time-sensitive pushes | ✅ shipped |
+| 10. Live Activity | ⏸ parked on `codexspin/rai-live-activity-0903-110138-g75j` (commits above dfb42c5): two P1s survived four rounds (duplicate remote activity after a late local token; dotted opaque tokens bypass lock-screen redaction). Resume by fixing those two and re-running the round-4 review prompt. |
+| 11. Typing latency | ✅ harness + lifecycle guards shipped; local predictive echo is opt-in (off by default): a silent `read -s` between keystrokes cannot be detected by any output rule (5 review rounds); the "immediate repaint" idea measured as no gain |
+| Guarded send (wave 1) | ⏸ still parked (`codexspin/rai-guarded-send-0902-230810-o108`) |
