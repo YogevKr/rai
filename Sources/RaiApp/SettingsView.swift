@@ -302,6 +302,7 @@ private struct CompanionSettingsView: View {
     /// `defaults write gr.krig.rai companionPushSettingsVisible -bool true`.
     private var showPushSettings: Bool {
         apnsSettings.isConfigured
+            || apnsSettings.keyReadState == .unreadable
             || UserDefaults.standard.bool(forKey: "companionPushSettingsVisible")
     }
 
@@ -503,8 +504,19 @@ private struct CompanionSettingsView: View {
                                     .foregroundStyle(Theme.status(.blocked))
                             }
                         }
-                        Text("The private key is stored in the macOS Keychain.")
-                            .foregroundStyle(Theme.textTertiary)
+                        HStack {
+                            Text(apnsSettings.keyFileURL.path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Theme.textTertiary)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Button("Reveal") {
+                                let target = apnsSettings.hasStoredKey
+                                    ? apnsSettings.keyFileURL
+                                    : apnsSettings.keyFileURL.deletingLastPathComponent()
+                                NSWorkspace.shared.activateFileViewerSelecting([target])
+                            }
+                        }
                     }
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textPrimary)

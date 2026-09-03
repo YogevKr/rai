@@ -44,8 +44,7 @@ enum APNsKeyError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missing:
-            return "The APNs key is empty: it could not be read from the Keychain. "
-                + "If macOS asked whether rai may use the key, choose Always Allow and send again."
+            return "The APNs key file is empty. Paste the key again."
         case let .invalid(detail):
             return "The stored APNs key is not a valid .p8 PEM (\(detail))."
         }

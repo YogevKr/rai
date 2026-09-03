@@ -70,9 +70,17 @@ Push delivery requires an Apple Developer Program membership and a real device:
 5. Select your Team in Xcode signing, run rai on your iPhone, and grant
    notification permission.
 
-The same `.p8` authentication key serves both APNs sandbox and production. The
-environment attached to each device token determines which APNs host the Mac
-uses. The private key is stored in the Mac's Keychain, not in preferences.
+The same `.p8` authentication key serves APNs sandbox and production.
+The device token selects the APNs host.
+Rai validates the key as P-256 before each save.
+It stores the key at `~/Library/Application Support/Rai/apns-key.p8`.
+The file uses mode `0600`, and its directory uses mode `0700`.
+Settings shows this path and includes a Reveal button.
+Rai never puts the key in logs, its audit log, or bridge messages.
+
+Rai migrates a valid key from its old Keychain item on the first launch.
+The migration leaves the Keychain item unchanged.
+Doctor asks for a new paste when the old item is invalid.
 
 Rai can use Claude Code hooks for accurate notification and push text. Install
 them from **Settings → Integrations → Install Claude Code hooks** on the Mac.

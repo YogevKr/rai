@@ -113,8 +113,8 @@ enum CompanionDoctor {
         switch state.apnsKeyState {
         case .readable:
             return .init(
-                id: "apns-key", severity: .green, title: "APNs key readable",
-                detail: "The stored APNs key is valid PEM.",
+                id: "apns-key", severity: .green, title: "APNs key file readable · P-256",
+                detail: "The stored key is valid P-256 PEM.",
                 fix: "No action needed."
             )
         case .missing:
@@ -126,8 +126,8 @@ enum CompanionDoctor {
         case .unreadable:
             return .init(
                 id: "apns-key", severity: .red, title: "APNs key unreadable",
-                detail: "The stored key is empty, denied, or invalid PEM.",
-                fix: "Save the APNs .p8 key again."
+                detail: "The key file or old Keychain item is not valid.",
+                fix: "Paste the key again."
             )
         }
     }

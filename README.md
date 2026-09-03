@@ -94,6 +94,7 @@ crook for the herd:
   The phone also sets snooze periods and a daily do-not-disturb window.
   Changes remain pending during reconnects and sync after the next welcome.
 - **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
+- The Mac validates its P-256 APNs key and stores it in an owner-only file.
 
 The Mac side is the hub: a per-device authenticated WebSocket bridge
 (**Settings → iPhone**) that the phone reaches over the LAN or through
