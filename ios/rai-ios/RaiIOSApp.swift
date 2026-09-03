@@ -17,6 +17,33 @@ enum PhoneNotificationRegistrationPolicy {
     }
 }
 
+protocol PhoneNotificationAuthorizationReading: Sendable {
+    func readAuthorizationStatus(
+        _ completion: @escaping @Sendable (UNAuthorizationStatus) -> Void
+    )
+}
+
+struct SystemPhoneNotificationAuthorizationReader: PhoneNotificationAuthorizationReading {
+    func readAuthorizationStatus(
+        _ completion: @escaping @Sendable (UNAuthorizationStatus) -> Void
+    ) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            completion(settings.authorizationStatus)
+        }
+    }
+}
+
+enum PhoneNotificationAuthorization {
+    static func isGranted(_ status: UNAuthorizationStatus) -> Bool {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            true
+        default:
+            false
+        }
+    }
+}
+
 enum PhoneNotificationResponsePlan: Equatable {
     case decide(RemotePermissionDecision, requestID: String)
     case input([UInt8])
@@ -73,12 +100,23 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
     private var deviceToken: String?
     private var pendingPaneID: String?
     private var pendingTriage = false
-    private var notificationAuthorizationGranted = false
+    private(set) var notificationAuthorizationGranted = false
     private var appIsForeground = false
+    private let notificationAuthorizationReader: any PhoneNotificationAuthorizationReading
     private lazy var retractionHandler = PhoneNotificationRetractionHandler(
         center: SystemPhoneNotificationCenter(),
         readStateStore: UserDefaultsPhoneNotificationReadStateStore()
     )
+
+    override init() {
+        notificationAuthorizationReader = SystemPhoneNotificationAuthorizationReader()
+        super.init()
+    }
+
+    init(notificationAuthorizationReader: any PhoneNotificationAuthorizationReading) {
+        self.notificationAuthorizationReader = notificationAuthorizationReader
+        super.init()
+    }
 
     func markDeliveredNotificationsSeen() {
         Task { await retractionHandler.markDeliveredNotificationsSeen() }
@@ -86,6 +124,25 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     func updateScenePhase(_ phase: ScenePhase) {
         appIsForeground = phase == .active
+        if phase == .active {
+            notificationAuthorizationReader.readAuthorizationStatus { [weak self] status in
+                DispatchQueue.main.async {
+                    self?.applyNotificationAuthorization(
+                        PhoneNotificationAuthorization.isGranted(status)
+                    )
+                }
+            }
+            return
+        }
+        publishDecisionAvailability()
+    }
+
+    private func applyNotificationAuthorization(_ granted: Bool) {
+        notificationAuthorizationGranted = granted
+        publishDecisionAvailability()
+    }
+
+    private func publishDecisionAvailability() {
         Task { @MainActor in
             appModel?.updateDecisionAvailability(
                 notificationAuthorized: notificationAuthorizationGranted,
@@ -147,11 +204,7 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                 NSLog("rai-ios: Notification authorization failed: \(error.localizedDescription)")
             }
             DispatchQueue.main.async {
-                self.notificationAuthorizationGranted = granted
-                self.appModel?.updateDecisionAvailability(
-                    notificationAuthorized: granted,
-                    isForeground: self.appIsForeground
-                )
+                self.applyNotificationAuthorization(granted)
                 if PhoneNotificationRegistrationPolicy.shouldRegister(
                     authorizationGranted: granted
                 ) {

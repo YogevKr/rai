@@ -1,4 +1,6 @@
+import Foundation
 import RaiCore
+import UserNotifications
 import XCTest
 
 @testable import rai
@@ -134,6 +136,29 @@ final class PermissionDecisionTests: XCTestCase {
         ))
     }
 
+    @MainActor
+    func testForegroundRefreshesNotificationAuthorizationEveryTime() async {
+        let reader = NotificationAuthorizationReaderSpy([
+            .authorized,
+            .denied,
+        ])
+        let delegate = IOSAppDelegate(notificationAuthorizationReader: reader)
+
+        delegate.updateScenePhase(.active)
+        let first = expectation(description: "first authorization applied")
+        DispatchQueue.main.async { first.fulfill() }
+        await fulfillment(of: [first], timeout: 1)
+        XCTAssertTrue(delegate.notificationAuthorizationGranted)
+
+        delegate.updateScenePhase(.background)
+        delegate.updateScenePhase(.active)
+        let second = expectation(description: "revoked authorization applied")
+        DispatchQueue.main.async { second.fulfill() }
+        await fulfillment(of: [second], timeout: 1)
+        XCTAssertFalse(delegate.notificationAuthorizationGranted)
+        XCTAssertEqual(reader.readCount, 2)
+    }
+
     func testStaleSocketFailureKeepsNewSocketWaiter() {
         let oldSocket = NSObject()
         let newSocket = NSObject()
@@ -216,6 +241,29 @@ final class PermissionDecisionTests: XCTestCase {
 
         XCTAssertTrue(PermissionPromptTransport.usesLegacyKeys(beacon: oldBeacon))
         XCTAssertFalse(PermissionPromptTransport.usesLegacyKeys(beacon: closedDecision))
+    }
+}
+
+private final class NotificationAuthorizationReaderSpy:
+    PhoneNotificationAuthorizationReading,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var statuses: [UNAuthorizationStatus]
+    private(set) var readCount = 0
+
+    init(_ statuses: [UNAuthorizationStatus]) {
+        self.statuses = statuses
+    }
+
+    func readAuthorizationStatus(
+        _ completion: @escaping @Sendable (UNAuthorizationStatus) -> Void
+    ) {
+        lock.lock()
+        readCount += 1
+        let status = statuses.removeFirst()
+        lock.unlock()
+        completion(status)
     }
 }
 

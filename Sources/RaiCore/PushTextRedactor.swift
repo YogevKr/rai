@@ -52,10 +52,10 @@ public enum PushTextRedactor {
 
     public static func permission(_ value: String, agent: String?) -> String {
         let sensitivePatterns = [
-            #"(?i)\b(?:password|passphrase|secret|token|key|bearer|pin|otp|code)\b.{0,12}(?:[:=]\s*)?[A-Za-z0-9_+/=-]{3,}"#,
-            #"\b\d{4,}\b"#,
-            #"\b[A-Fa-f0-9]{16,}\b"#,
-            #"\b[A-Za-z0-9_+/=-]{16,}\b"#,
+            #"(?i)\b(?:password|passphrase|secret|token|key|bearer|pin|otp|code)\b(?:(?:\s+|[:=]\s*)[A-Za-z][A-Za-z-]*){0,2}(?:\s+|[:=]\s*)[A-Za-z0-9_+/=-]{3,}"#,
+            #"(?<![A-Za-z0-9_./-])\d{6,}(?![A-Za-z0-9_./-])"#,
+            #"(?<![A-Za-z0-9_./-])[A-Fa-f0-9]{16,}(?![A-Za-z0-9_./-])"#,
+            #"(?<![A-Za-z0-9_./-])[A-Za-z0-9_+=-]{16,}(?![A-Za-z0-9_./-])"#,
             #"(?i)(?:authorization|proxy-authorization)\s*:"#,
         ]
         if sensitivePatterns.contains(where: { matches($0, in: value) }) {

@@ -325,6 +325,29 @@ final class AgentBeaconTests: XCTestCase {
         )
     }
 
+    func testPermissionPushRedactorKeepsOrdinaryFourDigitText() {
+        let samples = [
+            "WebSearch: WWDC 2026",
+            "Write: /tmp/1234/output",
+            "WebSearch: v2026 release notes",
+        ]
+
+        for sample in samples {
+            XCTAssertEqual(
+                PushTextRedactor.permission(sample, agent: "Claude"),
+                sample
+            )
+        }
+        XCTAssertEqual(
+            PushTextRedactor.permission("Bash: code is 1234", agent: "Claude"),
+            "Permission request from Claude"
+        )
+        XCTAssertEqual(
+            PushTextRedactor.permission("WebSearch: issue 123456", agent: "Claude"),
+            "Permission request from Claude"
+        )
+    }
+
     func testOrdinaryPreToolUseIsContextNotAPendingRequest() {
         let beacon = AgentBeacon(
             event: "PreToolUse",

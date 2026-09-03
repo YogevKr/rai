@@ -104,11 +104,12 @@ final class HookBeaconReceiver: @unchecked Sendable {
             .appendingPathComponent("hooks.sock")
     }
 
-    private static let maximumLineBytes = 64 * 1_024
+    private static let maximumLineBytes = 256 * 1_024
     private static let lineReadDeadlineNanoseconds: UInt64 = 2_000_000_000
 
     private let socketURL: URL
     private let onBeacon: @Sendable (AgentBeacon, HookDecisionReply?) -> Void
+    private let onDiagnostic: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "gr.krig.rai.hook-beacons")
     private let lock = NSLock()
     private var descriptor: Int32 = -1
@@ -116,17 +117,25 @@ final class HookBeaconReceiver: @unchecked Sendable {
 
     init(
         socketURL: URL = HookBeaconReceiver.defaultSocketURL,
+        onDiagnostic: @escaping @Sendable (String) -> Void = {
+            NSLog("rai: %@", $0)
+        },
         onBeacon: @escaping @Sendable (AgentBeacon) -> Void
     ) {
         self.socketURL = socketURL
+        self.onDiagnostic = onDiagnostic
         self.onBeacon = { beacon, _ in onBeacon(beacon) }
     }
 
     init(
         socketURL: URL = HookBeaconReceiver.defaultSocketURL,
+        onDiagnostic: @escaping @Sendable (String) -> Void = {
+            NSLog("rai: %@", $0)
+        },
         onBeaconWithReply: @escaping @Sendable (AgentBeacon, HookDecisionReply?) -> Void
     ) {
         self.socketURL = socketURL
+        self.onDiagnostic = onDiagnostic
         self.onBeacon = onBeaconWithReply
     }
 
@@ -237,7 +246,10 @@ final class HookBeaconReceiver: @unchecked Sendable {
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             guard count > 0 else { return false }
             if let newline = buffer[..<count].firstIndex(of: 0x0A) {
-                guard data.count + newline <= Self.maximumLineBytes else { return false }
+                guard data.count + newline <= Self.maximumLineBytes else {
+                    reportOversizedLine()
+                    return false
+                }
                 data.append(contentsOf: buffer[..<newline])
                 guard let beacon = try? JSONDecoder().decode(AgentBeacon.self, from: data)
                 else { return false }
@@ -251,10 +263,17 @@ final class HookBeaconReceiver: @unchecked Sendable {
                 onBeacon(beacon, nil)
                 return false
             }
-            guard data.count + count <= Self.maximumLineBytes else { return false }
+            guard data.count + count <= Self.maximumLineBytes else {
+                reportOversizedLine()
+                return false
+            }
             data.append(contentsOf: buffer[..<count])
         }
         return false
+    }
+
+    private func reportOversizedLine() {
+        onDiagnostic("Claude hook request exceeded the 256 KiB line limit.")
     }
 
     private var currentDescriptor: Int32 {

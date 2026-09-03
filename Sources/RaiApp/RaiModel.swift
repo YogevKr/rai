@@ -43,6 +43,28 @@ enum DecisionHoldPolicy {
     }
 }
 
+struct PhoneReachabilityGrace {
+    static let duration: TimeInterval = 5
+
+    private(set) var unreachableSince: Date?
+
+    mutating func shouldEndHold(phoneReachable: Bool, now: Date) -> Bool {
+        if phoneReachable {
+            unreachableSince = nil
+            return false
+        }
+        guard let unreachableSince else {
+            self.unreachableSince = now
+            return false
+        }
+        return now.timeIntervalSince(unreachableSince) >= Self.duration
+    }
+
+    mutating func reset() {
+        unreachableSince = nil
+    }
+}
+
 enum PendingDecisionRouting {
     static func canStart(_ pending: [PendingDecision], paneID: String) -> Bool {
         !pending.contains { $0.paneID == paneID }
@@ -491,6 +513,7 @@ final class RaiModel: ObservableObject {
     private let userDefaults: UserDefaults
     private let userIdleSeconds: @Sendable () -> TimeInterval
     private let phoneReachableOverride: (@Sendable () -> Bool)?
+    private var phoneReachabilityGrace = PhoneReachabilityGrace()
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private lazy var closedTabStore = ClosedTabStore(userDefaults: userDefaults)
 
@@ -757,14 +780,44 @@ final class RaiModel: ObservableObject {
     }
 
     private func shouldHoldDecision() -> Bool {
+        let inputs = decisionHoldInputs()
+        return DecisionHoldPolicy.shouldHold(
+            featureEnabled: inputs.featureEnabled,
+            userIsAtMac: inputs.userIsAtMac,
+            phoneReachable: inputs.phoneReachable,
+            paneCorrelated: true
+        )
+    }
+
+    private func shouldEndDecisionHold(now: Date) -> Bool {
+        let inputs = decisionHoldInputs()
+        guard DecisionHoldPolicy.shouldHold(
+            featureEnabled: inputs.featureEnabled,
+            userIsAtMac: inputs.userIsAtMac,
+            phoneReachable: true,
+            paneCorrelated: true
+        ) else {
+            phoneReachabilityGrace.reset()
+            return true
+        }
+        return phoneReachabilityGrace.shouldEndHold(
+            phoneReachable: inputs.phoneReachable,
+            now: now
+        )
+    }
+
+    private func decisionHoldInputs() -> (
+        featureEnabled: Bool,
+        userIsAtMac: Bool,
+        phoneReachable: Bool
+    ) {
         let answerEnabled = userDefaults.object(
             forKey: SettingsStore.answerFromPhoneKey
         ) as? Bool ?? true
-        return DecisionHoldPolicy.shouldHold(
+        return (
             featureEnabled: answerEnabled && !notificationsMuted,
             userIsAtMac: userIdleSeconds() < UserPresence.awayAfter,
-            phoneReachable: phoneReachableOverride?() ?? bridgeServer.hasDecisionCapablePhone,
-            paneCorrelated: true
+            phoneReachable: phoneReachableOverride?() ?? bridgeServer.hasDecisionCapablePhone
         )
     }
 
@@ -775,7 +828,8 @@ final class RaiModel: ObservableObject {
                 guard let self,
                       self.pendingDecisions[pending.requestID] != nil
                 else { return }
-                if !self.shouldHoldDecision() || pending.deadline <= Date() {
+                let now = Date()
+                if pending.deadline <= now || self.shouldEndDecisionHold(now: now) {
                     self.finishDecision(requestID: pending.requestID, decision: nil)
                     return
                 }
@@ -786,8 +840,13 @@ final class RaiModel: ObservableObject {
     }
 
     func reevaluatePendingDecisions() {
-        guard !pendingDecisions.isEmpty, !shouldHoldDecision() else { return }
-        finishAllPendingDecisions()
+        guard !pendingDecisions.isEmpty else {
+            phoneReachabilityGrace.reset()
+            return
+        }
+        if shouldEndDecisionHold(now: Date()) {
+            finishAllPendingDecisions()
+        }
     }
 
     @discardableResult
@@ -822,6 +881,9 @@ final class RaiModel: ObservableObject {
         )
         if relaySnapshot, let snapshot {
             bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+        }
+        if pendingDecisions.isEmpty {
+            phoneReachabilityGrace.reset()
         }
         return delivered
     }

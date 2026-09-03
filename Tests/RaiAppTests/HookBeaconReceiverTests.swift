@@ -260,6 +260,52 @@ final class HookBeaconReceiverTests: XCTestCase {
         wait(for: [dripFinished], timeout: 1)
     }
 
+    func testReceiverAcceptsScriptSizedLineAndReportsOverflow() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let received = expectation(description: "70 KiB beacon received")
+        let diagnosed = expectation(description: "oversized line diagnosed")
+        let diagnostic = LockedString()
+        let receiver = HookBeaconReceiver(
+            socketURL: fixture.socketURL,
+            onDiagnostic: { message in
+                diagnostic.set(message)
+                diagnosed.fulfill()
+            },
+            onBeacon: { beacon in
+                XCTAssertEqual(beacon.event, "PreToolUse")
+                received.fulfill()
+            }
+        )
+        try receiver.start()
+        defer { receiver.stop() }
+
+        let largeObject: [String: Any] = [
+            "event": "PreToolUse",
+            "ts": 1_780_000_000,
+            "session_id": "session-1",
+            "cwd": "/repo",
+            "transcript_path": "/tmp/session.jsonl",
+            "tool_name": "Bash",
+            "tool_input": ["description": String(repeating: "x", count: 70 * 1_024)],
+        ]
+        let largeData = try JSONSerialization.data(withJSONObject: largeObject)
+        XCTAssertGreaterThan(largeData.count, 70 * 1_024)
+        let largeSocket = try UnixSocket(path: fixture.socketURL.path)
+        try largeSocket.writeLine(largeData)
+        wait(for: [received], timeout: 2)
+
+        let overflowSocket = try UnixSocket(path: fixture.socketURL.path)
+        _ = try? overflowSocket.writeLine(
+            Data(repeating: 0x7B, count: 256 * 1_024 + 1)
+        )
+        wait(for: [diagnosed], timeout: 2)
+        XCTAssertEqual(
+            diagnostic.value,
+            "Claude hook request exceeded the 256 KiB line limit."
+        )
+    }
+
     func testDecisionReplyReportsAClosedPeer() throws {
         var descriptors = [Int32](repeating: -1, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
@@ -322,6 +368,30 @@ final class HookBeaconReceiverTests: XCTestCase {
             userIsAtMac: false,
             phoneReachable: true,
             paneCorrelated: false
+        ))
+    }
+
+    func testPhoneReachabilityGraceSurvivesTransientLoss() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var grace = PhoneReachabilityGrace()
+
+        XCTAssertFalse(grace.shouldEndHold(phoneReachable: false, now: start))
+        XCTAssertFalse(grace.shouldEndHold(
+            phoneReachable: false,
+            now: start.addingTimeInterval(4.9)
+        ))
+        XCTAssertFalse(grace.shouldEndHold(
+            phoneReachable: true,
+            now: start.addingTimeInterval(5)
+        ))
+        XCTAssertNil(grace.unreachableSince)
+        XCTAssertFalse(grace.shouldEndHold(
+            phoneReachable: false,
+            now: start.addingTimeInterval(10)
+        ))
+        XCTAssertTrue(grace.shouldEndHold(
+            phoneReachable: false,
+            now: start.addingTimeInterval(15)
         ))
     }
 
@@ -413,7 +483,7 @@ final class HookBeaconReceiverTests: XCTestCase {
     }
 
     @MainActor
-    func testHeldDecisionEndsWhenUserReturnsOrPhoneDrops() async throws {
+    func testHeldDecisionEndsForPresenceButSurvivesPhoneReconnect() async throws {
         _ = NSApplication.shared
         let defaultsName = "rai-decision-presence-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
@@ -485,12 +555,22 @@ final class HookBeaconReceiverTests: XCTestCase {
 
         phone.value = false
         try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertNotNil(model.pendingDecisions["request-phone"])
+
+        phone.value = true
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertNotNil(model.pendingDecisions["request-phone"])
+        XCTAssertTrue(model.decide(
+            paneID: "pane-1",
+            requestID: "request-phone",
+            decision: .allow
+        ))
         let phoneCount = Darwin.read(phoneDescriptors[1], &buffer, buffer.count)
 
         XCTAssertGreaterThan(phoneCount, 0)
         XCTAssertEqual(
             String(decoding: buffer.prefix(max(0, phoneCount)), as: UTF8.self),
-            "{\"decision\":\"none\"}\n"
+            "{\"decision\":\"allow\"}\n"
         )
         XCTAssertNil(model.pendingDecisions["request-phone"])
     }
@@ -708,6 +788,23 @@ final class HookBeaconReceiverTests: XCTestCase {
         func set(_ value: AgentBeacon) {
             lock.lock()
             beacon = value
+            lock.unlock()
+        }
+    }
+
+    private final class LockedString: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: String?
+
+        var value: String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func set(_ value: String) {
+            lock.lock()
+            stored = value
             lock.unlock()
         }
     }

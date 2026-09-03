@@ -105,6 +105,8 @@ New phones announce permission decision support during authentication.
 
 Notification permission enables decisions while the app runs in the background.
 
+The phone reads the current system permission each time it enters the foreground.
+
 A denied phone advertises decision support only during a foreground bridge connection.
 
 The Mac does not hold a hook for an old phone alone.

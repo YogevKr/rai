@@ -283,7 +283,9 @@ Non-decision events write no hook output.
 
 The permission handler waits for one JSON response line.
 
-Rai accepts that request line within two seconds and limits it to 64 KiB.
+Rai accepts that request line within two seconds and limits it to 256 KiB.
+
+Rai records a diagnostic when a sender exceeds this limit.
 
 `none`, socket errors, and timeouts write no output.
 
@@ -313,7 +315,9 @@ They include the request ID and an actionable tool question.
 
 A conservative filter protects decision text before it reaches the lock screen.
 
-Credential labels, authorization headers, long digit values, and opaque values use generic text.
+Credential labels, authorization headers, standalone six-digit values, and opaque values use generic text.
+
+Four-digit values require a nearby credential label. Years, versions, and numeric path segments remain visible.
 
 URL query values never reach the lock screen.
 
@@ -365,6 +369,8 @@ The phone also sends `decisionAvailability` when notification or foreground stat
 
 Notification permission enables background decisions. A foreground bridge connection also enables decisions.
 
+The phone reads the current system permission after every foreground transition.
+
 Rai never holds for an old phone without this capability.
 
 The phone shows Approve, Deny, and the remaining hold time.
@@ -381,7 +387,9 @@ Rai holds only when the phone is reachable and the user is away.
 
 Rai checks these conditions each second while it holds a request.
 
-Rai ends the hold when the user returns or all capable phones disconnect.
+Rai ends the hold when the user returns.
+
+Rai allows five seconds for a capable phone to reconnect before it ends the hold.
 
 The feature toggle is on by default in Settings → Integrations.
 

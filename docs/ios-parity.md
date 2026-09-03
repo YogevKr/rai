@@ -84,8 +84,10 @@ All additive, no version bump (old phones skip unknown message types):
 - New phones announce the `permission_decisions` capability.
 - Phones send `decisionAvailability` when notification or foreground state changes.
 - Notification permission enables background decisions.
+- Each foreground transition refreshes the system notification authorization state.
 - A foreground bridge connection also enables decisions without notification permission.
 - The Mac never holds a request for an old phone alone.
+- A five-second reachability grace keeps brief phone reconnects from closing a held request.
 - Held choices map only exact Yes and No labels.
 - The phone hides other held choices and directs users to the Mac.
 - Countdown math uses elapsed phone time and does not trust matching wall clocks.
