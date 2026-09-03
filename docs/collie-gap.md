@@ -118,23 +118,34 @@ taking later: a single "All sessions" triage list.
   consent gate.
 - 34 ADRs with sentence titles and a "what would justify revisiting" section.
 
-## Build plan (2026-09-02)
+## Build plan (2026-09-02) — outcome (2026-09-03)
 
-Wave 1 — independent worktrees, one Codex job each:
+Wave 1 ran as five Codex jobs in worktrees, each reviewed with
+`codex review --base main` until a round came back clean, then merged onto
+main behind the full Mac and iOS test suites.
 
-1. **guarded-send** (iOS): verified send + no-echo prompt guard (items 1, 4).
-2. ✅ **device-pairing** (Mac bridge + iOS): pairing codes with TTL/attempts,
-   per-device tokens, revoke, audit log (item 5). LAN TLS remains open.
-3. **push-intelligence ✅ complete** (Mac + iOS notification delegate): coalescing,
-   thread grouping, phone-side retraction, test push + Doctor in
-   Settings → iPhone (items 6, 10).
-4. ✅ **offline-resilience** (iOS): cached last snapshot with "last seen",
-   connection-cause diagnosis (items 7, 9 phone side).
-5. ✅ **hook-beacons** (Mac + hook script): Claude Code hook receiver, pane
-   correlation via `HERDR_PANE_ID`, push body carries the question, beacon
-   exposed over the bridge (item 2, Mac half).
+| Branch | Review rounds | Result |
+| --- | --- | --- |
+| device-pairing (item 5) | 2 | ✅ merged b6ac85f — codes, per-device tokens, revoke, audit log, protocol 6 |
+| offline-resilience (items 7, 9 phone side) | 2 | ✅ merged 9b43b30 — cached herd, last-seen stamp, diagnosed reconnects |
+| push-intelligence (items 6, 10) | 2 | ✅ merged 5b9285e — coalescing, thread grouping, retraction, Doctor, test push |
+| hook-beacons (item 2, Mac half) | 4 | ✅ merged 66a7284 — hook receiver, pane correlation, question in the push; verified live against Claude 2.1.259 in an isolated herdr pane |
+| guarded-send (items 1, 4) | 9 | ⛔ **not merged** — branch `codexspin/rai-guarded-send-0902-230810-o108` (last commit 27534d9, 98 iOS tests) |
 
-Wave 2: structured prompt blocks fed by beacons (AskUserQuestion, plan,
-multi-select) on iOS; transcript history view; operator config files;
-phone-side notification prefs (per-kind, snooze) on top of wave-1 protocol;
-bridge error codes on the Mac side; statusline strip.
+Why guarded-send stayed out: every review round found a new P1 in the
+send/Enter/outbox state machine (blind Enter after a rejected text write,
+duplicate replay of an uncertain queued line, a stale shell/agent policy,
+and finally a regression in the *unverified* default path that dropped the
+300 ms settle before Enter). The branch grew to ~2 800 lines of layered
+guards. Wave 2 should redesign it with a smaller contract: the unverified
+path stays byte-identical to today's send; no outbox replay while any send
+is uncertain; one evidence model per pane kind (agent input box vs. shell
+prompt), decided from the input rows only; and a live check on a real
+Claude and a real shell pane before merge. The password-prompt guard
+(item 4) is small and should ship on its own first.
+
+Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
+(AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
+dialogs) on iOS; transcript history view; operator config files;
+phone-side notification prefs (per-kind, snooze) on top of protocol 6;
+bridge error codes on the Mac side; statusline strip; LAN TLS.
