@@ -1,15 +1,43 @@
 import SwiftUI
 import UIKit
 import UserNotifications
+import RaiCore
+
+enum PhoneNotificationAction {
+    static let category = "agent-attention"
+    static let decisionCategory = "permission-decision"
+    static let approve = "Approve"
+    static let deny = "Deny"
+    static let reply = "Reply"
+}
+
+enum PhoneNotificationResponsePlan: Equatable {
+    case decide(RemotePermissionDecision, requestID: String)
+    case input([UInt8])
+    case open
+
+    static func make(
+        actionIdentifier: String,
+        requestID: String?,
+        replyText: String? = nil
+    ) -> PhoneNotificationResponsePlan {
+        switch actionIdentifier {
+        case PhoneNotificationAction.approve:
+            if let requestID { return .decide(.allow, requestID: requestID) }
+            return .input([0x0D])
+        case PhoneNotificationAction.deny:
+            if let requestID { return .decide(.deny, requestID: requestID) }
+            return .input([0x1B])
+        case PhoneNotificationAction.reply:
+            guard let replyText else { return .open }
+            return .input(Array(replyText.utf8) + [0x0D])
+        default:
+            return .open
+        }
+    }
+}
 
 final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    private enum NotificationAction {
-        static let category = "agent-attention"
-        static let approve = "Approve"
-        static let deny = "Deny"
-        static let reply = "Reply"
-    }
-
     weak var appModel: AppModel? {
         didSet {
             if let deviceToken {
@@ -50,20 +78,37 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         center.delegate = self
         center.setNotificationCategories([
             UNNotificationCategory(
-                identifier: NotificationAction.category,
+                identifier: PhoneNotificationAction.decisionCategory,
                 actions: [
                     UNNotificationAction(
-                        identifier: NotificationAction.approve,
+                        identifier: PhoneNotificationAction.approve,
                         title: "Approve",
                         options: [.authenticationRequired]
                     ),
                     UNNotificationAction(
-                        identifier: NotificationAction.deny,
+                        identifier: PhoneNotificationAction.deny,
+                        title: "Deny",
+                        options: [.authenticationRequired, .destructive]
+                    ),
+                ],
+                intentIdentifiers: [],
+                options: []
+            ),
+            UNNotificationCategory(
+                identifier: PhoneNotificationAction.category,
+                actions: [
+                    UNNotificationAction(
+                        identifier: PhoneNotificationAction.approve,
+                        title: "Approve",
+                        options: [.authenticationRequired]
+                    ),
+                    UNNotificationAction(
+                        identifier: PhoneNotificationAction.deny,
                         title: "Deny",
                         options: [.authenticationRequired, .destructive]
                     ),
                     UNTextInputNotificationAction(
-                        identifier: NotificationAction.reply,
+                        identifier: PhoneNotificationAction.reply,
                         title: "Reply",
                         options: [.authenticationRequired],
                         textInputButtonTitle: "Send",
@@ -129,20 +174,34 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             }
             return
         }
-        let bytes: [UInt8]?
-        switch response.actionIdentifier {
-        case NotificationAction.approve:
-            bytes = [0x0D]
-        case NotificationAction.deny:
-            bytes = [0x1B]
-        case NotificationAction.reply:
-            guard let response = response as? UNTextInputNotificationResponse else { return }
-            bytes = Array(response.userText.utf8) + [0x0D]
-        default:
-            bytes = nil
-        }
+        let plan = PhoneNotificationResponsePlan.make(
+            actionIdentifier: response.actionIdentifier,
+            requestID: userInfo["request_id"] as? String,
+            replyText: (response as? UNTextInputNotificationResponse)?.userText
+        )
 
-        if let bytes {
+        switch plan {
+        case let .decide(decision, requestID):
+            let delivered: Bool
+            if let appModel {
+                delivered = await appModel.sendNotificationDecision(
+                    decision,
+                    requestID: requestID,
+                    paneID: paneID
+                )
+            } else if let pairing = PairingStore().load() {
+                let connection = await MainActor.run { BridgeConnection() }
+                delivered = await connection.connectAndDecide(
+                    decision,
+                    requestID: requestID,
+                    paneID: paneID,
+                    pairing: pairing
+                )
+            } else {
+                delivered = false
+            }
+            if delivered { return }
+        case let .input(bytes):
             let delivered: Bool
             if let appModel {
                 delivered = await appModel.sendNotificationInput(bytes, to: paneID)
@@ -157,6 +216,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                 delivered = false
             }
             if delivered { return }
+        case .open:
+            break
         }
         await openPane(paneID)
     }

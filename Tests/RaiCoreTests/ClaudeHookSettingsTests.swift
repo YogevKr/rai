@@ -33,6 +33,15 @@ final class ClaudeHookSettingsTests: XCTestCase {
                 event: event
             )
             XCTAssertEqual(commandCount(command, in: groups), 1)
+            let raiHandler = groups
+                .compactMap { $0["hooks"] as? [[String: Any]] }
+                .flatMap { $0 }
+                .first { ($0["command"] as? String) == command }
+            XCTAssertEqual(
+                raiHandler?["timeout"] as? Int,
+                event == "PermissionRequest" ? 60 : 2
+            )
+            XCTAssertEqual(raiHandler?["async"] as? Bool, event == "PermissionRequest" ? nil : true)
         }
     }
 
@@ -62,6 +71,32 @@ final class ClaudeHookSettingsTests: XCTestCase {
         let root = try object(merged)
         XCTAssertNotNil(root["permissions"])
         XCTAssertNotNil(root["hooks"])
+    }
+
+    func testChangingHoldReplacesPermissionHandler() throws {
+        let first = try ClaudeHookSettings.merged(
+            settings: nil,
+            scriptPath: scriptPath,
+            decisionHoldSeconds: 45
+        )
+        let second = try ClaudeHookSettings.merged(
+            settings: first,
+            scriptPath: scriptPath,
+            decisionHoldSeconds: 60
+        )
+        let hooks = try XCTUnwrap(try object(second)["hooks"] as? [String: Any])
+        let groups = try XCTUnwrap(hooks["PermissionRequest"] as? [[String: Any]])
+        let handlers = groups.compactMap { $0["hooks"] as? [[String: Any]] }.flatMap { $0 }
+        XCTAssertEqual(handlers.count, 1)
+        XCTAssertEqual(handlers[0]["timeout"] as? Int, 75)
+        XCTAssertEqual(
+            handlers[0]["command"] as? String,
+            ClaudeHookSettings.hookCommand(
+                scriptPath: scriptPath,
+                event: "PermissionRequest",
+                decisionHoldSeconds: 60
+            )
+        )
     }
 
     private func fixture(named name: String) throws -> Data {

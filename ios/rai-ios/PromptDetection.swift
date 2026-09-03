@@ -1,4 +1,5 @@
 import Foundation
+import RaiCore
 
 struct PromptOption: Equatable, Identifiable {
     let digit: Int
@@ -10,6 +11,31 @@ struct PromptOption: Equatable, Identifiable {
 struct PromptModel: Equatable {
     let options: [PromptOption]
     let signature: String
+}
+
+enum PermissionPromptDecisionMap {
+    static func decision(for option: PromptOption) -> RemotePermissionDecision? {
+        let label = option.label.lowercased()
+        if label.contains("always")
+            || label.contains("don't ask")
+            || label.contains("do not ask")
+            || label.contains("auto mode") {
+            return nil
+        }
+        if label == "yes" || label.hasPrefix("yes ") { return .allow }
+        // The hook supports only allow or deny. The product maps Claude's
+        // feedback-style No row to deny and keeps durable choices on the Mac.
+        if label == "no" || label.hasPrefix("no ") || label.hasPrefix("no,") {
+            return .deny
+        }
+        return nil
+    }
+}
+
+enum PermissionPromptTransport {
+    static func usesLegacyKeys(beacon: AgentBeacon?) -> Bool {
+        beacon?.requestID == nil
+    }
 }
 
 enum PromptDetector {

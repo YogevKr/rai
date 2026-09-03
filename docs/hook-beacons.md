@@ -2,7 +2,9 @@
 
 This document records the hook research for Rai beacon support.
 
-The research used Claude Code 2.1.258 on 2026-09-02.
+The first research used Claude Code 2.1.258 on 2026-09-02.
+
+The decision check used Claude Code 2.1.259 on 2026-09-03.
 
 Sources:
 
@@ -43,6 +45,26 @@ An ordinary `PreToolUse` supplies tool context but is not pending by itself.
 The probe could not load `AskUserQuestion` in print mode.
 
 Its input shape remains documentation-backed, not probe-backed.
+
+### Interactive decision check
+
+The decision check ran Claude in an isolated herdr lab pane.
+
+It used a temporary settings file and a fake Unix socket server.
+
+The socket path stayed below macOS's 104-byte Unix path limit.
+
+The fake server returned `allow` for `touch allow-created`.
+
+Claude ran the command without a permission dialog.
+
+Claude showed `Allowed by PermissionRequest hook` after the command.
+
+The fake server then returned `none` for `touch none-created`.
+
+Claude showed its normal four-choice permission dialog.
+
+The second command did not run.
 
 ## Event input
 
@@ -239,13 +261,27 @@ The settings command uses that stable copy.
 
 An application bundle path can change during replacement or an update.
 
-Each handler uses Claude Code asynchronous hook mode.
+The `PermissionRequest` handler runs in synchronous mode.
+
+Its timeout equals the selected hold time plus 15 seconds.
+
+The hold time defaults to 45 seconds and has a 60-second limit.
+
+All other handlers use Claude Code asynchronous hook mode.
 
 The script writes through `nc -U` with a one-second timeout.
 
 It uses Python socket code when `nc` fails or is absent.
 
-The script always exits zero and writes no decision output.
+The script always exits zero.
+
+Non-decision events write no hook output.
+
+The permission handler waits for one JSON response line.
+
+`none`, socket errors, and timeouts write no output.
+
+Claude then uses its normal local permission dialog.
 
 ## Notification and bridge use
 
@@ -265,9 +301,17 @@ Other Bash requests show only the executable name, without arguments.
 
 Mac notifications and APNs pushes use the same body builder.
 
-APNs pushes with structured beacon text are tap-only.
+Held permission pushes include Approve and Deny actions.
 
-They do not attach the phone's blind Approve, Deny, or Reply actions.
+They include the request ID and an actionable tool question.
+
+Direct file commands show their command and path.
+
+Other shell commands keep the existing safe summary.
+
+Held pushes bypass the presence delay and never coalesce.
+
+Other structured beacon pushes remain tap-only.
 
 Fallback pushes also stay tap-only while Rai-managed hooks are installed.
 
@@ -283,26 +327,66 @@ Blocked sidebar rows show the same pending summary.
 
 Bridge snapshot panes now have an optional `beacon` field.
 
+A waiting beacon adds `request_id`, `awaits_decision`, and `deadline`.
+
+The phone sends `decide` with the pane, request ID, and decision.
+
+The Mac returns `decisionResult` after it accepts or rejects that request.
+
+The Mac audits this write like other phone writes.
+
+An expired or unknown request returns `That prompt already closed`.
+
+Rai retracts the request-specific action push when the request closes.
+
+Rai holds one request per pane because one pane exposes one current beacon.
+
+Concurrent requests across panes keep separate notification identities.
+
 This additive field does not change the merged bridge protocol version 6.
 
 Old phone decoders ignore unknown object fields.
 
-The shared phone model now decodes the field without showing new UI.
+Phones announce decision support during bridge authentication.
 
-## Future permission decisions
+Rai never holds for an old phone without this capability.
 
-A decision hook could return `allow` or `deny` for `PermissionRequest`.
+The phone shows Approve, Deny, and the remaining hold time.
 
-The phone could then approve a tool without terminal keystrokes.
+## Permission decisions
 
-That path needs per-request identity and authenticated decision delivery.
+Rai adds a UUID request ID to each `PermissionRequest` beacon.
 
-It also needs expiry, replay protection, and a visible audit record.
+The hook keeps its socket open while the Mac holds the request.
 
-A stale approval could authorize a different tool request.
+The beacon carries the installed hold time to set the same deadline.
 
-A broad approval could change later Claude Code permission policy.
+Rai holds only when the phone is reachable and the user is away.
 
-A lost response could leave Claude blocked or cause an unsafe retry.
+The feature toggle is on by default in Settings → Integrations.
 
-This task sends no decisions.
+Notification mute disables holds and decision pushes.
+
+The Mac bridge must run before Rai holds a request.
+
+Rai answers `none` when it cannot correlate the pane.
+
+It also answers `none` when the hold expires or the herd changes.
+
+An allowed response uses this Claude hook output:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+```
+
+A denied response includes a message:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Rai Remote"}}}
+```
+
+These shapes match the Claude hooks reference and the interactive check.
+
+Always-allow and auto-mode choices stay on the Mac.
+
+Older Macs and beacons without request IDs keep the key-based phone path.

@@ -404,13 +404,11 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
-                            deny: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
                                 : nil
                         )
                     }
@@ -434,7 +432,13 @@ struct MonitorView: View {
                     NavigationLink(value: item.pane.paneID) {
                         NightAgentRow(
                             item: item,
-                            backgroundWork: backgroundWork(for: item.pane)
+                            backgroundWork: backgroundWork(for: item.pane),
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
+                                : nil,
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
+                                : nil
                         )
                     }
                     .listRowBackground(Night.row)
@@ -553,13 +557,11 @@ struct MonitorView: View {
                         NightAgentRow(
                             item: item,
                             backgroundWork: backgroundWork(for: item.pane),
-                            approve: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x0D], to: item.pane.paneID) }
+                            approve: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .allow, fallback: [0x0D]) }
                                 : nil,
-                            deny: connection.status.isConnected
-                                && item.pane.agentStatus == .blocked
-                                ? { connection.sendInput([0x1B], to: item.pane.paneID) }
+                            deny: canAnswer(item.pane)
+                                ? { answer(item.pane, decision: .deny, fallback: [0x1B]) }
                                 : nil
                         )
                     }
@@ -576,6 +578,27 @@ struct MonitorView: View {
                 hot: filter == .needsYou
             )
         }
+    }
+
+    private func answer(
+        _ pane: Pane,
+        decision: RemotePermissionDecision,
+        fallback: [UInt8]
+    ) {
+        if let requestID = pane.beacon?.requestID {
+            guard pane.beacon?.awaitsDecision == true else { return }
+            connection.decide(decision, requestID: requestID, paneID: pane.paneID)
+            return
+        }
+        connection.sendInput(fallback, to: pane.paneID)
+    }
+
+    private func canAnswer(_ pane: Pane) -> Bool {
+        guard connection.status.isConnected else { return false }
+        if pane.beacon?.requestID != nil {
+            return pane.beacon?.awaitsDecision == true
+        }
+        return pane.agentStatus == .blocked
     }
 }
 
@@ -959,6 +982,17 @@ private struct NightAgentRow: View {
                             + Text(activity).foregroundStyle(Night.faint))
                             .font(.caption.monospaced())
                             .lineLimit(1)
+                    }
+                    if let beacon = item.pane.beacon,
+                       beacon.awaitsDecision,
+                       let deadline = beacon.deadline {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(
+                                "held for you · \(max(0, Int(ceil(deadline.timeIntervalSince(context.date))))) s"
+                            )
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Night.amber)
+                        }
                     }
                 }
                 Spacer(minLength: 4)

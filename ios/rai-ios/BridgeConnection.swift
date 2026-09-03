@@ -289,6 +289,7 @@ final class BridgeConnection: ObservableObject {
     // while reconnecting is routine on a phone) is retried on the next
     // welcome instead of being skipped forever.
     private var seededPanes: Set<String> = []
+    private var decisionWaiters: [String: CheckedContinuation<Bool, Never>] = [:]
 
     func connect(to pairing: Pairing) {
         let changesMac = self.pairing.map { $0 != pairing } ?? false
@@ -502,6 +503,14 @@ final class BridgeConnection: ObservableObject {
         sendAction(.sendKeys(paneID: paneID, keys: keys))
     }
 
+    func decide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String
+    ) {
+        sendAction(.decide(paneID: paneID, requestID: requestID, decision: decision))
+    }
+
     func sendInput(_ bytes: [UInt8], to paneID: String) {
         Task {
             do {
@@ -642,6 +651,45 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    func connectAndDecide(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String,
+        pairing: Pairing
+    ) async -> Bool {
+        if !status.isConnected {
+            connect(to: pairing)
+            for _ in 0..<80 {
+                if status.isConnected { break }
+                if requiresRepair { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return false }
+            }
+        }
+        guard status.isConnected else { return false }
+        guard decisionWaiters[requestID] == nil else { return false }
+        return await withCheckedContinuation { continuation in
+            decisionWaiters[requestID] = continuation
+            Task {
+                do {
+                    try await send(
+                        .decide(
+                            paneID: paneID,
+                            requestID: requestID,
+                            decision: decision
+                        )
+                    )
+                } catch {
+                    resolveDecision(requestID: requestID, accepted: false)
+                    handleSocketFailure(error)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(5))
+                resolveDecision(requestID: requestID, accepted: false)
+            }
+        }
+    }
+
     func registerPush(deviceToken: String, environment: String) {
         Task {
             do {
@@ -718,7 +766,8 @@ final class BridgeConnection: ObservableObject {
             deviceID: deviceID,
             name: UIDevice.current.name,
             platform: "iOS",
-            model: UIDevice.current.model
+            model: UIDevice.current.model,
+            capabilities: [BridgeCapability.permissionDecisions]
         )
     }
 
@@ -850,13 +899,20 @@ final class BridgeConnection: ObservableObject {
             } else {
                 status = .failed(.bridgeError(message, host: host))
             }
+        case let .paneError(_, message):
+            actionError = message
+        case let .decisionResult(_, requestID, accepted, message):
+            if !accepted {
+                actionError = message ?? "That prompt already closed"
+            }
+            resolveDecision(requestID: requestID, accepted: accepted)
         case .event:
             break
         case .pair, .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
-             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
+             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys, .decide,
              .listSessions, .selectSession:
             break
         }
@@ -973,6 +1029,7 @@ final class BridgeConnection: ObservableObject {
         _ error: Error,
         from socket: URLSessionWebSocketTask? = nil
     ) {
+        resolveAllDecisions(accepted: false)
         guard shouldReconnect, !(error is CancellationError) else { return }
         if let socket, task !== socket {
             return
@@ -1008,9 +1065,11 @@ final class BridgeConnection: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .failed(diagnosis)
+        resolveAllDecisions(accepted: false)
     }
 
     private func disconnect(clearPairing: Bool, clearSnapshot: Bool) {
+        resolveAllDecisions(accepted: false)
         shouldReconnect = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -1031,6 +1090,18 @@ final class BridgeConnection: ObservableObject {
         if clearPairing {
             pairing = nil
             invitation = nil
+        }
+    }
+
+    private func resolveDecision(requestID: String, accepted: Bool) {
+        decisionWaiters.removeValue(forKey: requestID)?.resume(returning: accepted)
+    }
+
+    private func resolveAllDecisions(accepted: Bool) {
+        let waiters = Array(decisionWaiters.values)
+        decisionWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: accepted)
         }
     }
 

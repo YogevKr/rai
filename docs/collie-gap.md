@@ -47,7 +47,7 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    cheap. Carry two facts: Claude collapses pastes over ~400 chars into a
    `[Pasted text #N]` token (Collie ADR 0010), and Codex keeps only 1024
    chars of one send (`[Pasted Content N chars]`).
-2. **Agent hooks as the source of truth — LANDED on Mac (2026-09-02).** Rai
+2. **Agent hooks as the source of truth — LANDED (2026-09-03).** Rai
    installs Claude hooks so a
    pane reports its name, status and session ref ("beacons"). Collie admits
    its push body cannot carry the question because parsing is client-side
@@ -55,9 +55,10 @@ diagnosis; read-only tier + audit log; draft take-over; per-pane display prefs.
    `PreToolUse` hook posting tool name, tool input, `session_id` and
    `HERDR_PANE_ID` to the Mac gives the push a real body ("Run `bun run
    build` in ~/src/collie?") and gives AskUserQuestion its options as data.
-   Grid parsing stays as the fallback and as the race guard. The Mac receiver,
-   notification bodies, bridge field, and sidebar text now ship. Structured
-   phone prompt controls remain in wave 2.
+   Grid parsing stays as the fallback and as the race guard.
+   The Mac receiver, notification bodies, bridge field, and sidebar text ship.
+   Permission requests now use authenticated data decisions from the phone.
+   Request IDs, deadlines, audit records, and key fallback close stale-answer races.
 3. **History from the transcript, not the screen.** Claude runs on the
    alternate screen, so the grid has no scrollback ring. Collie reads the
    agent's own JSONL transcript (`bridge/journal/`) and offers
@@ -144,7 +145,11 @@ prompt), decided from the input rows only; and a live check on a real
 Claude and a real shell pane before merge. The password-prompt guard
 (item 4) is small and should ship on its own first.
 
-Wave 2 (unchanged otherwise): structured prompt blocks fed by beacons
+Wave 2 decision hooks landed on 2026-09-03.
+
+They add structured permission decisions, direct pushes, and phone countdowns.
+
+Wave 2 remains: structured prompt blocks fed by beacons
 (AskUserQuestion, plan, multi-select, and the unnumbered `hideIndexes`
 dialogs) on iOS; transcript history view; operator config files;
 phone-side notification prefs (per-kind, snooze) on top of protocol 6;

@@ -54,7 +54,7 @@ terminal widget**.
 - **Drag to reorder** tabs and spaces; **double-click** to rename a tab or pane.
 - **Native notifications** + dock badge when an agent goes *blocked* or *done*.
 - **Claude hook beacons** put real tool requests or questions in notifications
-  and blocked sidebar rows, with no permission decisions.
+  and blocked sidebar rows. Rai Remote can answer waiting permission requests.
 - **Command palette** (⌘K) for fuzzy navigation.
 - **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
@@ -82,7 +82,8 @@ crook for the herd:
   while you were away.
 - **Answer Claude without reading a TUI** — permission and choice dialogs
   render as native tappable buttons, race-guarded so a stale tap can never
-  answer the wrong prompt.
+  answer the wrong prompt. Permission hooks send data decisions, with keys
+  as the fallback for older Macs.
 - **Type for real** — a compose bar with quick replies and an agent-aware
   slash-command palette, or put the keyboard straight into the pty; input
   rides herdr's key semantics, so Enter submits and Backspace erases.

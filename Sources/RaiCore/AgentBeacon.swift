@@ -21,6 +21,10 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
     public let lastAssistantMessage: String?
     public let timestamp: TimeInterval
     public let parentPID: Int?
+    public let requestID: String?
+    public let awaitsDecision: Bool
+    public let decisionHoldSeconds: Int?
+    public let deadline: Date?
 
     public init(
         event: String,
@@ -35,7 +39,11 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         message: String? = nil,
         lastAssistantMessage: String? = nil,
         timestamp: TimeInterval,
-        parentPID: Int? = nil
+        parentPID: Int? = nil,
+        requestID: String? = nil,
+        awaitsDecision: Bool = false,
+        decisionHoldSeconds: Int? = nil,
+        deadline: Date? = nil
     ) {
         self.event = event
         self.paneID = paneID
@@ -50,6 +58,10 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         self.lastAssistantMessage = Self.boundedSuffix(lastAssistantMessage)
         self.timestamp = timestamp
         self.parentPID = parentPID
+        self.requestID = requestID
+        self.awaitsDecision = awaitsDecision
+        self.decisionHoldSeconds = decisionHoldSeconds
+        self.deadline = deadline
     }
 
     enum CodingKeys: String, CodingKey {
@@ -66,6 +78,10 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         case lastAssistantMessage = "last_assistant_message"
         case timestamp = "ts"
         case parentPID = "parent_pid"
+        case requestID = "request_id"
+        case awaitsDecision = "awaits_decision"
+        case decisionHoldSeconds = "decision_hold_seconds"
+        case deadline
     }
 
     public init(from decoder: Decoder) throws {
@@ -95,6 +111,14 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         )
         timestamp = try container.decode(TimeInterval.self, forKey: .timestamp)
         parentPID = try container.decodeIfPresent(Int.self, forKey: .parentPID)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
+        awaitsDecision = try container.decodeIfPresent(Bool.self, forKey: .awaitsDecision)
+            ?? false
+        decisionHoldSeconds = try container.decodeIfPresent(
+            Int.self,
+            forKey: .decisionHoldSeconds
+        )
+        deadline = try container.decodeIfPresent(Date.self, forKey: .deadline)
     }
 
     /// Adds tool data from the preceding PreToolUse or PermissionRequest event.
@@ -120,7 +144,33 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
             message: message,
             lastAssistantMessage: lastAssistantMessage,
             timestamp: timestamp,
-            parentPID: parentPID ?? previous.parentPID
+            parentPID: parentPID ?? previous.parentPID,
+            requestID: requestID,
+            awaitsDecision: awaitsDecision,
+            decisionHoldSeconds: decisionHoldSeconds,
+            deadline: deadline
+        )
+    }
+
+    public func withDecisionState(awaiting: Bool, deadline: Date?) -> AgentBeacon {
+        AgentBeacon(
+            event: event,
+            paneID: paneID,
+            herdrSocketPath: herdrSocketPath,
+            sessionID: sessionID,
+            cwd: cwd,
+            transcriptPath: transcriptPath,
+            toolName: toolName,
+            toolInput: toolInput,
+            notificationType: notificationType,
+            message: message,
+            lastAssistantMessage: lastAssistantMessage,
+            timestamp: timestamp,
+            parentPID: parentPID,
+            requestID: requestID,
+            awaitsDecision: awaiting,
+            decisionHoldSeconds: decisionHoldSeconds,
+            deadline: deadline
         )
     }
 
@@ -135,6 +185,28 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         guard let toolName else { return oneLine(message) }
         guard let detail = toolDetail else { return toolName }
         return Self.oneLine("\(toolName): \(detail)")
+    }
+
+    /// Actionable permission question for an authenticated decision push.
+    /// Shell commands keep full arguments only for direct file operations.
+    public var permissionDecisionSummary: String? {
+        guard event == "PermissionRequest", let toolName else { return pendingSummary }
+        guard case let .object(input)? = toolInput else { return toolName }
+        let keys = toolName == "Bash"
+            ? ["command", "description"]
+            : ["file_path", "notebook_path", "path", "url", "query", "description"]
+        for key in keys {
+            if case let .string(value)? = input[key], let summary = Self.oneLine(value) {
+                if toolName == "Bash", key == "command" {
+                    return "Bash: \(Self.safeDecisionBashSummary(summary) ?? "shell command")"
+                }
+                if key == "url" {
+                    return "\(toolName): \(Self.safeURLSummary(summary) ?? "remote URL")"
+                }
+                return "\(toolName): \(summary)"
+            }
+        }
+        return pendingSummary ?? toolName
     }
 
     public var completionSummary: String? {
@@ -250,6 +322,29 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
         return tokens.count == 1 ? executable : "\(executable) …"
     }
 
+    private static func safeDecisionBashSummary(_ rawCommand: String) -> String? {
+        guard let command = oneLine(rawCommand) else { return nil }
+        let tokens = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let first = tokens.first else { return nil }
+        let executable = URL(fileURLWithPath: first).lastPathComponent
+        let fileCommands: Set<String> = [
+            "touch", "rm", "mkdir", "rmdir", "cp", "mv", "ln", "chmod",
+        ]
+        guard fileCommands.contains(executable),
+              command.rangeOfCharacter(
+                  from: CharacterSet(charactersIn: ";|&><`$'\"{}()")
+              ) == nil,
+              !tokens.contains(where: { $0.contains("://") }),
+              tokens.allSatisfy({
+                  $0.range(
+                      of: #"^-?[A-Za-z0-9_./@%+=:,~-]+$"#,
+                      options: .regularExpression
+                  ) != nil
+              })
+        else { return safeBashSummary(command) }
+        return command
+    }
+
     private func oneLine(_ value: String?) -> String? {
         value.flatMap(Self.oneLine)
     }
@@ -344,6 +439,13 @@ public enum AgentNotificationBody {
             status == .working ? "Working" : "Idle"
         }
         return redactingSecrets(in: body, isCompletion: status == .done)
+    }
+
+    public static func composeDecision(beacon: AgentBeacon) -> String {
+        redactingSecrets(
+            in: beacon.permissionDecisionSummary ?? "Needs you",
+            isCompletion: false
+        )
     }
 
     private static func redactingSecrets(

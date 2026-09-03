@@ -26,6 +26,7 @@
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
 		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
 		A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */; };
+		B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */; };
 		C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */; };
 		E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */; };
 		F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ECD4F2FE845F00F88608F /* MonitorView.swift */; };
@@ -55,13 +56,14 @@
 		48E9B4094B34953B946FDDDD /* Composer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composer.swift; sourceTree = "<group>"; };
 		4D6CB9C5D62403E91A70DA89 /* PaneTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTerminalView.swift; sourceTree = "<group>"; };
 		5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdListLayoutTests.swift; sourceTree = "<group>"; };
-		5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-hook-beacons-0902-230811-70z1"; path = ..; sourceTree = SOURCE_ROOT; };
 		7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetectionTests.swift; sourceTree = "<group>"; };
 		7BE1878923A0D1203A33641D /* PairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingTests.swift; sourceTree = "<group>"; };
+		8357E2C8052CA7D95FC84CDE /* rai-decision-hooks-0903-105140-m3r0 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-decision-hooks-0903-105140-m3r0"; path = ..; sourceTree = SOURCE_ROOT; };
 		9104D912B4487B9223AD236C /* PromptDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDetection.swift; sourceTree = "<group>"; };
 		970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
 		9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandler.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDecisionTests.swift; sourceTree = "<group>"; };
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C28A9944E5B3DBD0E0B55C06 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
@@ -85,7 +87,7 @@
 		2DA318A8F4154999D3174BCB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				5EB79DC9876FF79A9C7AA820 /* rai-hook-beacons-0902-230811-70z1 */,
+				8357E2C8052CA7D95FC84CDE /* rai-decision-hooks-0903-105140-m3r0 */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -98,6 +100,7 @@
 				2B8BBB6E4509632BAFE163AF /* OfflineResilienceTests.swift */,
 				3A18C263735F80641EEDBADC /* OutboxTests.swift */,
 				7BE1878923A0D1203A33641D /* PairingTests.swift */,
+				B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
 			);
@@ -246,6 +249,7 @@
 				88BD7D532E56C7B98D8A5630 /* OfflineResilienceTests.swift in Sources */,
 				1CDC860253486FEBDFD6670B /* OutboxTests.swift in Sources */,
 				55955DFEDD48E164A1925C4F /* PairingTests.swift in Sources */,
+				B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
 			);

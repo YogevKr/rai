@@ -332,6 +332,12 @@ struct BridgeAuditEvent: Equatable {
             )
         case let .sendKeys(paneID, keys):
             self.init(action: "sendKeys", targets: ["pane_id": paneID], text: keys.joined(separator: " "))
+        case let .decide(paneID, requestID, decision):
+            self.init(
+                action: "decide",
+                targets: ["pane_id": paneID, "request_id": requestID],
+                text: decision.rawValue
+            )
         case let .sendImage(paneID, bytesBase64, _):
             self.init(
                 action: "sendImage",
@@ -371,7 +377,8 @@ struct BridgeAuditEvent: Equatable {
             self.init(action: "selectSession", targets: ["session": name])
         case .pair, .hello, .subscribe, .attachStream, .detachStream, .readScrollback,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
-             .paneFrame, .scrollback, .backgroundWork, .sessions, .error:
+             .paneFrame, .scrollback, .backgroundWork, .sessions, .error, .paneError,
+             .decisionResult:
             return nil
         }
     }

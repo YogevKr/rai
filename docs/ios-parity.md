@@ -6,7 +6,7 @@ bridge, and what *should* exist on the phone. The phone is deliberately a
 "everything you'd want while away from the Mac", not a 1:1 clone of a
 30-inch-display UI.
 
-Audited 2026-09-02 against `main` (bridge protocol v6).
+Audited 2026-09-03 against `main` (bridge protocol v6).
 
 ## Parity matrix
 
@@ -22,6 +22,7 @@ Audited 2026-09-02 against `main` (bridge protocol v6).
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
 | Notifications on blocked/done | native macOS + dock badge | APNs bursts, workspace groups, actions, retraction, tap-to-open | ✅ parity (physical delivery not verified) |
+| Permission decisions | local Claude dialog | data decision, deadline, key fallback | ✅ parity (physical push action not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
 | Rename / close **workspace** | context menu | — | ⚠️ gap: needs `renameWorkspace` / `closeWorkspace` bridge messages |
 | Broadcast input to all panes in tab | toolbar action | — | ⚠️ gap: needs `broadcastInput` bridge message |
@@ -70,6 +71,20 @@ All additive, no version bump (old phones skip unknown message types):
   The shared iOS model decodes it, but phone prompt controls remain in wave 2.
 - The beacon field is additive within protocol v6. It does not require another bump.
 
+## Decision hooks LANDED (2026-09-03)
+
+- Permission beacons include a request ID, wait flag, and deadline.
+- The phone sends `decide` for Approve and Deny.
+- Unknown and expired requests return a pane-scoped decision error.
+- Decision results let notification actions confirm Mac acceptance.
+- Rai retracts decision pushes when each request closes.
+- Waiting requests bypass push delay and never coalesce.
+- The phone shows a countdown in the pane and herd row.
+- Notification actions keep key input for older Macs.
+- New phones announce the `permission_decisions` capability.
+- The Mac never holds a request for an old phone alone.
+- These messages are additive within protocol v6.
+
 ## Backlog (value order)
 
 1. **Workspace ops over the bridge** — `renameWorkspace` / `closeWorkspace`
@@ -96,6 +111,12 @@ new `pair` message sends a short code, protocol version, and device data. The
 `paired` reply returns one device credential once. The phone confirms it with
 `hello`. A lost reply can retry the code until expiry. Later connections also
 use `hello`.
+
+The `decide`, `decisionResult`, and `paneError` messages remain additive in protocol version 6.
+
+Old phones skip the waiting beacon fields and server error messages.
+
+Old Macs reject `decide` per message. The phone uses keys without a request ID.
 
 This change is not compatible with protocol version 5. Old phones receive
 "Re-pair required" and must pair again.

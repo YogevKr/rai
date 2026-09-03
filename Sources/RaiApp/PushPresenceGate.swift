@@ -28,6 +28,12 @@ enum HeldPushDecision: Equatable {
     }
 }
 
+enum PhonePushQueuePolicy {
+    static func queuesStatusPush(beacon: AgentBeacon?) -> Bool {
+        beacon?.awaitsDecision != true
+    }
+}
+
 struct PhonePushEvent: Equatable, Sendable {
     let paneID: String
     let paneName: String
@@ -36,6 +42,7 @@ struct PhonePushEvent: Equatable, Sendable {
     let status: AgentStatus
     let notificationBody: String?
     let allowsRemoteActions: Bool?
+    let requestID: String?
     let occurredAt: Date
 
     init(
@@ -46,6 +53,7 @@ struct PhonePushEvent: Equatable, Sendable {
         status: AgentStatus,
         notificationBody: String? = nil,
         allowsRemoteActions: Bool? = nil,
+        requestID: String? = nil,
         occurredAt: Date
     ) {
         self.paneID = paneID
@@ -55,6 +63,7 @@ struct PhonePushEvent: Equatable, Sendable {
         self.status = status
         self.notificationBody = notificationBody
         self.allowsRemoteActions = allowsRemoteActions
+        self.requestID = requestID
         self.occurredAt = occurredAt
     }
 }
@@ -80,11 +89,24 @@ struct PhonePushBurst: Equatable, Sendable {
     }
 
     var paneID: String? { isSummary ? nil : events[0].paneID }
+    var requestID: String? { isSummary ? nil : events[0].requestID }
     var requiresAttention: Bool {
         !isSummary && (events[0].allowsRemoteActions ?? (events[0].status == .blocked))
     }
+    var category: String? {
+        guard requiresAttention else { return nil }
+        return requestID == nil ? "agent-attention" : "permission-decision"
+    }
     var notificationIDs: [String] {
-        events.map { PushNotificationIdentity.pane($0.paneID) }
+        events.map { event in
+            if let requestID = event.requestID {
+                return PushNotificationIdentity.decision(
+                    event.paneID,
+                    requestID: requestID
+                )
+            }
+            return PushNotificationIdentity.pane(event.paneID)
+        }
     }
 
     var workspaceID: String? {
@@ -131,7 +153,9 @@ enum PushBurstPlanner {
         var groups: [[PhonePushEvent]] = [[ordered[0]]]
         for event in ordered.dropFirst() {
             let previous = groups[groups.count - 1].last!
-            if event.occurredAt.timeIntervalSince(previous.occurredAt) <= window {
+            if event.requestID == nil,
+               previous.requestID == nil,
+               event.occurredAt.timeIntervalSince(previous.occurredAt) <= window {
                 groups[groups.count - 1].append(event)
             } else {
                 groups.append([event])

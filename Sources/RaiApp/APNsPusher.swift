@@ -182,6 +182,7 @@ actor APNsPusher {
         subtitle: String?,
         body: String,
         paneID: String?,
+        requestID: String? = nil,
         workspaceID: String?,
         workspace: String?,
         category: String?,
@@ -199,6 +200,7 @@ actor APNsPusher {
                 subtitle: subtitle,
                 body: body,
                 paneID: paneID,
+                requestID: requestID,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 category: category,
@@ -354,6 +356,7 @@ enum APNsPayloadBuilder {
         subtitle: String?,
         body: String,
         paneID: String?,
+        requestID: String? = nil,
         workspaceID: String?,
         workspace: String?,
         category: String?,
@@ -392,6 +395,7 @@ enum APNsPayloadBuilder {
                     threadID: threadID
                 ),
                 paneID: paneID,
+                requestID: requestID,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 notificationID: notificationIDs.count == 1 ? notificationIDs[0] : nil,
@@ -524,12 +528,19 @@ enum APNsPayloadBuilder {
 
         let aps: APS
         let paneID: String?
+        let requestID: String?
         let workspaceID: String?
         let workspace: String?
         let notificationID: String?
         let notificationIDs: [String]
         let notificationTimestamp: TimeInterval
         let triage: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case aps, paneID, workspaceID, workspace
+            case notificationID, notificationIDs, notificationTimestamp, triage
+            case requestID = "request_id"
+        }
     }
 
     private struct RetractionPayload: Encodable {

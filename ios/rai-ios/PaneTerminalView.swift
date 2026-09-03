@@ -80,7 +80,17 @@ struct PaneTerminalView: View {
                 if let prompt = promptController.prompt {
                     PromptBar(
                         prompt: prompt,
+                        decisionBeacon: pane.beacon?.awaitsDecision == true
+                            ? pane.beacon
+                            : nil,
+                        legacyInputAllowed: PermissionPromptTransport.usesLegacyKeys(
+                            beacon: pane.beacon
+                        ),
+                        decisionEnabled: connection.status.isConnected,
                         select: { option in
+                            guard PermissionPromptTransport.usesLegacyKeys(
+                                beacon: pane.beacon
+                            ) else { return }
                             promptController.send(
                                 option: option,
                                 // Dialogs listen for keypresses; a digit sent as
@@ -94,12 +104,52 @@ struct PaneTerminalView: View {
                                 }
                             )
                         },
+                        decide: { option in
+                            guard connection.status.isConnected,
+                                  let beacon = pane.beacon,
+                                  beacon.awaitsDecision,
+                                  let requestID = beacon.requestID,
+                                  let decision = PermissionPromptDecisionMap.decision(for: option)
+                            else { return }
+                            connection.decide(
+                                decision,
+                                requestID: requestID,
+                                paneID: pane.paneID
+                            )
+                            promptController.dismiss()
+                        },
                         escape: {
+                            guard PermissionPromptTransport.usesLegacyKeys(
+                                beacon: pane.beacon
+                            ) else { return }
                             promptController.sendEscape(
                                 through: { connection.sendInput($0, to: pane.paneID) }
                             )
                         },
                         dismiss: promptController.dismiss
+                    )
+                } else if let beacon = pane.beacon,
+                          beacon.awaitsDecision,
+                          let requestID = beacon.requestID {
+                    HeldDecisionBar(
+                        beacon: beacon,
+                        decisionEnabled: connection.status.isConnected,
+                        approve: {
+                            guard connection.status.isConnected else { return }
+                            connection.decide(
+                                .allow,
+                                requestID: requestID,
+                                paneID: pane.paneID
+                            )
+                        },
+                        deny: {
+                            guard connection.status.isConnected else { return }
+                            connection.decide(
+                                .deny,
+                                requestID: requestID,
+                                paneID: pane.paneID
+                            )
+                        }
                     )
                 }
 
@@ -704,7 +754,11 @@ private final class TerminalPromptController: ObservableObject {
 
 private struct PromptBar: View {
     let prompt: PromptModel
+    let decisionBeacon: AgentBeacon?
+    let legacyInputAllowed: Bool
+    let decisionEnabled: Bool
     let select: (PromptOption) -> Void
+    let decide: (PromptOption) -> Void
     let escape: () -> Void
     let dismiss: () -> Void
 
@@ -713,7 +767,11 @@ private struct PromptBar: View {
             HStack(spacing: 6) {
                 ForEach(prompt.options) { option in
                     Button {
-                        select(option)
+                        if decisionBeacon != nil {
+                            decide(option)
+                        } else if legacyInputAllowed {
+                            select(option)
+                        }
                     } label: {
                         HStack(spacing: 4) {
                             Text("\(option.digit)")
@@ -727,10 +785,27 @@ private struct PromptBar: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(
+                        decisionBeacon != nil
+                            ? !decisionEnabled
+                                || PermissionPromptDecisionMap.decision(for: option) == nil
+                            : !legacyInputAllowed
+                    )
                 }
-                Button("Esc", action: escape)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                if let decisionBeacon {
+                    decisionCountdown(decisionBeacon)
+                    Text("answer on the Mac for other options")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if legacyInputAllowed {
+                    Button("Esc", action: escape)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                } else {
+                    Text("answer on the Mac")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
                 }
@@ -741,6 +816,55 @@ private struct PromptBar: View {
             .padding(.horizontal)
             .padding(.vertical, 6)
         }
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private func decisionCountdown(_ beacon: AgentBeacon) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = max(
+                0,
+                Int(ceil((beacon.deadline ?? context.date).timeIntervalSince(context.date)))
+            )
+            Text("held for you · \(seconds) s")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct HeldDecisionBar: View {
+    let beacon: AgentBeacon
+    let decisionEnabled: Bool
+    let approve: () -> Void
+    let deny: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button("Approve", action: approve)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!decisionEnabled)
+            Button("Deny", action: deny)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!decisionEnabled)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let seconds = max(
+                    0,
+                    Int(ceil((beacon.deadline ?? context.date).timeIntervalSince(context.date)))
+                )
+                Text("held for you · \(seconds) s")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Text("answer on the Mac for other options")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
         .background(.bar)
     }
 }

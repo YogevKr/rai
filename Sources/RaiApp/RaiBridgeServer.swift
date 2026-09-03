@@ -91,6 +91,17 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    var hasDecisionCapablePhone: Bool {
+        guard isRunning else { return false }
+        let connected = clients.values.contains {
+            $0.isAuthenticated && $0.info?.supportsPermissionDecisions == true
+        }
+        // A registered phone can wake from the push, reconnect, and decide.
+        let pushReady = apnsSettings.isConfigured
+            && pushRegistrations.contains { $0.supportsPermissionDecisions }
+        return connected || pushReady
+    }
+
     /// A hostname the phone can actually resolve over the LAN. The friendly
     /// computer name (`Host.localizedName`, e.g. "Yogev's MacBook Pro") is NOT a
     /// valid mDNS host — its spaces and apostrophe break resolution — so use the
@@ -567,9 +578,10 @@ final class RaiBridgeServer: ObservableObject {
             subtitle: burst.workspaceName,
             body: burst.body,
             paneID: burst.paneID,
+            requestID: burst.requestID,
             workspaceID: burst.workspaceID,
             workspace: burst.workspaceName,
-            category: burst.requiresAttention ? "agent-attention" : nil,
+            category: burst.category,
             notificationIDs: burst.notificationIDs,
             threadID: burst.threadID,
             summaryArgument: burst.summaryArgument,
@@ -636,6 +648,7 @@ final class RaiBridgeServer: ObservableObject {
             subtitle: nil,
             body: "Push delivery works.",
             paneID: nil,
+            requestID: nil,
             workspaceID: nil,
             workspace: nil,
             category: nil,
@@ -970,6 +983,21 @@ final class RaiBridgeServer: ObservableObject {
             await perform(for: client) {
                 try await self.model.client.sendKeys(paneID: paneID, keys: keys)
             }
+        case let .decide(paneID, requestID, decision):
+            let accepted = model.decide(
+                paneID: paneID,
+                requestID: requestID,
+                decision: decision
+            )
+            send(
+                .decisionResult(
+                    paneID: paneID,
+                    requestID: requestID,
+                    accepted: accepted,
+                    message: accepted ? nil : "That prompt already closed"
+                ),
+                to: client
+            )
         case let .readScrollback(paneID, lines, rows, fullGrid):
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
                 send(.error(message: "Unknown pane \(paneID)."), to: client)
@@ -1011,13 +1039,15 @@ final class RaiBridgeServer: ObservableObject {
             registerPush(
                 deviceToken: normalizedToken,
                 environment: environment,
-                deviceID: client.deviceID
+                deviceID: client.deviceID,
+                supportsPermissionDecisions: client.info?.supportsPermissionDecisions == true
             )
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .pair, .hello:
             send(.error(message: "Connection is already authenticated."), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
+             .paneError, .decisionResult,
              .backgroundWork, .sessions:
             send(.error(message: "Server-to-client message received from client."), to: client)
         }
@@ -1336,11 +1366,21 @@ final class RaiBridgeServer: ObservableObject {
         connectedDeviceCount = liveConnections.connectedDeviceCount
     }
 
-    private func registerPush(deviceToken: String, environment: String, deviceID: String?) {
+    private func registerPush(
+        deviceToken: String,
+        environment: String,
+        deviceID: String?,
+        supportsPermissionDecisions: Bool
+    ) {
         pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         pushRegistrations.insert(
-            .init(deviceToken: deviceToken, environment: environment, deviceID: deviceID)
+            .init(
+                deviceToken: deviceToken,
+                environment: environment,
+                deviceID: deviceID,
+                supportsPermissionDecisions: supportsPermissionDecisions
+            )
         )
         persistPushRegistrations()
     }
@@ -1408,12 +1448,21 @@ private struct PushRegistration: Codable, Hashable, Sendable {
     let deviceToken: String
     let environment: String
     let deviceID: String?
+    let decisionCapable: Bool?
 
-    init(deviceToken: String, environment: String, deviceID: String? = nil) {
+    init(
+        deviceToken: String,
+        environment: String,
+        deviceID: String? = nil,
+        supportsPermissionDecisions: Bool = false
+    ) {
         self.deviceToken = deviceToken
         self.environment = environment
         self.deviceID = deviceID
+        decisionCapable = supportsPermissionDecisions
     }
+
+    var supportsPermissionDecisions: Bool { decisionCapable == true }
 
     static func == (lhs: PushRegistration, rhs: PushRegistration) -> Bool {
         lhs.deviceToken == rhs.deviceToken && lhs.environment == rhs.environment

@@ -263,6 +263,20 @@ final class AppModel: ObservableObject {
         return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
     }
 
+    func sendNotificationDecision(
+        _ decision: RemotePermissionDecision,
+        requestID: String,
+        paneID: String
+    ) async -> Bool {
+        guard let pairing else { return false }
+        return await connection.connectAndDecide(
+            decision,
+            requestID: requestID,
+            paneID: paneID,
+            pairing: pairing
+        )
+    }
+
     func openTriage() {
         pendingOpenPaneID = nil
         triageRequest += 1

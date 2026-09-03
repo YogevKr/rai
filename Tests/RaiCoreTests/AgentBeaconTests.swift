@@ -215,6 +215,80 @@ final class AgentBeaconTests: XCTestCase {
         XCTAssertFalse(body.contains("hunter2"))
     }
 
+    func testDecisionBodyShowsDirectFileCommand() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object(["command": .string("touch allow-created")]),
+            timestamp: 1
+        )
+
+        XCTAssertEqual(
+            AgentNotificationBody.composeDecision(beacon: permission),
+            "Bash: touch allow-created"
+        )
+    }
+
+    func testDecisionBodyHidesUnrecognizedCommandArguments() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object(["command": .string("redis-cli -a hunter2")]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "Bash: redis-cli …")
+        XCTAssertFalse(body.contains("hunter2"))
+    }
+
+    func testDecisionBodyHidesURLPathSecrets() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "WebFetch",
+            toolInput: .object([
+                "url": .string("https://hooks.slack.test/services/secret/value"),
+            ]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "WebFetch: https://hooks.slack.test/…")
+        XCTAssertFalse(body.contains("secret"))
+    }
+
+    func testDecisionBodyHidesURLInsideAFileCommand() {
+        let permission = AgentBeacon(
+            event: "PermissionRequest",
+            sessionID: "session-1",
+            cwd: "/repo",
+            transcriptPath: "/tmp/session.jsonl",
+            toolName: "Bash",
+            toolInput: .object([
+                "command": .string(
+                    "ln -s https://hooks.example/services/secret/value link"
+                ),
+            ]),
+            timestamp: 1
+        )
+
+        let body = AgentNotificationBody.composeDecision(beacon: permission)
+
+        XCTAssertEqual(body, "Bash: ln …")
+        XCTAssertFalse(body.contains("secret"))
+    }
+
     func testOrdinaryPreToolUseIsContextNotAPendingRequest() {
         let beacon = AgentBeacon(
             event: "PreToolUse",

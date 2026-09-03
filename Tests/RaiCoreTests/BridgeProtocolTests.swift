@@ -19,7 +19,8 @@ final class BridgeProtocolTests: XCTestCase {
             deviceID: "phone-1",
             name: "Yogev’s iPhone",
             platform: "iOS",
-            model: "iPhone"
+            model: "iPhone",
+            capabilities: [BridgeCapability.permissionDecisions]
         )
         let messages: [BridgeMessage] = [
             .pair(
@@ -48,6 +49,7 @@ final class BridgeProtocolTests: XCTestCase {
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: false),
             .readScrollback(paneID: "pane-1", lines: 600, rows: 39, fullGrid: true),
             .sendKeys(paneID: "pane-1", keys: ["1"]),
+            .decide(paneID: "pane-1", requestID: "request-1", decision: .allow),
             .paired(
                 token: "device-token",
                 protocolVersion: bridgeProtocolVersion,
@@ -69,6 +71,19 @@ final class BridgeProtocolTests: XCTestCase {
                 cols: 80, rows: 29),
             .scrollback(paneID: "pane-1", bytesBase64: bytes),
             .error(message: "Herdr is unavailable"),
+            .paneError(paneID: "pane-1", message: "That prompt already closed"),
+            .decisionResult(
+                paneID: "pane-1",
+                requestID: "request-1",
+                accepted: true,
+                message: nil
+            ),
+            .decisionResult(
+                paneID: "pane-1",
+                requestID: "request-2",
+                accepted: false,
+                message: "That prompt already closed"
+            ),
         ]
 
         let encoder = JSONEncoder()
@@ -83,6 +98,16 @@ final class BridgeProtocolTests: XCTestCase {
                 try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
             )
         }
+    }
+
+    func testOldClientInfoHasNoDecisionCapability() throws {
+        let data = Data(
+            #"{"deviceID":"phone-1","name":"Phone","platform":"iOS"}"#.utf8
+        )
+
+        let client = try JSONDecoder().decode(ClientInfo.self, from: data)
+
+        XCTAssertFalse(client.supportsPermissionDecisions)
     }
 
     // A message from an OLD peer (no full_grid / frame dimension keys)
@@ -138,7 +163,9 @@ final class BridgeProtocolTests: XCTestCase {
                     "event":"PermissionRequest","pane_id":"w1:p1",
                     "session_id":"session-1","cwd":"/repo",
                     "transcript_path":"/tmp/session.jsonl","tool_name":"Bash",
-                    "tool_input":{"command":"swift test"},"ts":1780000000
+                    "tool_input":{"command":"swift test"},"ts":1780000000,
+                    "request_id":"request-1","awaits_decision":true,
+                    "deadline":780000000
                   }
                 }],
                 "layouts":[]
@@ -154,6 +181,9 @@ final class BridgeProtocolTests: XCTestCase {
             return XCTFail("Expected snapshot")
         }
         XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
+        XCTAssertEqual(snapshot.panes.first?.beacon?.requestID, "request-1")
+        XCTAssertTrue(snapshot.panes.first?.beacon?.awaitsDecision == true)
+        XCTAssertNotNil(snapshot.panes.first?.beacon?.deadline)
     }
 
     // Additive-only messages (workspace ops, broadcast, sessions, background
