@@ -1279,12 +1279,21 @@ final class TerminalPromptController: ObservableObject {
 }
 
 @MainActor
-private final class TerminalStatuslineController: ObservableObject {
+final class TerminalStatuslineController: ObservableObject {
     @Published private(set) var statusline: AgentStatusline?
     var readGrid: (() -> String)?
 
     func refresh(agent: String?) {
-        statusline = readGrid.flatMap { AgentStatuslineParser.parse($0(), agent: agent) }
+        // `statusline` drives the outer view's body (StatuslineStrip), which
+        // hosts this UIViewRepresentable — so refresh() runs on every
+        // updateUIView call. @Published republishes on every assignment even
+        // when the value is unchanged, which re-invalidates that outer view
+        // and calls updateUIView again: an unbounded self-triggering loop
+        // that pins the main thread and freezes the app on every pane open.
+        // Only assign (and publish) on a real change.
+        let next = readGrid.flatMap { AgentStatuslineParser.parse($0(), agent: agent) }
+        guard next != statusline else { return }
+        statusline = next
     }
 }
 

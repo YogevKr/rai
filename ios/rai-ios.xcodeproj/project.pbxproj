@@ -34,6 +34,7 @@
 		A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */; };
 		B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */; };
 		C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */; };
+		E3C6AD318A8B1546F8AA5CFA /* TerminalStatuslineControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD07CE836CF897E7813363C /* TerminalStatuslineControllerTests.swift */; };
 		E8ECFAC607F385F5B4B36FBF /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */; };
 		F28167D25DB53B3029810B05 /* MonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ECD4F2FE845F00F88608F /* MonitorView.swift */; };
 		FFF649B077BACB52609CEE4D /* NotificationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A34EA3E528FD172564A2362 /* NotificationPreferences.swift */; };
@@ -57,9 +58,9 @@
 		2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptHistoryViewModelTests.swift; sourceTree = "<group>"; };
 		2CA038B4352450A677BF46AE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		310ECD4F2FE845F00F88608F /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
-		312ACBA61C1F0BD99B4BB488 /* rai-transcript-history-0903-105140-kafv */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "rai-transcript-history-0903-105140-kafv"; path = ..; sourceTree = SOURCE_ROOT; };
 		3A18C263735F80641EEDBADC /* OutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxTests.swift; sourceTree = "<group>"; };
 		3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		3BD07CE836CF897E7813363C /* TerminalStatuslineControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalStatuslineControllerTests.swift; sourceTree = "<group>"; };
 		3BE449A05DEF30F4C47153FC /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
 		3BFAFF18CA746AE63249DE73 /* RaiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaiIOSApp.swift; sourceTree = "<group>"; };
 		3D076077933E7F528040D0BE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -76,6 +77,7 @@
 		970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
 		9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandler.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A94AED5CC385FC1F5FD41FE9 /* rai */ = {isa = PBXFileReference; lastKnownFileType = folder; name = rai; path = ..; sourceTree = SOURCE_ROOT; };
 		B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDecisionTests.swift; sourceTree = "<group>"; };
 		C0A260D874FB82D82728AC5A /* rai-ios.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "rai-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C28A9944E5B3DBD0E0B55C06 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -101,7 +103,7 @@
 		2DA318A8F4154999D3174BCB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				312ACBA61C1F0BD99B4BB488 /* rai-transcript-history-0903-105140-kafv */,
+				A94AED5CC385FC1F5FD41FE9 /* rai */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -120,6 +122,7 @@
 				B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
+				3BD07CE836CF897E7813363C /* TerminalStatuslineControllerTests.swift */,
 				2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */,
 			);
 			path = "rai-iosTests";
@@ -276,6 +279,7 @@
 				B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
+				E3C6AD318A8B1546F8AA5CFA /* TerminalStatuslineControllerTests.swift in Sources */,
 				73B280EEC25AAE5AC151E7F2 /* TranscriptHistoryViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
