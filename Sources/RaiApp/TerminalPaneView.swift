@@ -197,6 +197,9 @@ enum DroppedPathEscaper {
 final class FocusAwareTerminalView: LocalProcessTerminalView {
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
+    /// The pane's working directory from the herdr snapshot, so a ⌘-clicked
+    /// relative path (`./src/a.swift:12`) resolves like it would in that shell.
+    var paneCWD: String?
     var agentDetectionSummary = "Herdr detects: No agent — Unknown"
     var canReleaseAgent = false
     private var draggedSinceMouseDown = false
@@ -217,6 +220,25 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// lands in a window whose device works. Counting only real throws keeps a
     /// genuinely Metal-less machine from retrying on every window move.
     private var metalEnableFailures = 0
+
+    /// SwiftTerm hands every matched link, bare paths included, to
+    /// `NSWorkspace.open` as a scheme-less URL. LaunchServices rejects that
+    /// with paramErr and Finder shows "The application can't be opened. -50".
+    /// Resolve paths against the pane first, and open only what exists.
+    override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        switch LinkOpenResolver.resolve(link, cwd: paneCWD) {
+        case .url(let url):
+            guard NSWorkspace.shared.urlForApplication(toOpen: url) != nil else {
+                NSSound.beep()
+                return
+            }
+            NSWorkspace.shared.open(url)
+        case .file(let url):
+            NSWorkspace.shared.open(url)
+        case .unresolved:
+            NSSound.beep()
+        }
+    }
 
     /// Right-click on the pane: select it (like cmux), then offer the pane
     /// controls. AppKit-native so it works over the Metal-backed terminal.
@@ -1426,6 +1448,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
 struct TerminalPaneView: NSViewRepresentable {
     let terminalID: String
     var paneID: String?
+    var paneCWD: String?
     let isFocused: Bool
     let pool: TerminalPool
     let onPlainClick: () -> Void
@@ -1465,6 +1488,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.agentDetectionSummary = agentDetectionSummary
         view.canReleaseAgent = canReleaseAgent
         view.paneID = paneID
+        view.paneCWD = paneCWD
         container.install(view)
         if isFocused, view.window?.firstResponder !== view {
             DispatchQueue.main.async { [weak container, weak view] in

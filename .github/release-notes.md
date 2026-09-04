@@ -2,31 +2,16 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Answer Claude permission prompts from the phone.** The Claude hook now
-  waits (up to a configurable 5–60 s, default 45 s) for an Allow/Deny from
-  Rai Remote when you are away from the Mac, delivered as a time-sensitive
-  push with Approve/Deny actions. No decision, or you back at the Mac, and
-  Claude draws its normal dialog. Settings → Integrations has the toggle and
-  the hold time; the hooks installer writes the matching timeout.
-- **Time-sensitive "needs you" pushes.** Blocked-agent pushes break through
-  Focus modes; "finished" pushes stay ordinary.
-- **Phone-side notification preferences.** Per device: kinds, snooze
-  (15 min / 1 h / until 8:00), and a daily do-not-disturb window, enforced on
-  the Mac before anything is sent and shown in the Doctor.
-- **Stable bridge error codes.** `error` / `authFailed` carry a code the
-  phone maps to the right action (retry, Pair Again, update).
-- **APNs key as a validated file.** The `.p8` lives in
-  `~/Library/Application Support/Rai/apns-key.p8` (0600), migrated once from
-  the Keychain item, validated on Save, and named in the Doctor.
-- **First frame on attach.** A phone attaching to an alt-screen agent pane
-  gets the visible grid immediately instead of waiting for the next repaint.
-- **Typing latency, measured.** `rai-bench --latency` drives a real keystroke
-  through the terminal and times it to the display update; the daemon echo
-  measures median ~4 ms with a p90 of ~22 ms (bimodal: one keystroke in ten
-  waits a daemon tick). Predictive local echo can now cover that tail, but it
-  ships **off by default** (Settings → "Predict local typing") because a prompt
-  that silently disables echo can show one typed character before retraction.
-  Remote-herd prediction is unchanged and gains the same lifecycle guards.
+- **⌘-click on a path opens the file instead of a Finder error.** SwiftTerm's
+  Ghostty-style detector treats bare paths (`~/Downloads/report.html`,
+  `./src/a.swift:12`) as links, and its default handler passed them to
+  LaunchServices as scheme-less URLs. Every ⌘-click on a path, deliberate or a
+  stray click with ⌘ still held after ⌘C, drew Finder's "The application can't
+  be opened. -50". Rai now resolves the text first: `~` and `$VAR` expand,
+  relative paths resolve against the pane's working directory, a trailing
+  `:line:col` or stray punctuation is dropped, and only a path that exists
+  opens, with its default app. URLs with a scheme still go to their handler.
+  Anything unresolved beeps; nothing shows an alert.
 
 Ships with **Rai Remote build 34** (TestFlight; build 33 froze on every pane open and is superseded): structured Claude prompt
 controls (AskUserQuestion wizard, trust dialogs), Approve/Deny decisions,

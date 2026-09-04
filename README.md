@@ -177,6 +177,10 @@ Launch `rai` and the sidebar populates with your live herd. If that herd's serve
 is not running, rai starts it and connects once it is ready. Click a tab to
 attach its panes; type as you would in any terminal.
 
+⌘-click a URL or a file path in a pane to open it with its default app.
+Relative paths resolve against the pane's working directory, and `path:line:col`
+citations open the file. A path that does not exist on this Mac only beeps.
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |

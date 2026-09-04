@@ -319,6 +319,7 @@ private struct PaneSurface: View {
                     TerminalPaneView(
                         terminalID: terminalID,
                         paneID: paneID,
+                        paneCWD: pane.map { $0.foregroundCWD ?? $0.cwd },
                         // Release focus while the command palette is open so its
                         // search field — not the terminal — receives keystrokes.
                         isFocused: selected && !model.isCommandPalettePresented,
