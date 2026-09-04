@@ -28,7 +28,7 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
   that silently disables echo can show one typed character before retraction.
   Remote-herd prediction is unchanged and gains the same lifecycle guards.
 
-Ships with **Rai Remote build 33** (TestFlight): structured Claude prompt
+Ships with **Rai Remote build 34** (TestFlight; build 33 froze on every pane open and is superseded): structured Claude prompt
 controls (AskUserQuestion wizard, trust dialogs), Approve/Deny decisions,
 transcript history for hook-enabled panes, a statusline strip, notification
 preferences, and a password-prompt guard on every typed send.
