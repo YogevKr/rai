@@ -224,7 +224,7 @@ final class TerminalPool {
 @MainActor
 private final class TerminalProcessCoordinator:
     NSObject,
-    @preconcurrency LocalProcessTerminalViewDelegate
+    TerminalProcessViewDelegate
 {
     private weak var view: FocusAwareTerminalView?
     private let terminalID: String
@@ -269,7 +269,7 @@ private final class TerminalProcessCoordinator:
         launch()
     }
 
-    func stop(_ view: LocalProcessTerminalView) {
+    func stop(_ view: FocusAwareTerminalView) {
         intentionalStop = true
         pendingLaunch?.cancel()
         pendingLaunch = nil
@@ -315,9 +315,9 @@ private final class TerminalProcessCoordinator:
 
     /// The first real layout is the cue to spawn: the pty then starts at the
     /// pane's true size, so herdr renders it once instead of once per width.
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+    func sizeChanged(source: TerminalProcessView, newCols: Int, newRows: Int) {
         launchIfNeeded()
     }
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
+    func setTerminalTitle(source: TerminalProcessView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 }

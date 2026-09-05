@@ -1250,26 +1250,43 @@ final class RaiBridgeServer: ObservableObject {
             // the tail — not the client's screenful — or the seam duplicates
             // the rows between viewport height and pane height.
             let seamRows = fullGrid ? (pane.scroll?.viewportRows ?? rows) : rows
-            // Awaited inline so the reply reaches the client before any
-            // subsequent attachStream starts its frame stream — the phone
-            // relies on scrollback arriving before the first full frame.
-            let payload = await readScrollbackPayload(
-                paneID: paneID,
-                lines: min(max(lines, 1), 2_000),
-                clientRows: min(max(seamRows, 0), 200)
-            )
-            guard let payload else {
-                send(.error(
-                    message: "Could not read scrollback for \(paneID).",
-                    code: .scrollbackUnavailable,
-                    detail: paneID
-                ), to: client)
-                return
+            let clientID = ObjectIdentifier(client.connection)
+            func reply(_ payload: Data?) {
+                guard clients[clientID] === client else { return }
+                if let payload {
+                    send(.scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()), to: client)
+                } else {
+                    send(.error(
+                        message: "Could not read scrollback for \(paneID).",
+                        code: .scrollbackUnavailable,
+                        detail: paneID
+                    ), to: client)
+                }
             }
-            send(
-                .scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()),
-                to: client
-            )
+            if let stream = observeStreams[clientID]?[paneID] {
+                // Refresh reads must not hold up receiveMessage: the next
+                // WebSocket message can be a keystroke. Only the initial
+                // seed needs to finish before attachStream starts.
+                guard stream.historyReadTask == nil else { return }
+                stream.historyReadTask = Task { [weak self, weak stream] in
+                    guard let self, let stream else { return }
+                    let payload = await self.readScrollbackPayload(
+                        paneID: paneID,
+                        lines: min(max(lines, 1), 2_000),
+                        clientRows: min(max(seamRows, 0), 200)
+                    )
+                    guard !Task.isCancelled,
+                          self.observeStreams[clientID]?[paneID] === stream else { return }
+                    stream.historyReadTask = nil
+                    reply(payload)
+                }
+            } else {
+                reply(await readScrollbackPayload(
+                    paneID: paneID,
+                    lines: min(max(lines, 1), 2_000),
+                    clientRows: min(max(seamRows, 0), 200)
+                ))
+            }
         case let .history(
             paneID, requestedSessionID, requestID, beforeTurnIndex, limit, herdSessionName
         ):
@@ -1479,26 +1496,27 @@ final class RaiBridgeServer: ObservableObject {
         lines: Int,
         clientRows: Int
     ) async -> Data? {
-        guard let recent = await Self.runHerdrCapture([
-            "pane", "read", paneID,
-            "--source", "recent", "--lines", String(lines), "--format", "ansi",
-        ]), let recentText = String(data: recent, encoding: .utf8) else {
+        let herd = model.client
+        // HerdrClient serializes blocking RPC reads. Sharing model.client
+        // would make keyboard input wait behind this background read.
+        let reader = HerdrClient(socketPath: herd.socketPath)
+        defer { reader.disconnect() }
+        return await withTaskCancellationHandler {
+            for _ in 0..<3 {
+                guard !Task.isCancelled,
+                      let recent = try? await reader.readPane(
+                        paneID: paneID, source: "recent", lines: lines
+                      ), let visible = try? await reader.readPane(paneID: paneID),
+                      model.client === herd else { return nil }
+                guard recent.revision == visible.revision else { continue }
+                return PaneScrollback.payload(
+                    recent: recent.text, visible: visible.text, viewportRows: clientRows
+                )
+            }
             return nil
+        } onCancel: {
+            reader.disconnect()
         }
-        // Shell panes come back CRLF-terminated, and Swift treats "\r\n" as a
-        // single grapheme — split(separator: "\n") sees ONE line and the
-        // dropLast wipes the whole payload. Normalize endings first.
-        let normalized = recentText
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        let history = normalized
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .dropLast(clientRows)
-            .joined(separator: "\n")
-        guard !history.isEmpty else { return Data() }
-        // Trailing attribute reset so partial styling can't bleed into the
-        // live frames fed after this history.
-        return Data((history + "\n\u{1B}[0m").utf8)
     }
 
     nonisolated private static func runHerdrCapture(_ arguments: [String]) async -> Data? {
@@ -2148,6 +2166,7 @@ private final class ObserveStream: @unchecked Sendable {
     let paneRows: Int?
     private var buffer = Data()
     private(set) var isStopping = false
+    @MainActor var historyReadTask: Task<Void, Never>?
 
     var isRunning: Bool { process.isRunning }
 
@@ -2182,6 +2201,8 @@ private final class ObserveStream: @unchecked Sendable {
     @MainActor
     func stop() {
         isStopping = true
+        historyReadTask?.cancel()
+        historyReadTask = nil
         stdout.fileHandleForReading.readabilityHandler = nil
         if process.isRunning {
             process.terminate()
@@ -2190,6 +2211,8 @@ private final class ObserveStream: @unchecked Sendable {
 
     @MainActor
     func close() {
+        historyReadTask?.cancel()
+        historyReadTask = nil
         stdout.fileHandleForReading.readabilityHandler = nil
         try? stdout.fileHandleForReading.close()
         try? stdout.fileHandleForWriting.close()

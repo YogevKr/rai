@@ -21,7 +21,7 @@ enum GhosttyTheme {
         0x687386, 0xE0525B, 0x2DA44E, 0xB58407, 0x3B7DDD, 0x9067C6, 0x1597A5, 0xFFFFFF,
     ]
 
-    static func apply(to view: LocalProcessTerminalView) {
+    static func apply(to view: TerminalView) {
         let isDark = Theme.activeVariant == .dark
         let background = Theme.nsColor(.terminalBG)
         let foreground = Theme.nsColor(.textPrimary)
@@ -194,7 +194,7 @@ enum DroppedPathEscaper {
     }
 }
 
-final class FocusAwareTerminalView: LocalProcessTerminalView {
+final class FocusAwareTerminalView: TerminalProcessView {
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
     /// The pane's working directory from the herdr snapshot, so a ⌘-clicked
@@ -331,8 +331,12 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     private var externalInputBlockedUntil: UInt64 = 0
     private var terminalDisplayGeneration: UInt64 = 0
     private var predictionOverlayUpdatePending = false
-    private var deferredFeedBytes: [UInt8] = []
+    private let deferredFeed = TerminalOutputQueue()
     private var deferredFeedWorkItem: DispatchWorkItem?
+    private var outputDisplayWorkItem: DispatchWorkItem?
+    private var outputGeneration: UInt64 = 0
+    static let parserChunkBytes = 16 * 1024
+    var pendingOutputBytesForTesting: Int { deferredFeed.byteCount }
     private var predictionDecisionsDeferred = false
     private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
@@ -390,7 +394,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// Copy-mode keys never reach the pty, so callers skip those.
     private func notePredictionKey(_ event: NSEvent) {
         guard let engine = predictiveEcho else { return }
-        guard externalInputDepth == 0,
+        guard !predictionDecisionsDeferred, externalInputDepth == 0,
               DispatchTime.now().uptimeNanoseconds >= externalInputBlockedUntil else {
             resetPredictions()
             return
@@ -436,7 +440,7 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         updateOverlay: Bool = true,
         outputBytes: ArraySlice<UInt8>? = nil
     ) -> PredictionReconcileResult? {
-        guard let engine = predictiveEcho else { return nil }
+        guard !predictionDecisionsDeferred, let engine = predictiveEcho else { return nil }
         guard scrolledOffset == 0 else {
             resetPredictions()
             return nil
@@ -858,6 +862,9 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         super.rangeChanged(source: source, startY: startY, endY: endY)
         terminalDisplayGeneration &+= 1
+        if deferredFeed.isEmpty && outputDisplayWorkItem == nil {
+            predictionDecisionsDeferred = false
+        }
         if predictionOverlayUpdatePending && !predictionDecisionsDeferred {
             predictionOverlayUpdatePending = false
             updatePredictionOverlay()
@@ -867,14 +874,14 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
     /// The attach process delivers reads on the main queue. Select the feed
     /// path before SwiftTerm sees bytes. This prevents its recent-input fast
     /// path from repainting large chunks without a byte limit.
-    override func dataReceived(slice: ArraySlice<UInt8>) {
+    override func dataReceived(slice: ArraySlice<UInt8>, completion: @escaping () -> Void = {}) {
         let now = DispatchTime.now().uptimeNanoseconds
         if externalInputDepth > 0 || now < externalInputBlockedUntil {
             // Keep old external echoes from confirming a new local burst.
             extendExternalInputFence(from: now)
         }
         if deferredFeedWorkItem != nil {
-            deferredFeedBytes.append(contentsOf: slice)
+            deferredFeed.append(slice, completion: completion)
             deferPredictionDecisionsUntilFeedDrains()
             return
         }
@@ -885,26 +892,37 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
             synchronizedOutputActive: getTerminal().synchronizedOutputActive,
             at: now
         )
+        if slice.count > Self.parserChunkBytes {
+            deferredFeed.append(slice, completion: completion)
+            deferPredictionDecisionsUntilFeedDrains()
+            scheduleDeferredFeed(deadlineUptimeNanoseconds: now + 1_000_000)
+            return
+        }
         switch disposition {
         case .deferToFrame(let deadline):
-            deferredFeedBytes.append(contentsOf: slice)
+            deferredFeed.append(slice, completion: completion)
             deferPredictionDecisionsUntilFeedDrains()
-            scheduleDeferredFeed(deadlineUptimeNanoseconds: deadline)
+            scheduleDeferredFeed(deadlineUptimeNanoseconds: deadline, displayReady: true)
         case .feedNowAndRepaint:
             processReceived(slice: slice, immediateRepaintAllowed: true)
+            completion()
         case .feedNormally:
             processReceived(slice: slice, immediateRepaintAllowed: false)
+            completion()
         }
     }
 
     private func deferPredictionDecisionsUntilFeedDrains() {
+        resetPredictions()
         predictionDecisionsDeferred = true
         predictionOverlay?.isHidden = true
     }
 
-    private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64) {
+    private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64, displayReady: Bool = false) {
+        let generation = outputGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            self?.flushDeferredFeed()
+            guard let self, self.outputGeneration == generation else { return }
+            self.flushDeferredFeed(displayReady: displayReady)
         }
         deferredFeedWorkItem = workItem
         DispatchQueue.main.asyncAfter(
@@ -913,29 +931,60 @@ final class FocusAwareTerminalView: LocalProcessTerminalView {
         )
     }
 
-    private func flushDeferredFeed() {
+    private func flushDeferredFeed(displayReady: Bool) {
         deferredFeedWorkItem = nil
-        guard !deferredFeedBytes.isEmpty else { return }
-        let bytes = deferredFeedBytes
-        deferredFeedBytes.removeAll(keepingCapacity: true)
-        feedRepaintState.noteDeferredFramePaint()
-        processReceived(
-            slice: bytes[...],
-            immediateRepaintAllowed: false,
-            drainsDeferredBytes: true
-        )
+        guard let chunk = deferredFeed.next(maxBytes: Self.parserChunkBytes) else { return }
+        if displayReady && deferredFeed.isEmpty {
+            // A small echo already waited for its frame. Paint it now rather
+            // than imposing another frame delay after parsing.
+            feedRepaintState.noteDeferredFramePaint()
+            processReceived(slice: chunk.bytes, immediateRepaintAllowed: false)
+            chunk.complete()
+            return
+        }
+        // Feed only the parser here. View.feed would invoke SwiftTerm's
+        // recent-input display path once per chunk, bypassing frame pacing.
+        getTerminal().feed(buffer: chunk.bytes)
+        chunk.complete()
+        scheduleOutputDisplay()
+        if !deferredFeed.isEmpty {
+            // A future run-loop turn can handle keys before the next chunk.
+            scheduleDeferredFeed(deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 1_000_000)
+        }
+    }
+
+    private func scheduleOutputDisplay() {
+        guard outputDisplayWorkItem == nil else { return }
+        let generation = outputGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.outputGeneration == generation else { return }
+            self.outputDisplayWorkItem = nil
+            self.feedRepaintState.noteDeferredFramePaint()
+            // The view updates its caret, search cache and display range.
+            // SwiftTerm keeps synchronized output hidden until it ends.
+            self.feed(byteArray: [])
+        }
+        outputDisplayWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16), execute: workItem)
+    }
+
+    override func discardPendingOutput() {
+        outputGeneration &+= 1
+        deferredFeedWorkItem?.cancel()
+        deferredFeedWorkItem = nil
+        outputDisplayWorkItem?.cancel()
+        outputDisplayWorkItem = nil
+        deferredFeed.discard()
+        predictionDecisionsDeferred = false
+        resetPredictions()
     }
 
     private func processReceived(
         slice: ArraySlice<UInt8>,
-        immediateRepaintAllowed: Bool,
-        drainsDeferredBytes: Bool = false
+        immediateRepaintAllowed: Bool
     ) {
         let displayGenerationBeforeFeed = terminalDisplayGeneration
         super.dataReceived(slice: slice)
-        if drainsDeferredBytes {
-            predictionDecisionsDeferred = false
-        }
         let canRepaintImmediately = TerminalFeedRepaintPolicy
             .allowsImmediateRepaintAfterFeed(
                 requested: immediateRepaintAllowed,

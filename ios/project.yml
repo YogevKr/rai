@@ -55,7 +55,7 @@ targets:
         # Source of truth for the build number: xcodegen REGENERATES
         # Info.plist from this file, so bumping the plist alone is
         # silently reverted on the next `xcodegen generate`.
-        CFBundleVersion: "29"
+        CFBundleVersion: "35"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:

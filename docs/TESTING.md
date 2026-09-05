@@ -40,6 +40,22 @@ Metal toolchain can compile).
 
 ## Typing latency benchmark
 
+The Mac terminal parses queued output in chunks of at most 16 KB.
+It returns to the event loop between chunks and paces their display updates.
+The PTY reader waits for each read to finish parsing before delivering another read.
+This keeps pending transport output within one 128 KB read. Keyboard writes use a separate path.
+Small keyboard echoes retain the immediate display path.
+Stopping or replacing a terminal releases blocked reads and discards output from the old process.
+
+Run the output and transport regression tests:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter TerminalOutputTests
+```
+
+These tests check event-loop progress, byte order, Unicode, synchronized output, cancellation, keyboard delivery, and PTY resizing.
+
 `rai-bench --latency` hosts one terminal view. It runs 200 samples for each
 path. The terminal path sends an `NSEvent` through `TerminalView.keyDown`.
 The delegate feeds the sent byte back as its echo. The timer stops in

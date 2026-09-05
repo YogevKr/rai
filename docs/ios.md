@@ -20,6 +20,19 @@ The visible frame uses the pane's native grid size and a full repaint.
 The stream's first full frame replaces it without adding a second history seam.
 Rai skips the visible frame when the read fails.
 
+During output, the phone refreshes remote history at most four times per second.
+It keeps one history read in flight and stops reading when output stops.
+These reads preserve repeated rows that cell-position updates cannot add to local history.
+The phone preserves the live grid, cursor, colors, and a scrolled history viewport during refresh.
+It defers history replacement during dragging, deceleration, and text selection.
+History retains up to 1,000 recent rows from the Mac.
+
+The Mac matches recent and visible reads by revision before separating history from the screen.
+Refresh reads use a separate connection and let subsequent phone input proceed during the read.
+It counts actual visible rows because herdr omits empty rows at the bottom.
+The phone reserves the full native grid after the history seed.
+Update both apps to receive the history-boundary correction.
+
 ## 1. Turn on the Mac bridge
 
 In rai on your Mac: **Settings → iPhone** → enable the companion bridge. It shows

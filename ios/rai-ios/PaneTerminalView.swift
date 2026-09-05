@@ -643,6 +643,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.selectedTextForegroundColor = Self.ui(0x545454)
         terminal.installColors(Self.palette.map(Self.st))
         terminal.indicatorStyle = .white
+        terminal.changeScrollback(2_000)
         // Dragging down through the terminal tucks the keyboard away, the
         // same gesture Messages and Notes use.
         terminal.keyboardDismissMode = .interactive
@@ -658,22 +659,15 @@ private struct StreamingTerminalView: UIViewRepresentable {
         prompts.beacon = beacon
         prompts.allowsPrompts = ClaudePromptGate.allows(agent: agent)
         context.coordinator.connectionGenerationHandlerID =
-            connection.addConnectionGenerationHandler { [weak prompts] generation in
+            connection.addConnectionGenerationHandler { [weak prompts, weak terminal] generation in
                 prompts?.invalidateForConnectionGeneration(generation)
+                terminal?.awaitNextConnectionFrame()
             }
 
         context.coordinator.scrollbackHandlerID = connection.addPaneScrollbackHandler(
             for: paneID
         ) { [weak terminal] data in
-            // Remote history (herdr's `pane read --source recent`) seeds the
-            // local buffer so the user can scroll up — agent TUIs live on the
-            // alt screen and never produce scrollback via the frame stream.
-            // A seed can also follow a reconnect, with stale grid content and
-            // older history already in the buffer: full-reset first (ESC c
-            // clears screen, modes, and scrollback) so the seed plus the
-            // stream's next full frame rebuild one clean copy.
-            terminal?.feed(byteArray: [0x1B, 0x63][...])
-            terminal?.feed(byteArray: Self.normalizedHistory(data)[...])
+            terminal?.receiveHistory(data)
         }
 
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
@@ -687,6 +681,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 terminal?.pinGridSize(cols: grid.cols, rows: grid.rows)
                 context.coordinator.updateWidthFloor(cols: grid.cols)
             }
+            terminal?.prepareHistoryForFrame()
             // A `full` frame starts a fresh stream (initial attach, or a restart
             // after resize/reconnect). Clear the visible screen + home the cursor
             // first so stale cells/styles from the previous stream don't bleed
@@ -696,6 +691,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
                 terminal?.feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...])
             }
             terminal?.feed(byteArray: [UInt8](data)[...])
+            terminal?.hasLiveFrame = true
+            terminal?.prepareHistoryForFrame()
             context.coordinator.prompts.refresh(frameArrived: true)
             context.coordinator.statusline.refresh(agent: context.coordinator.agent)
             if full {
@@ -784,22 +781,6 @@ private struct StreamingTerminalView: UIViewRepresentable {
         coordinator.search.terminal = nil
         coordinator.prompts.readGrid = nil
         coordinator.statusline.readGrid = nil
-    }
-
-    /// History text uses bare `\n`; the emulator needs `\r\n` or every line
-    /// inherits the previous line's indent.
-    private static func normalizedHistory(_ data: Data) -> [UInt8] {
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(data.count + data.count / 16)
-        var previous: UInt8 = 0
-        for byte in data {
-            if byte == 0x0A, previous != 0x0D {
-                bytes.append(0x0D)
-            }
-            bytes.append(byte)
-            previous = byte
-        }
-        return bytes
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
@@ -891,6 +872,158 @@ private struct StreamingTerminalView: UIViewRepresentable {
 /// TUI is just the viewport the bridge drops. The grid then read as "" and
 /// prompt buttons never appeared.
 final class GridReadableTerminalView: TerminalView {
+    var hasLiveFrame = false
+    private var pendingHistory: Data?
+    private var appliedHistory: Data?
+    private var appliedHistoryGrid: PaneGridSize?
+    private var historyRetry: Task<Void, Never>?
+
+    func awaitNextConnectionFrame() {
+        hasLiveFrame = false
+        historyRetry?.cancel()
+        historyRetry = nil
+        pendingHistory = nil
+    }
+
+    func receiveHistory(_ data: Data) {
+        pendingHistory = data
+        if hasLiveFrame { prepareHistoryForFrame() }
+    }
+
+    /// The first history seed waits for the native grid size. Later replies
+    /// replace only history; cell-addressed stream updates still own the grid.
+    func prepareHistoryForFrame() {
+        let terminal = getTerminal()
+        let grid = PaneGridSize(cols: terminal.cols, rows: terminal.rows)
+        // Increasing the grid height can move history rows onto the screen.
+        // Restore the cached seed before the new full frame overwrites them.
+        guard let history = pendingHistory
+            ?? (appliedHistoryGrid == grid ? nil : appliedHistory) else { return }
+        if history == appliedHistory && appliedHistoryGrid == grid {
+            pendingHistory = nil
+            return
+        }
+        guard !isTracking, !isDecelerating, getSelectionRange() == nil else {
+            if historyRetry == nil {
+                historyRetry = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard let self, !Task.isCancelled else { return }
+                    self.historyRetry = nil
+                    self.prepareHistoryForFrame()
+                }
+            }
+            return
+        }
+
+        guard !terminal.synchronizedOutputActive else { return }
+        let oldRows = bufferRows()
+        let historyCount = max(0, oldRows.count - terminal.rows)
+        let firstRow = terminal.buffer.totalLinesTrimmed + historyCount
+        let screen = hasLiveFrame ? (0..<terminal.rows).compactMap {
+            terminal.getScrollInvariantLine(row: firstRow + $0).map { BufferLine(from: $0) }
+        } : []
+        let oldOffset = contentOffset
+        let oldDisplayRow = terminal.buffer.yDisp
+        let wasReadingHistory = hasLiveFrame && oldDisplayRow < historyCount
+        let oldHistoryCells = wasReadingHistory ? historyCells(count: historyCount) : []
+        let scrollRegion = (terminal.buffer.scrollTop, terminal.buffer.scrollBottom)
+        let margins = (terminal.buffer.marginLeft, terminal.buffer.marginRight)
+
+        // Buffer.clear preserves the parser, cursor visibility, links, and
+        // saved cursor attributes. RIS would discard those live-stream modes.
+        terminal.feed(text: "\u{1B}7")
+        terminal.buffer.clear()
+        terminal.buffer.fillViewportRows()
+        terminal.feed(text: "\u{1B}[0m\u{1B}[?6l\u{1B}[?7h\u{1B}[?69l")
+        terminal.feed(byteArray: Self.normalizedHistory(history))
+        if terminal.getCursorLocation().x > 0 { terminal.feed(text: "\r\n") }
+        // History ends at a blank row. Reserve the rest of the live grid so
+        // its first full repaint cannot overwrite the tail of that history.
+        terminal.feed(text: String(repeating: "\r\n", count: max(0, terminal.rows - 1)))
+        let newRows = bufferRows()
+        let newHistoryCount = max(0, newRows.count - terminal.rows)
+        let newFirstRow = terminal.buffer.totalLinesTrimmed + newHistoryCount
+        for (row, line) in screen.enumerated() {
+            terminal.getScrollInvariantLine(row: newFirstRow + row)?.copyFrom(line: line)
+        }
+        terminal.feed(text: "\u{1B}8")
+        terminal.buffer.scrollTop = scrollRegion.0
+        terminal.buffer.scrollBottom = scrollRegion.1
+        terminal.buffer.marginLeft = margins.0
+        terminal.buffer.marginRight = margins.1
+        terminal.updateFullScreen()
+        pendingHistory = nil
+        appliedHistory = history
+        appliedHistoryGrid = grid
+
+        if wasReadingHistory {
+            // Retained history normally keeps its prefix. At the retention
+            // limit, match its suffix to locate rows removed from the top.
+            let removed = Self.removedHistoryRows(
+                old: oldHistoryCells,
+                new: historyCells(count: newHistoryCount)
+            )
+            let row = max(0, oldDisplayRow - removed)
+            scrollTo(row: row)
+            let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
+            setContentOffset(CGPoint(
+                x: oldOffset.x,
+                y: max(0, oldOffset.y - CGFloat(removed) * cellHeight)
+            ), animated: false)
+        } else {
+            scrollToLive()
+        }
+        // Use the view's feed completion to update its native caret and
+        // search cache after direct buffer edits, even without another frame.
+        feed(byteArray: [])
+    }
+
+    private func bufferRows() -> [String] {
+        Array(String(decoding: getTerminal().getBufferAsData(), as: UTF8.self)
+            .components(separatedBy: "\n").dropLast())
+    }
+
+    private struct HistoryCell: Equatable {
+        let character: Character
+        let attribute: Attribute
+    }
+
+    private func historyCells(count: Int) -> [[HistoryCell]] {
+        let terminal = getTerminal()
+        return (0..<count).map { row in
+            guard let line = terminal.getScrollInvariantLine(
+                row: terminal.buffer.totalLinesTrimmed + row
+            ) else { return [] }
+            // Styles distinguish repeated text. Ignore unused cells at the
+            // right edge, whose fill attributes depend on the preceding row.
+            return line.getData().prefix(line.getTrimmedLength()).map {
+                HistoryCell(character: $0.getCharacter(), attribute: $0.attribute)
+            }
+        }
+    }
+
+    private static func removedHistoryRows(old: [[HistoryCell]], new: [[HistoryCell]]) -> Int {
+        guard !old.isEmpty, !new.isEmpty else { return old.count }
+        for removed in 0..<old.count {
+            let count = min(old.count - removed, new.count)
+            if old[removed..<(removed + count)].elementsEqual(new.prefix(count)) {
+                return removed
+            }
+        }
+        return old.count
+    }
+
+    private static func normalizedHistory(_ data: Data) -> [UInt8] {
+        var bytes: [UInt8] = []
+        var previous: UInt8 = 0
+        for byte in data {
+            if byte == 0x0A, previous != 0x0D { bytes.append(0x0D) }
+            bytes.append(byte)
+            previous = byte
+        }
+        return bytes
+    }
+
     func liveGridText() -> String {
         let terminal = getTerminal()
         guard let text = String(data: terminal.getBufferAsData(), encoding: .utf8)

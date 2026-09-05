@@ -12,6 +12,7 @@
 		050E99B73C87B11874938879 /* TranscriptHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C90FF96CA4523AF5AB8C7B /* TranscriptHistoryView.swift */; };
 		05AD621F149C70D175777D4A /* NotificationRetractionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */; };
 		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
+		0B818BD0831A468E0B40C267 /* ScrollbackRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6F965D885F8D5F9CCC62F63 /* ScrollbackRefreshTests.swift */; };
 		1659651FF7FA69AECF9A1CB8 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1D30390653CB42449AC98C /* AppModel.swift */; };
 		196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */; };
 		1C59675AF0E1BBF495882AF5 /* PasswordPromptGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C9314FA1E81C9AB1788AA7 /* PasswordPromptGuard.swift */; };
@@ -32,6 +33,7 @@
 		9C3E81E6DC432B115478C980 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A4671400FCF1C980765FE75F /* SwiftTerm */; };
 		9F15CEF1EC5502DB49D2CF23 /* RaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0DF2560875011836BCF0C528 /* RaiCore */; };
 		A4554B25B7325E6472DB5098 /* HerdListLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5994FFF42AB8E0E4BA1A97C7 /* HerdListLayoutTests.swift */; };
+		B11E6DC189E351F5BE2E6C07 /* TerminalHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFAF5A0BEFA0D8F2178D9AB9 /* TerminalHistoryTests.swift */; };
 		B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */; };
 		C277860A2469FEC6276740A9 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA5F5DC5C68F5E8FD06AA37 /* QRScannerView.swift */; };
 		E3C6AD318A8B1546F8AA5CFA /* TerminalStatuslineControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD07CE836CF897E7813363C /* TerminalStatuslineControllerTests.swift */; };
@@ -84,7 +86,9 @@
 		DCC851F5A15F4B3C632FC3C7 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		DD164C96454BB5CAE0E70FAD /* rai-ios.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "rai-ios.entitlements"; sourceTree = "<group>"; };
 		E4CCA246AEC0AB002C1CACE6 /* NotificationPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPreferencesTests.swift; sourceTree = "<group>"; };
+		F6F965D885F8D5F9CCC62F63 /* ScrollbackRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollbackRefreshTests.swift; sourceTree = "<group>"; };
 		FB1D30390653CB42449AC98C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		FFAF5A0BEFA0D8F2178D9AB9 /* TerminalHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHistoryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -121,6 +125,8 @@
 				8F96A3F6F812BC9A5DDED7EF /* PasswordPromptGuardTests.swift */,
 				B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */,
 				7A70DEB343A85DD32C29F57A /* PromptDetectionTests.swift */,
+				F6F965D885F8D5F9CCC62F63 /* ScrollbackRefreshTests.swift */,
+				FFAF5A0BEFA0D8F2178D9AB9 /* TerminalHistoryTests.swift */,
 				970CC5909AA4C4D0BA17BBF5 /* TerminalLayoutTests.swift */,
 				3BD07CE836CF897E7813363C /* TerminalStatuslineControllerTests.swift */,
 				2C607346F7024285FDF8B953 /* TranscriptHistoryViewModelTests.swift */,
@@ -278,6 +284,8 @@
 				78E28972139ACF5AF36DA047 /* PasswordPromptGuardTests.swift in Sources */,
 				B7AE3083AC7486B711C93CAF /* PermissionDecisionTests.swift in Sources */,
 				196F7878D682C65EA73B0C0E /* PromptDetectionTests.swift in Sources */,
+				0B818BD0831A468E0B40C267 /* ScrollbackRefreshTests.swift in Sources */,
+				B11E6DC189E351F5BE2E6C07 /* TerminalHistoryTests.swift in Sources */,
 				496DB3382BC92DD54C36D585 /* TerminalLayoutTests.swift in Sources */,
 				E3C6AD318A8B1546F8AA5CFA /* TerminalStatuslineControllerTests.swift in Sources */,
 				73B280EEC25AAE5AC151E7F2 /* TranscriptHistoryViewModelTests.swift in Sources */,

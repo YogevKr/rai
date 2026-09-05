@@ -555,6 +555,9 @@ final class BridgeConnection: ObservableObject {
     // while reconnecting is routine on a phone) is retried on the next
     // welcome instead of being skipped forever.
     private var seededPanes: Set<String> = []
+    private var scrollbackRefreshTasks: [String: Task<Void, Never>] = [:]
+    private var scrollbackRefreshInFlight: Set<String> = []
+    private var dirtyScrollback: Set<String> = []
     private var decisionBeaconReceivedAt: [String: Date] = [:]
     private var decisionWaiters: [String: DecisionWaiter] = [:]
     private var notificationAuthorizationGranted = false
@@ -830,6 +833,8 @@ final class BridgeConnection: ObservableObject {
         passwordPromptGridReader.remove(paneID)
         // Re-opening the pane later should seed fresh history again.
         seededPanes.remove(paneID)
+        cancelScrollbackRefresh(for: paneID)
+        pendingScrollback.removeValue(forKey: paneID)
         Task {
             do {
                 try await send(.detachStream(paneID: paneID))
@@ -837,6 +842,43 @@ final class BridgeConnection: ObservableObject {
                 handleSocketFailure(error)
             }
         }
+    }
+
+    /// Observe frames repaint cells rather than emitting terminal line feeds.
+    /// Refresh authoritative history during output, including repeated rows
+    /// whose movement cannot be inferred from two identical screen images.
+    private func scheduleScrollbackRefresh(for paneID: String) {
+        guard status.isConnected, desiredStreams[paneID] != nil,
+              paneFrameHandlers[paneID]?.isEmpty == false,
+              dirtyScrollback.contains(paneID),
+              scrollbackRefreshTasks[paneID] == nil,
+              !scrollbackRefreshInFlight.contains(paneID) else { return }
+        let generation = connectionGeneration
+        scrollbackRefreshTasks[paneID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self,
+                  self.connectionGeneration == generation,
+                  let size = self.desiredStreams[paneID],
+                  self.status.isConnected else { return }
+            self.scrollbackRefreshTasks.removeValue(forKey: paneID)
+            self.dirtyScrollback.remove(paneID)
+            self.scrollbackRefreshInFlight.insert(paneID)
+            do {
+                try await self.send(.readScrollback(
+                    paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true
+                ))
+            } catch {
+                guard self.connectionGeneration == generation else { return }
+                self.scrollbackRefreshInFlight.remove(paneID)
+                self.handleSocketFailure(error)
+            }
+        }
+    }
+
+    private func cancelScrollbackRefresh(for paneID: String) {
+        scrollbackRefreshTasks.removeValue(forKey: paneID)?.cancel()
+        scrollbackRefreshInFlight.remove(paneID)
+        dirtyScrollback.remove(paneID)
     }
 
     func launchAgent(workspaceID: String?, agent: String, cwd: String? = nil) {
@@ -1681,8 +1723,13 @@ final class BridgeConnection: ObservableObject {
             } else if pendingPushPreferences == nil {
                 synchronizePushPreferencesTimeZone()
             }
-        case let .paneFrame(paneID, bytesBase64, full, _, cols, rows):
+        case let .paneFrame(paneID, bytesBase64, full, seq, cols, rows):
             guard let data = Data(base64Encoded: bytesBase64) else { return }
+            if full && seq <= 1 {
+                // A restarted observe stream cancels its pending server read.
+                // Its first frame must release the old request slot.
+                cancelScrollbackRefresh(for: paneID)
+            }
             // Older Macs omit the frame's grid dimensions; clients then fall
             // back to sizing the emulator from the view.
             let grid: PaneGridSize? = if let cols, let rows, cols > 0, rows > 0 {
@@ -1702,7 +1749,13 @@ final class BridgeConnection: ObservableObject {
             for handler in handlers {
                 handler(data, full, grid)
             }
+            dirtyScrollback.insert(paneID)
+            scheduleScrollbackRefresh(for: paneID)
         case let .scrollback(paneID, bytesBase64):
+            // A reply already queued by the Mac can outlive local detach.
+            // Do not let it seed a later visit or reach the outgoing view.
+            guard desiredStreams[paneID] != nil else { return }
+            scrollbackRefreshInFlight.remove(paneID)
             seededPanes.insert(paneID)
             // An EMPTY seed is the NORMAL reply for an agent on the alt screen:
             // `pane read --source recent` returns just the current screen, and
@@ -1714,6 +1767,7 @@ final class BridgeConnection: ObservableObject {
             // an empty seed here left stale history sitting above the live
             // screen every time the user came back to an agent.
             let data = Data(base64Encoded: bytesBase64) ?? Data()
+            scheduleScrollbackRefresh(for: paneID)
             guard let handlers = paneScrollbackHandlers[paneID]?.values,
                   !handlers.isEmpty else {
                 pendingScrollback[paneID] = data
@@ -1723,6 +1777,12 @@ final class BridgeConnection: ObservableObject {
                 handler(data)
             }
         case let .error(message, code, detail, paneID, requestID):
+            if code == .scrollbackUnavailable, let failedPane = paneID ?? detail {
+                scrollbackRefreshInFlight.remove(failedPane)
+                // Preserve output received during the failed read. The next
+                // request consumes that flag, so an idle failure cannot loop.
+                scheduleScrollbackRefresh(for: failedPane)
+            }
             let historyMessage = code == .unknownMessage
                 ? "History is not supported by this Mac."
                 : detail ?? message
@@ -2306,6 +2366,12 @@ final class BridgeConnection: ObservableObject {
 
     private func advanceConnectionGeneration() {
         connectionGeneration &+= 1
+        for task in scrollbackRefreshTasks.values { task.cancel() }
+        scrollbackRefreshTasks.removeAll()
+        scrollbackRefreshInFlight.removeAll()
+        dirtyScrollback.removeAll()
+        seededPanes.removeAll()
+        pendingScrollback.removeAll()
         latestGridByPaneID.removeAll()
         passwordPromptGridReader.removeAll()
         for handler in connectionGenerationHandlers.values {

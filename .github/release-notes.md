@@ -2,21 +2,15 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **⌘-click on a path opens the file instead of a Finder error.** SwiftTerm's
-  Ghostty-style detector treats bare paths (`~/Downloads/report.html`,
-  `./src/a.swift:12`) as links, and its default handler passed them to
-  LaunchServices as scheme-less URLs. Every ⌘-click on a path, deliberate or a
-  stray click with ⌘ still held after ⌘C, drew Finder's "The application can't
-  be opened. -50". Rai now resolves the text first: `~` and `$VAR` expand,
-  relative paths resolve against the pane's working directory, a trailing
-  `:line:col` or stray punctuation is dropped, and only a path that exists
-  opens, with its default app. URLs with a scheme still go to their handler.
-  Anything unresolved beeps; nothing shows an alert.
+- **Faster Mac typing during heavy terminal output.** Rai parses output in
+  bounded chunks and gives keyboard events time between chunks. The terminal
+  reader limits pending output while keyboard input uses a separate path.
+- **Complete iPhone terminal history during live output.** Rai Remote refreshes
+  history from the Mac while preserving the screen, cursor, colors, and scroll
+  position. Repeated rows remain visible without leaving and reopening the pane.
 
-Ships with **Rai Remote build 34** (TestFlight; build 33 froze on every pane open and is superseded): structured Claude prompt
-controls (AskUserQuestion wizard, trust dialogs), Approve/Deny decisions,
-transcript history for hook-enabled panes, a statusline strip, notification
-preferences, and a password-prompt guard on every typed send.
+The companion update is **Rai Remote build 35** on TestFlight.
+Update both apps for the complete terminal history fix.
 
 Bridge protocol stays 6 (all additions are optional fields); existing
 pairings keep working.
