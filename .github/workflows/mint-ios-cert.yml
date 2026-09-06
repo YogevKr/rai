@@ -34,6 +34,20 @@ jobs:
             > "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
           chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
 
+      # The API allows one current Development certificate per key: "You
+      # already have a current Development certificate or a pending certificate
+      # request" (HTTP 409). Minting replaces the CI certificate, so clear the
+      # previous one and any per-run leftovers first. Developer ID and
+      # hand-made certificates are kept.
+      - name: Revoke the previous CI certificate
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          swift scripts/asc-certs.swift \
+            "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8" "$API_KEY_ID" "$API_ISSUER_ID" revoke-ci
+
       - name: Create the certificate
         env:
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
