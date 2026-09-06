@@ -1,8 +1,10 @@
 import AppKit
+import Darwin
 import SwiftTerm
 
 @MainActor
 protocol TerminalProcessViewDelegate: AnyObject {
+    func visibilityChanged(source: TerminalProcessView)
     func sizeChanged(source: TerminalProcessView, newCols: Int, newRows: Int)
     func setTerminalTitle(source: TerminalProcessView, title: String)
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?)
@@ -29,13 +31,32 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
 
     deinit {
         outputDriver?.stop()
-        if process?.running == true { process?.terminate() }
+        Self.terminateAndReap(process)
+    }
+
+    var isTerminalVisible: Bool {
+        window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        processDelegate?.visibilityChanged(source: self)
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        processDelegate?.visibilityChanged(source: self)
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        processDelegate?.visibilityChanged(source: self)
     }
 
     func startProcess(
         executable: String = "/bin/bash", args: [String] = [],
         environment: [String]? = nil, execName: String? = nil,
-        currentDirectory: String? = nil
+        currentDirectory: String? = nil, rawInput: Bool = false
     ) {
         guard process?.running != true else { return }
         outputDriver?.stop()
@@ -66,6 +87,21 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
             executable: executable, args: args, environment: environment,
             execName: execName, currentDirectory: currentDirectory
         )
+        // Herdr enables raw input only after its socket handshake. Configure
+        // this display-client PTY before returning to the event loop so early
+        // control keys reach Herdr instead of the local terminal line editor.
+        guard !rawInput || Self.enableRawInput(on: process.childfd) else {
+            terminate()
+            processDelegate?.processTerminated(source: self, exitCode: nil)
+            return
+        }
+    }
+
+    private static func enableRawInput(on descriptor: Int32) -> Bool {
+        var attributes = termios()
+        guard tcgetattr(descriptor, &attributes) == 0 else { return false }
+        cfmakeraw(&attributes)
+        return tcsetattr(descriptor, TCSANOW, &attributes) == 0
     }
 
     func terminate() {
@@ -73,8 +109,21 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
         outputDriver?.stop()
         outputDriver = nil
         discardPendingOutput()
-        if process?.running == true { process?.terminate() }
+        Self.terminateAndReap(process)
         process = nil
+    }
+
+    private nonisolated static func terminateAndReap(_ process: LocalProcess?) {
+        guard let process else { return }
+        let pid = process.shellPid
+        if process.running { process.terminate() }
+        guard pid > 0 else { return }
+        // SwiftTerm cancels its exit monitor when terminate() sends SIGTERM.
+        // Reap this child off the main queue so tab switches leave no zombies.
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        }
     }
 
     func discardPendingOutput() {}

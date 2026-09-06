@@ -5,9 +5,9 @@ import SwiftTerm
 
 /// Owns attached terminal views independently of SwiftUI's view lifecycle.
 ///
-/// A terminal can move between lightweight host views while its attach process
-/// and scrollback remain alive. Closed terminals are reaped from snapshots, and
-/// inactive terminals are bounded by LRU eviction.
+/// A terminal can move between lightweight host views without losing scrollback.
+/// Hidden views suspend their display clients; Herdr keeps their agents running.
+/// Closed terminals are reaped from snapshots, and cached views use LRU eviction.
 @MainActor
 final class TerminalPool {
     private struct Entry {
@@ -18,6 +18,7 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
+    private let attachExecutable: String
     /// Set alongside `switchSocket`. New local and remote views use different
     /// display thresholds; existing views were already reaped by the switch.
     var predictiveEchoHerdLocation = PredictiveEchoEngine.HerdLocation.local
@@ -30,7 +31,7 @@ final class TerminalPool {
     /// longer exists (which then retries its way to nothing).
     private var knownTerminalIDs: Set<String>?
 
-    /// Floor for the attach pool: a small herd still keeps a few panes warm.
+    /// Floor for the view cache: a small herd still keeps a few panes warm.
     nonisolated static let minimumCapacity = 8
     /// Ceiling, so a very large herd cannot spawn an attach process per pane
     /// without bound. Above this the pool churns again — by then that is the
@@ -39,10 +40,12 @@ final class TerminalPool {
 
     init(
         capacity: Int = TerminalPool.minimumCapacity,
-        socketPath: String = HerdrClient.defaultSocketPath()
+        socketPath: String = HerdrClient.defaultSocketPath(),
+        attachExecutable: String = HerdrCLI.binaryPath
     ) {
         recency = LRUTracker(capacity: capacity)
         self.socketPath = socketPath
+        self.attachExecutable = attachExecutable
         // Re-theme + repaint every live terminal the instant the palette changes
         // (RunLoop.main delivery lands after the @Published value has updated).
         themeObserver = SettingsStore.shared.objectWillChange
@@ -122,7 +125,8 @@ final class TerminalPool {
 
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
-            socketPath: socketPath
+            socketPath: socketPath,
+            executable: attachExecutable
         )
         view.processDelegate = coordinator
         entries[terminalID] = Entry(view: view, coordinator: coordinator)
@@ -226,58 +230,104 @@ private final class TerminalProcessCoordinator:
     NSObject,
     TerminalProcessViewDelegate
 {
+    private enum State {
+        case suspended, waitingForLayout, attached, waitingToRetry, exhausted, stopped
+    }
+
     private weak var view: FocusAwareTerminalView?
     private let terminalID: String
     private let socketPath: String
-    private var started = false
-    private var launched = false
+    private let executable: String
+    private var state = State.suspended
+    private var hasLaunched = false
     private var pendingLaunch: DispatchWorkItem?
-    private var intentionalStop = false
+    private var pendingSuspension: DispatchWorkItem?
     private var retries = 0
     private let maxRetries = 5
 
-    init(terminalID: String, socketPath: String) {
+    init(terminalID: String, socketPath: String, executable: String) {
         self.terminalID = terminalID
         self.socketPath = socketPath
+        self.executable = executable
     }
 
     func attach(_ view: FocusAwareTerminalView) {
-        guard !started else { return }
-        started = true
+        guard self.view == nil, state != .stopped else { return }
         self.view = view
-        // Do NOT spawn yet. The pool hands over a view at frame .zero, so the
-        // attach would inherit SwiftTerm's default 80x25 pty: herdr renders the
-        // pane at 80 columns, the real size lands ~100ms later, and every TUI
-        // that reprints on resize leaves an 80-column copy of its output in the
-        // scrollback above the reflowed one. Wait for the first real layout.
-        //
-        // The timer is the floor, not the plan: a pooled view that is never
-        // laid out (no window, zero-sized host) must still attach, or its pane
-        // would never stream at all.
+        visibilityChanged(source: view)
+    }
+
+    func visibilityChanged(source: TerminalProcessView) {
+        guard state != .stopped, let view else { return }
+        guard view.isTerminalVisible else {
+            cancelPendingLaunch()
+            if state == .attached {
+                // SwiftUI briefly removes a view while transferring it between
+                // hosts. Keep that client's connection during a short transfer.
+                guard pendingSuspension == nil else { return }
+                let suspension = DispatchWorkItem { [weak self] in
+                    guard let self, self.view?.isTerminalVisible == false else { return }
+                    self.suspend()
+                }
+                pendingSuspension = suspension
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: suspension)
+            } else {
+                suspend()
+            }
+            return
+        }
+
+        pendingSuspension?.cancel()
+        pendingSuspension = nil
+        guard state == .suspended else { return }
+        retries = 0
+        state = .waitingForLayout
+        if hasLaunched {
+            // A cached view already has a terminal grid. Reconnect immediately
+            // so input after a tab switch cannot fall into the fallback delay.
+            launch()
+            return
+        }
+        // Wait for the real grid size before starting the PTY. Only a visible
+        // view gets a fallback; cached views must not create display clients.
         let fallback = DispatchWorkItem { [weak self] in
-            self?.launchIfNeeded()
+            guard let self, self.state == .waitingForLayout else { return }
+            self.launch()
         }
         pendingLaunch = fallback
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: fallback)
     }
 
-    private func launchIfNeeded() {
-        guard !launched, view != nil, !intentionalStop else { return }
-        launched = true
+    private func cancelPendingLaunch() {
         pendingLaunch?.cancel()
         pendingLaunch = nil
-        launch()
+    }
+
+    private func suspend() {
+        guard state != .stopped else { return }
+        cancelPendingLaunch()
+        pendingSuspension?.cancel()
+        pendingSuspension = nil
+        state = .suspended
+        // This process is only `herdr terminal attach`. The server owns the
+        // agent. Keep the cached terminal buffer intact for the next attach.
+        view?.terminate()
     }
 
     func stop(_ view: FocusAwareTerminalView) {
-        intentionalStop = true
-        pendingLaunch?.cancel()
-        pendingLaunch = nil
+        state = .stopped
+        cancelPendingLaunch()
+        pendingSuspension?.cancel()
+        pendingSuspension = nil
         view.terminate()
     }
 
     private func launch() {
-        guard let view else { return }
+        guard state == .waitingForLayout || state == .waitingToRetry,
+              let view, view.isTerminalVisible else { return }
+        cancelPendingLaunch()
+        state = .attached
+        hasLaunched = true
         if PredictiveEchoViewPolicy.shouldClear(for: .reattach) {
             view.resetPredictionsForReattach()
         }
@@ -292,31 +342,38 @@ private final class TerminalProcessCoordinator:
         env["HERDR_SOCKET_PATH"] = socketPath
 
         view.startProcess(
-            executable: HerdrCLI.binaryPath,
+            executable: executable,
             args: ["terminal", "attach", terminalID, "--takeover"],
-            environment: env.map { "\($0.key)=\($0.value)" }
+            environment: env.map { "\($0.key)=\($0.value)" },
+            rawInput: true
         )
     }
 
-    // Unexpected attach exits retry exactly as before. Pool eviction calls
-    // stop() first, so intentional termination can never schedule a relaunch.
+    // Retry unexpected exits only while visible. Both suspension and eviction
+    // cancel pending retries, so neither can relaunch a hidden display client.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        guard !intentionalStop else { return }
+        guard state == .attached else { return }
         view?.resetPredictionsForReattach()
-        guard retries < maxRetries else { return }
+        guard view?.isTerminalVisible == true else { suspend(); return }
+        guard retries < maxRetries else { state = .exhausted; return }
         retries += 1
+        state = .waitingToRetry
         let delay = 0.4 * Double(retries)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, let view = self.view, !self.intentionalStop else { return }
+        let retry = DispatchWorkItem { [weak self] in
+            guard let self, self.state == .waitingToRetry,
+                  let view = self.view, view.isTerminalVisible else { return }
             view.getTerminal().resetToInitialState()
             self.launch()
         }
+        pendingLaunch = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: retry)
     }
 
     /// The first real layout is the cue to spawn: the pty then starts at the
     /// pane's true size, so herdr renders it once instead of once per width.
     func sizeChanged(source: TerminalProcessView, newCols: Int, newRows: Int) {
-        launchIfNeeded()
+        guard state == .waitingForLayout else { return }
+        launch()
     }
     func setTerminalTitle(source: TerminalProcessView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}

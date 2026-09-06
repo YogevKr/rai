@@ -38,6 +38,35 @@ case `swift build` is the local compile gate, and CI is the source of truth —
 (pinned because SwiftTerm ships a `.metal` shader that only the Xcode-bundled
 Metal toolchain can compile).
 
+## Hidden terminal streams
+
+Rai disconnects a display client after its view stays outside a window or hidden for one second.
+It keeps the cached view and reconnects when the view becomes visible.
+Cached views reconnect immediately, so the first keys after a tab switch reach the client.
+Rai enables raw PTY input before accepting keys. Control keys then survive the client's connection handshake.
+The Herdr server keeps the pane process running. Brief view transfers retain the existing client.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter TerminalVisibilityTests
+```
+
+These tests use local PTYs. They check visibility, cached scrollback, input after reconnect, retries, eviction, and child process cleanup.
+The control-key test delays client setup and checks that Ctrl-C, Backspace, Ctrl-V, text, and Return arrive unchanged.
+
+An isolated Herdr 0.8.0 test on 2026-09-06 used eight shell processes with a 100 ms output interval.
+Each CPU sample lasted ten seconds. Percentages refer to one CPU core.
+
+| Display clients | Server CPU |
+| --- | ---: |
+| Eight connected | 5.2% |
+| One connected, seven hidden | 2.7% |
+| Eight reconnected | 8.2% |
+
+All eight process IDs stayed unchanged, and output continued while seven views were hidden.
+The hidden views kept their buffers. Their clients exited without leaving child processes, and reconnected views received current output.
+These samples verify this workload. They do not predict CPU use in a live herd.
+
 ## Typing latency benchmark
 
 The Mac terminal parses queued output in chunks of at most 16 KB.
