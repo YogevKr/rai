@@ -38,6 +38,38 @@ case `swift build` is the local compile gate, and CI is the source of truth —
 (pinned because SwiftTerm ships a `.metal` shader that only the Xcode-bundled
 Metal toolchain can compile).
 
+## Application updates
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter 'AppReleaseTests|AppUpdate'
+```
+
+These tests cover numeric version order, release assets, skipped versions, retry, duplicate actions, and opaque dialog rendering.
+The popup consumes Command-W and Command-Shift-W. Tests check that both shortcuts dismiss it without reaching a terminal.
+Manual checks join an active background request and keep their visible result, including skipped releases and errors.
+Installation tests use temporary app folders. They check replacement, rollback, retained backups, and signature rejection.
+They do not replace `/Applications/Rai.app` or stop Herdr.
+
+Set `RAI_UPDATE_DIALOG_SNAPSHOT` to a PNG path to save the dialog render during `AppUpdateTests`.
+The optional signature probe uses the downloaded official 0.1.48 ZIP and its extracted app:
+
+```sh
+RAI_UPDATE_ARCHIVE_PROBE=/path/to/Rai-0.1.48-macos.zip \
+RAI_UPDATE_APP_PROBE=/path/to/unpacked/Rai.app \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter AppUpdateTests.testOfficialReleaseArchiveAndSignature
+```
+
+`rai-updater` runs outside Rai's app process. It verifies the candidate before reporting readiness and again after Rai exits.
+It waits up to two minutes for normal shutdown. It never stops the Herdr server.
+The installer retains the previous app and reports errors instead of deleting the backup.
+`scripts/bundle.sh` includes and signs the helper before signing the outer app.
+
+Release metadata and archive hashes come from the [GitHub Releases API](https://docs.github.com/en/rest/releases/releases).
+Signature checks use Apple's [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services).
+Current release archives contain no symbolic links. The installer rejects archives with symbolic links before extraction.
+
 ## Hidden terminal streams
 
 Rai disconnects a display client after its view stays outside a window or hidden for one second.
@@ -84,6 +116,26 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 These tests check event-loop progress, byte order, Unicode, synchronized output, cancellation, keyboard delivery, and PTY resizing.
+
+Frame pacing delays display updates, but it does not delay parsing reads of 16 KB or less.
+The reader acknowledges these reads immediately. Keyboard echoes can then follow background output without waiting for another frame.
+A regression test checks parsing, read acknowledgement, and echo order without advancing the event loop.
+
+Measure the production Rai view and a real, isolated PTY:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  RAI_TYPING_LATENCY_PROBE=1 swift test --filter TypingLatencyProbeTests
+```
+
+The probe tests small echoes, 1 KB echoes, and typing during continuous output.
+It sends events directly to its own view. It never types into a Herdr pane.
+Each scenario records 60 samples after ten warmup keys. Predictive echo stays disabled.
+Timing stops at the display-update callback, before physical screen presentation.
+
+On 2026-09-06, the streaming median fell from 108.1 ms to 17.3 ms after removing the read delay.
+The streaming p90 fell from 182.6 ms to 23.8 ms. These debug-build results describe this workload only.
+Small-echo medians stayed below 1 ms. Large-echo medians stayed near 21 ms.
 
 `rai-bench --latency` hosts one terminal view. It runs 200 samples for each
 path. The terminal path sends an `NSEvent` through `TerminalView.keyDown`.

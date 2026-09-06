@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "RaiCore", targets: ["RaiCore"]),
         .executable(name: "rai", targets: ["RaiApp"]),
+        .executable(name: "rai-updater", targets: ["RaiUpdateHelper"]),
         .executable(name: "rai-probe", targets: ["RaiProbe"]),
         .executable(name: "rai-bench", targets: ["RaiBench"]),
     ],
@@ -37,6 +38,10 @@ let package = Package(
                 "RaiCore",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ]
+        ),
+        .executableTarget(
+            name: "RaiUpdateHelper",
+            dependencies: ["RaiCore"]
         ),
         .executableTarget(
             name: "RaiProbe",

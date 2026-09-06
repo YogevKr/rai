@@ -2,14 +2,18 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Lower CPU use for hidden terminals.** Rai disconnects hidden terminal
-  display clients after one second. Agents keep running in Herdr, and Rai
-  keeps cached scrollback. Opening a tab reconnects its display.
-- **Reliable reconnects.** Control keys entered during reconnection reach
-  the terminal unchanged. Rai also cleans up stopped display processes.
+- **Faster typing during output.** Rai processes terminal output without
+  waiting for a display update. Keyboard echoes can follow background output
+  without waiting for another frame.
+- **Update popup.** A solid popup shows **Update** and **Skip** when a newer
+  version is available. Update verifies the download, installs the signed
+  release, and restarts Rai. Your agents keep running in Herdr.
+- **Skip one version.** Skip hides that version across launches. Later
+  versions still appear. Use **Rai → Check for Updates…** to check again,
+  including a version you skipped.
 
-No Rai Remote change in this release. The current TestFlight build (35) keeps
-working, and the bridge protocol stays 6.
+Rai checks for updates after launch and every six hours. Installation requires
+a writable Applications folder. The installer keeps the previous app for recovery.
 
 ### Install
 
