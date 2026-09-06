@@ -97,6 +97,20 @@ jobs:
             > "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
           chmod 600 "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
 
+      # Every run mints an "Apple Development: Created via API" certificate and
+      # the runner's keychain dies with the job, so the account fills up and
+      # Xcode fails with "Choose a certificate to revoke" (build 37, 2026-09-06).
+      # Revoke those throwaway certificates first. The script leaves Developer
+      # ID and hand-made certificates alone; see scripts/asc-revoke-ci-certs.swift.
+      - name: Revoke stale CI certificates
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          swift scripts/asc-revoke-ci-certs.swift \
+            "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8" "$API_KEY_ID" "$API_ISSUER_ID"
+
       # No Apple Distribution cert is stored anywhere. `-allowProvisioningUpdates`
       # plus the API key lets Xcode create and download the signing assets on the
       # runner, which is also why this survives a local keychain being wiped.
