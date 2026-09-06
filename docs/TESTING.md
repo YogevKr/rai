@@ -38,6 +38,31 @@ case `swift build` is the local compile gate, and CI is the source of truth —
 (pinned because SwiftTerm ships a `.metal` shader that only the Xcode-bundled
 Metal toolchain can compile).
 
+## iOS connections and terminal retention
+
+Generate the iOS project, then run the tests on an isolated simulator:
+
+```sh
+xcodegen generate --spec ios/project.yml
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project ios/rai-ios.xcodeproj -scheme rai-ios \
+  -destination 'platform=iOS Simulator,id=<simulator-id>' \
+  -derivedDataPath /tmp/rai-ios-network-tests test
+```
+
+`BridgeNetworkTests` covers stalled authentication, missing pongs, network changes, late errors, and composed-line queue behavior.
+`BridgeSocketIntegrationTests` uses a loopback WebSocket server with delayed authentication and a dropped connection.
+It checks ping handling, conditional history replies, and raw-key replay prevention.
+`ScrollbackRefreshTests` covers traffic pacing, conditional replies, and cancellation when the user leaves a pane.
+`TerminalViewCacheTests` covers cached cells, scroll positions, memory limits, context isolation, and nested horizontal offsets.
+It checks text positions after history trimming and terminal deallocation after cache removal.
+Its SwiftUI navigation test records a screenshot before any reply reaches the restored terminal.
+`PromptDetectionTests` rejects cached permission controls until a full screen frame arrives.
+`ConnectionBannerStateTests` covers the three-second delay, recovery, repeated retries, and immediate pairing repair.
+These tests use synthetic content and do not connect to Herdr or change system network settings.
+
+Run the shared protocol and Mac bridge checks with `swift test`.
+
 ## Application updates
 
 ```sh

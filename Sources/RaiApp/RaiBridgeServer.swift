@@ -849,13 +849,18 @@ final class RaiBridgeServer: ObservableObject {
                     self.statusMessage = error.localizedDescription
                     return
                 }
-                if let data,
-                   let metadata = context?.protocolMetadata(
-                       definition: NWProtocolWebSocket.definition
-                   ) as? NWProtocolWebSocket.Metadata,
-                   metadata.opcode == .text {
-                    await self.handle(data, from: client)
-                } else {
+                let metadata = context?.protocolMetadata(
+                    definition: NWProtocolWebSocket.definition
+                ) as? NWProtocolWebSocket.Metadata
+                switch BridgeWebSocketPolicy.action(for: metadata?.opcode) {
+                case .text:
+                    if let data { await self.handle(data, from: client) }
+                case .ignore:
+                    break
+                case .close:
+                    self.removeClient(ObjectIdentifier(client.connection))
+                    return
+                case .reject:
                     self.send(.error(
                         message: "Only WebSocket text frames are supported.",
                         code: .invalidRequest,
@@ -1236,7 +1241,7 @@ final class RaiBridgeServer: ObservableObject {
                 supported: pushAuthorized
             )
             model.reevaluatePendingDecisions()
-        case let .readScrollback(paneID, lines, rows, fullGrid):
+        case let .readScrollback(paneID, lines, rows, fullGrid, knownHash):
             guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
                 send(.error(
                     message: "Unknown pane \(paneID).",
@@ -1254,7 +1259,9 @@ final class RaiBridgeServer: ObservableObject {
             func reply(_ payload: Data?) {
                 guard clients[clientID] === client else { return }
                 if let payload {
-                    send(.scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString()), to: client)
+                    send(PaneScrollback.reply(
+                        paneID: paneID, payload: payload, knownHash: knownHash
+                    ), to: client)
                 } else {
                     send(.error(
                         message: "Could not read scrollback for \(paneID).",
@@ -1397,7 +1404,7 @@ final class RaiBridgeServer: ObservableObject {
                 code: .invalidRequest,
                 detail: "Pair and hello are handshake messages."
             ), to: client)
-        case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .error,
+        case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .scrollbackUnchanged, .error,
              .paneError, .decisionResult,
              .backgroundWork, .sessions, .historyPage, .historyError, .pushPrefsState:
             send(.error(

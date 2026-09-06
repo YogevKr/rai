@@ -409,7 +409,7 @@ enum PushRegistrationPlan {
 @MainActor
 final class BridgeConnection: ObservableObject {
     private struct DecisionWaiter {
-        let socket: URLSessionWebSocketTask
+        let socket: any BridgeSocket
         let continuation: CheckedContinuation<Bool, Never>
     }
     enum Status: Equatable {
@@ -487,9 +487,24 @@ final class BridgeConnection: ObservableObject {
         pairing?.host ?? invitation?.host ?? "Mac"
     }
 
-    private var task: URLSessionWebSocketTask?
+    private var task: (any BridgeSocket)?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var handshakeDeadline: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var pongDeadline: Task<Void, Never>?
+    private var pendingPing: UUID?
+    private var hasSentPing = false
+    private var pathMonitor: NWPathMonitor?
+    private var pathMonitorID: UUID?
+    private let socketFactory: (URL) -> any BridgeSocket
+    private let networkTiming: BridgeNetworkTiming
+    private let monitorsNetwork: Bool
+    private let uptime: () -> TimeInterval
+    private var historyPacing = BridgeHistoryPacing()
+    private var historyReadStarted: [String: TimeInterval] = [:]
+
+    var scrollbackRefreshInterval: TimeInterval { historyPacing.interval }
     private var pairing: Pairing?
     private var invitation: PairingInvitation?
     private var reconnectAttempt = 0
@@ -508,8 +523,18 @@ final class BridgeConnection: ObservableObject {
         userDefaults: UserDefaults = .standard,
         messageSender: ((BridgeMessage) async throws -> Void)? = nil,
         now: @escaping () -> Date = Date.init,
-        replyFrameWaitIterations: Int = 50
+        replyFrameWaitIterations: Int = 50,
+        socketFactory: @escaping (URL) -> any BridgeSocket = {
+            URLSession.shared.webSocketTask(with: $0)
+        },
+        networkTiming: BridgeNetworkTiming = BridgeNetworkTiming(),
+        monitorsNetwork: Bool = true,
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
+        self.socketFactory = socketFactory
+        self.networkTiming = networkTiming
+        self.monitorsNetwork = monitorsNetwork
+        self.uptime = uptime
         self.currentTimeZone = currentTimeZone
         self.userDefaults = userDefaults
         self.messageSender = messageSender
@@ -542,6 +567,7 @@ final class BridgeConnection: ObservableObject {
     // payload and deliver it on registration instead of dropping it.
     private var pendingScrollback: [String: Data] = [:]
     private var desiredStreams: [String: (cols: Int, rows: Int)] = [:]
+    private var paneOpenIDs: [String: UUID] = [:]
     private var historyGeneration: UInt = 0
     private var historySessionName: String?
     private var pendingHistoryRequests: [String: PendingHistoryRequest] = [:]
@@ -555,6 +581,9 @@ final class BridgeConnection: ObservableObject {
     // while reconnecting is routine on a phone) is retried on the next
     // welcome instead of being skipped forever.
     private var seededPanes: Set<String> = []
+    let terminalViewCache = TerminalViewCache()
+    private var terminalCacheScope = UUID()
+    private var scrollbackHashes: [String: String] = [:]
     private var scrollbackRefreshTasks: [String: Task<Void, Never>] = [:]
     private var scrollbackRefreshInFlight: Set<String> = []
     private var dirtyScrollback: Set<String> = []
@@ -568,8 +597,13 @@ final class BridgeConnection: ObservableObject {
         isForeground: Bool
     ) {
         let previous = decisionAvailability
+        let enteredForeground = isForeground && !appIsForeground
         notificationAuthorizationGranted = notificationAuthorized
         appIsForeground = isForeground
+        if enteredForeground, status.isConnected, let task, pendingPing == nil {
+            heartbeatTask?.cancel()
+            ping(task)
+        }
         let current = decisionAvailability
         guard current != previous, status.isConnected else { return }
         Task {
@@ -604,6 +638,7 @@ final class BridgeConnection: ObservableObject {
         invitation = nil
         shouldReconnect = true
         reconnectAttempt = 0
+        startNetworkMonitor()
         openSocket()
     }
 
@@ -628,6 +663,7 @@ final class BridgeConnection: ObservableObject {
         self.invitation = invitation
         shouldReconnect = true
         reconnectAttempt = 0
+        startNetworkMonitor()
         openSocket()
     }
 
@@ -638,11 +674,13 @@ final class BridgeConnection: ObservableObject {
     func retryNow() {
         guard pairing != nil || invitation != nil else { return }
         advanceConnectionGeneration()
-        task?.cancel(with: .goingAway, reason: nil)
-        receiveTask?.cancel()
+        stopSocket()
         reconnectTask?.cancel()
+        reconnectTask = nil
         reconnectAttempt = 0
         shouldReconnect = true
+        startNetworkMonitor()
+        guard historyPacing.path?.allowsConnectionAttempts != false else { return }
         status = .connecting
         openSocket()
     }
@@ -655,6 +693,16 @@ final class BridgeConnection: ObservableObject {
 
     func replaceWithLiveSnapshot(_ snapshot: SessionSnapshot, receivedAt: Date = Date()) {
         updateHistoryPaneSet(snapshot.panes, now: receivedAt)
+        let terminalIDs = snapshot.panes.reduce(into: [String: String]()) { $0[$1.paneID] = $1.terminalID }
+        retainedTerminalAgentIDs = retainedTerminalAgentIDs.filter { paneID, identity in
+            terminalIDs[paneID] == identity.terminalID
+        }
+        for pane in snapshot.panes {
+            if let sessionID = reportedAgentSessionID(for: pane) {
+                retainedTerminalAgentIDs[pane.paneID] = (pane.terminalID, sessionID)
+            }
+        }
+        terminalViewCache.retain(Set(snapshot.panes.map { terminalCacheKey(for: $0) }))
         let activeRequestIDs: Set<String> = Set(snapshot.panes.compactMap { pane -> String? in
             guard pane.beacon?.awaitsDecision == true else { return nil }
             return pane.beacon?.requestID
@@ -668,7 +716,12 @@ final class BridgeConnection: ObservableObject {
         self.snapshot = snapshot
         lastSnapshotAt = receivedAt
         isShowingCachedSnapshot = false
+        let recovered = !status.isConnected
         status = .connected
+        if recovered, let task, pendingPing == nil {
+            heartbeatTask?.cancel()
+            ping(task)
+        }
         didReceiveSnapshot?(snapshot, receivedAt)
     }
 
@@ -789,30 +842,50 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    func openPane(paneID: String, cols: Int = 80, rows: Int = 24) {
+    func openPane(paneID: String, cols: Int = 80, rows: Int = 24, resetStream: Bool = false) {
         activePaneID = paneID
-        let needsSeed = !seededPanes.contains(paneID)
+        if resetStream {
+            seededPanes.remove(paneID)
+            pendingScrollback.removeValue(forKey: paneID)
+            cancelScrollbackRefresh(for: paneID)
+            latestGridByPaneID.removeValue(forKey: paneID)
+            passwordPromptGridReader.remove(paneID)
+        }
+        let openID = UUID()
+        paneOpenIDs[paneID] = openID
+        let generation = connectionGeneration
         if desiredStreams[paneID] == nil {
             desiredStreams[paneID] = (cols, rows)
         }
         Task {
             do {
+                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                if resetStream {
+                    // Complete detach before reading the seed. Otherwise the
+                    // old stream's background read can be cancelled by attach.
+                    try await send(.detachStream(paneID: paneID))
+                    guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                }
                 try await send(.selectPane(paneID: paneID))
+                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
                 try await send(.focusPane(paneID: paneID))
+                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
                 // Read the size at send time, not at entry: the terminal's
                 // layout often lands (and updates desiredStreams) between
                 // openPane and this send, and the server drops resizes for
                 // panes with no active stream — attaching with a stale size
                 // would leave the stream permanently smaller than the view.
                 let size = desiredStreams[paneID] ?? (cols, rows)
-                if needsSeed {
+                if !seededPanes.contains(paneID) {
                     // Sent before attachStream: the server handles messages in
                     // order, so history arrives before the first full frame.
                     try await send(
                         .readScrollback(
-                            paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true)
+                            paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true,
+                            knownHash: scrollbackHashes[paneID])
                     )
                 }
+                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
                 // fullGrid: the stream is never smaller than the pane's grid;
                 // frames carry their dimensions and the emulator pins to them,
                 // scrolling a viewport instead of clipping the pane's bottom.
@@ -829,14 +902,18 @@ final class BridgeConnection: ObservableObject {
     func detachPane(paneID: String) {
         if activePaneID == paneID { activePaneID = nil }
         desiredStreams.removeValue(forKey: paneID)
+        paneOpenIDs.removeValue(forKey: paneID)
         latestGridByPaneID.removeValue(forKey: paneID)
         passwordPromptGridReader.remove(paneID)
-        // Re-opening the pane later should seed fresh history again.
+        // The next view restores a hash only when it also retains the history.
         seededPanes.remove(paneID)
+        scrollbackHashes.removeValue(forKey: paneID)
         cancelScrollbackRefresh(for: paneID)
         pendingScrollback.removeValue(forKey: paneID)
+        let generation = connectionGeneration
         Task {
             do {
+                guard desiredStreams[paneID] == nil, connectionGeneration == generation else { return }
                 try await send(.detachStream(paneID: paneID))
             } catch {
                 handleSocketFailure(error)
@@ -855,7 +932,8 @@ final class BridgeConnection: ObservableObject {
               !scrollbackRefreshInFlight.contains(paneID) else { return }
         let generation = connectionGeneration
         scrollbackRefreshTasks[paneID] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
+            let interval = self?.scrollbackRefreshInterval ?? 0.25
+            try? await Task.sleep(for: .seconds(interval))
             guard !Task.isCancelled, let self,
                   self.connectionGeneration == generation,
                   let size = self.desiredStreams[paneID],
@@ -863,9 +941,11 @@ final class BridgeConnection: ObservableObject {
             self.scrollbackRefreshTasks.removeValue(forKey: paneID)
             self.dirtyScrollback.remove(paneID)
             self.scrollbackRefreshInFlight.insert(paneID)
+            self.historyReadStarted[paneID] = self.uptime()
             do {
                 try await self.send(.readScrollback(
-                    paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true
+                    paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true,
+                    knownHash: self.scrollbackHashes[paneID]
                 ))
             } catch {
                 guard self.connectionGeneration == generation else { return }
@@ -875,9 +955,52 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
+    private func finishScrollbackRead(paneID: String) {
+        scrollbackRefreshInFlight.remove(paneID)
+        if let started = historyReadStarted.removeValue(forKey: paneID) {
+            historyPacing.historyReadDuration = max(0, uptime() - started)
+        }
+        seededPanes.insert(paneID)
+    }
+
+    private var retainedTerminalAgentIDs: [String: (terminalID: String, sessionID: String)] = [:]
+
+    private func reportedAgentSessionID(for pane: Pane) -> String? {
+        // Resume paths and hook presence can change without replacing an agent.
+        // Prefer a native session ID, then retain the last observed hook ID.
+        if let session = pane.agentSession, session.kind == .id, !session.value.isEmpty { return session.value }
+        return (pane.beacon?.sessionID).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    func terminalCacheKey(for pane: Pane) -> TerminalCacheKey {
+        let retained = retainedTerminalAgentIDs[pane.paneID]
+        let sessionID = reportedAgentSessionID(for: pane)
+            ?? (retained?.terminalID == pane.terminalID ? retained?.sessionID : nil)
+        return TerminalCacheKey(
+            scope: terminalCacheScope, paneID: pane.paneID, terminalID: pane.terminalID,
+            agentSessionID: sessionID
+        )
+    }
+
+    func terminalCacheKey(paneID: String) -> TerminalCacheKey? {
+        snapshot?.panes.first { $0.paneID == paneID }.map { terminalCacheKey(for: $0) }
+    }
+
+    func restoreScrollbackHash(_ hash: String?, paneID: String) {
+        scrollbackHashes[paneID] = hash
+    }
+
+    private func invalidateTerminalCache() {
+        terminalCacheScope = UUID()
+        retainedTerminalAgentIDs.removeAll()
+        terminalViewCache.removeAll()
+        scrollbackHashes.removeAll()
+    }
+
     private func cancelScrollbackRefresh(for paneID: String) {
         scrollbackRefreshTasks.removeValue(forKey: paneID)?.cancel()
         scrollbackRefreshInFlight.remove(paneID)
+        historyReadStarted.removeValue(forKey: paneID)
         dirtyScrollback.remove(paneID)
     }
 
@@ -924,7 +1047,7 @@ final class BridgeConnection: ObservableObject {
     }
 
     func resizePane(paneID: String, cols: Int, rows: Int) {
-        guard cols > 0, rows > 0,
+        guard cols > 0, rows > 0, desiredStreams[paneID] != nil,
               desiredStreams[paneID]?.cols != cols || desiredStreams[paneID]?.rows != rows
         else { return }
         desiredStreams[paneID] = (cols, rows)
@@ -1066,7 +1189,11 @@ final class BridgeConnection: ObservableObject {
                 autoReplayUsed: autoReplayUsed
             )
         )
-        if !status.isConnected { retryNow() }
+        // A queued line must not restart a slow handshake or its retry delay.
+        if !status.isConnected, task == nil, reconnectTask == nil,
+           historyPacing.path?.allowsConnectionAttempts != false, !requiresRepair {
+            retryNow()
+        }
     }
 
     func discardOutbox() {
@@ -1508,23 +1635,26 @@ final class BridgeConnection: ObservableObject {
     }
 
     private func openSocket() {
+        guard historyPacing.path?.allowsConnectionAttempts != false else { return }
         guard let url = webSocketURL(), shouldReconnect else {
             status = .failed(.invalidAddress(host: host))
             return
         }
 
         reconnectTask?.cancel()
+        reconnectTask = nil
         if status.diagnosis == nil {
             status = .connecting
         }
-        let socket = URLSession.shared.webSocketTask(with: url)
+        let socket = socketFactory(url)
         task = socket
         socket.resume()
+        startHandshakeDeadline(for: socket)
 
         receiveTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.sendAuthentication()
+                try await self.sendAuthentication(over: socket)
                 try await self.receiveMessages(from: socket)
             } catch is CancellationError {
                 return
@@ -1534,7 +1664,7 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func sendAuthentication() async throws {
+    private func sendAuthentication(over socket: any BridgeSocket) async throws {
         let client = clientInfo()
         if let invitation {
             try await send(
@@ -1542,10 +1672,10 @@ final class BridgeConnection: ObservableObject {
                     code: invitation.code,
                     protocolVersion: bridgeProtocolVersion,
                     client: client
-                )
+                ), over: socket
             )
         } else if let pairing {
-            try await send(.hello(token: pairing.token, client: client))
+            try await send(.hello(token: pairing.token, client: client), over: socket)
         } else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -1570,7 +1700,7 @@ final class BridgeConnection: ObservableObject {
         )
     }
 
-    private func receiveMessages(from socket: URLSessionWebSocketTask) async throws {
+    private func receiveMessages(from socket: any BridgeSocket) async throws {
         while !Task.isCancelled {
             let frame = try await socket.receive()
             guard task === socket else { return }
@@ -1661,6 +1791,7 @@ final class BridgeConnection: ObservableObject {
             }
         case let .snapshot(snapshot, snapshotSessionName):
             if let snapshotSessionName, sessionName != snapshotSessionName {
+                invalidateTerminalCache()
                 historyGeneration &+= 1
                 pendingHistoryRequests.removeAll()
                 historyPages = [:]
@@ -1676,6 +1807,7 @@ final class BridgeConnection: ObservableObject {
             sessions = list
             if let current = list.first(where: { $0.isCurrent }) {
                 if let sessionName, sessionName != current.name {
+                    invalidateTerminalCache()
                     historyGeneration &+= 1
                     historyPages = [:]
                     historyErrors = [:]
@@ -1751,12 +1883,21 @@ final class BridgeConnection: ObservableObject {
             }
             dirtyScrollback.insert(paneID)
             scheduleScrollbackRefresh(for: paneID)
+        case let .scrollbackUnchanged(paneID, contentHash):
+            guard desiredStreams[paneID] != nil else { return }
+            finishScrollbackRead(paneID: paneID)
+            if scrollbackHashes[paneID] != contentHash {
+                // A discarded view cannot validate an unchanged reply.
+                scrollbackHashes.removeValue(forKey: paneID)
+                seededPanes.remove(paneID)
+                dirtyScrollback.insert(paneID)
+            }
+            scheduleScrollbackRefresh(for: paneID)
         case let .scrollback(paneID, bytesBase64):
             // A reply already queued by the Mac can outlive local detach.
             // Do not let it seed a later visit or reach the outgoing view.
             guard desiredStreams[paneID] != nil else { return }
-            scrollbackRefreshInFlight.remove(paneID)
-            seededPanes.insert(paneID)
+            finishScrollbackRead(paneID: paneID)
             // An EMPTY seed is the NORMAL reply for an agent on the alt screen:
             // `pane read --source recent` returns just the current screen, and
             // the Mac drops a screenful from the tail so the seam can't show it
@@ -1767,6 +1908,7 @@ final class BridgeConnection: ObservableObject {
             // an empty seed here left stale history sitting above the live
             // screen every time the user came back to an agent.
             let data = Data(base64Encoded: bytesBase64) ?? Data()
+            scrollbackHashes[paneID] = PaneScrollback.contentHash(data)
             scheduleScrollbackRefresh(for: paneID)
             guard let handlers = paneScrollbackHandlers[paneID]?.values,
                   !handlers.isEmpty else {
@@ -1777,8 +1919,16 @@ final class BridgeConnection: ObservableObject {
                 handler(data)
             }
         case let .error(message, code, detail, paneID, requestID):
+            // Older Macs send a pong and then this exact error for the same ping.
+            // No application operation uses a non-text frame.
+            if hasSentPing, status.isConnected, code == .invalidRequest,
+               message == "Only WebSocket text frames are supported.",
+               detail == "The bridge accepts WebSocket text frames only." {
+                return
+            }
             if code == .scrollbackUnavailable, let failedPane = paneID ?? detail {
                 scrollbackRefreshInFlight.remove(failedPane)
+                historyReadStarted.removeValue(forKey: failedPane)
                 // Preserve output received during the failed read. The next
                 // request consumes that flag, so an idle failure cannot loop.
                 scheduleScrollbackRefresh(for: failedPane)
@@ -2015,6 +2165,8 @@ final class BridgeConnection: ObservableObject {
             stopWithFailure(.protocolMismatch(protocolVersion))
             return
         }
+        handshakeDeadline?.cancel()
+        handshakeDeadline = nil
         // A welcome starts a new authenticated screen generation. This also
         // invalidates prompt controls and any password grid from the old socket.
         advanceConnectionGeneration()
@@ -2023,6 +2175,7 @@ final class BridgeConnection: ObservableObject {
         self.sessionName = sessionName
         if let historySessionName, let sessionName,
            historySessionName != sessionName {
+            invalidateTerminalCache()
             historyPages = [:]
             historyFromPreviousSession = []
             didReceiveHistoryPages?(historyPages)
@@ -2030,17 +2183,28 @@ final class BridgeConnection: ObservableObject {
         self.historySessionName = sessionName
         reconnectAttempt = 0
         status = .connected
+        if let task { ping(task) }
+        let generation = connectionGeneration
+        let socket = task
+        let streamsToRestore = desiredStreams
+        let openIDsToRestore = paneOpenIDs
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.connectionGeneration == generation else { return }
             do {
-                try await self.send(.subscribe)
+                try await self.send(.subscribe, over: socket)
+                guard self.connectionGeneration == generation else { return }
                 if let pending = self.pendingPushPreferences {
-                    try await self.send(.pushPrefs(pending))
+                    try await self.send(.pushPrefs(pending), over: socket)
                 }
+                guard self.connectionGeneration == generation else { return }
                 self.didConnect?()
                 self.requestSessions()
                 self.flushOutbox()
-                for (paneID, size) in self.desiredStreams {
+                for (paneID, size) in streamsToRestore {
+                    guard self.connectionGeneration == generation else { return }
+                    let openID = openIDsToRestore[paneID]
+                    guard self.desiredStreams[paneID] != nil,
+                          self.paneOpenIDs[paneID] == openID else { continue }
                     let needsSeed = !self.seededPanes.contains(paneID)
                     if needsSeed {
                         try await self.send(
@@ -2048,17 +2212,21 @@ final class BridgeConnection: ObservableObject {
                                 paneID: paneID,
                                 lines: 1000,
                                 rows: size.rows,
-                                fullGrid: true
-                            )
+                                fullGrid: true,
+                                knownHash: self.scrollbackHashes[paneID]
+                            ), over: socket
                         )
                     }
+                    guard self.connectionGeneration == generation else { return }
+                    guard self.desiredStreams[paneID] != nil,
+                          self.paneOpenIDs[paneID] == openID else { continue }
                     try await self.send(
                         .attachStream(
                             paneID: paneID,
                             cols: size.cols,
                             rows: size.rows,
                             fullGrid: true
-                        )
+                        ), over: socket
                     )
                 }
             } catch {
@@ -2077,6 +2245,7 @@ final class BridgeConnection: ObservableObject {
     /// Switches the herd the Mac — and therefore this phone — watches.
     func switchSession(named name: String) {
         guard name != sessionName else { return }
+        invalidateTerminalCache()
         historyGeneration &+= 1
         historyPages = [:]
         historyErrors = [:]
@@ -2162,10 +2331,7 @@ final class BridgeConnection: ObservableObject {
 
     private func retryAuthentication(after diagnosis: ConnectionDiagnosis) {
         shouldReconnect = true
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        receiveTask?.cancel()
-        receiveTask = nil
+        stopSocket()
         scheduleReconnect(
             after: NSError(
                 domain: "RaiBridgeAuthentication",
@@ -2201,12 +2367,15 @@ final class BridgeConnection: ObservableObject {
         setPushPreferences(localized)
     }
 
-    private func send(_ message: BridgeMessage) async throws {
+    private func send(
+        _ message: BridgeMessage, over expectedSocket: (any BridgeSocket)? = nil
+    ) async throws {
         if let messageSender {
             try await messageSender(message)
             return
         }
-        guard let task else { throw URLError(.notConnectedToInternet) }
+        guard let socket = expectedSocket ?? task else { throw URLError(.notConnectedToInternet) }
+        guard task === socket else { throw CancellationError() }
         let data = try encoder.encode(message)
         guard let text = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
@@ -2228,12 +2397,21 @@ final class BridgeConnection: ObservableObject {
             }
             return
         }
-        try await task.send(.string(text))
+        do {
+            try await socket.send(.string(text))
+        } catch {
+            guard task === socket else { throw CancellationError() }
+            throw error
+        }
+        // A successful input send stays successful even if the socket changes
+        // before this continuation resumes. Requeueing it can duplicate a line.
+        if case .input = message { return }
+        guard task === socket else { throw CancellationError() }
     }
 
     private func sendDecision(
         _ message: BridgeMessage,
-        over socket: URLSessionWebSocketTask
+        over socket: any BridgeSocket
     ) async throws {
         guard task === socket, status.isConnected else {
             throw URLError(.notConnectedToInternet)
@@ -2247,8 +2425,9 @@ final class BridgeConnection: ObservableObject {
 
     private func handleSocketFailure(
         _ error: Error,
-        from socket: URLSessionWebSocketTask? = nil
+        from socket: (any BridgeSocket)? = nil
     ) {
+        guard !(error is CancellationError) else { return }
         if let socket, task !== socket {
             resolveDecisions(for: socket, accepted: false)
             return
@@ -2258,7 +2437,7 @@ final class BridgeConnection: ObservableObject {
         } else {
             resolveAllDecisions(accepted: false)
         }
-        guard shouldReconnect, !(error is CancellationError) else { return }
+        guard shouldReconnect else { return }
         scheduleReconnect(after: error)
     }
 
@@ -2269,11 +2448,11 @@ final class BridgeConnection: ObservableObject {
         NSLog("rai-ios: connection lost, will reconnect: %@", String(describing: error))
         guard reconnectTask == nil || reconnectTask?.isCancelled == true else { return }
         advanceConnectionGeneration()
-        task = nil
-        receiveTask = nil
+        stopSocket()
         reconnectAttempt += 1
         status = .failed(diagnosis ?? .transport(error, host: host))
-        let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30)
+        guard historyPacing.path?.allowsConnectionAttempts != false else { return }
+        let delay = min(networkTiming.reconnectBase * pow(2.0, Double(min(reconnectAttempt - 1, 5))), 30)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self, self.shouldReconnect else { return }
@@ -2288,10 +2467,8 @@ final class BridgeConnection: ObservableObject {
         NSLog("rai-ios: connection failed: %@ — %@", diagnosis.message, diagnosis.rawDetails)
         advanceConnectionGeneration()
         shouldReconnect = false
-        task?.cancel(with: .policyViolation, reason: nil)
-        task = nil
-        receiveTask?.cancel()
-        receiveTask = nil
+        stopSocket(closeCode: .policyViolation)
+        stopNetworkMonitor()
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .failed(diagnosis)
@@ -2302,15 +2479,14 @@ final class BridgeConnection: ObservableObject {
         advanceConnectionGeneration()
         resolveAllDecisions(accepted: false)
         shouldReconnect = false
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        receiveTask?.cancel()
-        receiveTask = nil
+        stopSocket()
+        stopNetworkMonitor()
         reconnectTask?.cancel()
         reconnectTask = nil
         status = .disconnected
         supportsPushPreferences = false
         if clearSnapshot {
+            invalidateTerminalCache()
             snapshot = nil
             lastSnapshotAt = nil
             decisionBeaconReceivedAt.removeAll()
@@ -2331,6 +2507,8 @@ final class BridgeConnection: ObservableObject {
         sessionName = nil
         didReceiveBackgroundWork?([])
         desiredStreams.removeAll()
+        paneOpenIDs.removeAll()
+        scrollbackHashes.removeAll()
         seededPanes.removeAll()
         if clearPairing {
             clearPendingPushPreferences()
@@ -2345,7 +2523,7 @@ final class BridgeConnection: ObservableObject {
         )
     }
 
-    private func resolveDecisions(for socket: URLSessionWebSocketTask, accepted: Bool) {
+    private func resolveDecisions(for socket: any BridgeSocket, accepted: Bool) {
         let socketIDs = decisionWaiters.mapValues { ObjectIdentifier($0.socket) }
         let requestIDs = DecisionWaiterRouting.requestIDs(
             waiterSocketIDs: socketIDs,
@@ -2369,8 +2547,12 @@ final class BridgeConnection: ObservableObject {
         for task in scrollbackRefreshTasks.values { task.cancel() }
         scrollbackRefreshTasks.removeAll()
         scrollbackRefreshInFlight.removeAll()
+        historyReadStarted.removeAll()
         dirtyScrollback.removeAll()
         seededPanes.removeAll()
+        // The view may not have applied a received history reply yet. Its
+        // pending data is invalidated below, so reconnect must request a seed.
+        scrollbackHashes.removeAll()
         pendingScrollback.removeAll()
         latestGridByPaneID.removeAll()
         passwordPromptGridReader.removeAll()
@@ -2392,6 +2574,112 @@ final class BridgeConnection: ObservableObject {
         return components.url
     }
 
+}
+
+extension BridgeConnection {
+    private func startNetworkMonitor() {
+        guard monitorsNetwork, messageSender == nil, pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        let id = UUID()
+        pathMonitor = monitor
+        pathMonitorID = id
+        monitor.pathUpdateHandler = { [weak self] path in
+            let state = BridgeNetworkPath(path)
+            Task { @MainActor [weak self] in
+                guard let self, self.pathMonitorID == id else { return }
+                self.networkPathChanged(state)
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "rai.bridge.network-path"))
+    }
+
+    private func stopNetworkMonitor() {
+        pathMonitorID = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        historyPacing = BridgeHistoryPacing()
+    }
+
+    func networkPathChanged(_ path: BridgeNetworkPath) {
+        let previous = historyPacing.path
+        historyPacing.path = path
+        guard shouldReconnect else { return }
+        if !path.allowsConnectionAttempts {
+            guard previous?.allowsConnectionAttempts != false else { return }
+            advanceConnectionGeneration()
+            stopSocket()
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            status = .failed(.transport(URLError(.notConnectedToInternet), host: host))
+        } else if previous?.allowsConnectionAttempts == false
+            || (previous?.status == .satisfied && path.status == .satisfied
+                && previous?.interfaces != path.interfaces) {
+            // A Wi-Fi/cellular handoff cannot migrate the existing TCP socket.
+            retryNow()
+        }
+    }
+
+    private func stopSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway) {
+        handshakeDeadline?.cancel()
+        handshakeDeadline = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        pongDeadline?.cancel()
+        pongDeadline = nil
+        pendingPing = nil
+        hasSentPing = false
+        if let socket = task {
+            task = nil
+            resolveDecisions(for: socket, accepted: false)
+            socket.cancel(with: closeCode, reason: nil)
+        }
+        receiveTask?.cancel()
+        receiveTask = nil
+    }
+
+    private func startHandshakeDeadline(for socket: any BridgeSocket) {
+        let timeout = networkTiming.handshakeTimeout
+        handshakeDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, self.task === socket,
+                  !self.status.isConnected else { return }
+            self.handleSocketFailure(URLError(.timedOut), from: socket)
+        }
+    }
+
+    private func ping(_ socket: any BridgeSocket) {
+        guard task === socket, status.isConnected, pendingPing == nil else { return }
+        let id = UUID()
+        pendingPing = id
+        hasSentPing = true
+        let started = uptime()
+        let timeout = networkTiming.pongTimeout
+        pongDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, self.pendingPing == id,
+                  self.task === socket else { return }
+            self.handleSocketFailure(URLError(.timedOut), from: socket)
+        }
+        socket.sendPing { [weak self] error in
+            Task { @MainActor [weak self] in
+                guard let self, self.task === socket, self.pendingPing == id else { return }
+                self.pongDeadline?.cancel()
+                self.pongDeadline = nil
+                self.pendingPing = nil
+                if let error {
+                    self.handleSocketFailure(error, from: socket)
+                    return
+                }
+                self.historyPacing.roundTrip = max(0, self.uptime() - started)
+                let interval = self.networkTiming.pingInterval
+                self.heartbeatTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(interval))
+                    guard !Task.isCancelled else { return }
+                    self?.ping(socket)
+                }
+            }
+        }
+    }
 }
 
 struct PendingHistoryRequest {

@@ -153,4 +153,96 @@ final class ScrollbackRefreshTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(messages.readCount, reads + 1)
     }
+
+    func testConditionalReplyKeepsRowsAndNewOutputGetsOneFollowUp() async throws {
+        let messages = Messages()
+        let connection = try await connected(messages)
+        defer { connection.disconnect() }
+        var delivered: [Data] = []
+        _ = connection.addPaneScrollbackHandler(for: "pane") { delivered.append($0) }
+        let history = Data("retained history\n".utf8)
+        connection.handle(.scrollback(paneID: "pane", bytesBase64: history.base64EncodedString()))
+        frame(connection)
+        try await Task.sleep(for: .milliseconds(350))
+        guard case let .readScrollback(_, _, _, _, hash) = messages.values.last else { return XCTFail() }
+        XCTAssertEqual(hash, PaneScrollback.contentHash(history))
+        let before = delivered.count
+        frame(connection)
+        let reads = messages.readCount
+        connection.handle(.scrollbackUnchanged(paneID: "pane", contentHash: hash!))
+        XCTAssertEqual(delivered.count, before, "Unchanged replies must not clear the view")
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(messages.readCount, reads + 1)
+    }
+
+    func testMissingRetainedHashFallsBackToFullHistory() async throws {
+        let messages = Messages()
+        let connection = try await connected(messages)
+        defer { connection.disconnect() }
+        connection.restoreScrollbackHash(nil, paneID: "pane")
+        connection.handle(.scrollbackUnchanged(paneID: "pane", contentHash: "discarded"))
+        try await Task.sleep(for: .milliseconds(350))
+        guard case let .readScrollback(_, _, _, _, hash) = messages.values.last else { return XCTFail() }
+        XCTAssertNil(hash)
+    }
+
+    func testReconnectRequestsHistoryLostBeforeFirstFrame() async throws {
+        let messages = Messages()
+        let connection = BridgeConnection(messageSender: { messages.values.append($0) })
+        let terminal = GridReadableTerminalView(frame: .zero)
+        _ = connection.addConnectionGenerationHandler { _ in terminal.awaitNextConnectionFrame() }
+        _ = connection.addPaneScrollbackHandler(for: "pane") { terminal.receiveHistory($0) }
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        defer { connection.disconnect() }
+        connection.openPane(paneID: "pane")
+        try await Task.sleep(for: .milliseconds(30))
+        let history = Data("history before the first frame\n".utf8)
+        connection.handle(.scrollback(paneID: "pane", bytesBase64: history.base64EncodedString()))
+        XCTAssertNil(terminal.cachedHistoryHash, "History is pending until the first native grid arrives")
+        messages.values.removeAll()
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        try await Task.sleep(for: .milliseconds(30))
+        let reads = messages.values.filter { if case .readScrollback = $0 { return true }; return false }
+        guard case let .readScrollback(_, _, _, _, hash) = reads.first else { return XCTFail() }
+        XCTAssertNil(hash, "Discarded pending data must not produce an unchanged reply")
+        connection.handle(.scrollback(paneID: "pane", bytesBase64: history.base64EncodedString()))
+        terminal.receiveFrame(Data("\u{1B}[Hlive".utf8), full: true, grid: PaneGridSize(cols: 80, rows: 4))
+        XCTAssertTrue(String(decoding: terminal.getTerminal().getBufferAsData(), as: UTF8.self)
+            .contains("history before the first frame"))
+    }
+
+    func testExpensiveNetworkCoalescesOutputForTwoSeconds() async throws {
+        let messages = Messages()
+        let connection = try await connected(messages)
+        defer { connection.disconnect() }
+        connection.networkPathChanged(BridgeNetworkPath(status: .satisfied, isExpensive: true))
+        let reads = messages.readCount
+        for _ in 0..<100 { frame(connection) }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(messages.readCount, reads)
+        try await Task.sleep(for: .seconds(1.8))
+        XCTAssertEqual(messages.readCount, reads + 1)
+    }
+
+    func testLeavingDuringDelayedOpenNeverAttachesHiddenPane() async throws {
+        let messages = Messages()
+        var pendingSelect: CheckedContinuation<Void, Never>?
+        let connection = BridgeConnection(messageSender: {
+            messages.values.append($0)
+            if case .selectPane = $0 {
+                await withCheckedContinuation { pendingSelect = $0 }
+            }
+        })
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        defer { connection.disconnect() }
+        connection.openPane(paneID: "pane")
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertNotNil(pendingSelect)
+        connection.detachPane(paneID: "pane")
+        connection.resizePane(paneID: "pane", cols: 120, rows: 30)
+        pendingSelect?.resume()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(messages.attachCount, 0)
+        XCTAssertEqual(messages.readCount, 0)
+    }
 }

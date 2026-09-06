@@ -22,10 +22,43 @@ Rai skips the visible frame when the read fails.
 
 During output, the phone refreshes remote history at most four times per second.
 It keeps one history read in flight and stops reading when output stops.
+Cellular, hotspot, and Low Data Mode connections use a two-second refresh interval.
+Slow ping or history replies also reduce the refresh rate, with a five-second maximum interval.
 These reads preserve repeated rows that cell-position updates cannot add to local history.
 The phone preserves the live grid, cursor, colors, and a scrolled history viewport during refresh.
 It defers history replacement during dragging, deceleration, and text selection.
 History retains up to 1,000 recent rows from the Mac.
+
+The phone retains three recently closed terminal views in memory.
+Returning to a thread shows its retained cells, history, and scroll position before the Mac replies.
+Hidden views disconnect their display streams. Agent sessions continue on the Mac.
+Memory warnings clear the hidden views. Changing Mac, herd, terminal, or agent prevents reuse across those contexts.
+The cache retains a known agent session ID when temporary hook data disappears.
+Native session IDs take priority over hook data. Resume paths do not identify an agent session.
+Discarding a view closes its display timer and releases its terminal buffer.
+Returning to trimmed history keeps the same text in view when that text remains available.
+Changing the Mac grid height preserves that text position, including when history also changes.
+Column changes match styled text across wrapped rows. Deferred resizing retains the saved text position.
+Ordinary history updates use the final gesture position.
+The outer scroll view controls horizontal movement. The terminal controls vertical movement to prevent double horizontal offsets.
+
+History requests include a SHA-256 hash when the phone retains the corresponding history.
+The updated Mac returns `scrollbackUnchanged` when the content matches, without sending the history again.
+Changed history receives a complete replacement, including an empty replacement when previous rows disappear.
+Reconnect requests a complete seed because a view can discard history that it has not yet applied.
+This additive protocol change keeps protocol version 6. Older Macs ignore `knownHash` and send complete history replies.
+Older phones omit `knownHash` and continue receiving complete replies from the updated Mac.
+The Mac still reads local history to validate the hash. Each stream attachment still sends its initial screen frames.
+
+The phone waits up to 30 seconds for authentication and for each WebSocket ping reply.
+It checks the connection every 15 seconds and when the app returns to the foreground.
+After a connection failure, retry delays increase from one second to a 30-second maximum.
+The reconnect banner waits three seconds after a failure. Retry attempts keep the same deadline.
+Recovery cancels the banner. Pairing failures show the repair action immediately.
+When the network disappears, retries pause. Network return or a Wi-Fi/cellular handoff starts a new connection immediately.
+A path that requires activation still permits connection attempts. Activating that path preserves the current connection attempt.
+Adding composed lines to the queue preserves an existing connection attempt and its retry delay.
+Reconnect does not replay raw keys. Composed lines retain the existing queue and password-prompt checks.
 
 The Mac matches recent and visible reads by revision before separating history from the screen.
 Refresh reads use a separate connection and let subsequent phone input proceed during the read.
@@ -164,7 +197,8 @@ multi-select checkboxes, free-text entry, and a final Submit action.
 
 Each tap keeps its rendered signature, prompt instance, beacon request, and question.
 Rai refuses the tap when the live prompt differs. It never binds a tap to a newer prompt.
-Rai hides prompt controls when a connection generation ends. A new frame must arrive before controls return.
+Rai hides prompt controls when a connection generation ends or a terminal view returns.
+A full screen frame must arrive before controls return. Earlier deltas cannot validate cached prompt text.
 
 Rai sends one key, then waits for the marker, checkbox, tab, or dialog to change.
 The sequence stops after four seconds or any unexpected change. Rai never sends
