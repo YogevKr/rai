@@ -93,8 +93,14 @@ struct Certificate {
         type = attributes["certificateType"] as? String ?? ""
         name = attributes["name"] as? String ?? ""
         displayName = attributes["displayName"] as? String ?? ""
-        serial = (attributes["serialNumber"] as? String ?? "").uppercased()
+        serial = Certificate.normalize(attributes["serialNumber"] as? String ?? "")
         expires = attributes["expirationDate"] as? String ?? ""
+    }
+
+    /// Apple reports serials without a leading zero; `openssl x509 -serial`
+    /// prints an even number of hex digits, so compare without leading zeros.
+    static func normalize(_ serial: String) -> String {
+        String(serial.uppercased().drop(while: { $0 == "0" }))
     }
 
     func isThrowaway(keeping serials: Set<String>) -> Bool {
@@ -128,7 +134,7 @@ func revokeCI(token: String) {
     var index = 0
     while index < options.count {
         if options[index] == "--keep-serial", index + 1 < options.count {
-            keep.insert(options[index + 1].uppercased())
+            keep.insert(Certificate.normalize(options[index + 1]))
             index += 2
         } else {
             fail("Unknown revoke-ci option \(options[index])")
