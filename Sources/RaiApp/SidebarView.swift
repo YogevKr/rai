@@ -152,6 +152,7 @@ struct SidebarView: View {
                                             model.previewTabDuringPaneDrag(tab)
                                         },
                                         onBroadcast: { broadcastPresented = true },
+                                        gitStatus: model.gitStatus(forTab: tab),
                                         indent: entry.indented ? 32 : 14
                                     )
                                 }
@@ -160,7 +161,6 @@ struct SidebarView: View {
                                     model: model,
                                     workspace: workspace,
                                     displayLabel: entry.displayLabel,
-                                    gitStatus: model.gitStatus(for: workspace),
                                     displayStatus: entry.displayStatus,
                                     focusedInHerdr: focused,
                                     indented: entry.indented,
@@ -667,6 +667,9 @@ private struct SidebarRowLabel<Trailing: View>: View {
     var onCommitRename: (String) -> Void = { _ in }
     var onCancelRename: () -> Void = {}
     var onRename: () -> Void = {}
+    /// Branch and ahead/behind of the row's own directory, shown after the
+    /// subtitle. Tabs carry this; a space header no longer does.
+    var gitStatus: WorkspaceGitStatus? = nil
     @ViewBuilder var trailing: () -> Trailing
 
     private var subtitleLine: Text {
@@ -713,14 +716,31 @@ private struct SidebarRowLabel<Trailing: View>: View {
                         }
                     }
                 }
-                subtitleLine
-                    .font(.system(size: 10.5, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    subtitleLine
+                        .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let gitStatus, gitStatus.hasSidebarDetails {
+                        Text("·")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Theme.textTertiary)
+                        WorktreeTag(status: gitStatus, worktree: nil)
+                    }
+                }
             }
             Spacer(minLength: 4)
             trailing()
         }
+    }
+}
+
+private extension WorkspaceGitStatus {
+    /// Anything the tag would render: a branch, a detached HEAD, or a
+    /// non-zero ahead/behind count.
+    var hasSidebarDetails: Bool {
+        branch != nil || isDetached
+            || aheadBehind.map { $0.ahead > 0 || $0.behind > 0 } == true
     }
 }
 
@@ -772,7 +792,6 @@ private struct WorkspaceHeader: View {
     @ObservedObject var model: RaiModel
     let workspace: Workspace
     let displayLabel: String
-    let gitStatus: WorkspaceGitStatus?
     let displayStatus: AgentStatus
     let focusedInHerdr: Bool
     var indented = false
@@ -789,14 +808,6 @@ private struct WorkspaceHeader: View {
         guard let worktree = workspace.worktree else { return false }
         return worktree.isLinkedWorktree
             || worktree.repoName.caseInsensitiveCompare(displayLabel) != .orderedSame
-    }
-
-    private var showGitDetails: Bool {
-        guard let gitStatus else { return false }
-        return gitStatus.branch != nil || gitStatus.isDetached
-            || gitStatus.aheadBehind.map {
-                $0.ahead > 0 || $0.behind > 0
-            } == true
     }
 
     var body: some View {
@@ -865,10 +876,13 @@ private struct WorkspaceHeader: View {
                         .foregroundStyle(Theme.textTertiary)
                 }
             }
-            if !indented, showGitDetails || showWorktreeFallback {
-                // Herdr suppresses Git tokens on indented children. Their auto
-                // label is already the branch, while a custom name stays custom.
-                WorktreeTag(status: gitStatus, worktree: workspace.worktree)
+            if !indented, showWorktreeFallback {
+                // The branch lives on the tab rows now: tabs in one space can
+                // sit in different worktrees. The header keeps only the
+                // checkout identity of a linked worktree or a renamed space.
+                // Herdr suppresses that on indented children, whose auto label
+                // is already the branch while a custom name stays custom.
+                WorktreeTag(status: nil, worktree: workspace.worktree)
                     .padding(.leading, groupKey == nil ? 43 : 58)
                     .padding(.trailing, 6)
                     .lineLimit(1)
@@ -955,6 +969,7 @@ private struct AgentRow: View {
     let onSelect: () -> Void
     let onPaneDragHover: () -> Void
     let onBroadcast: () -> Void
+    var gitStatus: WorkspaceGitStatus? = nil
     var indent: CGFloat = 14
 
     @State private var hovering = false
@@ -981,7 +996,8 @@ private struct AgentRow: View {
             editing: model.inlineRename == .tab(tab.tabID),
             onCommitRename: { model.commitInlineRename(tab: tab, to: $0) },
             onCancelRename: { model.cancelInlineRename() },
-            onRename: { model.beginInlineRename(tab: tab) }
+            onRename: { model.beginInlineRename(tab: tab) },
+            gitStatus: gitStatus
         ) {
             let bgTasks = model.backgroundWork(forTab: tab.tabID)
             if !bgTasks.isEmpty {

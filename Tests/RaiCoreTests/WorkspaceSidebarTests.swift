@@ -228,6 +228,128 @@ final class WorkspaceSidebarTests: XCTestCase {
         )
     }
 
+    func testTabCheckoutPathPrefersFocusedPaneShellDirectory() {
+        let space = workspace("w-plain", label: "plain", activeTabID: "t-a")
+        let tabs = [
+            tab("t-a", workspaceID: "w-plain"),
+            tab("t-b", workspaceID: "w-plain"),
+            tab("t-empty", workspaceID: "w-plain"),
+        ]
+        let snapshot = snapshot(
+            workspaces: [space],
+            tabs: tabs,
+            panes: [
+                pane("p-first", workspaceID: "w-plain", tabID: "t-a", cwd: "/repo"),
+                pane(
+                    "p-focused",
+                    workspaceID: "w-plain",
+                    tabID: "t-a",
+                    cwd: "/repo/.worktrees/x",
+                    foregroundCWD: "/helper",
+                    focused: true
+                ),
+                pane(
+                    "p-no-shell-cwd",
+                    workspaceID: "w-plain",
+                    tabID: "t-b",
+                    cwd: "",
+                    foregroundCWD: "/foreground"
+                ),
+            ]
+        )
+
+        // The focused pane's shell directory wins over the first pane and
+        // over the foreground process directory (an MCP helper elsewhere).
+        XCTAssertEqual(
+            WorkspaceSidebar.checkoutPath(for: tabs[0], in: snapshot),
+            "/repo/.worktrees/x"
+        )
+        XCTAssertEqual(
+            WorkspaceSidebar.checkoutPath(for: tabs[1], in: snapshot),
+            "/foreground"
+        )
+        XCTAssertNil(WorkspaceSidebar.checkoutPath(for: tabs[2], in: snapshot))
+    }
+
+    func testCheckoutPathsCoverSpacesAndTabsOnce() {
+        let tree = workspace("w-tree", label: "tree", path: "/tree", linked: false)
+        let snapshot = snapshot(
+            workspaces: [tree],
+            tabs: [
+                tab("t-root", workspaceID: "w-tree"),
+                tab("t-worktree", workspaceID: "w-tree"),
+            ],
+            panes: [
+                pane("p-root", workspaceID: "w-tree", tabID: "t-root", cwd: "/tree"),
+                pane(
+                    "p-worktree",
+                    workspaceID: "w-tree",
+                    tabID: "t-worktree",
+                    cwd: "/tree/.worktrees/x"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            WorkspaceSidebar.checkoutPaths(in: snapshot),
+            ["/tree", "/tree/.worktrees/x"]
+        )
+    }
+
+    func testTabGitStatusReadsItsOwnDirectoryNotTheSpace() {
+        let tree = workspace("w-tree", label: "tree", path: "/tree", linked: false)
+        let rootTab = tab("t-root", workspaceID: "w-tree")
+        let worktreeTab = tab("t-worktree", workspaceID: "w-tree")
+        let snapshot = snapshot(
+            workspaces: [tree],
+            tabs: [rootTab, worktreeTab],
+            panes: [
+                pane("p-root", workspaceID: "w-tree", tabID: "t-root", cwd: "/tree"),
+                pane(
+                    "p-worktree",
+                    workspaceID: "w-tree",
+                    tabID: "t-worktree",
+                    cwd: "/tree/.worktrees/x"
+                ),
+            ]
+        )
+        let statuses = [
+            "/tree": WorkspaceGitStatus(
+                checkoutPath: "/tree", branch: "main", isDetached: false,
+                aheadBehind: nil, repoKey: "repo"
+            ),
+            "/tree/.worktrees/x": WorkspaceGitStatus(
+                checkoutPath: "/tree/.worktrees/x", branch: "feature", isDetached: false,
+                aheadBehind: GitAheadBehind(ahead: 1, behind: 0), repoKey: "repo"
+            ),
+        ]
+
+        XCTAssertEqual(
+            WorkspaceSidebar.gitStatus(for: rootTab, in: snapshot, gitStatuses: statuses)?.branch,
+            "main"
+        )
+        XCTAssertEqual(
+            WorkspaceSidebar.gitStatus(for: worktreeTab, in: snapshot, gitStatuses: statuses)?.branch,
+            "feature"
+        )
+        XCTAssertEqual(
+            WorkspaceSidebar.gitStatus(for: tree, in: snapshot, gitStatuses: statuses)?.branch,
+            "main"
+        )
+    }
+
+    private func tab(_ id: String, workspaceID: String) -> HerdrTab {
+        HerdrTab(
+            tabID: id,
+            workspaceID: workspaceID,
+            number: 1,
+            label: id,
+            focused: false,
+            paneCount: 1,
+            agentStatus: .idle
+        )
+    }
+
     private func workspace(
         _ id: String,
         label: String,
@@ -262,14 +384,15 @@ final class WorkspaceSidebarTests: XCTestCase {
         workspaceID: String,
         tabID: String,
         cwd: String,
-        foregroundCWD: String? = nil
+        foregroundCWD: String? = nil,
+        focused: Bool = false
     ) -> Pane {
         Pane(
             paneID: id,
             terminalID: "term-\(id)",
             workspaceID: workspaceID,
             tabID: tabID,
-            focused: false,
+            focused: focused,
             cwd: cwd,
             foregroundCWD: foregroundCWD,
             agent: nil,
@@ -284,6 +407,7 @@ final class WorkspaceSidebarTests: XCTestCase {
 
     private func snapshot(
         workspaces: [Workspace],
+        tabs: [HerdrTab] = [],
         panes: [Pane] = []
     ) -> SessionSnapshot {
         SessionSnapshot(
@@ -293,7 +417,7 @@ final class WorkspaceSidebarTests: XCTestCase {
             focusedTabID: nil,
             focusedPaneID: nil,
             workspaces: workspaces,
-            tabs: [],
+            tabs: tabs,
             panes: panes,
             agents: nil,
             layouts: []

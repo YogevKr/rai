@@ -1000,6 +1000,17 @@ final class RaiModel: ObservableObject {
         )
     }
 
+    /// The branch shown on a tab row: the Git status of that tab's shell
+    /// directory, which can differ from its space (a tab inside a worktree).
+    func gitStatus(forTab tab: HerdrTab) -> WorkspaceGitStatus? {
+        guard let snapshot else { return nil }
+        return WorkspaceSidebar.gitStatus(
+            for: tab,
+            in: snapshot,
+            gitStatuses: workspaceGitStatuses
+        )
+    }
+
     func toggleSpaceGroupCollapsed(_ key: String) {
         if collapsedSpaceKeys.contains(key) {
             collapsedSpaceKeys.remove(key)

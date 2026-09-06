@@ -248,10 +248,38 @@ public struct WorkspaceListEntry: Identifiable, Sendable, Equatable {
 }
 
 public enum WorkspaceSidebar {
+    /// Every path the sidebar reads Git details for: each space's checkout
+    /// (repo grouping) plus each tab's shell directory (the row's branch tag).
+    /// Tabs usually share their space's checkout, so this rarely adds a read.
     public static func checkoutPaths(in snapshot: SessionSnapshot) -> [String] {
-        snapshot.workspaces.compactMap {
-            checkoutPath(for: $0, in: snapshot)
-        }
+        let paths = snapshot.workspaces.compactMap { checkoutPath(for: $0, in: snapshot) }
+            + snapshot.tabs.compactMap { checkoutPath(for: $0, in: snapshot) }
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
+    }
+
+    /// A tab reports the shell directory of its focused pane, else its first
+    /// pane. The shell's own cwd wins over the foreground process directory:
+    /// an agent's helper processes (MCP servers) often run from another
+    /// checkout, and the row subtitle already names the shell directory.
+    public static func checkoutPath(
+        for tab: HerdrTab,
+        in snapshot: SessionSnapshot
+    ) -> String? {
+        let panes = snapshot.panes.filter { $0.tabID == tab.tabID }
+        guard let pane = panes.first(where: \.focused) ?? panes.first else { return nil }
+        let path = pane.cwd.isEmpty ? (pane.foregroundCWD ?? "") : pane.cwd
+        guard !path.isEmpty else { return nil }
+        return WorkspaceGit.normalizedCheckoutPath(path)
+    }
+
+    public static func gitStatus(
+        for tab: HerdrTab,
+        in snapshot: SessionSnapshot,
+        gitStatuses: [String: WorkspaceGitStatus]
+    ) -> WorkspaceGitStatus? {
+        guard let path = checkoutPath(for: tab, in: snapshot) else { return nil }
+        return gitStatuses[path]
     }
 
     public static func checkoutPath(
