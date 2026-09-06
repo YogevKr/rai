@@ -23,11 +23,10 @@ final class TerminalHistoryTests: XCTestCase {
     }
 
     private func paint(_ lines: [String], on view: GridReadableTerminalView) {
-        view.prepareHistoryForFrame()
-        view.feed(text: "\u{1B}[H\u{1B}[2J" + lines.enumerated().map {
+        let frame = "\u{1B}[H\u{1B}[2J" + lines.enumerated().map {
             "\u{1B}[\($0.offset + 1);1H\($0.element)"
-        }.joined())
-        view.hasLiveFrame = true
+        }.joined()
+        view.receiveFrame(Data(frame.utf8), full: true, grid: nil)
     }
 
     func testFirstFramePreservesEveryHistoryRowAtNativeGridSize() {

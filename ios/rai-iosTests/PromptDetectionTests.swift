@@ -426,6 +426,51 @@ final class PromptDetectionTests: XCTestCase {
     }
 
     @MainActor
+    func testRebindingCachedGridWaitsForNewFrameInSameConnectionGeneration() throws {
+        let controller = TerminalPromptController()
+        controller.readGrid = { Self.permissionGrid }
+        controller.invalidateForConnectionGeneration(1)
+        controller.refresh(frameArrived: true)
+        XCTAssertNotNil(controller.prompt)
+        controller.awaitNextFrame()
+        controller.invalidateForConnectionGeneration(1)
+        controller.refresh()
+        XCTAssertNil(controller.prompt)
+        controller.refresh(frameArrived: true)
+        XCTAssertNotNil(controller.prompt)
+    }
+
+    @MainActor
+    func testCachedPermissionIgnoresDeltasUntilFullBaselineArrives() {
+        let terminal = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 650, height: 300))
+        defer { terminal.updateUiClosed() }
+        let controller = TerminalPromptController()
+        controller.readGrid = { [weak terminal] in terminal?.liveGridText() ?? "" }
+        let frame = Data(Self.permissionGrid.replacingOccurrences(of: "\n", with: "\r\n").utf8)
+        terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: 80, rows: 24))
+        controller.refresh(frameArrived: true)
+        XCTAssertNotNil(controller.prompt)
+        let cachedCells = terminal.getTerminal().getBufferAsData()
+
+        terminal.awaitNextConnectionFrame()
+        controller.awaitNextFrame()
+        let result = terminal.receiveFrame(Data("\u{1B}[20;1Hlate delta".utf8), full: false, grid: nil)
+        XCTAssertEqual(result, .ignored)
+        XCTAssertFalse(terminal.hasLiveFrame)
+        XCTAssertEqual(terminal.getTerminal().getBufferAsData(), cachedCells)
+        controller.refresh(frameArrived: result != .ignored)
+        XCTAssertNil(controller.prompt)
+
+        terminal.receiveFrame(Data("\u{1B}[Hnew screen".utf8), full: true, grid: nil)
+        controller.refresh(frameArrived: true)
+        XCTAssertTrue(terminal.hasLiveFrame)
+        XCTAssertNil(controller.prompt, "A fresh screen must remove the cached permission")
+        terminal.receiveFrame(frame, full: true, grid: nil)
+        controller.refresh(frameArrived: true)
+        XCTAssertNotNil(controller.prompt, "A full baseline can expose a current permission")
+    }
+
+    @MainActor
     func testControllerRejectsLegacyOptionOutsideRenderedPrompt() throws {
         let controller = TerminalPromptController()
         controller.readGrid = { Self.permissionGrid }

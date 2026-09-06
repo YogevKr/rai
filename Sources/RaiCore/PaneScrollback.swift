@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Splits a recent pane read from the visible rows in the same revision.
@@ -10,6 +11,17 @@ public enum PaneScrollback {
         let history = lines(recent).dropLast(screenRows)
         guard !history.isEmpty else { return Data() }
         return Data((history.joined(separator: "\n") + "\n\u{1B}[0m").utf8)
+    }
+
+    public static func contentHash(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func reply(paneID: String, payload: Data, knownHash: String?) -> BridgeMessage {
+        if let knownHash, knownHash == contentHash(payload) {
+            return .scrollbackUnchanged(paneID: paneID, contentHash: knownHash)
+        }
+        return .scrollback(paneID: paneID, bytesBase64: payload.base64EncodedString())
     }
 
     private static func lines(_ text: String) -> [String] {

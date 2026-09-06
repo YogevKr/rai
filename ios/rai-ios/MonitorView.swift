@@ -41,6 +41,7 @@ struct MonitorView: View {
     @State private var closeTarget: CloseTarget?
     @State private var backgroundWorkTarget: BackgroundWorkTarget?
     @State private var filter: HerdFilter?
+    @StateObject private var connectionBanner = ConnectionBannerState()
     /// Off = just the spaces, no pulse line and no Needs you / Working groups.
     @AppStorage(HerdListLayout.triageDefaultsKey) private var triageEnabled = true
 
@@ -161,7 +162,7 @@ struct MonitorView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if let diagnosis = connection.status.diagnosis,
+                if let diagnosis = connectionBanner.diagnosis,
                    connection.snapshot != nil {
                     ConnectionIssueBar(
                         diagnosis: diagnosis,
@@ -171,6 +172,9 @@ struct MonitorView: View {
                 }
             }
         })
+        .onChange(of: connection.status, initial: true) { _, status in
+            connectionBanner.update(status)
+        }
         .sheet(isPresented: $showingAgentLauncher) {
             AgentLauncherSheet(
                 workspaces: connection.snapshot?.workspaces ?? []

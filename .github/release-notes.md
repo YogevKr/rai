@@ -2,26 +2,30 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Update restart fix.** Rai completes shutdown before the installer replaces
-  the app. This fixes the shutdown stall found during an update from 0.1.49.
-  Your agents keep running in Herdr.
-- **Faster typing during output.** Rai processes terminal output without
-  waiting for a display update. Keyboard echoes can follow background output
-  without waiting for another frame.
-- **Update popup.** A solid popup shows **Update** and **Skip** when a newer
-  version is available. Update verifies the download, installs the signed
-  release, and restarts Rai. Your agents keep running in Herdr.
-- **Skip one version.** Skip hides that version across launches. Later
-  versions still appear. Use **Rai → Check for Updates…** to check again,
-  including a version you skipped.
+- **Less history traffic.** The Mac checks retained phone history and skips
+  sending it when the content has not changed. Update both apps for this benefit.
+- **Connection checks.** The Mac handles WebSocket ping and pong messages
+  without reporting them as invalid requests.
 
-Rai checks for updates after launch and every six hours. Installation requires
-a writable Applications folder. The installer keeps the previous app for recovery.
+### iOS companion build 36
+
+- **Retained threads.** The phone retains three recent terminal views.
+  Returning to a thread shows its text and scroll position before the Mac replies.
+  Hidden views detach their display streams. Your agents keep running in Herdr.
+- **Slow connections.** Longer connection deadlines and fewer history reads
+  support weak connections. The phone pauses retries while offline and reconnects when the network returns.
+- **Terminal display.** Horizontal scrolling uses one scroll view to prevent
+  left-edge clipping. History updates and resizing preserve the text you are reading.
+- **Reconnect banner.** The banner waits three seconds after a connection failure.
+  Recovery cancels it. Pairing failures show the repair action immediately.
+
+The phone receives changed history as a complete replacement.
+Older app versions remain compatible. The history traffic reduction requires this Mac release and iOS build 36.
 
 ### Install
 
-If you use 0.1.49, install this release from the DMG or Homebrew. Its in-app
-update can stall during shutdown. This release fixes subsequent updates.
+If you use 0.1.49, install this release from the DMG or Homebrew.
+Its in-app update can stall during shutdown. Version 0.1.50 fixed that issue.
 
 ```sh
 brew install --cask yogevkr/tap/rai
