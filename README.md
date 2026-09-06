@@ -151,6 +151,18 @@ stapled into both the app and the disk image, so Gatekeeper accepts them on the
 first launch — offline included. (Builds before 0.1.26 were ad-hoc signed and
 needed `xattr -dr com.apple.quarantine`; that is no longer necessary.)
 
+### Updates
+
+Rai checks for a new stable release after launch and every six hours.
+An opaque dialog shows **Update** and **Skip** when a newer version is available.
+**Update** downloads the release, verifies it, installs it, and restarts Rai. Herdr keeps your agent sessions running.
+**Skip** hides that version across launches. A later version will still appear.
+Use **Rai → Check for Updates…** to check again, including a version you skipped.
+
+Installation requires a writable Applications folder. The installer checks the archive hash, Rai's Developer ID signature, and notarization.
+It keeps the previous app in a hidden `.rai-update-*` folder beside Rai for recovery.
+If replacement fails, it restores the previous app. Network failures during automatic checks stay quiet.
+
 ### Build from source
 
 ```sh

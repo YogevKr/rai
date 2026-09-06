@@ -45,8 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
     private var hookBeaconReceiver: HookBeaconReceiver?
+    private var appUpdateWindow: AppUpdateWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appUpdateWindow = AppUpdateWindow(model: AppUpdateController.shared)
+        AppUpdateController.shared.start()
         connect(to: RaiApp.sharedModel)
         startHookBeaconReceiver(model: RaiApp.sharedModel)
         installCloseRepeatGuard()
@@ -101,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppUpdateController.shared.stop()
         hookBeaconReceiver?.stop()
         microController?.stop()
     }
@@ -170,6 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func installTerminalKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event -> NSEvent? in
             MainActor.assumeIsolated {
+                if let panel = event.window as? AppUpdatePanel, panel.handleCloseShortcut(event) {
+                    return nil
+                }
                 guard let window = event.window,
                       let term = window.firstResponder as? FocusAwareTerminalView,
                       KeyRoutingDecision.shouldRouteToTerminal(

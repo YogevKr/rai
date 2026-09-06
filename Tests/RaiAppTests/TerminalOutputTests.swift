@@ -12,6 +12,36 @@ final class TerminalOutputTests: XCTestCase {
         return view
     }
 
+    func testFramePacingParsesAndAcknowledgesOutputBeforeWaitingForDisplay() throws {
+        let view = view()
+        let window = NSWindow(
+            contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        window.makeFirstResponder(view)
+        defer {
+            view.terminate()
+            window.contentView = nil
+        }
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7
+        ))
+        _ = view.handleInterceptedKey(event)
+        view.send(source: view, data: [UInt8(ascii: "x")])
+
+        // More than 512 bytes selects frame pacing after local input.
+        // Both callbacks and the final echo must arrive without a run-loop turn.
+        let background = Array((String(repeating: "\u{1B}[0m", count: 256) + "background").utf8)
+        var acknowledgements: [Int] = []
+        view.dataReceived(slice: background[...]) { acknowledgements.append(1) }
+        view.dataReceived(slice: Array("\u{1B}[Hx".utf8)[...]) { acknowledgements.append(2) }
+        XCTAssertEqual(acknowledgements, [1, 2])
+        XCTAssertEqual(view.pendingOutputBytesForTesting, 0)
+        XCTAssertEqual(view.getTerminal().getCharData(col: 0, row: 0)?.getCharacter(), "x")
+    }
+
     func testLargeBacklogYieldsBeforeItFinishes() async {
         let view = view()
         defer { view.terminate() }

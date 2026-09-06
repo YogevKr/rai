@@ -28,6 +28,7 @@ BIN="${BIN_DIR}/${BIN_NAME}"
 STAGE="$(mktemp -d)/${APP_NAME}.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$BIN" "$STAGE/Contents/MacOS/${BIN_NAME}"
+cp "$BIN_DIR/rai-updater" "$STAGE/Contents/MacOS/rai-updater"
 [ -f Resources/Rai.icns ] && cp Resources/Rai.icns "$STAGE/Contents/Resources/Rai.icns"
 [ -f Resources/rai-hook.sh ] && cp Resources/rai-hook.sh "$STAGE/Contents/Resources/rai-hook.sh"
 
@@ -89,18 +90,21 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; t
       # timestamp, so a Developer ID build must have both — no silent fallback
       # to an unstamped signature, or the release ships unnotarizable.
       echo "==> sign ($SIGN_ID) + hardened runtime"
+      codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$STAGE/Contents/MacOS/rai-updater"
       codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$STAGE"
       ;;
     *)
       # Local dev identity: skip both. The timestamp server needs network, and
       # the hardened runtime only matters for distribution.
       echo "==> sign ($SIGN_ID)"
+      codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE/Contents/MacOS/rai-updater"
       codesign --force --sign "$SIGN_ID" --timestamp=none "$STAGE" >/dev/null 2>&1 || \
         codesign --force --sign "$SIGN_ID" "$STAGE"
       ;;
   esac
 else
   echo "==> ad-hoc sign"
+  codesign --force --sign - --timestamp=none "$STAGE/Contents/MacOS/rai-updater"
   codesign --force --sign - --timestamp=none "$STAGE" >/dev/null 2>&1 || \
     codesign --force --sign - "$STAGE"
 fi

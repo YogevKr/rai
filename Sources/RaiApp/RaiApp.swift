@@ -8,6 +8,7 @@ struct RaiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = RaiApp.sharedModel
     @StateObject private var settings = SettingsStore.shared
+    @StateObject private var appUpdates = AppUpdateController.shared
 
     var body: some Scene {
         WindowGroup {
@@ -24,14 +25,24 @@ struct RaiApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
 
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    Task { await AppUpdateController.shared.check(manual: true) }
+                }
+            }
+
             CommandMenu("Tab") {
                 Button("New Tab") { model.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
                 Button("Reopen Closed Tab") { model.reopenClosedTab() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
                     .disabled(!model.canReopenClosedTab)
-                Button("Close Tab") { model.closeTab() }
+                Button("Close Tab") {
+                    guard !appUpdates.isPresented else { return }
+                    model.closeTab()
+                }
                     .keyboardShortcut("w", modifiers: .command)
+                    .disabled(appUpdates.isPresented)
                 Divider()
                 Button("Next Tab") { model.nextTab() }
                     .keyboardShortcut(.tab, modifiers: .control)
@@ -49,8 +60,12 @@ struct RaiApp: App {
                     .keyboardShortcut("d", modifiers: .command)
                 Button("Split Down") { model.splitDown() }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
-                Button("Close Pane") { model.closePane() }
+                Button("Close Pane") {
+                    guard !appUpdates.isPresented else { return }
+                    model.closePane()
+                }
                     .keyboardShortcut("w", modifiers: [.command, .shift])
+                    .disabled(appUpdates.isPresented)
                 Button("Zoom Pane") { model.zoomPane() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()

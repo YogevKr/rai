@@ -900,9 +900,13 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
         switch disposition {
         case .deferToFrame(let deadline):
-            deferredFeed.append(slice, completion: completion)
             deferPredictionDecisionsUntilFeedDrains()
-            scheduleDeferredFeed(deadlineUptimeNanoseconds: deadline, displayReady: true)
+            // Keep the parser and PTY reader moving while display updates
+            // wait for their frame. Holding a read here makes later keyboard
+            // echoes queue behind background output in the terminal pipe.
+            getTerminal().feed(buffer: slice)
+            completion()
+            scheduleOutputDisplay(deadlineUptimeNanoseconds: deadline)
         case .feedNowAndRepaint:
             processReceived(slice: slice, immediateRepaintAllowed: true)
             completion()
@@ -918,11 +922,11 @@ final class FocusAwareTerminalView: TerminalProcessView {
         predictionOverlay?.isHidden = true
     }
 
-    private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64, displayReady: Bool = false) {
+    private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64) {
         let generation = outputGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.outputGeneration == generation else { return }
-            self.flushDeferredFeed(displayReady: displayReady)
+            self.flushDeferredFeed()
         }
         deferredFeedWorkItem = workItem
         DispatchQueue.main.asyncAfter(
@@ -931,17 +935,9 @@ final class FocusAwareTerminalView: TerminalProcessView {
         )
     }
 
-    private func flushDeferredFeed(displayReady: Bool) {
+    private func flushDeferredFeed() {
         deferredFeedWorkItem = nil
         guard let chunk = deferredFeed.next(maxBytes: Self.parserChunkBytes) else { return }
-        if displayReady && deferredFeed.isEmpty {
-            // A small echo already waited for its frame. Paint it now rather
-            // than imposing another frame delay after parsing.
-            feedRepaintState.noteDeferredFramePaint()
-            processReceived(slice: chunk.bytes, immediateRepaintAllowed: false)
-            chunk.complete()
-            return
-        }
         // Feed only the parser here. View.feed would invoke SwiftTerm's
         // recent-input display path once per chunk, bypassing frame pacing.
         getTerminal().feed(buffer: chunk.bytes)
@@ -953,7 +949,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
     }
 
-    private func scheduleOutputDisplay() {
+    private func scheduleOutputDisplay(deadlineUptimeNanoseconds: UInt64? = nil) {
         guard outputDisplayWorkItem == nil else { return }
         let generation = outputGeneration
         let workItem = DispatchWorkItem { [weak self] in
@@ -965,7 +961,9 @@ final class FocusAwareTerminalView: TerminalProcessView {
             self.feed(byteArray: [])
         }
         outputDisplayWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16), execute: workItem)
+        let deadline = deadlineUptimeNanoseconds.map { DispatchTime(uptimeNanoseconds: $0) }
+            ?? (.now() + .milliseconds(16))
+        DispatchQueue.main.asyncAfter(deadline: deadline, execute: workItem)
     }
 
     override func discardPendingOutput() {
