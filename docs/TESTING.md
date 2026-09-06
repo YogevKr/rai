@@ -42,7 +42,7 @@ Metal toolchain can compile).
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift test --filter 'AppReleaseTests|AppUpdate'
+  swift test --filter 'AppReleaseTests|AppUpdate|AppTerminationTests'
 ```
 
 These tests cover numeric version order, release assets, skipped versions, retry, duplicate actions, and opaque dialog rendering.
@@ -63,6 +63,9 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 `rai-updater` runs outside Rai's app process. It verifies the candidate before reporting readiness and again after Rai exits.
 It waits up to two minutes for normal shutdown. It never stops the Herdr server.
+Rai schedules update shutdown on the main run loop, after the update task returns.
+This lets the delegate's cleanup task run inside AppKit's termination loop. Normal Quit and system shutdown keep their existing behavior.
+`AppTerminationTests` checks that the shutdown callback runs on the main thread, outside the calling task.
 The installer retains the previous app and reports errors instead of deleting the backup.
 `scripts/bundle.sh` includes and signs the helper before signing the outer app.
 

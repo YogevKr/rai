@@ -16,7 +16,7 @@ final class AppUpdateController: ObservableObject {
             installRelease: { release in
                 let installation = try await service.prepare(release)
                 try await service.launchInstaller(installation)
-                NSApp.terminate(nil)
+                AppTermination.schedule()
             }
         )
     }()
