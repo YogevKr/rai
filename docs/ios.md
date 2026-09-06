@@ -20,7 +20,8 @@ The visible frame uses the pane's native grid size and a full repaint.
 The stream's first full frame replaces it without adding a second history seam.
 Rai skips the visible frame when the read fails.
 
-A retained view already shows a screen, so it ignores the visible-grid frame and waits for the stream baseline.
+The phone ignores the visible-grid frame: the stream baseline follows within tens of milliseconds, and the visible-grid frame differs in styling and cursor position.
+A new view stays invisible until its first baseline is applied and scrolled to the live rows, so the first paint is the final one.
 The phone renders each full frame off screen and compares every cell, the cursor position, and the cursor visibility and shape with the retained screen.
 A matching frame keeps the screen. Any difference clears and repaints the grid.
 

@@ -714,6 +714,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.installColors(Self.palette.map(Self.st))
         terminal.indicatorStyle = .white
         terminal.changeScrollback(2_000)
+        terminal.hideUntilFirstFrame()
         // Dragging down through the terminal tucks the keyboard away, the
         // same gesture Messages and Notes use.
         terminal.keyboardDismissMode = .interactive
@@ -925,6 +926,7 @@ class GridReadableTerminalView: TerminalView {
     /// The last cursor visibility (DECTCEM) and shape (DECSCUSR) fed to the
     /// emulator; each stays nil until a frame sets it.
     private var cursorIntent = CursorIntent()
+    private var revealsOnFirstFrame = false
     private var pendingHistory: Data?
     private var appliedHistory: Data?
     private var appliedHistoryGrid: PaneGridSize?
@@ -936,6 +938,27 @@ class GridReadableTerminalView: TerminalView {
     func suspendHistoryRefresh() {
         historyRetry?.cancel()
         historyRetry = nil
+    }
+
+    /// A new view paints its first frame at the top of the seeded history and
+    /// only then scrolls to the live rows, so the reader saw one wrong frame
+    /// and a jump. Stay invisible until that first frame is in place.
+    func hideUntilFirstFrame() {
+        guard !hasDisplayedFrame else { return }
+        revealsOnFirstFrame = true
+        alpha = 0
+    }
+
+    private func revealAfterFirstFrame() {
+        guard revealsOnFirstFrame else { return }
+        revealsOnFirstFrame = false
+        // Same turn as the caller's deferred scrollToLive, queued before it:
+        // the feed's content size has landed by then.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scrollToLive()
+            self.alpha = 1
+        }
     }
 
     @discardableResult
@@ -950,12 +973,12 @@ class GridReadableTerminalView: TerminalView {
         // A detached view can miss deltas. Only a full baseline makes its
         // retained screen valid for subsequent deltas and prompt controls.
         guard full || hasLiveFrame else { return .ignored }
-        // The Mac paints a pane read before its observe stream starts so a
-        // fresh view shows text early. A retained screen already shows text,
-        // and that preview carries approximate attributes and a cursor parked
-        // after the last character, so it would repaint the grid twice on
-        // every return. Wait for the stream's own baseline instead.
-        if kind == .preview, hasDisplayedFrame { return .ignored }
+        // The Mac paints a pane read before its observe stream starts. The
+        // stream's baseline follows within tens of milliseconds, and the
+        // preview carries approximate attributes and a cursor parked after
+        // the last character, so showing it only adds a differently styled
+        // paint before the real one. Wait for the baseline.
+        if kind == .preview { return .ignored }
         let terminal = getTerminal()
         // Returning to a cached pane replays a full frame. When it renders the
         // cells the reader already sees, keep the screen instead of clearing
@@ -987,6 +1010,7 @@ class GridReadableTerminalView: TerminalView {
         }
         hasLiveFrame = true
         hasDisplayedFrame = true
+        revealAfterFirstFrame()
         if preservePosition {
             let row = min(savedRow, max(0, bufferRows().count - terminal.rows))
             if terminal.buffer.yDisp != row { scrollTo(row: row) }

@@ -150,10 +150,13 @@ final class FullFrameRepaintTests: XCTestCase {
         XCTAssertEqual(view.getTerminal().rows, 5)
     }
 
-    func testPreviewIsIgnoredOnARetainedScreenAndPaintsAFreshOne() {
+    func testPreviewIsAlwaysIgnored() {
         let fresh = view()
         let preview = Data("\u{1B}[H\u{1B}[0m\u{1B}[2mone\u{1B}[0m\r\ntwo\u{1B}[0m".utf8)
-        XCTAssertEqual(fresh.receiveFrame(preview, kind: .preview, grid: grid), .followLive)
+        XCTAssertEqual(fresh.receiveFrame(preview, kind: .preview, grid: grid), .ignored)
+        XCTAssertFalse(fresh.hasLiveFrame)
+        XCTAssertFalse(fresh.liveGridText().contains("two"), "A fresh view waits for the stream baseline")
+        XCTAssertEqual(fresh.receiveFrame(frame(["one", "two"]), kind: .full, grid: grid), .followLive)
         XCTAssertTrue(fresh.liveGridText().contains("two"))
 
         let retained = view()
@@ -167,6 +170,29 @@ final class FullFrameRepaintTests: XCTestCase {
         XCTAssertEqual(retained.receiveFrame(frame(["one", "two"]), kind: .full, grid: grid), .followLive)
         XCTAssertEqual(retained.fullRepaints, 1, "The matching baseline keeps the screen")
         XCTAssertTrue(retained.hasLiveFrame)
+    }
+
+    func testNewViewStaysInvisibleUntilItsFirstFrameIsScrolledIntoPlace() async throws {
+        let view = view()
+        view.hideUntilFirstFrame()
+        XCTAssertEqual(view.alpha, 0)
+        view.receiveHistory(Data("older\nrows\nabove\nthe\nlive\nscreen\n\u{1B}[0m".utf8))
+        _ = view.receiveFrame(Data("\u{1B}[H\u{1B}[0m\u{1B}[2mone".utf8), kind: .preview, grid: grid)
+        XCTAssertEqual(view.alpha, 0, "A preview does not reveal the view")
+        XCTAssertEqual(view.receiveFrame(frame(["one", "two"]), kind: .full, grid: grid), .followLive)
+        XCTAssertEqual(view.alpha, 0, "The reveal waits for the deferred scroll")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(view.alpha, 1)
+        let terminal = view.getTerminal()
+        let bufferRows = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+            .components(separatedBy: "\n").dropLast().count
+        XCTAssertGreaterThan(bufferRows, terminal.rows, "History rows sit above the live screen")
+        XCTAssertEqual(terminal.buffer.yDisp, bufferRows - terminal.rows, "Revealed at the live rows")
+
+        let retained = self.view()
+        _ = retained.receiveFrame(frame(["one"]), kind: .full, grid: grid)
+        retained.hideUntilFirstFrame()
+        XCTAssertEqual(retained.alpha, 1, "A view that already shows a frame is never hidden")
     }
 
     func testConnectionMapsSequenceZeroToPreview() {
