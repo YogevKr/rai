@@ -7,7 +7,7 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 - **Connection checks.** The Mac handles WebSocket ping and pong messages
   without reporting them as invalid requests.
 
-### iOS companion build 36
+### iOS companion build 37
 
 - **Retained threads.** The phone retains three recent terminal views.
   Returning to a thread shows its text and scroll position before the Mac replies.
@@ -18,9 +18,12 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
   left-edge clipping. History updates and resizing preserve the text you are reading.
 - **Reconnect banner.** The banner waits three seconds after a connection failure.
   Recovery cancels it. Pairing failures show the repair action immediately.
+- **No repaint without change** (build 37, supersedes build 36). Returning to a
+  retained thread keeps its screen when the Mac's full frame matches it. Only a
+  changed screen repaints.
 
 The phone receives changed history as a complete replacement.
-Older app versions remain compatible. The history traffic reduction requires this Mac release and iOS build 36.
+Older app versions remain compatible. The history traffic reduction requires this Mac release and iOS build 36 or later.
 
 ### Install
 

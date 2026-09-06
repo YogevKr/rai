@@ -20,6 +20,10 @@ The visible frame uses the pane's native grid size and a full repaint.
 The stream's first full frame replaces it without adding a second history seam.
 Rai skips the visible frame when the read fails.
 
+A retained view already shows a screen, so it ignores the visible-grid frame and waits for the stream baseline.
+The phone renders each full frame off screen and compares every cell, the cursor position, and the cursor visibility and shape with the retained screen.
+A matching frame keeps the screen. Any difference clears and repaints the grid.
+
 During output, the phone refreshes remote history at most four times per second.
 It keeps one history read in flight and stops reading when output stops.
 Cellular, hotspot, and Low Data Mode connections use a two-second refresh interval.

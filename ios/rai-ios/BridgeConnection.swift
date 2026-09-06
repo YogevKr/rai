@@ -344,6 +344,16 @@ struct PaneGridSize: Equatable {
     let rows: Int
 }
 
+/// What a pane frame carries. A `preview` is the Mac's pane read (sequence 0)
+/// sent before its observe stream starts; `full` is a stream baseline.
+enum PaneFrameKind: Equatable {
+    case delta
+    case full
+    case preview
+
+    var isFull: Bool { self != .delta }
+}
+
 enum ComposedLineSendResult: Equatable {
     case accepted
     case queued
@@ -558,7 +568,7 @@ final class BridgeConnection: ObservableObject {
     private let decoder = JSONDecoder()
     private(set) var connectionGeneration: UInt64 = 0
     private var connectionGenerationHandlers: [UUID: (UInt64) -> Void] = [:]
-    private var paneFrameHandlers: [String: [UUID: (Data, Bool, PaneGridSize?) -> Void]] = [:]
+    private var paneFrameHandlers: [String: [UUID: (Data, PaneFrameKind, PaneGridSize?) -> Void]] = [:]
     private var paneScrollbackHandlers: [String: [UUID: (Data) -> Void]] = [:]
     private var latestGridByPaneID: [String: PasswordPromptGridEvidence] = [:]
     private let passwordPromptGridReader = PasswordPromptGridReader()
@@ -1062,7 +1072,7 @@ final class BridgeConnection: ObservableObject {
 
     func addPaneFrameHandler(
         for paneID: String,
-        handler: @escaping (Data, Bool, PaneGridSize?) -> Void
+        handler: @escaping (Data, PaneFrameKind, PaneGridSize?) -> Void
     ) -> UUID {
         let id = UUID()
         paneFrameHandlers[paneID, default: [:]][id] = handler
@@ -1878,8 +1888,9 @@ final class BridgeConnection: ObservableObject {
                 updateVisibleGrid(text, for: paneID)
             }
             guard let handlers = paneFrameHandlers[paneID]?.values else { return }
+            let kind: PaneFrameKind = full ? (seq == 0 ? .preview : .full) : .delta
             for handler in handlers {
-                handler(data, full, grid)
+                handler(data, kind, grid)
             }
             dirtyScrollback.insert(paneID)
             scheduleScrollbackRefresh(for: paneID)

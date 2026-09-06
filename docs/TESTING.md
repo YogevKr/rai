@@ -58,6 +58,7 @@ It checks ping handling, conditional history replies, and raw-key replay prevent
 It checks text positions after history trimming and terminal deallocation after cache removal.
 Its SwiftUI navigation test records a screenshot before any reply reaches the restored terminal.
 `PromptDetectionTests` rejects cached permission controls until a full screen frame arrives.
+`FullFrameRepaintTests` covers full frames that match the retained screen, changed text, attributes, cursor, grid size, and the ignored preview frame.
 `ConnectionBannerStateTests` covers the three-second delay, recovery, repeated retries, and immediate pairing repair.
 These tests use synthetic content and do not connect to Herdr or change system network settings.
 

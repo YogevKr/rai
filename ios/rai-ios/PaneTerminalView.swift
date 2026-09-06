@@ -679,11 +679,11 @@ private struct StreamingTerminalView: UIViewRepresentable {
         }
 
         context.coordinator.frameHandlerID = connection.addPaneFrameHandler(for: paneID) {
-            [weak terminal] data, full, grid in
+            [weak terminal] data, kind, grid in
             guard let terminal else { return }
-            let result = terminal.receiveFrame(data, full: full, grid: grid)
+            let result = terminal.receiveFrame(data, kind: kind, grid: grid)
             guard result != .ignored else { return }
-            if full { context.coordinator.prompts.invalidateForFullFrame() }
+            if kind.isFull { context.coordinator.prompts.invalidateForFullFrame() }
             if let grid { context.coordinator.updateWidthFloor(cols: grid.cols) }
             context.coordinator.prompts.refresh(frameArrived: true)
             context.coordinator.statusline.refresh(agent: context.coordinator.agent)
@@ -919,6 +919,12 @@ class GridReadableTerminalView: TerminalView {
 
     private(set) var hasLiveFrame = false
     private var hasDisplayedFrame = false
+    /// Full frames that cleared and repainted the grid. A frame that renders
+    /// the retained screen does not count.
+    private(set) var fullRepaints = 0
+    /// The last cursor visibility (DECTCEM) and shape (DECSCUSR) fed to the
+    /// emulator; each stays nil until a frame sets it.
+    private var cursorIntent = CursorIntent()
     private var pendingHistory: Data?
     private var appliedHistory: Data?
     private var appliedHistoryGrid: PaneGridSize?
@@ -932,13 +938,29 @@ class GridReadableTerminalView: TerminalView {
         historyRetry = nil
     }
 
-    /// A reattached stream validates the screen without losing the reader's position.
     @discardableResult
     func receiveFrame(_ data: Data, full: Bool, grid: PaneGridSize?) -> FrameResult {
+        receiveFrame(data, kind: full ? .full : .delta, grid: grid)
+    }
+
+    /// A reattached stream validates the screen without losing the reader's position.
+    @discardableResult
+    func receiveFrame(_ data: Data, kind: PaneFrameKind, grid: PaneGridSize?) -> FrameResult {
+        let full = kind.isFull
         // A detached view can miss deltas. Only a full baseline makes its
         // retained screen valid for subsequent deltas and prompt controls.
         guard full || hasLiveFrame else { return .ignored }
+        // The Mac paints a pane read before its observe stream starts so a
+        // fresh view shows text early. A retained screen already shows text,
+        // and that preview carries approximate attributes and a cursor parked
+        // after the last character, so it would repaint the grid twice on
+        // every return. Wait for the stream's own baseline instead.
+        if kind == .preview, hasDisplayedFrame { return .ignored }
         let terminal = getTerminal()
+        // Returning to a cached pane replays a full frame. When it renders the
+        // cells the reader already sees, keep the screen instead of clearing
+        // and repainting it.
+        let unchanged = full && rendersRetainedScreen(data, grid: grid)
         let readingPosition = full ? (pendingReadingPosition ?? captureReadingPosition()) : nil
         let preservePosition = readingPosition != nil
         var savedRow = terminal.buffer.yDisp
@@ -955,8 +977,14 @@ class GridReadableTerminalView: TerminalView {
             savedRow = terminal.buffer.yDisp
             savedOffset = contentOffset
         }
-        if full { feed(byteArray: [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A][...]) }
-        feed(byteArray: [UInt8](data)[...])
+        if !unchanged {
+            if full {
+                feed(byteArray: Self.clearScreen[...])
+                fullRepaints += 1
+            }
+            feed(byteArray: [UInt8](data)[...])
+            cursorIntent.merge(Self.cursorIntent(in: data))
+        }
         hasLiveFrame = true
         hasDisplayedFrame = true
         if preservePosition {
@@ -966,6 +994,103 @@ class GridReadableTerminalView: TerminalView {
         }
         prepareHistoryForFrame()
         return full && !preservePosition ? .followLive : .applied
+    }
+
+    private static let clearScreen: [UInt8] = [0x1B, 0x5B, 0x48, 0x1B, 0x5B, 0x32, 0x4A]
+
+    /// Render the full frame off screen and compare it with the live screen:
+    /// every cell's character and attributes, the cursor position, and the
+    /// cursor visibility and shape the frame requests. Any difference repaints.
+    private func rendersRetainedScreen(_ data: Data, grid: PaneGridSize?) -> Bool {
+        guard hasDisplayedFrame else { return false }
+        let terminal = getTerminal()
+        if let grid, grid.cols != terminal.cols || grid.rows != terminal.rows { return false }
+        guard cursorIntent.accepts(Self.cursorIntent(in: data)) else { return false }
+        let sink = OffscreenTerminalSink()
+        let rendered = Terminal(
+            delegate: sink,
+            options: TerminalOptions(cols: terminal.cols, rows: terminal.rows, scrollback: 0)
+        )
+        rendered.feed(byteArray: Self.clearScreen + [UInt8](data))
+        guard rendered.getCursorLocation() == terminal.getCursorLocation() else { return false }
+        return Self.screenCells(of: rendered) == Self.screenCells(of: terminal)
+    }
+
+    private struct ScreenCell: Equatable {
+        let character: Character
+        let attribute: Attribute
+        let link: String?
+    }
+
+    /// The live screen rows, styled, independent of the scrolled viewport.
+    /// Grapheme clusters resolve through their own terminal: `CharData` holds
+    /// only an index into that terminal's table for them. OSC 8 links live
+    /// outside the attribute, so they are compared by target.
+    private static func screenCells(of terminal: Terminal) -> [[ScreenCell]] {
+        let total = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+            .components(separatedBy: "\n").dropLast().count
+        let firstRow = terminal.buffer.totalLinesTrimmed + max(0, total - terminal.rows)
+        return (0..<terminal.rows).map { row in
+            guard let line = terminal.getScrollInvariantLine(row: firstRow + row) else { return [] }
+            return line.getData().prefix(terminal.cols).map {
+                ScreenCell(
+                    character: terminal.getCharacter(for: $0),
+                    attribute: $0.attribute,
+                    link: $0.hasPayload ? $0.getPayload() as? String : nil
+                )
+            }
+        }
+    }
+
+    /// Cursor state a byte stream requests: DECTCEM (`ESC [ ? 25 h|l`) and
+    /// DECSCUSR (`ESC [ Ps SP q`). herdr's baseline repeats the pane's shape
+    /// only when it is not the default, and deltas carry a change once.
+    struct CursorIntent: Equatable {
+        var visible: Bool?
+        var style: Int?
+
+        mutating func merge(_ other: CursorIntent) {
+            if let visible = other.visible { self.visible = visible }
+            if let style = other.style { self.style = style }
+        }
+
+        /// A frame that requests nothing leaves the retained state alone.
+        func accepts(_ frame: CursorIntent) -> Bool {
+            (frame.visible == nil || frame.visible == visible)
+                && (frame.style == nil || frame.style == style)
+        }
+    }
+
+    /// The last cursor visibility and shape requests in the bytes.
+    static func cursorIntent(in data: Data) -> CursorIntent {
+        let bytes = [UInt8](data)
+        var intent = CursorIntent()
+        var index = 0
+        while index + 1 < bytes.count {
+            guard bytes[index] == 0x1B, bytes[index + 1] == 0x5B else {
+                index += 1
+                continue
+            }
+            var end = index + 2
+            while end < bytes.count, !(0x40...0x7E).contains(bytes[end]) { end += 1 }
+            guard end < bytes.count else { break }
+            let params = bytes[(index + 2)..<end]
+            switch bytes[end] {
+            case 0x68, 0x6C: // h / l
+                if Array(params) == [0x3F, 0x32, 0x35] { intent.visible = bytes[end] == 0x68 }
+            case 0x71: // q
+                if params.last == 0x20 {
+                    let digits = params.dropLast()
+                    if digits.allSatisfy({ (0x30...0x39).contains($0) }) {
+                        intent.style = Int(String(decoding: digits, as: UTF8.self)) ?? 0
+                    }
+                }
+            default:
+                break
+            }
+            index = end + 1
+        }
+        return intent
     }
 
     private struct ReadingPosition {
@@ -1209,6 +1334,11 @@ class GridReadableTerminalView: TerminalView {
         }
         return lines.suffix(terminal.rows).joined(separator: "\n")
     }
+}
+
+/// Delegate for an emulator that only renders; replies go nowhere.
+private final class OffscreenTerminalSink: TerminalDelegate {
+    func send(source: Terminal, data: ArraySlice<UInt8>) {}
 }
 
 enum ClaudePromptGate {
