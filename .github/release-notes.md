@@ -2,11 +2,11 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Branch shown per tab, not per space.** Each tab row now carries the Git
-  branch and ahead/behind counts of its own shell directory, so tabs that sit
-  in different worktrees of one space each show their own branch. The space
-  header no longer shows a branch; a linked worktree or a renamed space keeps
-  its checkout name there.
+- **Lower CPU use for hidden terminals.** Rai disconnects hidden terminal
+  display clients after one second. Agents keep running in Herdr, and Rai
+  keeps cached scrollback. Opening a tab reconnects its display.
+- **Reliable reconnects.** Control keys entered during reconnection reach
+  the terminal unchanged. Rai also cleans up stopped display processes.
 
 No Rai Remote change in this release. The current TestFlight build (35) keeps
 working, and the bridge protocol stays 6.

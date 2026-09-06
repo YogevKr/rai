@@ -48,6 +48,8 @@ terminal widget**.
   `session.snapshot`, kept live by herdr's event stream (no polling loop).
 - **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
   type, watch output, search the scrollback (⌘F).
+  Inactive pane views disconnect their display clients after one second. Their agents keep running in Herdr.
+  Rai keeps cached scrollback and reconnects when a pane returns.
 - **Low-latency typing** — confirmed shell echo predicts safe ASCII bursts.
   TUI modes, copy mode, resizing, and scrollback always clear the prediction.
   Focus, visibility, and reconnect changes also clear it. A recent 20-confirm
