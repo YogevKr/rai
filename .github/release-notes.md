@@ -2,18 +2,14 @@ Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Sili
 
 ### New in this release
 
-- **Faster Mac typing during heavy terminal output.** Rai parses output in
-  bounded chunks and gives keyboard events time between chunks. The terminal
-  reader limits pending output while keyboard input uses a separate path.
-- **Complete iPhone terminal history during live output.** Rai Remote refreshes
-  history from the Mac while preserving the screen, cursor, colors, and scroll
-  position. Repeated rows remain visible without leaving and reopening the pane.
+- **Branch shown per tab, not per space.** Each tab row now carries the Git
+  branch and ahead/behind counts of its own shell directory, so tabs that sit
+  in different worktrees of one space each show their own branch. The space
+  header no longer shows a branch; a linked worktree or a renamed space keeps
+  its checkout name there.
 
-The companion update is **Rai Remote build 35** on TestFlight.
-Update both apps for the complete terminal history fix.
-
-Bridge protocol stays 6 (all additions are optional fields); existing
-pairings keep working.
+No Rai Remote change in this release. The current TestFlight build (35) keeps
+working, and the bridge protocol stays 6.
 
 ### Install
 
