@@ -163,6 +163,18 @@ Installation requires a writable Applications folder. The installer checks the a
 It keeps the previous app in a hidden `.rai-update-*` folder beside Rai for recovery.
 If replacement fails, it restores the previous app. Network failures during automatic checks stay quiet.
 
+### Optional Full Disk Access
+
+Commands such as 1Password CLI can cause repeated macOS requests to access data from other apps.
+Rai explains this once on launch, including the first launch after upgrading to this feature.
+Choose **Open System Settings** or **Not Now**. Neither choice grants access or causes Rai to repeat the dialog.
+You can review it again under **Settings → Herdr Server → Mac Privacy**.
+
+Full Disk Access is optional. It lets Rai and commands running through it access protected files, including other apps’ data.
+To enable it, open **System Settings → Privacy & Security → Full Disk Access** and enable the installed Rai app.
+Quit and reopen Rai when macOS asks. Herdr keeps agent sessions running.
+Rai does not read protected files to test this permission or report an unverified permission status.
+
 ### Build from source
 
 ```sh

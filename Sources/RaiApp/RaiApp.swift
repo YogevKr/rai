@@ -13,6 +13,7 @@ struct RaiApp: App {
     var body: some Scene {
         WindowGroup {
             RaiRootView(model: model)
+                .fullDiskAccessLaunchGuidance()
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {

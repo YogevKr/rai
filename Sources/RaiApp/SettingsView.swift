@@ -908,6 +908,7 @@ private struct HerdrServerSettingsView: View {
     @State private var news: [HerdrNewsItem] = []
     @State private var isRunningAction = false
     @State private var isStopConfirmationPresented = false
+    @State private var isDiskAccessHelpPresented = false
 
     var body: some View {
         ScrollView {
@@ -969,6 +970,22 @@ private struct HerdrServerSettingsView: View {
                 }
 
                 ProjectRootsSection(model: model)
+
+                SettingsSection(title: "Mac Privacy") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Commands such as 1Password CLI can cause repeated macOS requests to access data from other apps.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                        Text("Full Disk Access is optional. It gives Rai and commands running through it access to protected files.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textSecondary)
+                        Button("Review Full Disk Access…") {
+                            isDiskAccessHelpPresented = true
+                        }
+                        .buttonStyle(.bordered)
+                        .fullDiskAccessHelp(isPresented: $isDiskAccessHelpPresented)
+                    }
+                }
 
                 SettingsSection(title: "Agent Detection Manifests") {
                     VStack(alignment: .leading, spacing: 12) {

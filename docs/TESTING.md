@@ -37,6 +37,23 @@ CI stops when the release certificate is unavailable; it never publishes an ad-h
 Development and release apps still share Herdr and Rai's existing Application Support files.
 Do not run both integrations against the same keyboard during device tests.
 
+## Full Disk Access guidance
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter FullDiskAccessGuidanceTests
+```
+
+The tests use isolated preferences. They check first-launch help, suppression across windows and restarts, and existing preference preservation.
+They never read protected files or change macOS permissions.
+
+For a manual check, launch a development bundle with fresh preferences.
+Verify that the Full Disk Access dialog explains its optional scope and offers **Open System Settings** and **Not Now**.
+Dismiss it, open another window, and restart. The launch dialog must stay dismissed.
+Open **Settings → Herdr Server → Mac Privacy → Review Full Disk Access…** to show it again.
+Verify that **Open System Settings** opens Privacy & Security → Full Disk Access, without changing any grant.
+Granting access remains a separate user action in macOS. Follow its quit-and-reopen request when testing a grant.
+
 ## Codex Micro permissions
 
 Grant Input Monitoring separately to `Rai.app` and `Rai Dev.app` when using their keyboard integration.
