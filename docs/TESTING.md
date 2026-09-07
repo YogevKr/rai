@@ -37,6 +37,18 @@ CI stops when the release certificate is unavailable; it never publishes an ad-h
 Development and release apps still share Herdr and Rai's existing Application Support files.
 Do not run both integrations against the same keyboard during device tests.
 
+## Agent startup prompts
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter AgentLaunchReadinessTests
+```
+
+Claude's folder-trust prompt means the agent launched and needs input.
+Rai accepts a readiness rejection only when the requested pane reports the expected agent as blocked.
+The tests cover readiness timeouts, missing state, wrong panes, wrong agents, and actual launch failures.
+Rai leaves the startup decision to the user and does not send a replacement launch command.
+
 ## Full Disk Access guidance
 
 ```sh

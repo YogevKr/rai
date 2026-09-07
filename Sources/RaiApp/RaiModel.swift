@@ -3999,6 +3999,8 @@ final class RaiModel: ObservableObject {
 
     private enum AgentStartOutcome: Equatable {
         case started
+        /// The agent is running but needs the user's startup decision.
+        case waitingForInput
         /// The pane is confirmed untouched — either herdr's CLI rejected
         /// `--kind`/`--pane` outright (pre-0.7.5), or some other rejection
         /// (e.g. `agent_pane_busy` on a still-initializing fresh pane) left
@@ -4018,12 +4020,24 @@ final class RaiModel: ObservableObject {
         kind: AgentLaunchKind,
         paneID: String
     ) async -> AgentStartOutcome {
+        let generation = connectionGeneration
         let result = await runHerdrResult(PaneActionPlanner.agentStartArguments(
             name: name,
             kind: kind.rawValue,
             paneID: paneID
         ))
+        guard generation == connectionGeneration else { return .otherFailure }
         if result.succeeded { return .started }
+        // Herdr's readiness check rejects startup prompts, such as Claude's
+        // folder-trust screen. The agent did launch: leave the decision to
+        // the user instead of reporting failure or typing another command.
+        let context = await agentAuthorityContext(for: paneID)
+        guard generation == connectionGeneration else { return .otherFailure }
+        if [result.standardOutput, result.standardError].contains(where: {
+            Self.isWaitingForLaunchInput(output: $0, paneID: paneID, kind: kind, context: context)
+        }) {
+            return .waitingForInput
+        }
         // This exact wording is herdr's clap-level "no such flag" rejection,
         // issued before the pane is touched — no need to check process state
         // for this one, it's unambiguous.
@@ -4031,6 +4045,23 @@ final class RaiModel: ObservableObject {
             return .safeToRetype
         }
         return await isPaneAtShellPrompt(paneID) ? .safeToRetype : .otherFailure
+    }
+
+    static func isWaitingForLaunchInput(
+        output: String,
+        paneID: String,
+        kind: AgentLaunchKind,
+        context: AgentAuthorityContext?
+    ) -> Bool {
+        guard let context,
+              context.paneID == paneID,
+              context.agent == kind.rawValue,
+              context.status == .blocked,
+              let data = output.data(using: .utf8),
+              let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = response["error"] as? [String: Any],
+              let code = error["code"] as? String else { return false }
+        return code == "agent_not_ready" || code == "timeout"
     }
 
     private static func defaultAgentName(_ kind: AgentLaunchKind) -> String {
@@ -4092,7 +4123,7 @@ final class RaiModel: ObservableObject {
         )
         guard generation == connectionGeneration else { return false }
         switch outcome {
-        case .started:
+        case .started, .waitingForInput:
             return true
         case .safeToRetype:
             return await typeResumeCommand(
