@@ -110,6 +110,25 @@ final class OfflineResilienceTests: XCTestCase {
     }
 
     @MainActor
+    func testDisconnectMarksLiveRowsStaleUntilAFreshSnapshotArrives() throws {
+        let connection = BridgeConnection(messageSender: { _ in })
+        defer { connection.disconnect() }
+        let live = try snapshot(paneCount: 1)
+        connection.replaceWithLiveSnapshot(live)
+        XCTAssertFalse(connection.isSnapshotStale)
+
+        connection.scheduleReconnect(after: URLError(.networkConnectionLost))
+        XCTAssertTrue(connection.isSnapshotStale)
+        XCTAssertTrue(connection.isShowingCachedSnapshot)
+        XCTAssertNotNil(connection.snapshot, "Keep the last known herd visible")
+
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "herd")
+        XCTAssertTrue(connection.isSnapshotStale, "Authentication alone does not refresh the saved rows")
+        connection.replaceWithLiveSnapshot(live)
+        XCTAssertFalse(connection.isSnapshotStale)
+    }
+
+    @MainActor
     func testCachedSnapshotNeverShowsTheEmptyHerdState() throws {
         let connection = BridgeConnection()
         let empty = try snapshot(paneCount: 0)

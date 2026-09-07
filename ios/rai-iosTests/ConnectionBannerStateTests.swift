@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import UIKit
 @testable import rai
 
 @MainActor
@@ -84,5 +86,48 @@ final class ConnectionBannerStateTests: XCTestCase {
 
     private func yieldTasks() async {
         for _ in 0..<10 { await Task.yield() }
+    }
+
+    func testCompactBannerWithLongHostAndLargeText() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousWindow = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousWindow?.makeKeyAndVisible()
+        }
+        let diagnosis = ConnectionDiagnosis(
+            message: "Connection to a-long-mac-name.example-tailnet.ts.net failed",
+            rawDetails: "Synthetic transport error",
+            action: .reconnect
+        )
+        for size in [DynamicTypeSize.large, .accessibility3] {
+            let host = UIHostingController(rootView: ConnectionIssueBar(
+                diagnosis: diagnosis,
+                isReconnecting: true,
+                lastSnapshotAt: Date().addingTimeInterval(-12),
+                recover: {}
+            )
+                .environment(\.dynamicTypeSize, size)
+                .preferredColorScheme(.dark))
+            // Measure the inset's content without the hosting window's
+            // status bar and home-indicator safe areas.
+            host.safeAreaRegions = []
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(100))
+            let fitting = host.sizeThatFits(in: CGSize(width: 320, height: 1_000))
+            XCTAssertLessThanOrEqual(fitting.width, 320)
+            XCTAssertLessThan(fitting.height, size.isAccessibilitySize ? 280 : 120)
+            host.view.frame = CGRect(origin: .zero, size: fitting)
+            host.view.layoutIfNeeded()
+            let attachment = XCTAttachment(image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            })
+            attachment.name = "Connection banner \(size)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 }

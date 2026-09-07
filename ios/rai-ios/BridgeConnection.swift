@@ -245,12 +245,15 @@ struct ConnectionDiagnosis: Equatable {
     }
 
     static func bridgeError(_ message: String, host: String) -> ConnectionDiagnosis {
-        let normalized = message.lowercased()
-        if normalized == "herdr is not connected."
-            || normalized == "herdr is unavailable." {
+        if isHerdUnavailable(message) {
             return herdMissing(rawDetails: message)
         }
         return serverError(message, host: host)
+    }
+
+    static func isHerdUnavailable(_ message: String) -> Bool {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "herdr is not connected." || normalized == "herdr is unavailable."
     }
 
     private static func hostMissing(
@@ -477,6 +480,18 @@ final class BridgeConnection: ObservableObject {
 
     var hasPendingReconnect: Bool {
         reconnectTask != nil
+    }
+
+    /// Includes a retry handshake and waiting for a usable network path.
+    /// A server-side operation failure on an open socket is not a retry.
+    var isRecoveringConnection: Bool {
+        shouldReconnect && !status.isConnected && !requiresRepair
+            && (reconnectTask != nil || handshakeDeadline != nil
+                || historyPacing.path?.allowsConnectionAttempts == false)
+    }
+
+    var isSnapshotStale: Bool {
+        snapshot != nil && (isShowingCachedSnapshot || !status.isConnected)
     }
 
     var pendingHistoryRequestCount: Int {
@@ -1975,7 +1990,10 @@ final class BridgeConnection: ObservableObject {
                 // read failure. Scrollback is progressive enhancement; don't
                 // drop or flag a healthy connection over it.
                 NSLog("rai-ios: scrollback unavailable: %@", message)
-            } else if Self.isActionError(message) {
+            } else if Self.isActionError(message)
+                || (status.isConnected && !ConnectionDiagnosis.isHerdUnavailable(message)) {
+                // Legacy Macs omit error codes. An unknown operation error is
+                // not evidence that the authenticated transport has failed.
                 actionError = message
             } else {
                 status = .failed(.bridgeError(message, host: host))
@@ -2631,6 +2649,7 @@ extension BridgeConnection {
     }
 
     private func stopSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway) {
+        if snapshot != nil { isShowingCachedSnapshot = true }
         handshakeDeadline?.cancel()
         handshakeDeadline = nil
         heartbeatTask?.cancel()

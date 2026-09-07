@@ -5,6 +5,32 @@ import XCTest
 @testable import rai
 
 final class BridgeErrorPolicyTests: XCTestCase {
+    @MainActor
+    func testLegacyOperationErrorDoesNotReportAConnectionFailure() {
+        let connection = BridgeConnection(messageSender: { _ in })
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "herd")
+
+        connection.handle(.error(message: "Could not list the available sessions."))
+
+        XCTAssertTrue(connection.status.isConnected)
+        XCTAssertEqual(connection.actionError, "Could not list the available sessions.")
+        XCTAssertFalse(connection.hasPendingReconnect)
+        XCTAssertFalse(connection.isRecoveringConnection)
+    }
+
+    @MainActor
+    func testLegacyMissingHerdStillReportsAConnectionProblem() {
+        let connection = BridgeConnection(messageSender: { _ in })
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "herd")
+
+        connection.handle(.error(message: "Herdr is unavailable."))
+
+        XCTAssertFalse(connection.status.isConnected)
+        XCTAssertEqual(connection.status.diagnosis?.message, "herdr isn't running on the Mac")
+        XCTAssertNil(connection.actionError)
+        XCTAssertFalse(connection.isRecoveringConnection, "A server error is not an active transport retry")
+    }
+
     func testEverySharedBridgeCodeHasAPhonePolicy() {
         let operationExpected: [BridgeErrorCode: BridgeErrorDestination] = [
             .herdMissing: .reconnect,

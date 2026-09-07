@@ -78,6 +78,25 @@ final class BridgeNetworkTests: XCTestCase {
         XCTAssertEqual(network.sockets[0].cancelCount, 1)
     }
 
+    func testRecoveryCoversBackoffHandshakeAndNetworkWait() async throws {
+        let network = Network()
+        let connection = try connection(network)
+        defer { connection.disconnect() }
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        XCTAssertFalse(connection.isRecoveringConnection)
+
+        connection.scheduleReconnect(after: URLError(.networkConnectionLost))
+        XCTAssertTrue(connection.isRecoveringConnection)
+        await eventually { network.sockets.count == 2 }
+        XCTAssertFalse(connection.hasPendingReconnect)
+        XCTAssertTrue(connection.isRecoveringConnection, "The handshake is still recovering the same outage")
+
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        XCTAssertFalse(connection.isRecoveringConnection)
+        connection.networkPathChanged(.init(status: .unsatisfied, interfaces: []))
+        XCTAssertTrue(connection.isRecoveringConnection, "Network return restarts recovery automatically")
+    }
+
     func testQueuedLinesDoNotReplaceSlowHandshake() async throws {
         let network = Network()
         let connection = try connection(network)

@@ -110,6 +110,9 @@ Its SwiftUI navigation test records a screenshot before any reply reaches the re
 `PromptDetectionTests` rejects cached permission controls until a full screen frame arrives.
 `FullFrameRepaintTests` covers full frames that match the retained screen, changed text, attributes, cursor, grid size, and the ignored preview frame.
 `ConnectionBannerStateTests` covers the three-second delay, recovery, repeated retries, and immediate pairing repair.
+It also checks banner height with a long hostname at normal and accessibility text sizes, and records screenshots.
+`BridgeErrorPolicyTests` checks that legacy action errors preserve a healthy connection while missing-herd errors remain visible.
+`OfflineResilienceTests` checks that disconnected rows remain stale through authentication until a fresh snapshot arrives.
 These tests use synthetic content and do not connect to Herdr or change system network settings.
 
 Run the shared protocol and Mac bridge checks with `swift test`.

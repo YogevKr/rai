@@ -90,6 +90,9 @@ crook for the herd:
   Rai mutes cached rows and replaces them after the Mac sends a live snapshot.
 - **Clear connection help** — the phone names DNS, route, listener, TLS,
   pairing, and missing-herdr failures. Raw connection details remain available.
+  A compact banner shows automatic recovery. Tap its message for the failure details.
+  Saved agent rows stay muted until a fresh snapshot arrives after reconnection.
+  Action errors from older Macs no longer mark a healthy connection as failed.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away. A visible-grid frame paints the pane before streaming

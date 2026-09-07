@@ -163,9 +163,11 @@ struct MonitorView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if let diagnosis = connectionBanner.diagnosis,
-                   connection.snapshot != nil {
+                   connection.snapshot != nil,
+                   !connection.status.isConnected {
                     ConnectionIssueBar(
                         diagnosis: diagnosis,
+                        isReconnecting: connection.isRecoveringConnection,
                         lastSnapshotAt: connection.lastSnapshotAt,
                         recover: { recover(from: diagnosis) }
                     )
@@ -357,8 +359,7 @@ struct MonitorView: View {
         let working = agents(in: snapshot) { $0 == .working }
         let quiet = max(0, snapshot.panes.count - needsYou.count - working.count)
         let layout = HerdListLayout.resolve(triageEnabled: triageEnabled, filter: filter)
-        let lastSeenStamp: Date? = connection.isShowingCachedSnapshot
-            && !connection.status.isConnected
+        let lastSeenStamp: Date? = connection.isSnapshotStale
             ? connection.lastSnapshotAt
             : nil
         return List {
@@ -404,8 +405,8 @@ struct MonitorView: View {
                     spaceSections(snapshot)
                 }
             }
-            .disabled(connection.isShowingCachedSnapshot)
-            .opacity(connection.isShowingCachedSnapshot ? 0.52 : 1)
+            .disabled(connection.isSnapshotStale)
+            .opacity(connection.isSnapshotStale ? 0.52 : 1)
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -867,25 +868,46 @@ private struct PulseLine: View {
     }
 }
 
-private struct ConnectionIssueBar: View {
+struct ConnectionIssueBar: View {
     let diagnosis: ConnectionDiagnosis
+    let isReconnecting: Bool
     let lastSnapshotAt: Date?
     let recover: () -> Void
     @State private var showsRawDetails = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var title: String {
+        if isReconnecting { return "Reconnecting" }
+        return diagnosis.action == .pairAgain ? "Pairing required" : "Connection needs attention"
+    }
+
+    private var recoveryButton: some View {
+        Button(isReconnecting ? "Retry Now" : diagnosis.action.title, action: recover)
+            .buttonStyle(.bordered)
+            .tint(isReconnecting ? Night.amber : Night.repoBlue)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .top, spacing: 9) {
-                Image(systemName: "wifi.exclamationmark")
-                    .foregroundStyle(.red)
-                    .padding(.top, 2)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                if isReconnecting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Night.amber)
+                        .accessibilityLabel("Reconnecting automatically")
+                } else {
+                    Image(systemName: "wifi.exclamationmark")
+                        .foregroundStyle(.red)
+                }
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) {
                         showsRawDetails.toggle()
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(diagnosis.message)
+                        Text(title)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Night.text)
                             .multilineTextAlignment(.leading)
                         if let lastSnapshotAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -895,29 +917,41 @@ private struct ConnectionIssueBar: View {
                                         now: context.date
                                     )
                                 )
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Night.dim)
                             }
                         }
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Shows connection details")
                 Spacer(minLength: 6)
-                Button(diagnosis.action.title, action: recover)
-                    .buttonStyle(.bordered)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    recoveryButton
+                }
+            }
+            if dynamicTypeSize.isAccessibilitySize {
+                recoveryButton
             }
             if showsRawDetails {
+                Text(diagnosis.message)
+                    .foregroundStyle(Night.text)
                 Text(diagnosis.rawDetails)
                     .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Night.dim)
                     .textSelection(.enabled)
                     .transition(.opacity)
             }
         }
         .font(.footnote)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.bar)
-        .accessibilityHint("Tap the diagnosis to show connection details")
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(12)
+        .background(Night.row, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14).strokeBorder(Night.dim.opacity(0.2))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Night.ground)
     }
 }
 
