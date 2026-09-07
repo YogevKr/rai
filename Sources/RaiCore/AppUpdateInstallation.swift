@@ -113,4 +113,45 @@ public struct AppUpdateInstallation: Codable, Sendable {
         }
     }
 }
+
+extension AppUpdateInstallation {
+    /// Update folders whose installer wrote `result.txt`: the new version is in
+    /// place and `Previous-Rai.app` only serves a rollback. Each one is a second
+    /// bundle registered under Rai's identifier, so LaunchServices, Finder, and
+    /// TCC prompts start naming the stale copy instead of the installed app.
+    /// Callers prune once the installed app has proven it launches.
+    public static func completedStagingDirectories(
+        besideApplication target: URL, manager: FileManager = .default
+    ) -> [URL] {
+        let target = target.standardizedFileURL
+        let parent = target.deletingLastPathComponent()
+        guard let siblings = try? manager.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        ) else { return [] }
+        return siblings.filter { staging in
+            guard staging.lastPathComponent.hasPrefix(".rai-update-"),
+                  let values = try? staging.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  manager.fileExists(atPath: staging.appendingPathComponent("result.txt").path),
+                  let data = try? Data(contentsOf: staging.appendingPathComponent("installation.json")),
+                  let installation = try? JSONDecoder().decode(AppUpdateInstallation.self, from: data)
+            else { return false }
+            // Compare paths: a directory URL may carry a trailing slash on one side only.
+            return installation.target.standardizedFileURL.path == target.path
+                && installation.staging.standardizedFileURL.path == staging.standardizedFileURL.path
+        }
+        .sorted { $0.path < $1.path }
+    }
+
+    /// Removes every completed update folder beside the app. Returns what it removed.
+    @discardableResult
+    public static func pruneCompletedStaging(
+        besideApplication target: URL, manager: FileManager = .default
+    ) -> [URL] {
+        completedStagingDirectories(besideApplication: target, manager: manager).filter { staging in
+            (try? manager.removeItem(at: staging)) != nil
+        }
+    }
+}
 #endif

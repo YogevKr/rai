@@ -17,6 +17,9 @@ final class AppUpdateController: ObservableObject {
                 let installation = try await service.prepare(release)
                 try await service.launchInstaller(installation)
                 AppTermination.schedule()
+            },
+            pruneCompletedUpdates: {
+                AppUpdateInstallation.pruneCompletedStaging(besideApplication: Bundle.main.bundleURL)
             }
         )
     }()
@@ -30,6 +33,7 @@ final class AppUpdateController: ObservableObject {
     private let defaults: UserDefaults
     private let fetchRelease: () async throws -> AppRelease
     private let installRelease: (AppRelease) async throws -> Void
+    private let pruneCompletedUpdates: @Sendable () -> Void
     private var periodicTask: Task<Void, Never>?
     private var manualCheckRequested = false
     private var checkDismissed = false
@@ -37,12 +41,14 @@ final class AppUpdateController: ObservableObject {
     init(
         currentVersion: String, defaults: UserDefaults = .standard,
         fetchRelease: @escaping () async throws -> AppRelease,
-        installRelease: @escaping (AppRelease) async throws -> Void
+        installRelease: @escaping (AppRelease) async throws -> Void,
+        pruneCompletedUpdates: @escaping @Sendable () -> Void = {}
     ) {
         self.currentVersion = currentVersion
         self.defaults = defaults
         self.fetchRelease = fetchRelease
         self.installRelease = installRelease
+        self.pruneCompletedUpdates = pruneCompletedUpdates
     }
 
     var isInstalling: Bool { phase == .installing }
@@ -52,6 +58,13 @@ final class AppUpdateController: ObservableObject {
         periodicTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(15))
+                // Fifteen seconds up means this build launches. The previous
+                // version's backup has served its purpose, and leaving it
+                // registered under Rai's bundle identifier misnames the app
+                // in Finder and permission prompts.
+                if let prune = self?.pruneCompletedUpdates {
+                    await Task.detached(priority: .utility) { prune() }.value
+                }
                 while !Task.isCancelled {
                     await self?.check()
                     try await Task.sleep(for: .seconds(6 * 60 * 60))

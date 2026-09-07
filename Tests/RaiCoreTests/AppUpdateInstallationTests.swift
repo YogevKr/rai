@@ -72,6 +72,52 @@ final class AppUpdateInstallationTests: XCTestCase {
         }
     }
 
+    func testPruneRemovesOnlyCompletedUpdatesOfThisApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rai-prune-test-\(UUID().uuidString)").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("Rai.app")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let completed = try staging(named: ".rai-update-done", beside: target, target: target, files: ["result.txt"])
+        let inFlight = try staging(named: ".rai-update-live", beside: target, target: target, files: ["ready"])
+        let otherApp = try staging(
+            named: ".rai-update-other", beside: target,
+            target: root.appendingPathComponent("Other.app"), files: ["result.txt"]
+        )
+        let unrelated = root.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: false)
+        try Data().write(to: unrelated.appendingPathComponent("result.txt"))
+        let linked = root.appendingPathComponent(".rai-update-link")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: completed)
+
+        // Compare names: the walk yields /private/var directory URLs, the fixture /var ones.
+        XCTAssertEqual(
+            AppUpdateInstallation.completedStagingDirectories(besideApplication: target).map(\.lastPathComponent),
+            [completed.lastPathComponent]
+        )
+        XCTAssertEqual(
+            AppUpdateInstallation.pruneCompletedStaging(besideApplication: target).map(\.lastPathComponent),
+            [completed.lastPathComponent]
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completed.path))
+        for kept in [inFlight, otherApp, unrelated, target] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), kept.path)
+        }
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: linked.path))
+        XCTAssertEqual(AppUpdateInstallation.pruneCompletedStaging(besideApplication: target), [])
+    }
+
+    private func staging(named name: String, beside application: URL, target: URL, files: [String]) throws -> URL {
+        let staging = application.deletingLastPathComponent().appendingPathComponent(name)
+        try FileManager.default.createDirectory(
+            at: staging.appendingPathComponent("Previous-Rai.app"), withIntermediateDirectories: true
+        )
+        let installation = AppUpdateInstallation(parentPID: 1, target: target, staging: staging, version: "0.1.49")
+        try JSONEncoder().encode(installation).write(to: staging.appendingPathComponent("installation.json"))
+        for file in files { try Data().write(to: staging.appendingPathComponent(file)) }
+        return staging
+    }
+
     private func fixture() throws -> (URL, AppUpdateInstallation) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rai-update-test-\(UUID().uuidString)")
             .resolvingSymlinksInPath()
