@@ -49,6 +49,7 @@ They never read protected files or change macOS permissions.
 
 For a manual check, launch a development bundle with fresh preferences.
 Verify that the Full Disk Access dialog explains its optional scope and offers **Open System Settings** and **Not Now**.
+Check light and dark appearance in a bundle containing `Rai.icns`. The sheet must show Rai’s icon without a separate Dock item.
 Dismiss it, open another window, and restart. The launch dialog must stay dismissed.
 Open **Settings → Herdr Server → Mac Privacy → Review Full Disk Access…** to show it again.
 Verify that **Open System Settings** opens Privacy & Security → Full Disk Access, without changing any grant.
