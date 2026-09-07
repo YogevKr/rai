@@ -1,5 +1,19 @@
 # rai for iOS — companion app
 
+## Check an uploaded TestFlight build
+
+The `iOS Build Status` workflow uses App Store Connect CLI 5.0.0 with a verified binary hash.
+It reads Apple's processing state and TestFlight distribution state using the existing GitHub Actions secrets.
+It does not upload a build, change distribution, or require a browser session.
+
+```sh
+gh workflow run ios-build-status.yml --repo YogevKr/rai -f build_number=39 -f version=1.0
+```
+
+Read the run summary for Apple's states. A successful query alone does not mean testers can install the build.
+
+## Companion overview
+
 A native iOS companion that connects to the macOS rai app over your LAN /
 Tailscale and mirrors your herd: live spaces → tabs → agent status, and a live
 SwiftTerm terminal per pane with input/control.

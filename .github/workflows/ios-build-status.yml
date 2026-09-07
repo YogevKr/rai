@@ -1,0 +1,72 @@
+name: iOS Build Status
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: 'Uploaded Rai Remote build number'
+        required: true
+      version:
+        description: 'Marketing version'
+        required: true
+        default: '1.0'
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Install verified App Store Connect CLI
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            https://github.com/rorkai/App-Store-Connect-CLI/releases/download/5.0.0/asc_5.0.0_linux_amd64 \
+            --output "$RUNNER_TEMP/asc"
+          printf '%s  %s\n' \
+            '76dc06fab91b0f6db73f42bb977fa1f61817b5ee5cb0958a38408f1aceeb3415' \
+            "$RUNNER_TEMP/asc" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/asc"
+          "$RUNNER_TEMP/asc" version
+
+      - name: Read Apple processing and TestFlight status
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          MARKETING_VERSION: ${{ inputs.version }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || {
+            echo '::error::build_number must contain only digits'; exit 1;
+          }
+          : "${ASC_KEY_ID:?Missing Apple key ID}"
+          : "${ASC_ISSUER_ID:?Missing Apple issuer ID}"
+          : "${ASC_PRIVATE_KEY_B64:?Missing Apple API key}"
+
+          "$RUNNER_TEMP/asc" builds info \
+            --app com.whetstone.rai.ios --build-number "$BUILD_NUMBER" \
+            --version "$MARKETING_VERSION" --platform IOS --output json \
+            > "$RUNNER_TEMP/build.json"
+          BUILD_ID=$(jq -er '.data.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/build.json")
+          jq -e --arg number "$BUILD_NUMBER" '.data.attributes.version == $number' \
+            "$RUNNER_TEMP/build.json" > /dev/null
+          jq '{id: .data.id, build: .data.attributes.version,
+               processingState: .data.attributes.processingState,
+               expired: .data.attributes.expired,
+               uploadedDate: .data.attributes.uploadedDate}' \
+            "$RUNNER_TEMP/build.json" | tee "$RUNNER_TEMP/build-status.json"
+
+          "$RUNNER_TEMP/asc" testflight distribution view \
+            --build-id "$BUILD_ID" --output json \
+            | tee "$RUNNER_TEMP/distribution-status.json"
+          {
+            echo '## Rai Remote build status'
+            echo 'A successful status job means the queries succeeded. Read the Apple states below.'
+            echo '```json'
+            cat "$RUNNER_TEMP/build-status.json" "$RUNNER_TEMP/distribution-status.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
