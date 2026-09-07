@@ -6,6 +6,29 @@ import XCTest
 
 @MainActor
 final class AppUpdateTests: XCTestCase {
+    func testDevelopmentBuildNeverFetchesOrInstallsReleaseUpdates() async {
+        let (defaults, name) = preferences()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let model = AppUpdateController(
+            currentVersion: "0.1.0", supportsUpdates: false, defaults: defaults,
+            fetchRelease: { XCTFail("unexpected release fetch"); throw AppUpdateError.downloadFailed },
+            installRelease: { _ in XCTFail("unexpected release install") },
+            pruneCompletedUpdates: { XCTFail("unexpected release cleanup") }
+        )
+        model.start()
+        defer { model.stop() }
+        await model.check()
+        XCTAssertFalse(model.isPresented)
+        await model.check(manual: true)
+        XCTAssertTrue(model.isPresented)
+        guard case .failed(let message) = model.phase else {
+            return XCTFail("expected development build explanation")
+        }
+        XCTAssertTrue(message.contains("Development builds"))
+        await model.update()
+        XCTAssertNil(model.release)
+    }
+
     func testSkipSurvivesRestartAndDoesNotHideFutureVersions() async throws {
         let (defaults, name) = preferences()
         defer { defaults.removePersistentDomain(forName: name) }

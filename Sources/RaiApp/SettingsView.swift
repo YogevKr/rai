@@ -2354,7 +2354,7 @@ private struct CodexMicroSettingsView: View {
             SettingsSection(title: "Device") {
                 VStack(alignment: .leading, spacing: 8) {
                     LabeledContent("Status") {
-                        Text(status.isConnected ? "Connected" : (status.isEnabled ? "Waiting for device" : "Disabled"))
+                        Text(status.isConnected ? "Connected" : (status.isEnabled ? (status.lastError == nil ? "Waiting for device" : "Connection failed") : "Disabled"))
                             .foregroundStyle(status.isConnected ? Theme.status(.done) : Theme.textSecondary)
                     }
                     if let transport = status.transportName {
@@ -2407,7 +2407,18 @@ private struct CodexMicroSettingsView: View {
                         .foregroundStyle(Theme.status(.blocked))
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                    if status.needsInputMonitoring {
+                        Button("Open Input Monitoring") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
                 }
+            }
+
+            if status.isEnabled && !status.isConnected {
+                Button("Retry connection") { status.retryConnection() }
             }
 
                 Spacer()

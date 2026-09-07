@@ -168,8 +168,8 @@ If replacement fails, it restores the previous app. Network failures during auto
 ```sh
 git clone https://github.com/YogevKr/rai.git
 cd rai
-./scripts/bundle.sh          # builds a release Rai.app and installs it
-open -a Rai
+./scripts/bundle.sh          # builds and installs Rai Dev.app with a stable signing identity
+open -a "Rai Dev"
 ```
 
 Or run straight from the package during development:
@@ -262,7 +262,7 @@ Sources/RaiApp     SwiftUI/AppKit app — views, terminal panes, settings, comma
 Sources/RaiCore    HerdrClient (socket RPC + event stream), model types, fuzzy match
 Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
 Tests/RaiCoreTests unit tests
-scripts/bundle.sh  builds and installs Rai.app
+scripts/bundle.sh  builds and installs Rai Dev.app (release channel builds Rai.app)
 poc/               reference Python herdr socket client
 ios/               Rai Remote — the iPhone companion (xcodegen project)
 docs/ios.md        iOS companion app — build, run on device, pairing

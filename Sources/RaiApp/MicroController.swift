@@ -368,14 +368,17 @@ private final class Worker: @unchecked Sendable {
             let transport = IOHIDMicroTransport()
             self.transport = transport
             transport.onReport = { [weak self] report in self?.consume(report) }
+            transport.onError = { [weak self] error in
+                self?.publishStatus { $0.recordTransportError(error) }
+            }
             transport.onConnectionChange = { [weak self, weak transport] connected in
                 self?.connectionChanged(connected)
                 let identity = transport?.currentDeviceIdentity
-                Task { @MainActor in
+                self?.publishStatus { status in
                     if connected {
-                        MicroStatusCenter.shared.deviceAttached(identity: identity)
+                        status.deviceAttached(identity: identity)
                     } else {
-                        MicroStatusCenter.shared.deviceDetached()
+                        status.deviceDetached()
                     }
                 }
             }
@@ -384,7 +387,13 @@ private final class Worker: @unchecked Sendable {
             } catch {
                 let message = error.localizedDescription
                 NSLog("rai: Codex Micro monitoring failed: \(message)")
-                Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
+                publishStatus { status in
+                    if let error = error as? MicroTransportError {
+                        status.recordTransportError(error)
+                    } else {
+                        status.recordError(message)
+                    }
+                }
                 return
             }
             queued.forEach { $0() }
@@ -405,6 +414,14 @@ private final class Worker: @unchecked Sendable {
         guard let target else { return }
         CFRunLoopPerformBlock(target, CFRunLoopMode.defaultMode.rawValue, block)
         CFRunLoopWakeUp(target)
+    }
+
+    /// A stopped worker must not overwrite a new connection attempt's status.
+    private func publishStatus(_ update: @escaping @MainActor @Sendable (MicroStatusCenter) -> Void) {
+        Task { @MainActor [weak self] in
+            guard let self, !self.lock.withLock({ self.stopped }) else { return }
+            update(MicroStatusCenter.shared)
+        }
     }
 
     private func connectionChanged(_ isConnected: Bool) {
@@ -431,7 +448,7 @@ private final class Worker: @unchecked Sendable {
         } catch {
             let message = error.localizedDescription
             NSLog("rai: Codex Micro lighting update failed: \(message)")
-            Task { @MainActor in MicroStatusCenter.shared.recordError(message) }
+            publishStatus { $0.recordError(message) }
         }
     }
 
@@ -451,13 +468,13 @@ private final class Worker: @unchecked Sendable {
         // Device replies are not input, but they are the only positive proof the
         // link is alive, so surface them for Settings rather than dropping them.
         if case .deviceResponse(_, _, let error) = event {
-            Task { @MainActor in
+            publishStatus { status in
                 if let error {
-                    MicroStatusCenter.shared.recordError(
+                    status.recordError(
                         "device error \(error.code): \(error.message)"
                     )
                 } else {
-                    MicroStatusCenter.shared.recordAcknowledgedWrite()
+                    status.recordAcknowledgedWrite()
                 }
             }
             return

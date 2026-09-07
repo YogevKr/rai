@@ -29,3 +29,6 @@ jobs:
 
       - name: Test
         run: swift test
+
+      - name: Test bundle signing and development isolation
+        run: python3 Tests/BuildScripts/test_bundle.py

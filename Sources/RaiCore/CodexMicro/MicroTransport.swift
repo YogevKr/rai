@@ -117,6 +117,12 @@ public enum MicroTransportError: Error, LocalizedError {
         case .alreadyOpen: "Codex Micro transport is already open"
         case .notOpen: "Codex Micro transport is not open"
         case .invalidReport: "Codex Micro reports must be exactly 64 bytes with report ID 0x06"
+        case .ioReturn(let code) where code == kIOReturnNotPermitted:
+            """
+            macOS denied access to Codex Micro. Open System Settings → Privacy & Security → Input Monitoring. \
+            Enable this app, then quit and reopen it. If access still fails after an update, \
+            remove the old entry and add the current app from Applications.
+            """
         case .ioReturn(let code) where code == kIOReturnExclusiveAccess:
             """
             Codex Micro is seized by another process, so it cannot be opened \
@@ -134,6 +140,11 @@ public enum MicroTransportError: Error, LocalizedError {
     /// configuration problem the user can fix — not a bug and not transient.
     public var isSeized: Bool {
         if case .ioReturn(let code) = self, code == kIOReturnExclusiveAccess { return true }
+        return false
+    }
+
+    public var needsInputMonitoring: Bool {
+        if case .ioReturn(let code) = self, code == kIOReturnNotPermitted { return true }
         return false
     }
 }
@@ -168,6 +179,8 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
     /// the monitoring path are otherwise invisible, which makes "nothing
     /// happened" indistinguishable from "the callback never fired".
     public var onDiagnostic: (@Sendable (String) -> Void)?
+    /// Reports failed hot-plug opens. Startup failures are thrown by openMonitoring().
+    public var onError: (@Sendable (MicroTransportError) -> Void)?
 
     /// Called with `true` on attach and `false` on drop while monitoring.
     /// Invoked outside the internal lock, on the monitoring run loop.
@@ -302,6 +315,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
 
     private func handleMatched(_: IOHIDDevice) {
         var diagnostics: [String] = []
+        var failure: MicroTransportError?
         let attached: Bool = lock.withLock {
             guard monitoring else {
                 diagnostics.append("matched callback ignored: not monitoring")
@@ -332,6 +346,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
                     candidate.device, IOOptionBits(kIOHIDOptionsTypeNone)
                 )
                 guard result == kIOReturnSuccess else {
+                    if device == nil { failure = .ioReturn(result) }
                     diagnostics.append(
                         String(
                             format: "open of node 0x%llX failed: 0x%08X",
@@ -342,6 +357,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
                     continue
                 }
                 let replacingExisting = device != nil
+                failure = nil
                 if replacingExisting { detachLocked() }
                 attachOpenedLocked(candidate.device, identity: candidate.identity)
                 if replacingExisting { return false }
@@ -350,6 +366,7 @@ public final class IOHIDMicroTransport: MicroTransport, @unchecked Sendable {
             return false
         }
         for line in diagnostics { onDiagnostic?(line) }
+        if let failure { onError?(failure) }
         if attached { onConnectionChange?(true) }
     }
 

@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var notificationBodies: [String: String] = [:]
     private var microController: MicroController?
     private var microEnabledObserver: AnyCancellable?
+    private var microRetryObserver: AnyCancellable?
     private var hookBeaconReceiver: HookBeaconReceiver?
     private var appUpdateWindow: AppUpdateWindow?
 
@@ -60,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .removeDuplicates()
             .sink { [weak self] enabled in
                 Task { @MainActor in self?.setMicroIntegration(enabled: enabled) }
+            }
+        microRetryObserver = MicroStatusCenter.shared.retryRequests
+            .sink { [weak self] in
+                self?.setMicroIntegration(enabled: false)
+                self?.setMicroIntegration(enabled: MicroStatusCenter.shared.isEnabled)
             }
 
         let center = UNUserNotificationCenter.current()

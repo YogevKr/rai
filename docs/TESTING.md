@@ -5,12 +5,14 @@ daemon — without disrupting anyone's running agents.
 
 ## Build & run a dev build
 
-`scripts/bundle.sh` compiles a release build, wraps it in `Rai.app`, code-signs
-it, and installs to `/Applications` (falling back to `~/Applications`).
+`scripts/bundle.sh` compiles an optimized build and installs `Rai Dev.app` in `/Applications`.
+It falls back to `~/Applications` when necessary.
+Development builds use `gr.krig.rai.dev`, separate preferences, and a stable signing identity.
+They do not replace `Rai.app` or install release updates.
 
 ```sh
-./scripts/bundle.sh          # arm64 dev build → /Applications/Rai.app
-open -a Rai
+./scripts/bundle.sh          # arm64 dev build → /Applications/Rai Dev.app
+open -a "Rai Dev"
 ```
 
 Env overrides:
@@ -20,10 +22,40 @@ Env overrides:
 | `RAI_VERSION` | `CFBundleShortVersionString` (default `0.1.0`) |
 | `RAI_UNIVERSAL=1` | universal arm64 + x86_64 binary (used by the release workflow) |
 | `RAI_APP_DEST` | install into this dir instead of `/Applications` |
-| `RAI_SIGN_IDENTITY` | codesign identity. A stable local identity (e.g. a self-signed `rai-dev-signing`) keeps macOS TCC grants — like Input Monitoring for the Codex Micro — alive across rebuilds, because the code requirement stays constant. Falls back to ad-hoc when the identity is absent (CI, other machines). |
+| `RAI_BUILD_CHANNEL` | `development` by default; `release` builds `Rai.app` with `gr.krig.rai`. |
+| `RAI_SIGN_IDENTITY` | Stable signing identity. Development defaults to `rai-dev-signing`. Release requires an explicit Developer ID Application identity. Missing identities stop the build before installation. |
 | `RAI_PAIRING_CODE_FILE` | Test harness only: the bridge mirrors its current pairing code (one line; empty once spent) to this owner-only file, so an isolated end-to-end run can pair a simulator without driving Settings. Unset in normal use. Pair the simulator with `SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=<RAI_BRIDGE_PORT>&code=<code>"`. Run the isolated instance with `open -n -a <bundle> --env HOME=<scratch> …` so its UserDefaults stay out of the real ones (its Application Support folder is still the real one — delete `bridge-audit.jsonl` and `hooks.sock` afterwards). |
 
 For a quick loop without bundling, `swift run rai` runs straight from the package.
+
+For development bundles, use an existing stable identity or create a Code Signing certificate in Keychain Access.
+Use the name `rai-dev-signing`, or set `RAI_SIGN_IDENTITY` to its full name.
+Keep that identity across rebuilds. Never alternate signing identities for one bundle ID.
+Release builds verify the publisher requirement used by the updater before installation.
+CI stops when the release certificate is unavailable; it never publishes an ad-hoc substitute.
+
+Development and release apps still share Herdr and Rai's existing Application Support files.
+Do not run both integrations against the same keyboard during device tests.
+
+## Codex Micro permissions
+
+Grant Input Monitoring separately to `Rai.app` and `Rai Dev.app` when using their keyboard integration.
+If a previous development build replaced `Rai.app`, remove its old Input Monitoring entry and add the installed release app.
+Quit and reopen that app after granting permission. This repairs the existing certificate mismatch once.
+
+Settings → Codex Micro reports access failures at startup and after reconnection.
+Use **Open Input Monitoring** for permission failures, then follow the macOS restart request.
+Use **Retry connection** to restart device monitoring without losing bindings or the enabled setting.
+
+```sh
+python3 Tests/BuildScripts/test_bundle.py
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter 'MicroStatusTests|CodexMicroTests|AppUpdateTests'
+```
+
+The bundle tests use temporary apps and fake build/signing tools. They never replace the installed Rai app.
+They verify separate development identity, required signing, publisher rejection, and preservation of the installed release on failure.
+The Swift tests verify permission recovery state, saved bindings, and disabled release updates in development builds.
 
 ## Unit tests
 

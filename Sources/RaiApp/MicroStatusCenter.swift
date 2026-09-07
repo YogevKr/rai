@@ -15,11 +15,13 @@ final class MicroStatusCenter: ObservableObject {
     static let shared = MicroStatusCenter()
 
     let bindings: MicroBindings
+    let retryRequests = PassthroughSubject<Void, Never>()
+    private let defaults: UserDefaults
 
     @Published var isEnabled: Bool {
         didSet {
             guard oldValue != isEnabled else { return }
-            UserDefaults.standard.set(isEnabled, forKey: MicroController.enabledDefaultsKey)
+            defaults.set(isEnabled, forKey: MicroController.enabledDefaultsKey)
             if !isEnabled { reset() }
         }
     }
@@ -36,6 +38,7 @@ final class MicroStatusCenter: ObservableObject {
     @Published private(set) var nodeID: UInt64?
     /// Last failure worth showing, e.g. the device being seized by Karabiner.
     @Published private(set) var lastError: String?
+    @Published private(set) var needsInputMonitoring = false
     /// Rolling count of accepted lighting writes — cheap proof the link is live.
     @Published private(set) var acknowledgedWrites = 0
     /// Latest press edge from any bindable control. Releases are intentionally
@@ -44,19 +47,23 @@ final class MicroStatusCenter: ObservableObject {
     @Published private(set) var pressSequence = 0
     private var bindingsObserver: AnyCancellable?
 
-    private init() {
-        bindings = MicroBindings.load()
-        isEnabled = UserDefaults.standard.bool(forKey: MicroController.enabledDefaultsKey)
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        bindings = MicroBindings.load(from: defaults)
+        isEnabled = defaults.bool(forKey: MicroController.enabledDefaultsKey)
         // Settings remains usable while the hardware integration is disabled,
         // so persistence belongs here rather than in MicroController's lifetime.
         bindingsObserver = bindings.$table
             .dropFirst()
-            .sink { [weak bindings] _ in bindings?.persist() }
+            // @Published emits before the stored table changes. Persist the
+            // emitted table so the latest binding survives a restart.
+            .sink { table in MicroBindings(table: table).persist(to: defaults) }
     }
 
     func deviceAttached(identity: MicroDeviceIdentity?) {
         isConnected = true
         lastError = nil
+        needsInputMonitoring = false
         transportName = identity?.transport.displayName
         nodeID = identity?.registryEntryID
     }
@@ -75,6 +82,17 @@ final class MicroStatusCenter: ObservableObject {
         lastError = message
     }
 
+    func recordTransportError(_ error: MicroTransportError) {
+        lastError = error.localizedDescription
+        needsInputMonitoring = error.needsInputMonitoring
+    }
+
+    func retryConnection() {
+        guard isEnabled else { return }
+        reset()
+        retryRequests.send()
+    }
+
     func recordPressed(_ control: MicroControl) {
         lastPressedControl = control
         pressSequence &+= 1
@@ -91,6 +109,7 @@ final class MicroStatusCenter: ObservableObject {
         transportName = nil
         nodeID = nil
         lastError = nil
+        needsInputMonitoring = false
         acknowledgedWrites = 0
         lastPressedControl = nil
         pressSequence = 0

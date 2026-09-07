@@ -1,42 +1,38 @@
-Native macOS client for [herdr](https://herdr.dev). Universal binary (Apple Silicon + Intel), macOS 14+.
+Native macOS client for [Herdr](https://herdr.dev). Universal binary for Apple Silicon and Intel. Requires macOS 14 or later.
 
-### New in this release
+### Codex Micro fixes
 
-- **Less history traffic.** The Mac checks retained phone history and skips
-  sending it when the content has not changed. Update both apps for this benefit.
-- **Connection checks.** The Mac handles WebSocket ping and pong messages
-  without reporting them as invalid requests.
+- Rai reports device access failures at startup and after reconnection.
+- Permission failures include an **Open Input Monitoring** button and recovery instructions.
+- **Retry connection** restarts device monitoring and preserves your saved key bindings.
+- Key binding changes now save the latest value and survive app restarts.
 
-### iOS companion build 38
+### Build identity
 
-- **Retained threads.** The phone retains three recent terminal views.
-  Returning to a thread shows its text and scroll position before the Mac replies.
-  Hidden views detach their display streams. Your agents keep running in Herdr.
-- **Slow connections.** Longer connection deadlines and fewer history reads
-  support weak connections. The phone pauses retries while offline and reconnects when the network returns.
-- **Terminal display.** Horizontal scrolling uses one scroll view to prevent
-  left-edge clipping. History updates and resizing preserve the text you are reading.
-- **Reconnect banner.** The banner waits three seconds after a connection failure.
-  Recovery cancels it. Pairing failures show the repair action immediately.
-- **No repaint without change** (build 38, supersedes builds 36 and 37).
-  Returning to a retained thread keeps its screen when the Mac's full frame
-  matches it. Only a changed screen repaints. A newly opened thread appears
-  once, scrolled to its live rows, instead of painting twice and jumping.
+- Development builds install as **Rai Dev.app**, with a separate bundle ID and preferences.
+- Development builds cannot replace Rai through release updates.
+- Release builds require Developer ID signing and verify the expected publisher before installation.
+- Missing signing certificates stop the build. Rai no longer substitutes ad-hoc signing.
 
-The phone receives changed history as a complete replacement.
-Older app versions remain compatible. The history traffic reduction requires this Mac release and iOS build 36 or later.
+If a development build previously replaced Rai, repair its existing Input Monitoring permission once.
+Remove the old Rai entry in **System Settings → Privacy & Security → Input Monitoring**.
+Add the installed **Rai.app**, enable it, then quit and reopen Rai.
 
 ### Install
 
-If you use 0.1.49, install this release from the DMG or Homebrew.
-Its in-app update can stall during shutdown. Version 0.1.50 fixed that issue.
+Use **Rai → Check for Updates…**, or install with Homebrew:
 
 ```sh
 brew install --cask yogevkr/tap/rai
 ```
 
-Or download the `.dmg` below, open it, and drag **Rai** into **Applications**.
+To update an existing Homebrew installation:
 
-Then open rai — it starts the herdr server itself if one is not running.
+```sh
+brew upgrade --cask yogevkr/tap/rai
+```
 
-Prefer to build it yourself? `git clone` and run `./scripts/bundle.sh`.
+You can also download the DMG below and drag **Rai** into **Applications**.
+Users of version 0.1.49 should use the DMG or Homebrew because its in-app update can stall during shutdown.
+
+Source builds require a stable signing identity. See [build instructions](https://github.com/YogevKr/rai/blob/v0.1.53/docs/TESTING.md).

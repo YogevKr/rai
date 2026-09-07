@@ -12,6 +12,7 @@ final class AppUpdateController: ObservableObject {
         let service = AppUpdateService(applicationURL: Bundle.main.bundleURL)
         return AppUpdateController(
             currentVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+            supportsUpdates: Bundle.main.bundleIdentifier == AppUpdateVerification.bundleIdentifier,
             fetchRelease: { try await service.latestRelease() },
             installRelease: { release in
                 let installation = try await service.prepare(release)
@@ -26,6 +27,7 @@ final class AppUpdateController: ObservableObject {
 
     static let skippedVersionKey = "skippedAppUpdateVersion"
     let currentVersion: String
+    let supportsUpdates: Bool
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var release: AppRelease?
     @Published private(set) var isPresented = false
@@ -39,12 +41,13 @@ final class AppUpdateController: ObservableObject {
     private var checkDismissed = false
 
     init(
-        currentVersion: String, defaults: UserDefaults = .standard,
+        currentVersion: String, supportsUpdates: Bool = true, defaults: UserDefaults = .standard,
         fetchRelease: @escaping () async throws -> AppRelease,
         installRelease: @escaping (AppRelease) async throws -> Void,
         pruneCompletedUpdates: @escaping @Sendable () -> Void = {}
     ) {
         self.currentVersion = currentVersion
+        self.supportsUpdates = supportsUpdates
         self.defaults = defaults
         self.fetchRelease = fetchRelease
         self.installRelease = installRelease
@@ -54,7 +57,7 @@ final class AppUpdateController: ObservableObject {
     var isInstalling: Bool { phase == .installing }
 
     func start() {
-        guard periodicTask == nil, AppReleaseVersion(currentVersion) != nil else { return }
+        guard supportsUpdates, periodicTask == nil, AppReleaseVersion(currentVersion) != nil else { return }
         periodicTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(15))
@@ -79,6 +82,13 @@ final class AppUpdateController: ObservableObject {
     }
 
     func check(manual: Bool = false) async {
+        guard supportsUpdates else {
+            if manual {
+                phase = .failed("Development builds do not install release updates. Use the Rai release app for updates.")
+                isPresented = true
+            }
+            return
+        }
         guard !isInstalling else { return }
         if isChecking {
             if manual {
@@ -142,7 +152,7 @@ final class AppUpdateController: ObservableObject {
     }
 
     func update() async {
-        guard let release, !isInstalling else { return }
+        guard supportsUpdates, let release, !isInstalling else { return }
         phase = .installing
         do {
             try await installRelease(release)

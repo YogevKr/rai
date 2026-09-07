@@ -38,9 +38,10 @@ jobs:
       - name: Test
         run: swift test
 
-      # Import the Developer ID cert into a throwaway keychain so bundle.sh can
-      # sign with it. Without the secrets the step is a no-op and the build
-      # stays ad-hoc signed, exactly as it was before notarization existed.
+      - name: Test bundle signing and development isolation
+        run: python3 Tests/BuildScripts/test_bundle.py
+
+      # Release identity must stay consistent with saved macOS permissions.
       - name: Import Developer ID certificate
         id: signing
         env:
@@ -48,9 +49,8 @@ jobs:
           CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
         run: |
           if [ -z "${CERT_P12}" ]; then
-            echo "::warning::APPLE_CERT_P12 not set — ad-hoc signing, release will NOT be notarized."
-            echo "identity=" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::APPLE_CERT_P12 is required. Refusing to release without Developer ID signing."
+            exit 1
           fi
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           # Random per-run password: this keychain only lives for the job.
@@ -97,6 +97,7 @@ jobs:
 
       - name: Build universal Rai.app
         env:
+          RAI_BUILD_CHANNEL: release
           RAI_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
         run: RAI_UNIVERSAL=1 RAI_VERSION="${{ steps.v.outputs.version }}" RAI_APP_DEST="$PWD/dist" ./scripts/bundle.sh
 
