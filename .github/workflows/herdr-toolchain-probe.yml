@@ -34,9 +34,15 @@ jobs:
     env:
       PROBE_SHA: ${{ matrix.source_sha }}
       PROBE_XCODE_MAJOR: ${{ matrix.xcode_major }}
-      PROBE_REPORT_DIR: ${{ runner.temp }}/herdr-toolchain-${{ matrix.label }}
-      PROBE_SCRATCH_DIR: ${{ runner.temp }}/herdr-swift-build-${{ matrix.label }}
+      PROBE_LABEL: ${{ matrix.label }}
     steps:
+      - name: Set diagnostic paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PROBE_REPORT_DIR=$RUNNER_TEMP/herdr-toolchain-$PROBE_LABEL" >> "$GITHUB_ENV"
+          echo "PROBE_SCRATCH_DIR=$RUNNER_TEMP/herdr-swift-build-$PROBE_LABEL" >> "$GITHUB_ENV"
+
       - name: Check out the exact source under test
         uses: actions/checkout@v4
         with:
