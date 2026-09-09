@@ -106,6 +106,23 @@ final class HookBeaconReceiverTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: scriptURL.path))
     }
 
+    func testLabHookPreviewAndApplyRejectExternalSettings() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let root = fixture.directory.appendingPathComponent("lab")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let settings = fixture.directory.appendingPathComponent("live-settings.json")
+        let script = root.appendingPathComponent("rai-hook.sh")
+        XCTAssertThrowsError(try ClaudeHooksInstaller.makePreview(
+            action: .remove, settingsURL: settings, scriptURL: script, isolatedRoot: root
+        ))
+        let preview = ClaudeHooksPreview(action: .remove, settingsURL: settings,
+                                        scriptURL: script, originalSettings: nil,
+                                        updatedSettings: Data("{}".utf8), scriptData: nil)
+        XCTAssertThrowsError(try ClaudeHooksInstaller.apply(preview, isolatedRoot: root))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.path))
+    }
+
     func testHookInstallerTracksEachManagedSettingsPath() throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }

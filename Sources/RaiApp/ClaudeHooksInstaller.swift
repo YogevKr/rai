@@ -45,7 +45,10 @@ enum ClaudeHooksInstaller {
     }
 
     static var defaultSettingsURL: URL {
-        settingsURL(
+        if AppDataPaths.current.isIsolated {
+            return AppDataPaths.current.claudeDirectory.appendingPathComponent("settings.json")
+        }
+        return settingsURL(
             environment: ProcessInfo.processInfo.environment,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         )
@@ -77,8 +80,11 @@ enum ClaudeHooksInstaller {
         settingsURL: URL = defaultSettingsURL,
         scriptURL: URL = defaultScriptURL,
         bundledScriptURL: URL? = bundledScriptURL,
-        decisionHoldSeconds: Int = ClaudeHookSettings.defaultDecisionHoldSeconds
+        decisionHoldSeconds: Int = ClaudeHookSettings.defaultDecisionHoldSeconds,
+        isolatedRoot: URL? = AppDataPaths.current.isolatedRoot
     ) throws -> ClaudeHooksPreview {
+        try LabLaunch.requireContainedPath(settingsURL.path, root: isolatedRoot)
+        try LabLaunch.requireContainedPath(scriptURL.path, root: isolatedRoot)
         try rejectSymbolicLink(at: settingsURL)
         let original = try existingData(at: settingsURL)
         let updated: Data
@@ -113,8 +119,11 @@ enum ClaudeHooksInstaller {
 
     static func apply(
         _ preview: ClaudeHooksPreview,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        isolatedRoot: URL? = AppDataPaths.current.isolatedRoot
     ) throws {
+        try LabLaunch.requireContainedPath(preview.settingsURL.path, root: isolatedRoot)
+        try LabLaunch.requireContainedPath(preview.scriptURL.path, root: isolatedRoot)
         try rejectSymbolicLink(at: preview.settingsURL)
         let current = try existingData(at: preview.settingsURL)
         guard current == preview.originalSettings else {

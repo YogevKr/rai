@@ -99,8 +99,7 @@ final class HookBeaconReceiver: @unchecked Sendable {
     }
 
     static var defaultSocketURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Rai", isDirectory: true)
+        AppDataPaths.current.applicationSupport
             .appendingPathComponent("hooks.sock")
     }
 

@@ -4,6 +4,21 @@ import XCTest
 @testable import RaiApp
 
 final class APNsKeyReadTests: XCTestCase {
+    @MainActor
+    func testIsolatedLaunchDoesNotReadLegacyCredentials() throws {
+        let (defaults, keyURL) = try fixture()
+        var reads = 0
+        let settings = APNsSettings(
+            defaults: defaults, keyFileURL: keyURL,
+            migrateImmediately: true, allowsLegacyMigration: false,
+            keyReader: { reads += 1; return ("", errSecItemNotFound) }
+        )
+        settings.migrateLegacyKeyIfNeeded()
+        settings.retryLegacyKeyMigration()
+        XCTAssertEqual(reads, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path))
+    }
+
     private static let pem = """
     -----BEGIN PRIVATE KEY-----
     MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgevZzL1gdAFr88hb2

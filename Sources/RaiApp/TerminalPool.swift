@@ -18,7 +18,15 @@ final class TerminalPool {
     private var entries: [String: Entry] = [:]
     private var recency: LRUTracker<String>
     private var socketPath: String
-    private let attachExecutable: String
+    private let attachExecutable: String?
+    var runtimeExecutable: String? {
+        didSet {
+            guard attachExecutable == nil, let runtimeExecutable else { return }
+            for entry in entries.values {
+                entry.coordinator.executable = runtimeExecutable
+            }
+        }
+    }
     /// Set alongside `switchSocket`. New local and remote views use different
     /// display thresholds; existing views were already reaped by the switch.
     var predictiveEchoHerdLocation = PredictiveEchoEngine.HerdLocation.local
@@ -41,7 +49,7 @@ final class TerminalPool {
     init(
         capacity: Int = TerminalPool.minimumCapacity,
         socketPath: String = HerdrClient.defaultSocketPath(),
-        attachExecutable: String = HerdrCLI.binaryPath
+        attachExecutable: String? = nil
     ) {
         recency = LRUTracker(capacity: capacity)
         self.socketPath = socketPath
@@ -96,6 +104,7 @@ final class TerminalPool {
         if let knownTerminalIDs, !knownTerminalIDs.contains(terminalID) {
             return nil
         }
+        guard let executable = attachExecutable ?? runtimeExecutable ?? HerdrCLI.resolvedBinaryPath else { return nil }
 
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font
@@ -126,7 +135,7 @@ final class TerminalPool {
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
             socketPath: socketPath,
-            executable: attachExecutable
+            executable: executable
         )
         view.processDelegate = coordinator
         entries[terminalID] = Entry(view: view, coordinator: coordinator)
@@ -190,6 +199,7 @@ final class TerminalPool {
     /// new API socket when their coordinators are created.
     func switchSocket(to socketPath: String) {
         removeAll()
+        runtimeExecutable = nil
         self.socketPath = socketPath
     }
 
@@ -237,7 +247,7 @@ private final class TerminalProcessCoordinator:
     private weak var view: FocusAwareTerminalView?
     private let terminalID: String
     private let socketPath: String
-    private let executable: String
+    var executable: String
     private var state = State.suspended
     private var hasLaunched = false
     private var pendingLaunch: DispatchWorkItem?

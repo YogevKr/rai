@@ -27,10 +27,12 @@ final class ScrollbackSelectionController {
     enum EdgeDirection { case up, down }
 
     weak var view: FocusAwareTerminalView?
+    var supportsDirectScrolling = false
     var paneID: String? {
         didSet {
             guard paneID != oldValue else { return }
             viewportRestoreGeneration = UUID()
+            cancelIndicatorScroll()
             viewportRestoreTask?.cancel()
             viewportRestoreTask = nil
             editorTask?.cancel()
@@ -78,6 +80,7 @@ final class ScrollbackSelectionController {
     private var stickyEnd: Position?
     private var wheelReconcileTask: Task<Void, Never>?
     private var scrollEventTask: Task<Void, Never>?
+    private(set) var indicatorScrollTask: Task<Void, Never>?
     private var returnToLiveTask: Task<Void, Never>?
     private var copyModeState: CopyModeState?
     private var copyModeStarting = false
@@ -91,6 +94,7 @@ final class ScrollbackSelectionController {
     // MARK: gesture lifecycle
 
     func mouseDown() {
+        cancelIndicatorScroll()
         if isCopyModeActive {
             exitCopyMode()
         }
@@ -222,6 +226,7 @@ final class ScrollbackSelectionController {
     /// Called for every wheel event over the pane; reconciles the highlight
     /// with wherever the content actually moved, after the scroll settles.
     func noteWheel() {
+        cancelIndicatorScroll()
         guard model.isActive || stickyText != nil else { return }
         wheelReconcileTask?.cancel()
         wheelReconcileTask = Task { [weak self] in
@@ -284,6 +289,7 @@ final class ScrollbackSelectionController {
     var isCopyModeActive: Bool { copyModeStarting || copyModeState != nil }
 
     func enterCopyMode() {
+        cancelIndicatorScroll()
         guard !isCopyModeActive, let paneID, let view else { return }
         clearSticky()
         view.selectNone()
@@ -354,6 +360,7 @@ final class ScrollbackSelectionController {
 
     /// Returns true whenever copy mode owns the key, including its loading phase.
     func handleCopyModeKey(_ key: CopyModeKey) -> Bool {
+        cancelIndicatorScroll()
         guard isCopyModeActive else { return false }
         if copyModeStarting {
             if key == .escape { cancelCopyMode() }
@@ -453,9 +460,7 @@ final class ScrollbackSelectionController {
             exitCopyMode()
             return
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        onNotice?("Copied to clipboard")
+        guard view?.writeSelectionToClipboard(text) == true else { return }
         exitCopyMode()
     }
 
@@ -813,6 +818,40 @@ final class ScrollbackSelectionController {
         return current.truncated == recent.truncated && current.text == recent.text
     }
 
+    func cancelIndicatorScroll() {
+        indicatorScrollTask?.cancel()
+        indicatorScrollTask = nil
+    }
+
+    /// Direct control cannot send wheel input to a running terminal application.
+    func scroll(toPosition position: Double) {
+        guard position.isFinite, let paneID else { return }
+        cancelIndicatorScroll()
+        indicatorScrollTask = Task { [weak self] in
+            guard let self else { return }
+            // Use a separate connection: a scrollback read must not delay input.
+            let reader = HerdrClient(socketPath: client.socketPath)
+            defer { reader.disconnect() }
+            await withTaskCancellationHandler {
+                do {
+                    let snapshot = try await reader.snapshot()
+                    guard !Task.isCancelled, self.paneID == paneID else { return }
+                    guard snapshot.protocol >= 22 else {
+                        self.onNotice?("This Herdr version supports wheel scrolling, but not scrollbar dragging.")
+                        return
+                    }
+                    guard let scroll = snapshot.panes.first(where: { $0.paneID == paneID })?.scroll else { return }
+                    let offset = Int((1 - min(1, max(0, position))) * Double(scroll.maxOffsetFromBottom))
+                    try await reader.scrollPane(paneID, offsetFromBottom: offset)
+                } catch {
+                    if !Task.isCancelled { self.onNotice?(error.localizedDescription) }
+                }
+            } onCancel: {
+                reader.disconnect()
+            }
+        }
+    }
+
     private func scrollPane(
         _ paneID: String,
         toOffset target: Int,
@@ -912,6 +951,11 @@ final class ScrollbackSelectionController {
     /// attach until the offset reaches zero. Bails on no-progress — the
     /// pane's app owns the wheel, nothing to unstick.
     func returnToLive() {
+        cancelIndicatorScroll()
+        if supportsDirectScrolling {
+            scroll(toPosition: 1)
+            return
+        }
         guard returnToLiveTask == nil, let paneID else { return }
         returnToLiveTask = Task { [weak self] in
             defer { self?.returnToLiveTask = nil }

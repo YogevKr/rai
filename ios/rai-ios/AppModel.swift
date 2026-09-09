@@ -284,6 +284,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pairing: Pairing?
     @Published private(set) var pendingPairing: PairingInvitation?
     @Published var pendingOpenPaneID: String?
+    @Published var pendingOpenMachineResource: MachineResource?
     @Published private(set) var triageRequest = 0
     @Published private(set) var backgroundWorkByPaneID: [String: [String]] = [:]
     let connection: BridgeConnection
@@ -416,6 +417,7 @@ final class AppModel: ObservableObject {
     }
 
     func forgetPairing() {
+        pendingOpenMachineResource = nil
         // Revoke push delivery on the Mac before dropping the socket, otherwise
         // it keeps this device registered and notifying after the user has
         // explicitly forgotten the pairing.
@@ -447,14 +449,14 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func sendNotificationInput(_ bytes: [UInt8], to paneID: String) async -> Bool {
+    func sendNotificationInput(_ bytes: [UInt8], to paneID: String, expectedConnectionID: String? = nil) async -> Bool {
         guard let pairing else { return false }
-        return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing)
+        return await connection.connectAndSendInput(bytes, to: paneID, pairing: pairing, expectedConnectionID: expectedConnectionID)
     }
 
-    func sendNotificationReply(_ bytes: [UInt8], to paneID: String) async -> Bool {
+    func sendNotificationReply(_ bytes: [UInt8], to paneID: String, expectedConnectionID: String? = nil) async -> Bool {
         guard let pairing else { return false }
-        return await connection.connectAndSendComposedLine(bytes, to: paneID, pairing: pairing)
+        return await connection.connectAndSendComposedLine(bytes, to: paneID, pairing: pairing, expectedConnectionID: expectedConnectionID)
     }
 
     func showActionError(_ message: String) {
@@ -464,14 +466,16 @@ final class AppModel: ObservableObject {
     func sendNotificationDecision(
         _ decision: RemotePermissionDecision,
         requestID: String,
-        paneID: String
+        paneID: String,
+        expectedConnectionID: String? = nil
     ) async -> Bool {
         guard let pairing else { return false }
         return await connection.connectAndDecide(
             decision,
             requestID: requestID,
             paneID: paneID,
-            pairing: pairing
+            pairing: pairing,
+            expectedConnectionID: expectedConnectionID
         )
     }
 

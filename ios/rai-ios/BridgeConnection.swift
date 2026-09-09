@@ -222,7 +222,7 @@ struct ConnectionDiagnosis: Equatable {
 
     static func herdMissing(rawDetails: String) -> ConnectionDiagnosis {
         ConnectionDiagnosis(
-            message: "herdr isn't running on the Mac",
+            message: "Herdr is unavailable on the Mac. Open Rai there to install or start Herdr.",
             rawDetails: rawDetails,
             action: .reconnect
         )
@@ -453,6 +453,18 @@ final class BridgeConnection: ObservableObject {
 
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var snapshot: SessionSnapshot?
+    @Published private(set) var machines = MachineDirectoryState()
+    private var machineListRequested = false
+    private var selectedMachine: MachineEndpoint?
+    private var pendingMachineAgent: MachineResource?
+    private var pendingMachineNotification: MachineResource?
+    private var machineNotificationRequiresSelection = false
+    let endpointView = EndpointPhoneModel()
+    private var endpointViewRequested = false
+    @Published private(set) var hostCapabilities: BridgeHostCapabilities?
+    @Published var agentExplanation: AgentExplanation?
+    @Published private(set) var herdrManagementRequest: HerdrManagementRequest?
+    @Published private(set) var herdrManagementText: String?
     @Published private(set) var isShowingCachedSnapshot = false
     @Published private(set) var lastSnapshotAt: Date?
     @Published private(set) var actionError: String?
@@ -550,7 +562,9 @@ final class BridgeConnection: ObservableObject {
         now: @escaping () -> Date = Date.init,
         replyFrameWaitIterations: Int = 50,
         socketFactory: @escaping (URL) -> any BridgeSocket = {
-            URLSession.shared.webSocketTask(with: $0)
+            let socket = URLSession.shared.webSocketTask(with: $0)
+            socket.maximumMessageSize = 16 * 1024 * 1024
+            return socket
         },
         networkTiming: BridgeNetworkTiming = BridgeNetworkTiming(),
         monitorsNetwork: Bool = true,
@@ -891,10 +905,14 @@ final class BridgeConnection: ObservableObject {
                     try await send(.detachStream(paneID: paneID))
                     guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
                 }
-                try await send(.selectPane(paneID: paneID))
-                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
-                try await send(.focusPane(paneID: paneID))
-                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                if hostCapabilities?.supportsIndependentPaneObservation != true {
+                    // Legacy hosts require the shared selection path. New hosts
+                    // can read and observe an explicit pane without changing focus.
+                    try await send(.selectPane(paneID: paneID))
+                    guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                    try await send(.focusPane(paneID: paneID))
+                    guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                }
                 // Read the size at send time, not at entry: the terminal's
                 // layout often lands (and updates desiredStreams) between
                 // openPane and this send, and the server drops resizes for
@@ -1053,12 +1071,139 @@ final class BridgeConnection: ObservableObject {
         sendAction(.renameWorkspace(workspaceID: workspaceID, label: label))
     }
 
-    func closeWorkspace(workspaceID: String) {
-        sendAction(.closeWorkspace(workspaceID: workspaceID))
+    func closeWorkspace(workspaceID: String, expectedConnectionID: String?) {
+        guard status.isConnected, let expectedConnectionID, !expectedConnectionID.isEmpty,
+              expectedConnectionID == hostCapabilities?.connectionID else {
+            actionError = "The workspace connection changed. Review the workspace before closing it."
+            return
+        }
+        sendAction(.closeWorkspace(workspaceID: workspaceID, connectionID: expectedConnectionID))
+    }
+
+    func closeWorkspaceGroup(_ preview: WorkspaceClosePreview) {
+        guard hostCapabilities?.supportsWorkspaceGroupClose == true, let connectionID = preview.connectionID else {
+            actionError = "Group closure requires an updated Mac app and Herdr 0.9 or later."
+            return
+        }
+        guard status.isConnected, connectionID == hostCapabilities?.connectionID else {
+            actionError = "The workspace connection changed. Review the group before closing it."
+            return
+        }
+        sendAction(.closeWorkspaceGroup(workspaceID: preview.workspaceID, expectedWorkspaceIDs: preview.workspaceIDs, connectionID: connectionID))
+    }
+
+    func manageHerdr(_ request: HerdrManagementRequest) {
+        guard herdrManagementRequest == nil else { return }
+        guard status.isConnected, request.connectionID == hostCapabilities?.connectionID,
+              hostCapabilities?.supports(request.action) == true else {
+            herdrManagementText = "The target changed or does not support this action. Review the server again."
+            return
+        }
+        herdrManagementRequest = request
+        herdrManagementText = "Running: \(request.action.title)."
+        sendAction(.manageHerdr(request))
+    }
+
+    func requestAgentExplanation(paneID: String) {
+        guard status.isConnected, hostCapabilities?.supportsAgentExplanation == true,
+              let connectionID = hostCapabilities?.connectionID else { return }
+        let request = AgentExplanation(paneID: paneID, requestID: UUID().uuidString, connectionID: connectionID)
+        agentExplanation = request
+        sendAction(.explainAgent(paneID: paneID, requestID: request.requestID, connectionID: connectionID))
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard let self, self.agentExplanation?.requestID == request.requestID,
+                  self.agentExplanation?.text == nil else { return }
+            self.agentExplanation?.text = "The explanation request timed out. Close this sheet and try again."
+        }
     }
 
     func broadcastInput(tabID: String, text: String) {
         sendAction(.broadcastInput(tabID: tabID, text: text))
+    }
+
+    func requestMachines(_ operation: MachineOperation = .refresh) {
+        guard status.isConnected else { actionError = "Connect to the Mac before managing machines."; return }
+        guard hostCapabilities?.operations.contains(BridgeCapability.machineDirectory) == true else {
+            actionError = "Update the Mac app to manage machines."
+            return
+        }
+        sendAction(.machineRequest(.init(revision: machines.revision, operation: operation)))
+    }
+
+    func selectMachine(_ entry: MachineEntry) {
+        guard entry.health == .online, entry == machines.entry(for: entry.endpoint) else { return }
+        endpointView.close()
+        selectedMachine = entry.endpoint
+        pendingMachineNotification = nil
+        machineNotificationRequiresSelection = false
+        pendingMachineAgent = nil
+        openEndpointView()
+    }
+
+    func selectMachineAgent(_ agent: MachineAgent) {
+        guard let entry = machines.entry(for: agent.resource.endpoint), entry.health == .online,
+              entry.agents.contains(agent) else { return }
+        selectMachine(entry)
+        pendingMachineAgent = agent.resource
+    }
+
+    func openMachineNotification(_ resource: MachineResource) {
+        guard resource.isValidNotificationTarget else { actionError = "The machine notification target is invalid."; return }
+        endpointView.close()
+        selectedMachine = resource.endpoint
+        pendingMachineAgent = nil
+        endpointViewRequested = true
+        machineNotificationRequiresSelection = true
+        pendingMachineNotification = resource
+        if status.isConnected { requestMachines() }
+    }
+
+    private func resolveMachineNotification() {
+        guard let target = pendingMachineNotification else { return }
+        guard let entry = machines.entry(for: target.endpoint) else {
+            guard !machines.busy else { return }
+            pendingMachineNotification = nil
+            actionError = "This machine was removed. Open Machines to choose another target."
+            return
+        }
+        guard entry.health == .online else { return }
+        pendingMachineNotification = nil
+        guard let agent = entry.agents.first(where: { $0.resource.paneID == target.paneID && $0.resource.bootID == target.bootID }) else {
+            actionError = "This agent or server changed. Open Machines to review its current state."
+            return
+        }
+        selectMachineAgent(agent)
+    }
+
+    func openEndpointView() {
+        if endpointViewRequested, endpointView.identity != nil, endpointView.error == nil { return }
+        endpointViewRequested = true
+        guard status.isConnected, !machineNotificationRequiresSelection else { return }
+        let identity: String
+        let endpoint = selectedMachine
+        if let endpoint {
+            guard let entry = machines.entry(for: endpoint), entry.health == .online, let connectionID = entry.connectionID else { return }
+            identity = connectionID
+        } else {
+            guard hostCapabilities?.operations.contains(BridgeCapability.nativeEndpoint) == true,
+                  let connectionID = hostCapabilities?.connectionID else { return }
+            identity = connectionID
+        }
+        let socket = task
+        let transportGeneration = connectionGeneration
+        endpointView.open(connectionID: identity, machineEndpoint: endpoint) { [weak self] request in
+            guard let self, self.status.isConnected, self.connectionGeneration == transportGeneration else { throw CancellationError() }
+            let current = endpoint.flatMap { self.machines.entry(for: $0)?.connectionID } ?? self.hostCapabilities?.connectionID
+            let retained = self.endpointView.identity == request.identity && self.endpointView.retainsHostConnection
+            guard current == identity || retained else { throw CancellationError() }
+            try await self.send(.endpointRequest(request), over: socket)
+        }
+    }
+
+    func closeEndpointView() {
+        endpointViewRequested = false
+        endpointView.close()
     }
 
     private func sendAction(_ message: BridgeMessage) {
@@ -1170,13 +1315,20 @@ final class BridgeConnection: ObservableObject {
     ///
     /// Returns whether Rai delivered, queued, or refused the line.
     @discardableResult
-    func sendComposedLine(_ bytes: [UInt8], to paneID: String) async -> ComposedLineSendResult {
+    func sendComposedLine(_ bytes: [UInt8], to paneID: String, expectedConnectionID: String? = nil) async -> ComposedLineSendResult {
+        if let expectedConnectionID {
+            guard status.isConnected, expectedConnectionID == hostCapabilities?.connectionID else {
+                actionError = "The notification host changed. No reply was sent."
+                return .refused
+            }
+        }
         switch passwordPromptState(for: paneID) {
         case .prompt:
             refusePasswordPromptSend(to: paneID)
             return .refused
         case .unknown:
             actionError = PasswordPromptGuard.waiting
+            guard expectedConnectionID == nil else { return .refused }
             enqueue(bytes, to: paneID)
             return .queued
         case .clear:
@@ -1188,13 +1340,16 @@ final class BridgeConnection: ObservableObject {
         if status.isConnected {
             do {
                 try await send(
-                    .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
+                    expectedConnectionID.map { .notificationAction(.init(connectionID: $0, paneID: paneID,
+                        operation: .input(bytesBase64: Data(bytes).base64EncodedString()))) }
+                        ?? .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
                 )
                 return .accepted
             } catch {
                 handleSocketFailure(error)
             }
         }
+        guard expectedConnectionID == nil else { return .refused }
         enqueue(bytes, to: paneID)
         return .queued
     }
@@ -1397,11 +1552,34 @@ final class BridgeConnection: ObservableObject {
     /// Notification actions can arrive while the app is suspended. Reuse the
     /// live socket when possible, otherwise reconnect and wait briefly for the
     /// authenticated welcome before sending within the notification window.
+    func validateNotificationHost(_ expected: String, pairing: Pairing) async -> Bool {
+        guard !expected.isEmpty else { return false }
+        if !status.isConnected { connect(to: pairing) }
+        for _ in 0..<80 {
+            if status.isConnected, let current = hostCapabilities?.connectionID {
+                guard current == expected,
+                      hostCapabilities?.operations.contains(BridgeCapability.notificationActions) == true else {
+                    actionError = "The notification host changed. Open its terminal before responding."
+                    return false
+                }
+                return true
+            }
+            if requiresRepair || Task.isCancelled { return false }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        actionError = "The notification host could not be verified."
+        return false
+    }
+
     func connectAndSendInput(
         _ bytes: [UInt8],
         to paneID: String,
-        pairing: Pairing
+        pairing: Pairing,
+        expectedConnectionID: String? = nil
     ) async -> Bool {
+        if let expectedConnectionID,
+           !(await validateNotificationHost(expectedConnectionID, pairing: pairing)) { return false }
+
         if !status.isConnected {
             connect(to: pairing)
             for _ in 0..<80 {
@@ -1414,10 +1592,9 @@ final class BridgeConnection: ObservableObject {
         guard status.isConnected else { return false }
         do {
             try await send(
-                .input(
-                    paneID: paneID,
-                    bytesBase64: Data(bytes).base64EncodedString()
-                )
+                expectedConnectionID.map { .notificationAction(.init(connectionID: $0, paneID: paneID,
+                    operation: .input(bytesBase64: Data(bytes).base64EncodedString()))) }
+                    ?? .input(paneID: paneID, bytesBase64: Data(bytes).base64EncodedString())
             )
             return true
         } catch {
@@ -1430,9 +1607,17 @@ final class BridgeConnection: ObservableObject {
     func connectAndSendComposedLine(
         _ bytes: [UInt8],
         to paneID: String,
-        pairing: Pairing
+        pairing: Pairing,
+        expectedConnectionID: String? = nil
     ) async -> Bool {
-        if queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
+        if let expectedConnectionID,
+           !(await validateNotificationHost(expectedConnectionID, pairing: pairing)) { return false }
+
+        if expectedConnectionID != nil, outbox.contains(where: { $0.paneID == paneID }) {
+            actionError = "Review the queued input before replying to this notification."
+            return false
+        }
+        if expectedConnectionID == nil, queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
             return false
         }
         let clock = ContinuousClock()
@@ -1462,6 +1647,19 @@ final class BridgeConnection: ObservableObject {
             return replyVerificationTimedOut(bytes, paneID: paneID)
         }
         var attachedTemporaryStream = false
+        let replyStreamGeneration = connectionGeneration
+        @MainActor func detachTemporaryStream() async {
+            guard attachedTemporaryStream,
+                  connectionGeneration == replyStreamGeneration,
+                  desiredStreams[paneID] == nil else { return }
+            attachedTemporaryStream = false
+            try? await send(.detachStream(paneID: paneID))
+        }
+        defer {
+            if attachedTemporaryStream {
+                Task { await detachTemporaryStream() }
+            }
+        }
         if passwordPromptState(for: paneID) == .unknown, desiredStreams[paneID] == nil {
             guard clock.now < deadline else {
                 return replyVerificationTimedOut(bytes, paneID: paneID)
@@ -1476,9 +1674,6 @@ final class BridgeConnection: ObservableObject {
             }
         }
         guard clock.now < deadline else {
-            if attachedTemporaryStream {
-                Task { try? await send(.detachStream(paneID: paneID)) }
-            }
             return replyVerificationTimedOut(bytes, paneID: paneID)
         }
         actionError = PasswordPromptGuard.waiting
@@ -1496,25 +1691,22 @@ final class BridgeConnection: ObservableObject {
         }
         guard clock.now < deadline,
               passwordPromptState(for: paneID) != .unknown else {
-            if attachedTemporaryStream {
-                Task { try? await send(.detachStream(paneID: paneID)) }
-            }
             return replyVerificationTimedOut(bytes, paneID: paneID)
         }
-        if queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
-            if attachedTemporaryStream {
-                Task { try? await send(.detachStream(paneID: paneID)) }
-            }
+        if expectedConnectionID != nil, outbox.contains(where: { $0.paneID == paneID }) {
+            actionError = "Review the queued input before replying to this notification."
+            await detachTemporaryStream()
+            return false
+        }
+        if expectedConnectionID == nil, queueNotificationReplyBehindOutboxIfNeeded(bytes, paneID: paneID) {
+            await detachTemporaryStream()
             return false
         }
         guard clock.now < deadline else {
-            if attachedTemporaryStream {
-                Task { try? await send(.detachStream(paneID: paneID)) }
-            }
             return replyVerificationTimedOut(bytes, paneID: paneID)
         }
-        let result = await sendComposedLine(bytes, to: paneID)
-        if attachedTemporaryStream { try? await send(.detachStream(paneID: paneID)) }
+        let result = await sendComposedLine(bytes, to: paneID, expectedConnectionID: expectedConnectionID)
+        await detachTemporaryStream()
         return result == .accepted
     }
 
@@ -1596,8 +1788,12 @@ final class BridgeConnection: ObservableObject {
         _ decision: RemotePermissionDecision,
         requestID: String,
         paneID: String,
-        pairing: Pairing
+        pairing: Pairing,
+        expectedConnectionID: String? = nil
     ) async -> Bool {
+        if let expectedConnectionID,
+           !(await validateNotificationHost(expectedConnectionID, pairing: pairing)) { return false }
+
         if !status.isConnected {
             connect(to: pairing)
             for _ in 0..<80 {
@@ -1618,11 +1814,9 @@ final class BridgeConnection: ObservableObject {
             Task {
                 do {
                     try await sendDecision(
-                        .decide(
-                            paneID: paneID,
-                            requestID: requestID,
-                            decision: decision
-                        ),
+                        expectedConnectionID.map { .notificationAction(.init(connectionID: $0, paneID: paneID,
+                            operation: .decide(requestID: requestID, decision: decision))) }
+                            ?? .decide(paneID: paneID, requestID: requestID, decision: decision),
                         over: decisionSocket
                     )
                 } catch {
@@ -1721,7 +1915,7 @@ final class BridgeConnection: ObservableObject {
             name: UIDevice.current.name,
             platform: "iOS",
             model: UIDevice.current.model,
-            capabilities: decisionAvailability.capabilities
+            capabilities: decisionAvailability.capabilities + [BridgeCapability.nativeEndpoint, BridgeCapability.machineDirectory, BridgeCapability.notificationActions]
         )
     }
 
@@ -1814,7 +2008,17 @@ final class BridgeConnection: ObservableObject {
                     unrecognizedCode: unrecognizedCode
                 )
             }
-        case let .snapshot(snapshot, snapshotSessionName):
+        case let .snapshot(snapshot, snapshotSessionName, capabilities):
+            if selectedMachine == nil, !endpointView.retainsHostConnection,
+               endpointView.identity?.connectionID != capabilities?.connectionID { endpointView.disconnect() }
+            hostCapabilities = capabilities
+            if !machineListRequested, capabilities?.operations.contains(BridgeCapability.machineDirectory) == true {
+                machineListRequested = true
+                requestMachines()
+            }
+            if let explanation = agentExplanation, explanation.connectionID != capabilities?.connectionID {
+                agentExplanation?.text = "The server connection changed. Request the explanation again."
+            }
             if let snapshotSessionName, sessionName != snapshotSessionName {
                 invalidateTerminalCache()
                 historyGeneration &+= 1
@@ -1828,6 +2032,7 @@ final class BridgeConnection: ObservableObject {
                 didReceiveHistoryPages?(historyPages)
             }
             replaceWithLiveSnapshot(snapshot)
+            if endpointViewRequested, endpointView.identity == nil { openEndpointView() }
         case let .sessions(list):
             sessions = list
             if let current = list.first(where: { $0.isCurrent }) {
@@ -1945,6 +2150,11 @@ final class BridgeConnection: ObservableObject {
                 handler(data)
             }
         case let .error(message, code, detail, paneID, requestID):
+            endpointView.receiveError(message, requestID: requestID)
+            if let requestID, requestID == herdrManagementRequest?.id {
+                herdrManagementText = detail ?? message
+                herdrManagementRequest = nil
+            }
             // Older Macs send a pong and then this exact error for the same ping.
             // No application operation uses a non-text frame.
             if hasSentPing, status.isConnected, code == .invalidRequest,
@@ -2005,15 +2215,44 @@ final class BridgeConnection: ObservableObject {
                 actionError = message ?? "That prompt already closed"
             }
             resolveDecision(requestID: requestID, accepted: accepted)
+        case let .agentExplanation(response):
+            if agentExplanation?.accepts(response, connectionID: hostCapabilities?.connectionID) == true {
+                agentExplanation = response
+            }
+        case let .machineState(state):
+            machines = state
+            resolveMachineNotification()
+            if let endpoint = selectedMachine,
+               state.entry(for: endpoint)?.connectionID != endpointView.identity?.connectionID {
+                endpointView.disconnect()
+                pendingMachineAgent = nil
+            }
+            if endpointViewRequested, endpointView.identity == nil { openEndpointView() }
+        case let .endpointState(state):
+            endpointView.receive(state)
+            if let target = pendingMachineAgent, !endpointView.busy, let snapshot = endpointView.state?.snapshot {
+                pendingMachineAgent = nil
+                if state.identity.machineEndpoint == target.endpoint,
+                   state.identity.connectionID == target.connectionID, snapshot.bootID == target.bootID {
+                    endpointView.command(.focusPane(target.paneID))
+                } else { actionError = "The agent changed. Select it again from Machines." }
+            }
+        case let .herdrManagementResult(result):
+            // Handoff changes the server identity. Match the original request,
+            // and report its result without applying it to the new server state.
+            if herdrManagementRequest == result.request {
+                herdrManagementText = result.text
+                herdrManagementRequest = nil
+            }
         case .event:
             break
         case .pair, .hello, .subscribe, .attachStream, .detachStream,
              .input, .sendImage, .focusPane, .selectPane, .resizePane,
              .launchAgent, .renamePane, .renameTab, .closePane, .closeTab,
              .registerPush, .unregisterPush, .readScrollback,
-             .renameWorkspace, .closeWorkspace, .broadcastInput, .sendKeys,
+             .renameWorkspace, .closeWorkspace, .closeWorkspaceGroup, .broadcastInput, .sendKeys,
              .decide, .decisionAvailability, .listSessions, .selectSession,
-             .history, .historyReceived, .pushPrefs:
+             .history, .historyReceived, .pushPrefs, .explainAgent, .manageHerdr, .endpointRequest, .machineRequest, .notificationAction:
             break
         }
     }
@@ -2534,12 +2773,21 @@ final class BridgeConnection: ObservableObject {
             historySessionName = nil
         }
         sessionName = nil
+        hostCapabilities = nil
+        machineListRequested = false
+        machines = MachineDirectoryState()
+        pendingMachineAgent = nil
+        agentExplanation?.text = "The connection closed. Request the explanation after reconnecting."
         didReceiveBackgroundWork?([])
         desiredStreams.removeAll()
         paneOpenIDs.removeAll()
         scrollbackHashes.removeAll()
         seededPanes.removeAll()
         if clearPairing {
+            pendingMachineNotification = nil
+            machineNotificationRequiresSelection = false
+            selectedMachine = nil
+            endpointViewRequested = false
             clearPendingPushPreferences()
             pairing = nil
             invitation = nil
@@ -2649,6 +2897,17 @@ extension BridgeConnection {
     }
 
     private func stopSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway) {
+        endpointView.disconnect()
+        machineListRequested = false
+        pendingMachineAgent = nil
+        for index in machines.entries.indices {
+            machines.entries[index].connectionID = nil
+            if machines.entries[index].health != .disabled { machines.entries[index].health = .disconnected }
+        }
+        if herdrManagementRequest != nil {
+            herdrManagementText = "The connection closed before the result arrived. The Mac may still complete the action. Check its server status."
+            herdrManagementRequest = nil
+        }
         if snapshot != nil { isShowingCachedSnapshot = true }
         handshakeDeadline?.cancel()
         handshakeDeadline = nil

@@ -16,7 +16,7 @@ final class TerminalPoolSocketTests: XCTestCase {
 
     func testScrollbackClientFollowsPoolSocket() {
         let socket = "/nonexistent/rai-tests-herd.sock"
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         let view = pool.view(for: "term-test")
         XCTAssertEqual(view?.scrollbackSelection.client.socketPath, socket)
         pool.removeAll()

@@ -1,5 +1,9 @@
 # macOS ↔ iOS parity — audit & backlog
 
+Current release scope: [Herdr 0.9 support on macOS and iOS](herdr-0.9-support-plan.md).
+Yogev selected every release feature for both platforms on 2026-09-08.
+The historical phone exclusions below do not apply to that plan.
+
 What the Mac app exposes versus what the iOS companion exposes over the
 bridge, and what *should* exist on the phone. The phone is deliberately a
 **remote for the herd**, not a full terminal multiplexer — parity means

@@ -293,7 +293,7 @@ final class BridgeProtocolTests: XCTestCase {
             """.utf8
         )
 
-        guard case let .snapshot(snapshot, sessionName) = try JSONDecoder().decode(
+        guard case let .snapshot(snapshot, sessionName, capabilities) = try JSONDecoder().decode(
             BridgeMessage.self,
             from: data
         ) else {
@@ -301,6 +301,7 @@ final class BridgeProtocolTests: XCTestCase {
         }
         XCTAssertEqual(snapshot.panes.first?.beacon?.pendingSummary, "Bash: swift test")
         XCTAssertNil(sessionName)
+        XCTAssertNil(capabilities)
         XCTAssertEqual(snapshot.panes.first?.beacon?.requestID, "request-1")
         XCTAssertTrue(snapshot.panes.first?.beacon?.awaitsDecision == true)
         XCTAssertNotNil(snapshot.panes.first?.beacon?.deadline)
@@ -312,6 +313,8 @@ final class BridgeProtocolTests: XCTestCase {
         let messages: [BridgeMessage] = [
             .renameWorkspace(workspaceID: "w7", label: "renamed"),
             .closeWorkspace(workspaceID: "w7"),
+            .closeWorkspace(workspaceID: "w7", connectionID: "captured-host"),
+            .closeWorkspaceGroup(workspaceID: "w7", expectedWorkspaceIDs: ["w7", "w8"], connectionID: "test-generation"),
             .broadcastInput(tabID: "w7:t1", text: "git status"),
             .listSessions,
             .selectSession(name: "default"),

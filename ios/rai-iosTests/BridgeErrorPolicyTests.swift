@@ -26,7 +26,7 @@ final class BridgeErrorPolicyTests: XCTestCase {
         connection.handle(.error(message: "Herdr is unavailable."))
 
         XCTAssertFalse(connection.status.isConnected)
-        XCTAssertEqual(connection.status.diagnosis?.message, "herdr isn't running on the Mac")
+        XCTAssertEqual(connection.status.diagnosis?.message, "Herdr is unavailable on the Mac. Open Rai there to install or start Herdr.")
         XCTAssertNil(connection.actionError)
         XCTAssertFalse(connection.isRecoveringConnection, "A server error is not an active transport retry")
     }
@@ -75,7 +75,7 @@ final class BridgeErrorPolicyTests: XCTestCase {
             host: "studio.local"
         )
         XCTAssertEqual(missing.action, .reconnect)
-        XCTAssertEqual(missing.message, "herdr isn't running on the Mac")
+        XCTAssertEqual(missing.message, "Herdr is unavailable on the Mac. Open Rai there to install or start Herdr.")
         XCTAssertEqual(missing.rawDetails, "No live snapshot")
 
         let repair = ConnectionDiagnosis.coded(

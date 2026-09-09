@@ -37,4 +37,30 @@ final class TerminalLayoutTests: XCTestCase {
             viewport: CGSize(width: 628, height: 500), minWidth: 628)
         XCTAssertEqual(width, 628, accuracy: 0.5)
     }
+
+    @MainActor
+    func testVerticalIndicatorStaysOnTheVisibleEdgeWithoutChangingTheGrid() {
+        let scroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 390, height: 500))
+        let terminal = GridReadableTerminalView(frame: .zero)
+        terminal.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(terminal)
+        NSLayoutConstraint.activate(TerminalPaneLayout.constraints(terminal: terminal, in: scroll, minWidth: 628))
+        scroll.layoutIfNeeded()
+        let cols = terminal.getTerminal().cols
+        let rows = terminal.getTerminal().rows
+        for offset in [0.0, 100.0, 238.0] {
+            scroll.contentOffset.x = offset
+            terminal.updateScrollIndicatorInsets()
+            XCTAssertEqual(terminal.verticalScrollIndicatorInsets.right, 238 - offset, accuracy: 0.5)
+            XCTAssertEqual(terminal.frame.width, 628, accuracy: 0.5)
+            XCTAssertEqual(terminal.getTerminal().cols, cols)
+            XCTAssertEqual(terminal.getTerminal().rows, rows)
+        }
+        scroll.frame.size.width = 844
+        scroll.contentOffset.x = 0
+        scroll.layoutIfNeeded()
+        terminal.updateScrollIndicatorInsets()
+        XCTAssertEqual(terminal.verticalScrollIndicatorInsets.right, 0)
+        XCTAssertEqual(terminal.frame.width, 844, accuracy: 0.5)
+    }
 }

@@ -21,7 +21,7 @@ final class StructuralEventTests: XCTestCase {
         for name in [
             "layout.updated", "pane.created", "pane.closed", "pane.moved",
             "pane.agent_status_changed", "tab.closed", "tab.moved",
-            "workspace.moved",
+            "workspace.moved", "workspace.renamed", "workspace.reordered",
         ] {
             XCTAssertTrue(RaiModel.isStructuralEvent(name), name)
         }

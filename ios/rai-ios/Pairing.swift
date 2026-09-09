@@ -98,7 +98,9 @@ protocol PairingStoring {
 
 final class PairingStore: PairingStoring {
     private let defaults: UserDefaults
-    private let service = "gr.krig.rai.ios.bridge"
+    private let service = Bundle.main.bundleIdentifier == "com.whetstone.rai.ios"
+        ? "gr.krig.rai.ios.bridge"
+        : "\(Bundle.main.bundleIdentifier ?? "rai-tests").bridge"
     private let account = "pairing-token"
     private let hostKey = "bridge.host"
     private let portKey = "bridge.port"

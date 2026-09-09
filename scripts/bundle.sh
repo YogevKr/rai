@@ -5,7 +5,7 @@
 #   RAI_VERSION    CFBundleShortVersionString (default 0.1.0)
 #   RAI_UNIVERSAL  =1 → build a universal arm64 + x86_64 binary
 #   RAI_APP_DEST   place Rai.app in this dir instead of /Applications
-#   RAI_BUILD_CHANNEL  development (default) or release
+#   RAI_BUILD_CHANNEL  development (default), lab, or release
 #   RAI_SIGN_IDENTITY  stable signing identity; required for releases
 set -euo pipefail
 
@@ -17,6 +17,16 @@ case "$BUILD_CHANNEL" in
     BUNDLE_ID="gr.krig.rai.dev"
     SIGN_ID="${RAI_SIGN_IDENTITY:-rai-dev-signing}"
     ;;
+  lab)
+    LAB_ID="${RAI_LAB_ID:-}"
+    if [[ ! "$LAB_ID" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || [ -z "${RAI_APP_DEST:-}" ]; then
+      echo "error: lab builds require RAI_LAB_ID (lowercase letters, digits, hyphens) and RAI_APP_DEST" >&2
+      exit 1
+    fi
+    APP_NAME="Rai Lab $LAB_ID"
+    BUNDLE_ID="gr.krig.rai.lab.$LAB_ID"
+    SIGN_ID="${RAI_SIGN_IDENTITY:-rai-dev-signing}"
+    ;;
   release)
     APP_NAME="Rai"
     BUNDLE_ID="gr.krig.rai"
@@ -26,7 +36,7 @@ case "$BUILD_CHANNEL" in
       *) echo "error: release builds require a Developer ID Application signing identity" >&2; exit 1 ;;
     esac
     ;;
-  *) echo "error: RAI_BUILD_CHANNEL must be development or release" >&2; exit 1 ;;
+  *) echo "error: RAI_BUILD_CHANNEL must be development, lab, or release" >&2; exit 1 ;;
 esac
 # Check before building or replacing an app. Never change the signing identity
 # silently: macOS ties Input Monitoring grants to the code requirement.

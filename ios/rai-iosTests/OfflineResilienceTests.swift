@@ -231,7 +231,7 @@ final class OfflineResilienceTests: XCTestCase {
             "Herdr is not connected.",
             host: "studio.local"
         )
-        XCTAssertEqual(missing.message, "herdr isn't running on the Mac")
+        XCTAssertEqual(missing.message, "Herdr is unavailable on the Mac. Open Rai there to install or start Herdr.")
         XCTAssertEqual(missing.rawDetails, "Herdr is not connected.")
         XCTAssertEqual(missing.action, .reconnect)
     }

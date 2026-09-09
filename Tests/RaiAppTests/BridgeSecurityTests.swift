@@ -271,6 +271,13 @@ final class BridgeAuditTests: XCTestCase {
         XCTAssertEqual(event.content, .none)
     }
 
+    func testGroupClosureRecordsThePreviewTargets() throws {
+        let event = try XCTUnwrap(BridgeAuditEvent(.closeWorkspaceGroup(workspaceID: "w1", expectedWorkspaceIDs: ["w1", "w3"], connectionID: "test-generation")))
+        XCTAssertEqual(event.action, "closeWorkspaceGroup")
+        XCTAssertEqual(event.targetIDs["workspace_id"], "w1")
+        XCTAssertEqual(event.targetIDs["workspace_ids"], "w1,w3")
+    }
+
     func testAuditLineShapeBoundsTextAndRedactsCredentials() async throws {
         let directory = temporaryDirectory()
         let url = directory.appendingPathComponent("bridge-audit.jsonl")

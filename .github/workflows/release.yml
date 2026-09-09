@@ -39,7 +39,7 @@ jobs:
         run: swift test
 
       - name: Test bundle signing and development isolation
-        run: python3 Tests/BuildScripts/test_bundle.py
+        run: python3 -m unittest discover -s Tests/BuildScripts -p 'test_*.py'
 
       # Release identity must stay consistent with saved macOS permissions.
       - name: Import Developer ID certificate
