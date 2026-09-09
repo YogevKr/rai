@@ -129,7 +129,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 
 ## Push notifications
 
-Push delivery requires an Apple Developer Program membership and a real device:
+Push delivery requires an Apple Developer Program membership and an iPhone or a supported simulator:
 
 1. Enroll in the Apple Developer Program.
 2. Enable **Push Notifications** for the `com.whetstone.rai.ios` App ID.
@@ -138,11 +138,21 @@ Push delivery requires an Apple Developer Program membership and a real device:
 4. In rai, open **Settings → iPhone → Push Notifications**, enter the Team ID,
    Key ID, and paste the `.p8` contents. The bundle ID defaults to
    `com.whetstone.rai.ios`.
-5. Select your Team in Xcode signing, run rai on your iPhone, and grant
+5. Select your Team in Xcode signing, run rai on your iPhone or simulator, and grant
    notification permission.
 
 The same `.p8` authentication key serves APNs sandbox and production.
-The device token selects the APNs host.
+The registration environment selects the APNs host.
+[APNs device tokens have variable lengths](https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/HandlingRemoteNotifications.html).
+Rai accepts nonempty hexadecimal byte pairs.
+It preserves the full token and converts letters to lowercase.
+
+[Supported simulators](https://developer.apple.com/documentation/xcode-release-notes/xcode-14-release-notes)
+receive sandbox APNs notifications on Macs with Apple silicon or a T2 chip.
+Use iOS 16 or later with macOS 13 or later.
+Wait for the APNs token callback and Mac registration before testing delivery.
+`simctl push` injects a local notification; it does not verify delivery through Apple.
+
 Rai validates the key as P-256 before each save.
 It stores the key at `~/Library/Application Support/Rai/apns-key.p8`.
 The file uses mode `0600`, and its directory uses mode `0700`.
