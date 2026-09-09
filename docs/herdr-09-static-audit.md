@@ -65,3 +65,16 @@ No quality suppression or unrelated model rewrite changes the reported gate resu
 
 Evidence: `input67-fix-verification.json`, `input67-quality-delta-v2.xml`, and `input67-autoreview.json` in the lab root.
 This classification does not establish a clean static quality gate or completed app validation.
+
+## Candidate64 missing-executable correction
+
+The scoped report contains 12 findings: seven gating, two minor, and three findings on new symbols.
+Five gating findings concern recent change history. Two concern aggregate model and test-class length.
+The scanner also labels three XCTest methods as dead code. XCTest discovers these methods at runtime.
+The report adds no complexity, nesting, parameter, duplication, API, or error-masking regression.
+
+The correction rejects missing executable paths before calling Foundation's process setter. It retains existing caller failure results.
+The focused review found no actionable defect. Unrelated class restructuring would expand the correction without fixing this crash.
+No suppression changes the non-clean quality result.
+
+Evidence: `missing-herdr64-quality-delta-assessment.json` and `missing-herdr64-autoreview.json` in the lab root.

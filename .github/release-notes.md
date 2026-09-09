@@ -24,6 +24,7 @@ Older Herdr servers retain supported operations, including ordinary workspace cl
 ### Startup, scrolling, and text
 
 A new Mac without Herdr now reaches installation guidance instead of a stalled startup screen.
+Commands also handle a missing Herdr executable without crashing. Retry detects Herdr after installation.
 File-access guidance appears when an operation needs access. Installing Herdr alone does not trigger permission guidance.
 
 Pane scrollbars appear during scrolling and fade afterward. Translucent overlays preserve terminal layout and rendering dimensions.
@@ -47,7 +48,8 @@ Herdr also shares history position between views of the same pane.
 Popups belong to tabs. Clients selecting the same tab share popup presentation.
 Current upstream popup mouse input can fall back to cells. Its graphics API cannot activate the required popup pixel layer.
 
-Candidate63 passed 938 Mac tests and 407 iOS tests, with seven Mac skips and no failures.
+The corrected Mac source passed 941 tests with Herdr deliberately unavailable. Seven tests skipped; none failed.
+The unchanged iOS source passed 407 tests without failures or skips.
 Integrated Codex review found no defects. Earlier Candidate61 Mac timing-test failures remain in the validation record.
 
 Popup browser links and native selection controls passed executable app checks, subject to the limits below.

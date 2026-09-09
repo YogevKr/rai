@@ -17,7 +17,7 @@ final class TerminalPoolLifecycleTests: XCTestCase {
     }
 
     func testClosedTerminalIsNotResurrected() {
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }
 
         pool.retain(terminalIDs: ["term-live"])
@@ -26,7 +26,7 @@ final class TerminalPoolLifecycleTests: XCTestCase {
     }
 
     func testTerminalHerdrStillReportsIsStillCreated() {
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }
 
         pool.retain(terminalIDs: ["term-live"])
@@ -38,7 +38,7 @@ final class TerminalPoolLifecycleTests: XCTestCase {
     /// bound of 8 keeps every pane resident instead of evicting and re-spawning
     /// an attach on each visit.
     func testPoolGrowsToTheHerdSizeBetweenItsFloorAndCeiling() {
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }
 
         pool.retain(terminalIDs: Set((0..<3).map { "term-\($0)" }))
@@ -56,7 +56,7 @@ final class TerminalPoolLifecycleTests: XCTestCase {
     /// already gone and surrendered LIVE keys instead — their entries stayed
     /// pooled but untracked, and an untracked entry can never be evicted.
     func testShrinkingHerdLeavesNoUntrackedTerminals() {
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }
 
         let big = (0..<12).map { "term-\($0)" }
@@ -81,7 +81,7 @@ final class TerminalPoolLifecycleTests: XCTestCase {
     /// Before the first snapshot lands there is no live set to check against,
     /// so the pool must still serve the panes it is asked for.
     func testUnknownTerminalIsServedBeforeAnySnapshot() {
-        let pool = TerminalPool(socketPath: socket)
+        let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }
 
         XCTAssertNotNil(pool.view(for: "term-first"))

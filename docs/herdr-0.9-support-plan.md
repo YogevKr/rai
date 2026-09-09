@@ -30,10 +30,12 @@ Both platforms expose machine management, metadata rules, themes, plugins, notif
 Machine notifications carry machine and boot identity. They open their target without permission approval actions.
 Upstream provides no verified permission nonce for these machine notifications.
 The integration checks found theme rendering, sheet presentation, mouse, scrolling, and worktree navigation defects.
-Candidate48 includes these corrections, machine activation fixes, repeated-close protection, identifier keyboard settings, and history range validation.
-Its combined suites passed 879 Mac tests and 376 iOS tests with zero failures. Six Mac tests skipped.
-Direct UI checks remain open. Static quality reports remain non-clean.
-Herdr shares history position across views of one pane. Phone touch-scroll verification remains pending.
+Candidate63 includes these corrections, machine activation fixes, repeated-close protection, identifier keyboard settings, and history range validation.
+The corrected Mac source passed 941 tests. Unchanged iOS source passed 407 tests. Seven Mac tests skipped; no tests failed.
+App checks are closed within the recorded limits. Corrected Mac startup, installation recovery, and paired-phone recovery checks passed.
+Static quality reports remain non-clean.
+Herdr shares history position across views of one pane. The integrated validation document records the completed phone scrolling checks.
+The missing-Herdr process correction resolves the reproduced crash locally. Final CI and publication checks remain required.
 Semantic surfaces preserve OSC 8 links and reject terminal control bytes in link targets.
 Remaining feature and platform checks appear in the end-to-end evidence document.
 See the [integrated validation checkpoint](herdr-09-integrated-validation.md) for current results and limitations.

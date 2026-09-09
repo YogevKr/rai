@@ -587,7 +587,7 @@ final class RaiModel: ObservableObject {
            let archived = HerdrClientArchive().executable(for: version) {
             return archived.path
         }
-        return HerdrCLI.resolvedBinaryPath
+        return resolveHerdrBinary()
     }
     private var connectionAttemptID = UUID()
     var activeRemoteContext: RemoteConnection.Context? { remoteConnection?.context }
@@ -1654,10 +1654,15 @@ final class RaiModel: ObservableObject {
             ?? ["--session", name, "server"]
         let expectedSocket = existing?.socketPath ?? AppDataPaths.current.herdrDirectory
             .appendingPathComponent("sessions/\(name)/herdr.sock").path
-        let process = configuredHerdrProcess(
+        guard let process = configuredHerdrProcess(
             arguments,
             usesActiveSocket: false
-        )
+        ) else {
+            sessionAlert = SessionAlert(kind: .error(
+                title: "Couldn’t Start Session", message: herdrInstallationGuidance
+            ))
+            return
+        }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -5065,17 +5070,15 @@ final class RaiModel: ObservableObject {
     }
 
     private func localPluginCommand(_ arguments: [String], socketPath: String, fallback: String) async -> String {
-        let process = configuredHerdrProcess(arguments, usesActiveSocket: false)
-        var environment = process.environment ?? [:]
+        var environment = herdrProcessEnvironment(usesActiveSocket: false)
         environment["HERDR_SOCKET_PATH"] = socketPath
         environment["HERDR_CONFIG_PATH"] = AppDataPaths.current.herdrConfigFile.path
-        process.environment = environment
         let result: HerdrCommandResult
         if let pluginInstallRunner { result = await pluginInstallRunner(arguments, environment) }
         else {
             do {
                 try Task.checkCancellation()
-                guard let executable = process.executableURL?.path else { return "Herdr is not installed." }
+                guard let executable = resolveHerdrBinary() else { return herdrInstallationGuidance }
                 let output = try await MachineCommandRunner.capture(binary: executable, arguments: arguments,
                                                                     timeout: 120, environment: environment)
                 result = .init(succeeded: output.status == 0, standardOutput: String(decoding: output.standardOutput, as: UTF8.self),
@@ -5347,7 +5350,9 @@ final class RaiModel: ObservableObject {
         defer { isManagingHerdr = false }
         let socketPath = client.socketPath
         let session = currentSessionName
-        let process = configuredHerdrProcess(["server", "stop"], socketPath: socketPath)
+        guard let process = configuredHerdrProcess(["server", "stop"], socketPath: socketPath) else {
+            return herdrInstallationGuidance
+        }
         let result = await runProcessResult(process)
         return result.succeeded ? "Stopped Herdr server: \(session)." :
             (result.errorOutput.isEmpty ? "Herdr could not stop the selected server." : result.errorOutput)
@@ -5521,8 +5526,8 @@ final class RaiModel: ObservableObject {
         _ args: [String],
         socketPath: String? = nil
     ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let process = configuredHerdrProcess(args, socketPath: socketPath)
+        guard let process = configuredHerdrProcess(args, socketPath: socketPath) else { return false }
+        return await withCheckedContinuation { continuation in
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             process.terminationHandler = { proc in
@@ -5533,7 +5538,7 @@ final class RaiModel: ObservableObject {
     }
 
     private func runHerdrCapture(_ args: [String]) async -> String? {
-        let process = configuredHerdrProcess(args)
+        guard let process = configuredHerdrProcess(args) else { return nil }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -5594,12 +5599,11 @@ final class RaiModel: ObservableObject {
         _ args: [String],
         usesActiveSocket: Bool = true
     ) async -> HerdrCommandResult {
-        await runProcessResult(
-            configuredHerdrProcess(
-                args,
-                usesActiveSocket: usesActiveSocket
-            )
-        )
+        guard let process = configuredHerdrProcess(args, usesActiveSocket: usesActiveSocket) else {
+            return HerdrCommandResult(succeeded: false, standardOutput: "",
+                                      standardError: herdrInstallationGuidance)
+        }
+        return await runProcessResult(process)
     }
 
     private func runExternalResult(
@@ -5669,13 +5673,23 @@ final class RaiModel: ObservableObject {
         _ args: [String],
         usesActiveSocket: Bool = true,
         socketPath: String? = nil
-    ) -> Process {
-        let process = Process()
+    ) -> Process? {
         // Installation and session management must never launch an archived server.
         let executable = !usesActiveSocket || args == ["update"] || args == ["server", "live-handoff"]
-            ? HerdrCLI.resolvedBinaryPath : runtimeHerdrBinaryPath
-        process.executableURL = executable.map { URL(fileURLWithPath: $0) }
+            ? resolveHerdrBinary() : runtimeHerdrBinaryPath
+        // Foundation raises an Objective-C exception when executableURL receives nil.
+        guard let executable else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
+        process.environment = herdrProcessEnvironment(usesActiveSocket: usesActiveSocket, socketPath: socketPath)
+        return process
+    }
+
+    private func herdrProcessEnvironment(
+        usesActiveSocket: Bool,
+        socketPath: String? = nil
+    ) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let path = environment["PATH"] ?? ""
         if !path.contains("/opt/homebrew/bin") {
@@ -5687,7 +5701,6 @@ final class RaiModel: ObservableObject {
         } else {
             environment.removeValue(forKey: "HERDR_SOCKET_PATH")
         }
-        process.environment = environment
-        return process
+        return environment
     }
 }

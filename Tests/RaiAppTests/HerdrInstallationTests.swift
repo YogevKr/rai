@@ -60,6 +60,62 @@ final class HerdrInstallationTests: XCTestCase {
     }
 
     @MainActor
+    func testMissingHerdrCaptureReturnsWithoutLaunchingAProcess() async throws {
+        let model = try makeCommandModel()
+        let processInfo = await model.processInfo(for: "missing-pane")
+        let config = await model.configCheck()
+        XCTAssertNil(processInfo)
+        XCTAssertNil(config)
+        XCTAssertNil(model.runtimeHerdrBinaryPath)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testStopCommandUsesResolverAndRecoversWhenExecutableAppears() async throws {
+        var binary: String?
+        let model = try makeCommandModel(resolveHerdrBinary: { binary })
+        let missingResult = await model.stopServer()
+        XCTAssertFalse(missingResult)
+        binary = "/usr/bin/true"
+        XCTAssertEqual(model.runtimeHerdrBinaryPath, binary)
+        let installedResult = await model.stopServer()
+        XCTAssertTrue(installedResult)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testMissingHerdrManagementCommandsReturnInstallationGuidance() async throws {
+        let model = try makeCommandModel()
+        let guidance = model.herdrInstallationGuidance
+        let channel = await model.herdrChannel()
+        let change = await model.setHerdrChannel("preview")
+        let manifests = await model.agentManifestStatus()
+        let update = await model.updateAgentManifests()
+        let reload = await model.reloadAgentManifests()
+        XCTAssertEqual(channel, guidance)
+        XCTAssertFalse(change.succeeded)
+        XCTAssertEqual(change.output, guidance)
+        XCTAssertEqual(manifests, guidance)
+        XCTAssertEqual(update, guidance)
+        XCTAssertEqual(reload, guidance)
+        await model.shutdown()
+    }
+
+    @MainActor
+    private func makeCommandModel(
+        resolveHerdrBinary: @escaping () -> String? = { nil }
+    ) throws -> RaiModel {
+        _ = NSApplication.shared
+        let suite = "HerdrInstallationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "companionBridgeEnabled")
+        let socket = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        return RaiModel(client: HerdrClient(socketPath: socket), userDefaults: defaults,
+                        resolveHerdrBinary: resolveHerdrBinary)
+    }
+
+    @MainActor
     func testMissingHerdrStopsStartupAndRetryWithoutAConnectionLoop() async throws {
         _ = NSApplication.shared
         let suite = "HerdrInstallationTests.\(UUID().uuidString)"

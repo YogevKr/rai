@@ -2,12 +2,54 @@
 
 Date: 2026-09-09.
 
-Candidate63 passed 938 Mac tests, with seven skips and zero failures. Its 407 iOS tests passed without failures or skips.
-Its focused checks passed 92 Mac tests and 45 iOS tests, with one Mac skip and no failures.
-Executable app acceptance checks are closed, with the API and measurement limits listed below.
+Candidate65 passed 941 Mac tests, with seven skips and zero failures, while Herdr was deliberately unavailable.
+Its 31 focused tests, 25 missing-Herdr checks, and 16 build-script tests also passed.
+Mac app Candidate64 uses identical application source. Candidate65 changes two terminal-pool test fixtures and documentation.
+The unchanged Candidate63 iOS source passed 407 tests without failures or skips. Its 45 focused tests passed.
+Earlier executable app acceptance remains valid within the limits below. Corrected Mac startup and paired-phone recovery checks passed.
 These records do not establish a shipped release or universal E2E coverage.
 
 The current summary supersedes older pending statements below. Historical results retain their original candidate identity.
+
+## Missing-Herdr correction and release gate
+
+The first release attempt exposed a macOS 15 test-process crash that the normal local environment did not reproduce.
+The process aborts with `freed pointer was not the last allocation` during `CloseTabReopenTests`.
+Base commit `a547578` passes all 16 tests on macOS 15 with Xcode 16.4.
+Candidate commit `550090a` aborts with both Xcode 16.4 and Xcode 26.3 on macOS 15.7.9.
+The failing test and close-command implementation match the base commit.
+No XCTest assertion fails before the abort. A newer compiler alone did not resolve the crash.
+
+[Diagnostic run 34385642444](https://github.com/YogevKr/rai/actions/runs/34385642444) records this comparison.
+[Backtrace run 34387300185](https://github.com/YogevKr/rai/actions/runs/34387300185) tests the same source under LLDB.
+The single test passes under LLDB. The full suite aborts inside XCTest's error-observation path.
+Candidate63 reproduces the same abort locally when `HERDR_BIN_PATH` identifies a missing file.
+LLDB stops at `objc_exception_throw`, then Foundation's setter, then `configuredHerdrProcess` at `RaiModel.swift:5677`.
+The factory assigns `nil` to `Process.executableURL` when Herdr is absent. The setter raises before process launch.
+Swift `do/catch` does not catch this exception. The corrected factory rejects missing paths before process creation.
+All callers return failure results or installation guidance. Runtime lookup retains archived clients and uses the injected installed-binary resolver.
+Evidence: `missing-herdr64-objc-exception-lldb.log` and `missing-herdr64-candidate63-regression.log`.
+The backtrace identifies the missing-executable path. The diagnostic timer patch remains unapplied.
+
+The original 16 close tests now pass with Herdr deliberately unavailable. Three new tests cover missing commands and resolver recovery.
+The first corrected full run exposed five terminal-pool assertions that assumed Herdr was installed.
+Those tests now use the existing executable injection point with `/usr/bin/true`. Their lifecycle and socket assertions remain unchanged.
+All 941 tests then passed under the missing-Herdr condition. The two focused reviews found no actionable defects.
+The corrected Mac bundle passed strict signing and isolation checks. The temporary debugger workflow has been removed.
+Evidence: `candidate65-mac-pipeline-results.json`, `candidate65-app-source-reconciliation.json`, and `missing-herdr65-autoreview.json`.
+
+The separate startup app showed installation guidance, survived three Retry clicks, and remained responsive during failed commands.
+Installing the private Herdr fixture and selecting Retry restored a shell workspace without restarting the app.
+No Full Disk Access prompt appeared during launch, retries, installation, or recovery.
+The app retained PID `73430`; its owned Herdr server uses PID `78322`.
+Evidence: `/private/tmp/rai09-qol61vru/startup64-e2e-results.json`. Signed startup-app code matches Candidate64 before signing.
+
+The primary Mac app update retained the `commands22` session and restored its workspace list.
+Both paired phone simulators restored workspace lists without another pairing code. The secondary phone retained its captured History view.
+Both phone processes established connections to the updated Mac's private bridge port `56341`.
+Evidence: `candidate64-mac-install.json` and `candidate64-primary-recovery-results.json`.
+
+Publication still requires final-commit CI, release signing, notarization, upload, and external distribution checks.
 
 ## Candidate63 runtime checkpoint
 
