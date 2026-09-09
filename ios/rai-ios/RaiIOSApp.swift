@@ -104,6 +104,23 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     self.pendingPaneID = nil
                 }
             }
+            if let pendingHostPane {
+                Task { @MainActor in
+                    self.pendingHostPane = nil
+                    guard let appModel, let pairing = appModel.pairing,
+                          await appModel.connection.validateNotificationHost(pendingHostPane.connectionID, pairing: pairing) else {
+                        await self.showActionError("The notification host changed. Open Machines to review the agent.")
+                        return
+                    }
+                    await self.openPane(pendingHostPane.paneID)
+                }
+            }
+            if let pendingMachineResource {
+                Task { @MainActor in
+                    appModel?.pendingOpenMachineResource = pendingMachineResource
+                    self.pendingMachineResource = nil
+                }
+            }
             if pendingTriage {
                 Task { @MainActor in
                     appModel?.openTriage()
@@ -121,6 +138,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
 
     private var deviceToken: String?
     private var pendingPaneID: String?
+    private var pendingHostPane: (paneID: String, connectionID: String)?
+    private var pendingMachineResource: MachineResource?
     private var pendingComposedDraft: (paneID: String, text: String)?
     private var pendingTriage = false
     private var pendingActionError: String?
@@ -288,10 +307,30 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
+        switch MachineNotificationRoute.decode(userInfo) {
+        case .invalid:
+            await showActionError("This machine notification has an invalid target. Open Machines to choose the agent.")
+            return
+        case .machine(let resource):
+            pendingMachineResource = resource
+            await MainActor.run {
+                appModel?.pendingOpenMachineResource = resource
+                if appModel != nil { pendingMachineResource = nil }
+            }
+            if response.actionIdentifier != UNNotificationDefaultActionIdentifier {
+                await showActionError("Review this machine's terminal before responding. No permission response or text was sent.")
+            }
+            return
+        case .legacy: break
+        }
         guard let paneID = userInfo["paneID"] as? String else {
             if userInfo["triage"] as? Bool == true {
                 await openTriage()
             }
+            return
+        }
+        guard let expectedHost = userInfo["hostConnectionID"] as? String, !expectedHost.isEmpty else {
+            await showActionError("This notification has no verified host. Open Machines to review the agent.")
             return
         }
         let plan = PhoneNotificationResponsePlan.make(
@@ -312,7 +351,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                 delivered = await appModel.sendNotificationDecision(
                     decision,
                     requestID: requestID,
-                    paneID: paneID
+                    paneID: paneID,
+                    expectedConnectionID: expectedHost
                 )
             } else if let pairing = PairingStore().load() {
                 let connection = await MainActor.run { BridgeConnection() }
@@ -324,7 +364,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     decision,
                     requestID: requestID,
                     paneID: paneID,
-                    pairing: pairing
+                    pairing: pairing,
+                    expectedConnectionID: expectedHost
                 )
             } else {
                 delivered = false
@@ -334,15 +375,15 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
             let delivered: Bool
             if let appModel {
                 if response.actionIdentifier == PhoneNotificationAction.reply {
-                    delivered = await appModel.sendNotificationReply(bytes, to: paneID)
+                    delivered = await appModel.sendNotificationReply(bytes, to: paneID, expectedConnectionID: expectedHost)
                 } else {
-                    delivered = await appModel.sendNotificationInput(bytes, to: paneID)
+                    delivered = await appModel.sendNotificationInput(bytes, to: paneID, expectedConnectionID: expectedHost)
                 }
             } else if let pairing = PairingStore().load() {
                 let connection = await MainActor.run { BridgeConnection() }
                 if response.actionIdentifier == PhoneNotificationAction.reply {
                     delivered = await connection.connectAndSendComposedLine(
-                        bytes, to: paneID, pairing: pairing
+                        bytes, to: paneID, pairing: pairing, expectedConnectionID: expectedHost
                     )
                     if !delivered {
                         let (message, draft) = await MainActor.run {
@@ -358,7 +399,7 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     }
                 } else {
                     delivered = await connection.connectAndSendInput(
-                        bytes, to: paneID, pairing: pairing
+                        bytes, to: paneID, pairing: pairing, expectedConnectionID: expectedHost
                     )
                 }
             } else {
@@ -368,7 +409,16 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
         case .open:
             break
         }
-        await openPane(paneID)
+        if appModel == nil {
+            pendingHostPane = (paneID, expectedHost)
+            return
+        }
+        if let appModel, let pairing = appModel.pairing,
+           await appModel.connection.validateNotificationHost(expectedHost, pairing: pairing) {
+            await openPane(paneID)
+        } else {
+            await showActionError("The notification host changed. Open Machines to review the agent.")
+        }
     }
 
     private func openPane(_ paneID: String) async {

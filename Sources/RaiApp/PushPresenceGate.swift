@@ -128,6 +128,8 @@ enum PushPreferenceGate {
 
 struct PhonePushEvent: Equatable, Sendable {
     let paneID: String
+    let machineResource: MachineResource?
+    let hostConnectionID: String?
     let paneName: String
     let workspaceID: String
     let workspaceName: String
@@ -148,9 +150,13 @@ struct PhonePushEvent: Equatable, Sendable {
         allowsRemoteActions: Bool? = nil,
         requestID: String? = nil,
         occurredAt: Date,
-        suppressedDeviceIDs: Set<String> = []
+        suppressedDeviceIDs: Set<String> = [],
+        machineResource: MachineResource? = nil,
+        hostConnectionID: String? = nil
     ) {
         self.paneID = paneID
+        self.machineResource = machineResource
+        self.hostConnectionID = hostConnectionID
         self.paneName = paneName
         self.workspaceID = workspaceID
         self.workspaceName = workspaceName
@@ -173,7 +179,9 @@ struct PhonePushEvent: Equatable, Sendable {
             allowsRemoteActions: allowsRemoteActions,
             requestID: requestID,
             occurredAt: occurredAt,
-            suppressedDeviceIDs: suppressedDeviceIDs.union([deviceID])
+            suppressedDeviceIDs: suppressedDeviceIDs.union([deviceID]),
+            machineResource: machineResource,
+            hostConnectionID: hostConnectionID
         )
     }
 }
@@ -200,6 +208,9 @@ struct PhonePushBurst: Equatable, Sendable {
 
     var paneID: String? { isSummary ? nil : events[0].paneID }
     var requestID: String? { isSummary ? nil : events[0].requestID }
+    func canDeliver(remoteHost: Bool) -> Bool { !remoteHost || events.allSatisfy { $0.machineResource != nil } }
+    var hostConnectionID: String? { isSummary ? nil : events[0].hostConnectionID }
+    var machineResource: MachineResource? { isSummary ? nil : events[0].machineResource }
     var interruptionLevel: APNsInterruptionLevel {
         events.contains(where: { $0.status == .blocked }) ? .timeSensitive : .active
     }
@@ -207,11 +218,12 @@ struct PhonePushBurst: Equatable, Sendable {
         !isSummary && (events[0].allowsRemoteActions ?? (events[0].status == .blocked))
     }
     var category: String? {
-        guard requiresAttention else { return nil }
+        guard machineResource == nil, requiresAttention else { return nil }
         return requestID == nil ? "agent-attention" : "permission-decision"
     }
     var notificationIDs: [String] {
         events.map { event in
+            if let resource = event.machineResource { return resource.notificationID }
             if let requestID = event.requestID {
                 return PushNotificationIdentity.decision(
                     event.paneID,
@@ -233,7 +245,7 @@ struct PhonePushBurst: Equatable, Sendable {
     }
 
     var threadID: String {
-        workspaceID ?? "rai-triage"
+        machineResource?.notificationID ?? workspaceID ?? "rai-triage"
     }
 
     var summaryArgument: String {
@@ -266,7 +278,8 @@ enum PushBurstPlanner {
         var groups: [[PhonePushEvent]] = [[ordered[0]]]
         for event in ordered.dropFirst() {
             let previous = groups[groups.count - 1].last!
-            if event.requestID == nil,
+            if event.machineResource == nil, previous.machineResource == nil, event.hostConnectionID == previous.hostConnectionID,
+               event.requestID == nil,
                previous.requestID == nil,
                event.occurredAt.timeIntervalSince(previous.occurredAt) <= window {
                 groups[groups.count - 1].append(event)

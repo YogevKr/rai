@@ -45,10 +45,24 @@ struct SidebarView: View {
             } else {
                 Spacer()
                 HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Finding the herd…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
+                    if model.needsHerdrInstallation {
+                        Image(systemName: "arrow.down.circle")
+                    } else if case .disconnected = model.connectionState {
+                        Image(systemName: "network.slash")
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Group {
+                        if model.needsHerdrInstallation {
+                            Text("Herdr setup required")
+                        } else if case .disconnected = model.connectionState {
+                            Text("Connection unavailable")
+                        } else {
+                            Text("Finding the herd…")
+                        }
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
                 }
                 .frame(maxWidth: .infinity)
                 Spacer()
@@ -57,6 +71,11 @@ struct SidebarView: View {
             attentionFooter
         }
         .modifier(SidebarPresentations(model: model))
+        .background {
+            Color.clear.alert(item: $model.sessionAlert) { alert in
+                sessionAlert(alert)
+            }
+        }
         // A little top breathing room, then fill up to the window top (under the
         // transparent title bar); the header's leading padding reserves room for
         // the traffic lights.
@@ -226,15 +245,12 @@ struct SidebarView: View {
                 .sheet(item: $model.remoteHerdRequest) { _ in
                     RemoteHerdSheet(model: model)
                 }
-                .alert(item: $model.workspacePendingClose) { workspace in
+                .alert(item: $model.workspacePendingClose) { request in
                     Alert(
-                        title: Text("Close “\(workspace.label)”?"),
-                        message: Text(
-                            "This space contains \(workspace.tabCount) agents. "
-                                + "Closing it will end every tab in the space."
-                        ),
-                        primaryButton: .destructive(Text("Close Space")) {
-                            model.confirmCloseWorkspace()
+                        title: Text(request.title),
+                        message: Text(request.message),
+                        primaryButton: .destructive(Text(request.closeGroup ? "Close Group" : "Close Workspace")) {
+                            model.confirmCloseWorkspace(request)
                         },
                         secondaryButton: .cancel()
                     )
@@ -411,9 +427,6 @@ struct SidebarView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Switch Herdr session")
-        .alert(item: $model.sessionAlert) { alert in
-            sessionAlert(alert)
-        }
     }
 
     private var attentionFooter: some View {
@@ -928,6 +941,14 @@ private struct WorkspaceHeader: View {
             Button("Rename") { model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
+            }
+            if let snapshot = model.snapshot,
+               WorkspaceClosePreview.group(in: snapshot, workspaceID: workspace.workspaceID).count > 1 {
+                Button("Close Group…", role: .destructive) {
+                    model.requestCloseGroup(workspace: workspace)
+                }
+                .disabled((model.serverInfo?.protocol ?? 0) < 22)
+                .help("Group closure requires Herdr 0.9 or later.")
             }
             let actions = model.pluginActions(for: .workspace)
             if !actions.isEmpty {
@@ -1898,6 +1919,11 @@ private struct AgentPanelRow: View {
         .help(helpText)
         .contextMenu {
             Button("Focus", action: select)
+            Button("Explain Status") {
+                if let pane = model.snapshot?.panes.first(where: { $0.paneID == entry.paneID }) {
+                    model.explainStatus(pane: pane)
+                }
+            }
             Button("Close Pane", role: .destructive) {
                 model.closePane(entry.paneID)
             }

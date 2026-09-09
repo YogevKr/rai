@@ -604,7 +604,7 @@ public struct PaneLayoutSnapshot: Codable, Sendable, Equatable {
 /// Where pane.move puts a pane (protocol 16). `tab.move` can only reorder
 /// within a workspace, so relocating a whole tab across spaces is built from
 /// these: lead pane → `newTab`/`newWorkspace`, remaining panes → `tab`.
-public enum PaneMoveDestination: Sendable, Equatable {
+public enum PaneMoveDestination: Codable, Sendable, Equatable {
     case tab(tabID: String, split: SplitDirection, targetPaneID: String? = nil)
     case newTab(workspaceID: String?, label: String?)
     case newWorkspace(label: String?, tabLabel: String?)

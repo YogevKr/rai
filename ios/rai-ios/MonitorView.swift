@@ -26,6 +26,7 @@ enum Night {
 }
 
 struct MonitorView: View {
+    @Environment(\.colorScheme) private var systemColorScheme
     @ObservedObject var appModel: AppModel
     // Observed directly: BridgeConnection is its own ObservableObject, and
     // observing only AppModel would miss status/snapshot updates entirely —
@@ -36,6 +37,8 @@ struct MonitorView: View {
     @State private var didAutoOpen = false
     @State private var showingAgentLauncher = false
     @State private var showingNotificationPreferences = false
+    @State private var showingHerdrManagement = false
+    @State private var showingEndpoint = false
     @State private var renameTarget: RenameTarget?
     @State private var renameLabel = ""
     @State private var closeTarget: CloseTarget?
@@ -76,11 +79,13 @@ struct MonitorView: View {
             .onChange(of: appModel.pendingOpenPaneID) { _, _ in
                 openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
+            .onChange(of: appModel.pendingOpenMachineResource) { _, _ in openPendingMachinePush() }
             .onChange(of: appModel.triageRequest) { _, _ in
                 path.removeAll()
                 filter = nil
             }
             .onAppear {
+                openPendingMachinePush()
                 autoOpenIfRequested(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
                 openPendingPush(panes: connection.snapshot?.panes.map(\.paneID) ?? [])
             }
@@ -130,6 +135,13 @@ struct MonitorView: View {
                         Text("Mac: \(connection.host)")
                             .onAppear { connection.requestSessions() }
                         Text("App: v\(Self.appVersion) (\(Self.appBuild))")
+                        if let server = connection.hostCapabilities?.server {
+                            Text("Herdr: \(server.version)")
+                        }
+                        Button("Herdr Server") { showingHerdrManagement = true }
+                        if connection.hostCapabilities?.operations.contains(BridgeCapability.nativeEndpoint) == true {
+                            Button("Workspace View") { showingEndpoint = true }
+                        }
                         Divider()
                         Toggle("Triage groups", isOn: Binding(
                             get: { triageEnabled },
@@ -173,19 +185,26 @@ struct MonitorView: View {
                     )
                 }
             }
-        })
+        }.environment(\.colorScheme, .dark))
         .onChange(of: connection.status, initial: true) { _, status in
             connectionBanner.update(status)
         }
         .sheet(isPresented: $showingAgentLauncher) {
             AgentLauncherSheet(
-                workspaces: connection.snapshot?.workspaces ?? []
+                workspaces: connection.snapshot?.workspaces ?? [],
+                supportsMuse: connection.hostCapabilities?.supportsMuse == true
             ) { workspaceID, agent, cwd in
                 connection.launchAgent(workspaceID: workspaceID, agent: agent, cwd: cwd)
             }
         }
         .sheet(isPresented: $showingNotificationPreferences) {
             NotificationPreferencesSheet(connection: connection)
+        }
+        .sheet(isPresented: $showingEndpoint) {
+            EndpointPhoneView(connection: connection, systemColorScheme: systemColorScheme)
+        }
+        .sheet(isPresented: $showingHerdrManagement) {
+            HerdrManagementSheet(connection: connection)
         }
         .sheet(item: $backgroundWorkTarget) { target in
             BackgroundWorkSheet(target: target)
@@ -201,17 +220,16 @@ struct MonitorView: View {
             isPresented: closeBinding,
             titleVisibility: .visible
         ) {
-            Button("Close", role: .destructive) { commitClose() }
+            Button(closeTarget?.buttonTitle ?? "Close", role: .destructive) { commitClose() }
             Button("Cancel", role: .cancel) { closeTarget = nil }
         } message: {
-            Text("This will stop the processes in \(closeTarget?.name ?? "this item").")
+            Text(closeTarget?.message ?? "")
         }
         .alert("Action Failed", isPresented: actionErrorBinding) {
             Button("OK") { connection.clearActionError() }
         } message: {
             Text(connection.actionError ?? "")
         }
-        .preferredColorScheme(.dark)
     }
 
     static let appVersion = Bundle.main.object(
@@ -268,7 +286,8 @@ struct MonitorView: View {
         switch target {
         case let .pane(id, _): connection.closePane(paneID: id)
         case let .tab(id, _): connection.closeTab(tabID: id)
-        case let .workspace(id, _): connection.closeWorkspace(workspaceID: id)
+        case let .workspace(id, _, connectionID): connection.closeWorkspace(workspaceID: id, expectedConnectionID: connectionID)
+        case let .workspaceGroup(preview): connection.closeWorkspaceGroup(preview)
         }
         closeTarget = nil
     }
@@ -295,6 +314,13 @@ struct MonitorView: View {
             path.append(paneID)
         }
         appModel.pendingOpenPaneID = nil
+    }
+
+    private func openPendingMachinePush() {
+        guard let resource = appModel.pendingOpenMachineResource else { return }
+        connection.openMachineNotification(resource)
+        showingEndpoint = true
+        appModel.pendingOpenMachineResource = nil
     }
 
     @ViewBuilder
@@ -494,25 +520,40 @@ struct MonitorView: View {
                     .listRowBackground(Night.row)
                 }
             } header: {
-                HStack {
-                    Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(Night.faint)
-                    Spacer()
-                    StatusPill(status: workspace.agentStatus)
-                }
-                .contentShape(Rectangle())
-                .contextMenu {
+                Menu {
                     Button("Rename", systemImage: "pencil") {
                         beginRename(.workspace(workspace.workspaceID, workspace.label))
                     }
                     Button("Close", systemImage: "xmark", role: .destructive) {
                         closeTarget = .workspace(
                             workspace.workspaceID,
-                            workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label
+                            workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label,
+                            connection.hostCapabilities?.connectionID
                         )
                     }
+                    if WorkspaceClosePreview.group(in: snapshot, workspaceID: workspace.workspaceID).count > 1 {
+                        Button("Close Group…", systemImage: "xmark", role: .destructive) {
+                            if let preview = WorkspaceClosePreview(snapshot: snapshot, workspaceID: workspace.workspaceID, closeGroup: true, connectionID: connection.hostCapabilities?.connectionID) {
+                                closeTarget = .workspaceGroup(preview)
+                            }
+                        }
+                        .disabled(connection.hostCapabilities?.supportsWorkspaceGroupClose != true)
+                        if connection.hostCapabilities?.supportsWorkspaceGroupClose != true {
+                            Text("Group closure requires an updated Mac app and Herdr 0.9 or later.")
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label)
+                            .font(.caption.monospaced().weight(.semibold))
+                            .foregroundStyle(Night.faint)
+                        Spacer()
+                        StatusPill(status: workspace.agentStatus)
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(Night.faint)
+                    }
                 }
+                .accessibilityLabel("\(workspace.label.isEmpty ? "Space \(workspace.number)" : workspace.label) workspace actions")
             }
         }
     }
@@ -686,20 +727,34 @@ private enum RenameTarget {
 private enum CloseTarget {
     case pane(String, String)
     case tab(String, String)
-    case workspace(String, String)
+    case workspace(String, String, String?)
+    case workspaceGroup(WorkspaceClosePreview)
 
     var title: String {
         switch self {
         case .pane: "Close Pane?"
         case .tab: "Close Tab?"
         case .workspace: "Close Workspace?"
+        case .workspaceGroup: "Close Workspace Group?"
         }
     }
 
     var name: String {
         switch self {
-        case let .pane(_, name), let .tab(_, name), let .workspace(_, name): name
+        case let .pane(_, name), let .tab(_, name): name
+        case let .workspace(_, name, _): name
+        case let .workspaceGroup(preview): preview.workspaces.map(\.label).joined(separator: ", ")
         }
+    }
+
+    var buttonTitle: String {
+        if case .workspaceGroup = self { return "Close Group" }
+        return "Close"
+    }
+
+    var message: String {
+        if case .workspaceGroup(let preview) = self { return preview.message }
+        return "This will stop the processes in \(name)."
     }
 }
 
@@ -736,6 +791,7 @@ private struct BackgroundWorkSheet: View {
 
 private struct AgentLauncherSheet: View {
     let workspaces: [Workspace]
+    let supportsMuse: Bool
     let launch: (String?, String, String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var agent = "claude"
@@ -748,9 +804,14 @@ private struct AgentLauncherSheet: View {
                 Picker("Agent", selection: $agent) {
                     Text("Claude").tag("claude")
                     Text("Codex").tag("codex")
+                    Text("Muse").tag("muse").disabled(!supportsMuse)
                     Text("Terminal").tag("terminal")
                 }
                 .pickerStyle(.segmented)
+                if !supportsMuse {
+                    Text("Muse launch requires an updated Mac app and Herdr 0.9 or later.")
+                        .font(.footnote)
+                }
 
                 Picker("Workspace", selection: $workspaceID) {
                     Text("New workspace").tag(String?.none)
@@ -789,6 +850,7 @@ private struct AgentLauncherSheet: View {
                         )
                         dismiss()
                     }
+                    .disabled(agent == "muse" && !supportsMuse)
                 }
             }
         }

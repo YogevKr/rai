@@ -69,6 +69,19 @@ class BundleTests(unittest.TestCase):
                 self.assertFalse((self.root / "calls").exists())
                 self.assertTrue((self.release / "keep").exists())
 
+    def test_lab_build_has_its_own_identity(self):
+        result = self.run_bundle(RAI_BUILD_CHANNEL="lab", RAI_LAB_ID="e2e-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with (self.dest / "Rai Lab e2e-a.app/Contents/Info.plist").open("rb") as handle:
+            self.assertEqual(plistlib.load(handle)["CFBundleIdentifier"], "gr.krig.rai.lab.e2e-a")
+        self.assertTrue((self.release / "keep").exists())
+
+    def test_lab_rejects_invalid_identity_before_build(self):
+        for identifier in ["", "../live", "UPPER", "has space"]:
+            result = self.run_bundle(RAI_BUILD_CHANNEL="lab", RAI_LAB_ID=identifier)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((self.root / "calls").exists())
+
     def test_missing_development_identity_does_not_fall_back_to_ad_hoc(self):
         result = self.run_bundle(TEST_IDENTITY="another identity")
         self.assertNotEqual(result.returncode, 0)

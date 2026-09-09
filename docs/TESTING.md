@@ -3,6 +3,11 @@
 How to build, run, screenshot, and end-to-end verify rai against a live `herdr`
 daemon — without disrupting anyone's running agents.
 
+For Herdr 0.9 work, follow the [isolated app test contract](herdr-0.9-e2e.md).
+Every feature requires isolated macOS and iOS app end-to-end results before completion.
+The [integrated checkpoint](herdr-09-integrated-validation.md) records combined builds, UI findings, and pending corrections.
+The development bundle and named Herdr lab below do not provide complete app data isolation.
+
 ## Build & run a dev build
 
 `scripts/bundle.sh` compiles an optimized build and installs `Rai Dev.app` in `/Applications`.
@@ -24,7 +29,7 @@ Env overrides:
 | `RAI_APP_DEST` | install into this dir instead of `/Applications` |
 | `RAI_BUILD_CHANNEL` | `development` by default; `release` builds `Rai.app` with `gr.krig.rai`. |
 | `RAI_SIGN_IDENTITY` | Stable signing identity. Development defaults to `rai-dev-signing`. Release requires an explicit Developer ID Application identity. Missing identities stop the build before installation. |
-| `RAI_PAIRING_CODE_FILE` | Test harness only: the bridge mirrors its current pairing code (one line; empty once spent) to this owner-only file, so an isolated end-to-end run can pair a simulator without driving Settings. Unset in normal use. Pair the simulator with `SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=<RAI_BRIDGE_PORT>&code=<code>"`. Run the isolated instance with `open -n -a <bundle> --env HOME=<scratch> …` so its UserDefaults stay out of the real ones (its Application Support folder is still the real one — delete `bridge-audit.jsonl` and `hooks.sock` afterwards). |
+| `RAI_PAIRING_CODE_FILE` | Test harness only: writes the current pairing code to an owner-only file. Unset in normal use. Pair through `SIMCTL_CHILD_RAI_PAIR_URL="rai://pair?host=localhost&port=<RAI_BRIDGE_PORT>&code=<code>"`. Verify separate app data, credentials, and bridge targets first. A changed `HOME` does not isolate Application Support. Never delete shared `bridge-audit.jsonl` or `hooks.sock` files as test cleanup. |
 
 For a quick loop without bundling, `swift run rai` runs straight from the package.
 
@@ -36,6 +41,70 @@ CI stops when the release certificate is unavailable; it never publishes an ad-h
 
 Development and release apps still share Herdr and Rai's existing Application Support files.
 Do not run both integrations against the same keyboard during device tests.
+
+## Herdr 0.9 app lab
+
+The lab channel uses a unique bundle identity and refuses incomplete launch configuration.
+Prepare a run with a verified Herdr binary:
+
+```sh
+python3 scripts/app-lab.py prepare --herdr /path/to/verified/herdr
+```
+
+The command prints `root`, `lab_id`, `bundle_id`, and `bridge_port`.
+Use those returned values to build and launch:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  RAI_BUILD_CHANNEL=lab RAI_LAB_ID=<lab_id> RAI_APP_DEST=<root>/apps \
+  ./scripts/bundle.sh
+python3 scripts/app-lab.py launch --root <root> --app '<root>/apps/Rai Lab <lab_id>.app'
+```
+
+The lab stores its launch manifest, process IDs, logs, private binary, sockets, and application data under `root`.
+The unique bundle identity separates preferences. `RAI_DATA_ROOT` separates app-owned support files and Claude history.
+The launcher supplies private Herdr configuration, state, cache, hook routing, shell startup files, and Git configuration.
+It also supplies private temporary, Claude, and Codex directories to its child processes.
+Before starting Herdr, the launcher runs the app's `--validate-lab` check against the complete launch environment.
+Lab apps skip legacy APNs key migration, Bonjour advertisement, and automatic Tailscale Serve changes.
+Native Claude and Codex integration controls use their supported directory overrides.
+Other native integrations require a disposable test account. The lab blocks those controls until their targets can be isolated.
+Lab hook previews and writes reject settings or script paths outside the lab, including paths through symbolic links.
+The lab blocks SSH discovery, session listing, and tunnels until a disposable SSH account and configuration are available.
+An owned `.rai-lab-ssh.json` fixture enables only its declared SSH aliases and loopback endpoint.
+Set `RAI_MACHINE_E2E_ROOT` to that lab root when running `MachineTransportTests`.
+These tests require live detached Herdr sessions and validate distinct machines with duplicate pane identifiers.
+Keep physical notification tests separate, using dedicated test credentials and registrations.
+
+The launcher refuses existing process records. Inspect recorded processes before reusing a run.
+Stop only processes whose executable and ownership marker match that run. Preserve logs before cleanup.
+
+Use a dedicated simulator for the phone lab. Build with a separate `PRODUCT_BUNDLE_IDENTIFIER`.
+Simulator pairing requires signing: pass `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-` to the simulator build.
+An unsigned simulator app can fail Keychain writes with error `-34018`.
+Keep the test bundle identifier separate from `com.whetstone.rai.ios`.
+
+The lab launcher establishes test targets. It does not count as a feature end-to-end pass.
+Follow the [feature scenarios and evidence rules](herdr-0.9-e2e.md) for app UI validation.
+
+### Missing Herdr on a new Mac
+
+Create the negative-test lab with `python3 scripts/app-lab.py prepare --without-herdr`.
+Build and launch its app with the same lab commands above.
+This manifest permits an absent private executable and does not start a server.
+All path, identity, and port checks still apply.
+The launcher verifies that the app owns its bridge listener before reporting success.
+Servers that Rai starts after Retry receive `herdr-<pid>.json` ownership records inside the lab.
+Use these records, the ownership marker, and the live executable path before stopping a test server.
+
+Verify the installation screen appears without a connection spinner or repeated error alerts.
+Select Retry before installation and confirm the screen remains usable.
+Copy the verified Herdr binary to this lab's `bin/herdr` and grant owner execute permission.
+Select Retry again without restarting Rai. Verify the default server starts and a workspace opens.
+Pair the isolated phone and verify the missing-server diagnosis clears after recovery.
+Keep UI evidence for both platforms. Unit tests alone do not complete this scenario.
+
+Run regression tests with `swift test --filter HerdrInstallationTests` using the Xcode developer directory.
 
 ## Agent startup prompts
 
@@ -56,13 +125,16 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test --filter FullDiskAccessGuidanceTests
 ```
 
-The tests use isolated preferences. They check first-launch help, suppression across windows and restarts, and existing preference preservation.
+The tests check actual file access errors, wrapped errors, and unrelated failures. No startup action requests this guidance.
 They never read protected files or change macOS permissions.
 
-For a manual check, launch a development bundle with fresh preferences.
+For a manual check, launch the isolated lab bundle with fresh preferences.
+Verify that startup, installation, new windows, and restarts show no Full Disk Access dialog.
+Trigger a denied configuration or hook-settings operation. Verify that its error offers **File Access Help…**.
+Successful operations and unrelated errors must not offer this button. Select the button to open the guide.
 Verify that the Full Disk Access dialog explains its optional scope and offers **Open System Settings** and **Not Now**.
 Check light and dark appearance in a bundle containing `Rai.icns`. The sheet must show Rai’s icon without a separate Dock item.
-Dismiss it, open another window, and restart. The launch dialog must stay dismissed.
+Dismiss it, open another window, and restart. The dialog must remain closed.
 Open **Settings → Herdr Server → Mac Privacy → Review Full Disk Access…** to show it again.
 Verify that **Open System Settings** opens Privacy & Security → Full Disk Access, without changing any grant.
 Granting access remains a separate user action in macOS. Follow its quit-and-reopen request when testing a grant.
@@ -100,6 +172,42 @@ case `swift build` is the local compile gate, and CI is the source of truth —
 (pinned because SwiftTerm ships a `.metal` shader that only the Xcode-bundled
 Metal toolchain can compile).
 
+## Native Herdr endpoint tests
+
+Run endpoint wire, deadline, cancellation, surface, paste, keyboard, and input identity tests with the Xcode toolchain:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter 'HerdrEndpointTests|HerdrScrollTransportTests|EndpointKeyboardTests|EndpointBridgeHostTests|EndpointLinkTests'
+```
+
+These tests use temporary Unix socket fixtures. They do not control the installed Herdr server.
+Set `RAI_ENDPOINT_TEST_ROOT` to an owned app lab to include the live native handshake and surface check.
+The live test verifies the lab ownership marker before connecting.
+
+Additional Mac windows and the phone Workspace View use native endpoint transport.
+Test history page controls, live-output recovery, and scrollbar expiry without terminal geometry changes.
+Select Light, Dark, and System after each explicit mode. Change the simulator appearance while Workspace View remains open.
+Verify Always and Auto with one and two panes. Compare pane reads before and after border changes.
+Set different appearance and border choices in two Mac windows. Verify each existing window retains its choices.
+Restart the isolated app, open another window, and verify the last saved choices become its defaults.
+Restart the isolated Mac host while Workspace View remains open. Verify automatic recovery and input with new view identity.
+Background and restore the phone app. Close Workspace View, restart the host, and verify no new endpoint opens.
+Test image replacement beside another image, clipped history recovery, rotation, deletion, and image inspection.
+The Mac and phone share image cache and SwiftTerm replacement regression tests.
+Test configured commands with captured targets. Reload configuration while the command list remains open and verify stale-command rejection.
+Test release notes on both platforms. Verify popup input reaches only the active popup terminal.
+Views of one Herdr pane share history position. Validate touch gestures separately from menu actions.
+The primary Mac window and phone observation view retain their previous terminal paths.
+Phone endpoint tests cover request identity, sizing, navigation, queue limits, failed writes, and closure races.
+Phone text tests cover stable capture, implicit links, OSC 8 links, and rejected remote file paths.
+Verify touch selection, Copy, and browser navigation in both phone terminal views.
+During output, capture text and confirm later output cannot change the capture or selected text.
+Test tab creation, splits, directional focus, paste boundaries, application cursor keys, Kitty keys, reconnect, and window closure.
+Use separate app windows and record each input marker's target pane.
+Record app hashes and pane snapshots before removing temporary test panes.
+Full unit gates do not replace the isolated app scenarios in `herdr-0.9-e2e.md`.
+
 ## iOS connections and terminal retention
 
 Generate the iOS project, then run the tests on an isolated simulator:
@@ -128,6 +236,12 @@ It also checks banner height with a long hostname at normal and accessibility te
 These tests use synthetic content and do not connect to Herdr or change system network settings.
 
 Run the shared protocol and Mac bridge checks with `swift test`.
+
+Herdr management regression tests cover capability checks, target identity, audit records, and phone failure recovery.
+Run `swift test --filter 'HerdrManagementTests|HerdrManagementAppTests|BridgeAudit'` for the focused Mac gate.
+The simulator suite includes `HerdrManagementBridgeTests` for stale confirmation, result correlation, socket loss, and audit rejection.
+Use an owned lab server for app update and handoff checks. Compare shell and agent process IDs before and after handoff.
+See [Herdr 0.9 evidence](herdr-0.9-e2e.md) for current isolated app results and remaining checks.
 
 ## Application updates
 

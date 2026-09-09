@@ -24,7 +24,9 @@ struct PaneLayoutView: View {
 
     var body: some View {
         Group {
-            if let layout = model.selectedLayout,
+            if model.needsHerdrInstallation {
+                HerdrInstallationView(model: model)
+            } else if let layout = model.selectedLayout,
                model.visiblePanes.isEmpty == false {
                 if let zoomedPaneID = Self.zoomedPaneID(in: layout) {
                     // herdr reports a zoomed tab with its *unzoomed* rects, so
@@ -64,6 +66,31 @@ struct PaneLayoutView: View {
             }
         }
         .background(Theme.base)
+    }
+}
+
+private struct HerdrInstallationView: View {
+    @ObservedObject var model: RaiModel
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 40, weight: .light))
+            Text("Set up Herdr to start")
+                .font(.headline)
+            Text("Rai needs Herdr on this Mac to open local and remote terminals.")
+            Text(model.herdrInstallationGuidance)
+                .textSelection(.enabled)
+            HStack {
+                Link("Herdr Installation Guide", destination: URL(string: "https://herdr.dev")!)
+                Button("Retry") { model.retryHerdrStartup() }
+                    .accessibilityIdentifier("herdr.setup.retry")
+            }
+        }
+        .foregroundStyle(Theme.textSecondary)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("herdr.setup")
     }
 }
 
@@ -320,6 +347,8 @@ private struct PaneSurface: View {
                         terminalID: terminalID,
                         paneID: paneID,
                         paneCWD: pane.map { $0.foregroundCWD ?? $0.cwd },
+                        paneScroll: pane?.scroll,
+                        supportsDirectScrolling: (model.snapshot?.protocol ?? 0) >= 22,
                         // Release focus while the command palette is open so its
                         // search field — not the terminal — receives keystrokes.
                         isFocused: selected && !model.isCommandPalettePresented,
@@ -479,6 +508,11 @@ private struct PaneSurface: View {
             Button("Codex — Split Down") {
                 model.launchAgent(.codex, direction: .down, from: paneID)
             }
+            Divider()
+            Button("Muse — Split Right") { model.launchAgent(.muse, direction: .right, from: paneID) }
+                .disabled((model.serverInfo?.protocol ?? 0) < 22)
+            Button("Muse — Split Down") { model.launchAgent(.muse, direction: .down, from: paneID) }
+                .disabled((model.serverInfo?.protocol ?? 0) < 22)
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 10, weight: .semibold))

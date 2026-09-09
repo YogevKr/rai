@@ -105,6 +105,7 @@ protocol RaiSnapshotObserver: AnyObject {
 enum AgentLaunchKind: String, Codable {
     case claude
     case codex
+    case muse
 }
 
 /// One pane of a closed tab, in tree leaf order: what reopen needs to put a
@@ -210,9 +211,13 @@ struct HerdrNewsItem: Identifiable {
 }
 
 struct HerdrPluginInstallPreview: Identifiable {
-    let id = UUID()
+    let id: UUID
     let canConfirm: Bool
     let output: String
+
+    init(id: UUID = UUID(), canConfirm: Bool, output: String) {
+        self.id = id; self.canConfirm = canConfirm; self.output = output
+    }
 }
 
 private final class HerdrPipeCapture: @unchecked Sendable {
@@ -234,20 +239,24 @@ private final class HerdrPipeCapture: @unchecked Sendable {
 }
 
 private final class PendingHerdrPluginInstall: @unchecked Sendable {
+    let id = UUID()
     let source: String
     let resolvedCommit: String
     let socketPath: String
+    let bootID: String?
     let temporaryDirectory: URL
 
     init(
         source: String,
         resolvedCommit: String,
         socketPath: String,
+        bootID: String?,
         temporaryDirectory: URL
     ) {
         self.source = source
         self.resolvedCommit = resolvedCommit
         self.socketPath = socketPath
+        self.bootID = bootID
         self.temporaryDirectory = temporaryDirectory
     }
 }
@@ -387,6 +396,10 @@ final class RaiModel: ObservableObject {
     private var completionPresentationTimestamps: [String: TimeInterval] = [:]
     private var latestBeaconWorkTimestamps: [String: TimeInterval] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
+    @Published private(set) var needsHerdrInstallation = false
+    var herdrInstallationGuidance: String {
+        HerdrCLI.installationGuidance(environment: ProcessInfo.processInfo.environment)
+    }
     @Published var selectedPaneID: String?
     @Published var draggedPaneID: String?
     // Sidebar reorder drag state (mirrors draggedPaneID) — read synchronously by
@@ -452,8 +465,31 @@ final class RaiModel: ObservableObject {
     @Published var renameRequest: RenameRequest?
     // In-place sidebar rename: which tab/space is currently editing its name.
     @Published var inlineRename: InlineRenameTarget?
-    @Published var workspacePendingClose: Workspace?
-    @Published var statusExplanation: StatusExplanation?
+    @Published var workspacePendingClose: WorkspaceClosePreview?
+    @Published private(set) var serverInfo: HerdrServerInfo?
+
+    var notificationEndpointBootID: String? {
+        get async { await workspaceCloseEndpoint?.snapshot?.bootID }
+    }
+
+    var bridgeHostCapabilities: BridgeHostCapabilities {
+        var operations = [BridgeCapability.workspaceGroupClose, BridgeCapability.museAgent,
+                          BridgeCapability.agentExplanation, BridgeCapability.independentPaneObservation,
+                          BridgeCapability.machineDirectory, BridgeCapability.notificationActions]
+        if remoteTarget == nil { operations += [BridgeCapability.herdrManagement, BridgeCapability.herdrServerStop] }
+        if serverInfo?.capabilities?.endpointProtocolGeneration == 1 { operations.append(BridgeCapability.nativeEndpoint) }
+        return BridgeHostCapabilities(operations: operations, server: serverInfo, connectionID: resourceGeneration.uuidString)
+    }
+    private var isManagingHerdr = false
+    @Published var statusExplanation: StatusExplanation? {
+        didSet {
+            if statusExplanation?.id != oldValue?.id {
+                statusExplanationTask?.cancel()
+                statusExplanationTask = nil
+            }
+        }
+    }
+    private var statusExplanationTask: Task<Void, Never>?
     @Published var pluginActions: [PluginAction] = []
     /// Git checkouts under `repoRoots` that no space has opened yet. Scanned on
     /// the herd's host, so they stay correct when attached to a remote herd.
@@ -525,6 +561,8 @@ final class RaiModel: ObservableObject {
     }
     private var started = false
     private var eventTask: Task<Void, Never>?
+    private var eventSubscription: HerdrEventSubscription?
+    private var eventFilter: HerdrEventFilter?
     /// Where the user has been, for palette ordering. Deep enough to cover a
     /// long session, small enough that stale rows fall off on their own.
     private var navigationRecency = LRUTracker<String>(capacity: 60)
@@ -537,22 +575,48 @@ final class RaiModel: ObservableObject {
     /// herdr CLI spawn happens once per connection, not once per snapshot.
     private var pluginActionsGeneration: UUID?
     private var lastObservedPaneStatuses: [String: AgentStatus]?
-    private var connectionGeneration = UUID()
+    private var workspaceCloseEndpoint: HerdrEndpointConnection?
+    private var connectionGeneration = UUID() {
+        didSet { statusExplanation = nil; workspaceCloseEndpoint?.disconnect(); workspaceCloseEndpoint = nil }
+    }
+    private var resourceGeneration = UUID() {
+        didSet { statusExplanation = nil; workspaceCloseEndpoint?.disconnect(); workspaceCloseEndpoint = nil }
+    }
+    var runtimeHerdrBinaryPath: String? {
+        if let version = serverInfo?.protocol ?? snapshot?.protocol,
+           let archived = HerdrClientArchive().executable(for: version) {
+            return archived.path
+        }
+        return HerdrCLI.resolvedBinaryPath
+    }
     private var connectionAttemptID = UUID()
+    var activeRemoteContext: RemoteConnection.Context? { remoteConnection?.context }
     private var remoteConnection: RemoteConnection?
     private var launchedSessionServers: [String: Process] = [:]
     private var pendingPluginInstall: PendingHerdrPluginInstall?
     private let closeCommandRunner: CloseCommandRunner?
+    private let resolveHerdrBinary: () -> String?
+    private let pluginInstallRunner: (([String], [String: String]) async -> HerdrCommandResult)?
+    private let pluginBootReader: ((String) async throws -> String)?
+    private let pluginPreviewRunner: ((String, [String]) async -> HerdrCommandResult)?
 
     init(
         client: HerdrClient = HerdrClient(),
         userDefaults: UserDefaults = .standard,
         closeCommandRunner: CloseCommandRunner? = nil,
         userIdleSeconds: @escaping @Sendable () -> TimeInterval = { UserPresence.idleSeconds },
-        phoneReachable: (@Sendable () -> Bool)? = nil
+        phoneReachable: (@Sendable () -> Bool)? = nil,
+        resolveHerdrBinary: @escaping () -> String? = { HerdrCLI.resolvedBinaryPath },
+        pluginPreviewRunner: ((String, [String]) async -> HerdrCommandResult)? = nil,
+        pluginInstallRunner: (([String], [String: String]) async -> HerdrCommandResult)? = nil,
+        pluginBootReader: ((String) async throws -> String)? = nil
     ) {
         self.client = client
         self.closeCommandRunner = closeCommandRunner
+        self.resolveHerdrBinary = resolveHerdrBinary
+        self.pluginPreviewRunner = pluginPreviewRunner
+        self.pluginInstallRunner = pluginInstallRunner
+        self.pluginBootReader = pluginBootReader
         activeSocketPath = client.socketPath
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
         terminalPool = TerminalPool(socketPath: client.socketPath)
@@ -597,7 +661,11 @@ final class RaiModel: ObservableObject {
     }
 
     deinit {
+        workspaceCloseEndpoint?.disconnect()
         eventTask?.cancel()
+        eventSubscription?.close()
+        eventSubscription = nil
+        eventFilter = nil
         flushTask?.cancel()
         gitStatusTask?.cancel()
         client.disconnect()
@@ -1174,6 +1242,8 @@ final class RaiModel: ObservableObject {
         guard !started else { return }
         started = true
         bridgeServer.startIfEnabled()
+        guard checkHerdrInstallation() else { return }
+        needsHerdrInstallation = false
         let attemptID = UUID()
         connectionAttemptID = attemptID
 
@@ -1211,14 +1281,34 @@ final class RaiModel: ObservableObject {
     }
 
     func shutdown() async {
+        MachineDirectory.shared.stop()
         await bridgeServer.stopAndWait()
         tearDownCurrentConnection(stopRemote: true)
+    }
+
+    @discardableResult
+    func checkHerdrInstallation() -> Bool {
+        guard resolveHerdrBinary() != nil else {
+            needsHerdrInstallation = true
+            disconnectCurrentHerd(message: herdrInstallationGuidance)
+            sessionAlert = nil
+            return false
+        }
+        // Finding the binary alone does not resume startup or remove the Retry action.
+        return true
+    }
+
+    func retryHerdrStartup() {
+        guard needsHerdrInstallation else { return }
+        started = false
+        start()
     }
 
     // MARK: - Herd sessions
 
     /// Switches the complete herd-scoped runtime to a fresh client.
     func connect(toSocket socketPath: String) {
+        guard checkHerdrInstallation() else { return }
         let attemptID = UUID()
         connectionAttemptID = attemptID
         Task {
@@ -1232,6 +1322,7 @@ final class RaiModel: ObservableObject {
     }
 
     func switchSession(_ session: HerdrSession) {
+        guard checkHerdrInstallation() else { return }
         let attemptID = UUID()
         connectionAttemptID = attemptID
         Task {
@@ -1254,6 +1345,11 @@ final class RaiModel: ObservableObject {
     }
 
     func refreshSessions() {
+        if needsHerdrInstallation {
+            retryHerdrStartup()
+            return
+        }
+        guard checkHerdrInstallation() else { return }
         Task { await reloadSessions() }
     }
 
@@ -1262,6 +1358,7 @@ final class RaiModel: ObservableObject {
     }
 
     func createSession(named rawName: String) {
+        guard checkHerdrInstallation() else { return }
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.isValidSessionName(name) else {
             sessionAlert = SessionAlert(
@@ -1334,6 +1431,7 @@ final class RaiModel: ObservableObject {
     }
 
     func connectRemote(target: String, sessionName: String) {
+        guard checkHerdrInstallation() else { return }
         remoteHerdRequest = nil
         let attemptID = UUID()
         connectionAttemptID = attemptID
@@ -1393,6 +1491,7 @@ final class RaiModel: ObservableObject {
     ) async {
         let socketPath = NSString(string: rawSocketPath).expandingTildeInPath
         tearDownCurrentConnection(stopRemote: true)
+        needsHerdrInstallation = false
 
         let generation = UUID()
         connectionGeneration = generation
@@ -1412,13 +1511,8 @@ final class RaiModel: ObservableObject {
         terminalPool.predictiveEchoHerdLocation = remote == nil ? .local : .remote
         connectionState = .connecting
 
-        await refreshSnapshot(
-            keepSelection: false,
-            client: client,
-            generation: generation
-        )
+        await startEventLoop(client: client, generation: generation, keepSelection: false)
         guard generation == connectionGeneration else { return }
-        startEventLoop(client: client, generation: generation)
         refreshRepoIndex()
         await reloadSessions()
     }
@@ -1428,6 +1522,7 @@ final class RaiModel: ObservableObject {
         tearDownCurrentConnection(stopRemote: true)
         connectionGeneration = UUID()
         snapshot = nil
+        serverInfo = nil
         selectedPaneID = nil
         lastObservedPaneStatuses = nil
         connectionState = .disconnected(message)
@@ -1440,6 +1535,9 @@ final class RaiModel: ObservableObject {
         // the same name in the next herd.
         closingTabIDs.removeAll()
         eventTask?.cancel()
+        eventSubscription?.close()
+        eventSubscription = nil
+        eventFilter = nil
         eventTask = nil
         flushTask?.cancel()
         flushTask = nil
@@ -1461,6 +1559,7 @@ final class RaiModel: ObservableObject {
             remoteTarget = nil
         }
         snapshot = nil
+        serverInfo = nil
         agentBeacons = [:]
         completionBeacons = [:]
         completionPresentationTimestamps = [:]
@@ -1553,6 +1652,8 @@ final class RaiModel: ObservableObject {
 
         let arguments = existing.map(HerdrServerLaunch.serverArguments(for:))
             ?? ["--session", name, "server"]
+        let expectedSocket = existing?.socketPath ?? AppDataPaths.current.herdrDirectory
+            .appendingPathComponent("sessions/\(name)/herdr.sock").path
         let process = configuredHerdrProcess(
             arguments,
             usesActiveSocket: false
@@ -1571,9 +1672,19 @@ final class RaiModel: ObservableObject {
             }
         }
         do {
+            guard let executable = process.executableURL else { throw CocoaError(.fileNoSuchFile) }
+            try LabLaunch.requireContainedPath(expectedSocket, root: AppDataPaths.current.isolatedRoot)
+            try LabLaunch.requireContainedPath(executable.path, root: AppDataPaths.current.isolatedRoot)
             try process.run()
+            try LabLaunch.recordServer(
+                pid: process.processIdentifier,
+                executable: executable.path,
+                socketPath: expectedSocket,
+                root: AppDataPaths.current.isolatedRoot
+            )
             launchedSessionServers[name] = process
         } catch {
+            if process.isRunning { process.terminate() }
             sessionAlert = SessionAlert(
                 kind: .error(
                     title: "Couldn’t Start Session",
@@ -1583,9 +1694,6 @@ final class RaiModel: ObservableObject {
             return
         }
 
-        let expectedSocket = existing?.socketPath ?? NSString(
-            string: "~/.config/herdr/sessions/\(name)/herdr.sock"
-        ).expandingTildeInPath
         for _ in 0..<50 {
             guard attemptID == connectionAttemptID else { return }
             if FileManager.default.fileExists(atPath: expectedSocket) {
@@ -1671,7 +1779,7 @@ final class RaiModel: ObservableObject {
     }
 
     private static func defaultSocketPathWithoutEnvironment() -> String {
-        NSString(string: "~/.config/herdr/herdr.sock").expandingTildeInPath
+        AppDataPaths.current.herdrDirectory.appendingPathComponent("herdr.sock").path
     }
 
     private static func pathsMatch(_ lhs: String, _ rhs: String) -> Bool {
@@ -2032,7 +2140,10 @@ final class RaiModel: ObservableObject {
     var repoRoots: [String] {
         get {
             let stored = userDefaults.stringArray(forKey: Self.repoRootsKey)
-            guard let stored else { return RepoDiscoveryPlanner.defaultRoots }
+            guard let stored else {
+                return AppDataPaths.current.isolatedRoot.map { [$0.appendingPathComponent("repos").path] }
+                    ?? RepoDiscoveryPlanner.defaultRoots
+            }
             return stored
         }
         set {
@@ -2308,6 +2419,7 @@ final class RaiModel: ObservableObject {
             switch kind {
             case .claude: return "claude --continue || claude"
             case .codex: return "codex resume --last || codex"
+            case .muse: return "muse"
             }
         }
         var tokens = argv
@@ -2315,6 +2427,9 @@ final class RaiModel: ObservableObject {
         let escaped = tokens.map { DroppedPathEscaper.escape($0) }
         let base = escaped.joined(separator: " ")
         switch kind {
+        case .muse:
+            // Muse has no verified resume CLI contract. Reopen starts a new session.
+            return base
         case .claude:
             let hasResume = tokens.contains { ["--continue", "-c", "--resume", "-r"].contains($0) }
             return hasResume ? base : "\(base) --continue || \(base)"
@@ -2402,17 +2517,25 @@ final class RaiModel: ObservableObject {
     }
 
     func requestClose(workspace: Workspace) {
-        if workspace.tabCount > 1 {
-            workspacePendingClose = workspace
-        } else {
-            close(workspace: workspace)
+        guard let snapshot else { return }
+        if WorkspaceClosePreview.group(in: snapshot, workspaceID: workspace.workspaceID).count > 1 {
+            sessionAlert = SessionAlert(kind: .error(title: "Close Group Required", message: "This workspace belongs to a group. Use Close Group to review all affected workspaces."))
+            return
         }
+        workspacePendingClose = WorkspaceClosePreview(snapshot: snapshot, workspaceID: workspace.workspaceID, closeGroup: false, connectionID: resourceGeneration.uuidString)
     }
 
-    func confirmCloseWorkspace() {
-        guard let workspace = workspacePendingClose else { return }
+    func requestCloseGroup(workspace: Workspace) {
+        guard let snapshot, (serverInfo?.protocol ?? 0) >= 22 else { return }
+        workspacePendingClose = WorkspaceClosePreview(snapshot: snapshot, workspaceID: workspace.workspaceID, closeGroup: true, connectionID: resourceGeneration.uuidString)
+    }
+
+    func confirmCloseWorkspace(_ request: WorkspaceClosePreview) {
         workspacePendingClose = nil
-        close(workspace: workspace)
+        Task {
+            do { try await executeWorkspaceClose(request) }
+            catch { sessionAlert = SessionAlert(kind: .error(title: "Close Failed", message: error.localizedDescription)) }
+        }
     }
 
     // MARK: - Worktrees
@@ -2564,7 +2687,7 @@ final class RaiModel: ObservableObject {
                 }
                 return
             }
-            await refreshSnapshot(keepSelection: false)
+            await refreshSnapshot(keepSelection: true)
         }
     }
 
@@ -2647,9 +2770,13 @@ final class RaiModel: ObservableObject {
             return
         }
         beginExplanation(
-            target: pane.terminalID.isEmpty ? pane.paneID : pane.terminalID,
+            target: pane.paneID,
             title: "Why \(snapshot.displayLabel(for: tab)) is \(statusLabel(tab.agentStatus))"
         )
+    }
+
+    func explainStatus(pane: Pane) {
+        beginExplanation(target: pane.paneID, title: "Why \(pane.agent ?? "Pane") is \(statusLabel(pane.agentStatus))")
     }
 
     func explainStatus(workspace: Workspace) {
@@ -2669,7 +2796,7 @@ final class RaiModel: ObservableObject {
             return
         }
         beginExplanation(
-            target: pane.terminalID.isEmpty ? pane.paneID : pane.terminalID,
+            target: pane.paneID,
             title: "Why \(workspace.label) is \(statusLabel(workspace.agentStatus))"
         )
     }
@@ -2906,8 +3033,32 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    private func close(workspace: Workspace) {
-        runAction(["workspace", "close", workspace.workspaceID])
+    private func executeWorkspaceClose(_ request: WorkspaceClosePreview) async throws {
+        let generation = connectionGeneration
+        let resourceID = resourceGeneration.uuidString
+        let capturedClient = client
+        guard request.connectionID == resourceID else {
+            throw HerdrEndpointError.incompatible("The reviewed server connection is unavailable. Reconnect and review closure again.")
+        }
+        do {
+            if let endpoint = workspaceCloseEndpoint {
+                _ = try await endpoint.closeReviewedWorkspaces(request)
+            } else if let version = serverInfo?.protocol ?? snapshot?.protocol, version > 0, version < 22 {
+                let transport = HerdrPinnedRPC()
+                try await transport.closeReviewedLegacyWorkspace(socketPath: capturedClient.socketPath,
+                    preview: request, connectionID: resourceID) { @MainActor [weak self] in
+                    guard let self, self.resourceGeneration.uuidString == resourceID,
+                          self.connectionGeneration == generation else { throw HerdrEndpointError.staleIdentity }
+                }
+            } else {
+                throw HerdrEndpointError.incompatible("The reviewed server connection is unavailable. Reconnect and review closure again.")
+            }
+        }
+        catch {
+            await refreshSnapshot(keepSelection: true, client: capturedClient, generation: generation)
+            throw error
+        }
+        await refreshSnapshot(keepSelection: true, client: capturedClient, generation: generation)
     }
 
     private func preferredPane(in tab: HerdrTab, snapshot: SessionSnapshot) -> Pane? {
@@ -2930,17 +3081,19 @@ final class RaiModel: ObservableObject {
         let id = UUID()
         statusExplanation = StatusExplanation(id: id, title: title, text: nil)
         let generation = connectionGeneration
-        Task {
-            let output = await runHerdrCapture(["agent", "explain", target, "--json"])
-            guard generation == connectionGeneration,
+        let herd = client
+        statusExplanationTask = Task {
+            let text: String
+            do { text = try await herd.explainAgent(target) }
+            catch { text = error.localizedDescription }
+            guard !Task.isCancelled, generation == connectionGeneration,
                   statusExplanation?.id == id else {
                 return
             }
             statusExplanation = StatusExplanation(
                 id: id,
                 title: title,
-                text: output.map(Self.prettyPrintedJSON)
-                    ?? "Herdr could not explain this status."
+                text: text
             )
         }
     }
@@ -2970,30 +3123,83 @@ final class RaiModel: ObservableObject {
         return formatted
     }
 
-    private func startEventLoop(client: HerdrClient, generation: UUID) {
+    private func startEventLoop(
+        client: HerdrClient, generation: UUID, keepSelection: Bool
+    ) async {
         eventTask?.cancel()
-        eventTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled, generation == connectionGeneration {
-                do {
-                    let paneIDs = snapshot?.panes.map(\.paneID) ?? []
-                    let subscriptions = HerdrClient.subscriptions(
-                        forProtocol: snapshot?.protocol
+        eventSubscription?.close()
+        await withCheckedContinuation { (initial: CheckedContinuation<Void, Never>) in
+            eventTask = Task { [weak self] in
+                guard let self else { initial.resume(); return }
+                var initialAttempt: CheckedContinuation<Void, Never>? = initial
+                var preserveSelection = keepSelection
+                var resyncWithoutFilters = true
+                defer { initialAttempt?.resume() }
+                while !Task.isCancelled, generation == connectionGeneration {
+                    if resyncWithoutFilters { resourceGeneration = UUID() }
+                    let filter = HerdrEventFilter(snapshot: resyncWithoutFilters ? nil : snapshot)
+                    let subscription = client.subscribe(
+                        subscriptions: filter.subscriptions, paneIDs: filter.paneIDs
                     )
-                    for try await event in client.events(
-                        subscriptions: subscriptions,
-                        paneIDs: paneIDs
-                    ) {
-                        guard generation == connectionGeneration else { break }
-                        queue(event, generation: generation)
+                    eventFilter = filter
+                    eventSubscription = subscription
+                    do {
+                        for try await message in subscription.messages {
+                            guard !Task.isCancelled, generation == connectionGeneration else { break }
+                            switch message {
+                            case .ready:
+                                // The socket thread buffers events while the snapshot loads.
+                                let info = try await client.serverInfo()
+                                guard generation == connectionGeneration else { throw CancellationError() }
+                                serverInfo = info
+                                var preparedCloseEndpoint: HerdrEndpointConnection?
+                                if info.capabilities?.endpointProtocolGeneration == 1, workspaceCloseEndpoint == nil {
+                                    let endpoint = HerdrEndpointConnection()
+                                    do {
+                                        _ = try await endpoint.connect(socketPath: RemoteConnection.clientSocketPath(for: client.socketPath))
+                                        guard generation == connectionGeneration else { endpoint.disconnect(); throw CancellationError() }
+                                        preparedCloseEndpoint = endpoint
+                                    } catch { endpoint.disconnect() }
+                                }
+                                terminalPool.runtimeExecutable = runtimeHerdrBinaryPath
+                                guard await refreshSnapshot(
+                                    keepSelection: preserveSelection, client: client, generation: generation
+                                ) else { preparedCloseEndpoint?.disconnect(); throw HerdrClientError.disconnected }
+                                if let preparedCloseEndpoint { workspaceCloseEndpoint = preparedCloseEndpoint }
+                                if let snapshot {
+                                    bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+                                }
+                                preserveSelection = true
+                                resyncWithoutFilters = false
+                                initialAttempt?.resume()
+                                initialAttempt = nil
+                            case .event(let event):
+                                queue(event, generation: generation)
+                            }
+                        }
+                    } catch {
+                        // A closed pane can invalidate a filter before acknowledgement.
+                        // Recover through an unfiltered subscription and a fresh snapshot.
+                        resyncWithoutFilters = true
+                        if !Task.isCancelled, generation == connectionGeneration {
+                            resourceGeneration = UUID()
+                            serverInfo = nil
+                            connectionState = .disconnected(error.localizedDescription)
+                        }
                     }
-                } catch {
-                    if !Task.isCancelled, generation == connectionGeneration {
-                        connectionState = .disconnected(error.localizedDescription)
+                    subscription.close()
+                    initialAttempt?.resume()
+                    initialAttempt = nil
+                    guard !Task.isCancelled, generation == connectionGeneration else { break }
+                    // A changed pane set needs new filters and another acknowledged snapshot.
+                    if !resyncWithoutFilters, filter != HerdrEventFilter(snapshot: snapshot) { continue }
+                    resyncWithoutFilters = true
+                    resourceGeneration = UUID()
+                    if case .connected = connectionState {
+                        connectionState = .disconnected("Herdr event connection closed")
                     }
+                    try? await Task.sleep(for: .seconds(1))
                 }
-                guard !Task.isCancelled, generation == connectionGeneration else { break }
-                try? await Task.sleep(for: .seconds(1))
             }
         }
     }
@@ -3078,14 +3284,15 @@ final class RaiModel: ObservableObject {
         )
     }
 
+    @discardableResult
     private func refreshSnapshot(
         keepSelection: Bool,
         client: HerdrClient,
         generation: UUID
-    ) async {
+    ) async -> Bool {
         do {
             let newSnapshot = try await client.snapshot()
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration else { return false }
             let connectedState = ConnectionState.connected(
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
@@ -3111,6 +3318,9 @@ final class RaiModel: ObservableObject {
             if snapshotChanged {
                 snapshot = newSnapshot
             }
+            if let eventFilter, eventFilter != HerdrEventFilter(snapshot: newSnapshot) {
+                eventSubscription?.close()
+            }
             // A live server handoff can return an equal first snapshot. It
             // still needs new generation-bound workers and terminal setup.
             if snapshotChanged || firstSnapshotForGeneration {
@@ -3128,11 +3338,11 @@ final class RaiModel: ObservableObject {
                 pluginActionsGeneration = generation
                 await refreshPluginActions(generation: generation)
             }
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration else { return false }
             // Background processes can change without changing any snapshot
             // field. Keep this throttled refresh before the equality return.
             refreshBackgroundWork()
-            guard snapshotChanged else { return }
+            guard snapshotChanged else { return true }
 
             let selectionStillValid = selectedPaneID.map { id in
                 newSnapshot.panes.contains { $0.paneID == id }
@@ -3211,10 +3421,12 @@ final class RaiModel: ObservableObject {
                 }
             }
             bridgeServer.relay(snapshot: newSnapshot.addingBeacons(bridgeBeacons))
+            return true
         } catch {
             if generation == connectionGeneration {
                 connectionState = .disconnected(error.localizedDescription)
             }
+            return false
         }
     }
 
@@ -3566,7 +3778,7 @@ final class RaiModel: ObservableObject {
         for ch in ["/", ".", "_", " "] {
             slug = slug.replacingOccurrences(of: ch, with: "-")
         }
-        let dir = NSHomeDirectory() + "/.claude/projects/" + slug
+        let dir = AppDataPaths.current.claudeDirectory.appendingPathComponent("projects/" + slug).path
         // TIME-based cache, deliberately, checked BEFORE any filesystem work:
         // the live session's transcript changes every few seconds, so a content
         // signature would never hit, and even the directory listing + mtime
@@ -3668,7 +3880,7 @@ final class RaiModel: ObservableObject {
         for ch in ["/", ".", "_", " "] {
             slug = slug.replacingOccurrences(of: ch, with: "-")
         }
-        let dir = NSHomeDirectory() + "/.claude/projects/" + slug
+        let dir = AppDataPaths.current.claudeDirectory.appendingPathComponent("projects/" + slug).path
         let fm = FileManager.default
 
         var file: String?
@@ -3943,6 +4155,7 @@ final class RaiModel: ObservableObject {
         direction: SplitDirection,
         from paneID: String? = nil
     ) {
+        guard kind != .muse || (serverInfo?.protocol ?? 0) >= 22 else { return }
         guard let paneID = paneID ?? selectedPaneID,
               let pane = snapshot?.panes.first(where: { $0.paneID == paneID }) else {
             return
@@ -4074,6 +4287,7 @@ final class RaiModel: ObservableObject {
         workspaceID: String?,
         cwd: String?
     ) async -> Bool {
+        guard kind != .muse || (serverInfo?.protocol ?? 0) >= 22 else { return false }
         // Guarded like the UI's launchAgent: a herd switch between creating
         // the host pane below and the agent start after it would otherwise
         // carry a pane ID from the OLD herd's socket into a request against
@@ -4213,8 +4427,19 @@ final class RaiModel: ObservableObject {
     }
 
     /// Workspace close requested by the phone (already confirmed there).
-    func closeWorkspaceFromBridge(workspaceID: String) {
-        runAction(["workspace", "close", workspaceID], followFocus: false)
+    func closeWorkspaceFromBridge(workspaceID: String, expectedWorkspaceIDs: [String]? = nil, connectionID: String? = nil) async throws {
+        guard connectionID == resourceGeneration.uuidString else {
+            throw HerdrClientError.remote(code: "session_changed", message: "The server connection changed. Review the close action again.")
+        }
+        guard let snapshot,
+              let preview = WorkspaceClosePreview(snapshot: snapshot, workspaceID: workspaceID, closeGroup: expectedWorkspaceIDs != nil, connectionID: connectionID),
+              expectedWorkspaceIDs.map({ Set($0) == Set(preview.workspaceIDs) }) ?? true else {
+            throw HerdrClientError.remote(code: "workspace_changed", message: "The workspace list changed. Review the close action again.")
+        }
+        if expectedWorkspaceIDs != nil, connectionID != resourceGeneration.uuidString {
+            throw HerdrClientError.remote(code: "session_changed", message: "The server connection changed. Review the close action again.")
+        }
+        try await executeWorkspaceClose(preview)
     }
 
     /// Broadcast text to every pane in a tab, for the phone's compose bar.
@@ -4625,9 +4850,14 @@ final class RaiModel: ObservableObject {
 
     func preparePluginInstall(
         source: String,
-        reference: String
+        reference: String,
+        socketPath: String? = nil,
+        bootID: String? = nil
     ) async -> HerdrPluginInstallPreview {
-        guard remoteTarget == nil else {
+        let preparedSocket = socketPath ?? activeSocketPath
+        let preparedGeneration = connectionGeneration
+        guard !Task.isCancelled else { return .init(canConfirm: false, output: "Plugin review cancelled.") }
+        guard socketPath != nil || remoteTarget == nil else {
             return HerdrPluginInstallPreview(
                 canConfirm: false,
                 output: "Plugin install is available only for a local Herdr server."
@@ -4664,7 +4894,7 @@ final class RaiModel: ObservableObject {
             "/usr/bin/git",
             ["init", "--quiet", temporaryDirectory.path]
         )
-        guard initialized.succeeded else {
+        guard !Task.isCancelled, initialized.succeeded else {
             return pluginPreviewFailure(initialized)
         }
         let addedRemote = await runExternalResult(
@@ -4674,7 +4904,7 @@ final class RaiModel: ObservableObject {
                 "remote", "add", "origin", sourceParts.remoteURL,
             ]
         )
-        guard addedRemote.succeeded else {
+        guard !Task.isCancelled, addedRemote.succeeded else {
             return pluginPreviewFailure(addedRemote)
         }
         let fetched = await runExternalResult(
@@ -4685,7 +4915,7 @@ final class RaiModel: ObservableObject {
                 reference.isEmpty ? "HEAD" : reference,
             ]
         )
-        guard fetched.succeeded else {
+        guard !Task.isCancelled, fetched.succeeded else {
             return pluginPreviewFailure(fetched)
         }
         let resolved = await runExternalResult(
@@ -4698,7 +4928,7 @@ final class RaiModel: ObservableObject {
         let commit = resolved.standardOutput.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard resolved.succeeded, !commit.isEmpty else {
+        guard !Task.isCancelled, resolved.succeeded, !commit.isEmpty else {
             return pluginPreviewFailure(resolved)
         }
         let checkedOut = await runExternalResult(
@@ -4708,7 +4938,7 @@ final class RaiModel: ObservableObject {
                 "checkout", "--quiet", "--detach", "FETCH_HEAD",
             ]
         )
-        guard checkedOut.succeeded else {
+        guard !Task.isCancelled, checkedOut.succeeded else {
             return pluginPreviewFailure(checkedOut)
         }
         let resolvedRoot = temporaryDirectory.resolvingSymlinksInPath()
@@ -4728,14 +4958,24 @@ final class RaiModel: ObservableObject {
             )
         }
 
-        pendingPluginInstall = PendingHerdrPluginInstall(
+        guard !Task.isCancelled, socketPath != nil || (preparedGeneration == connectionGeneration
+              && Self.pathsMatch(preparedSocket, activeSocketPath) && remoteTarget == nil) else {
+            return .init(canConfirm: false, output: "The session changed or the plugin review was cancelled.")
+        }
+        let pending = PendingHerdrPluginInstall(
             source: source,
             resolvedCommit: commit,
-            socketPath: activeSocketPath,
+            socketPath: preparedSocket,
+            bootID: bootID,
             temporaryDirectory: temporaryDirectory
         )
+        if let previous = pendingPluginInstall {
+            try? FileManager.default.removeItem(at: previous.temporaryDirectory)
+        }
+        pendingPluginInstall = pending
         keepsTemporaryDirectory = true
         return HerdrPluginInstallPreview(
+            id: pending.id,
             canConfirm: true,
             output: """
                 Source: \(source)
@@ -4747,16 +4987,26 @@ final class RaiModel: ObservableObject {
         )
     }
 
-    func confirmPluginInstall() async -> String {
+    func confirmPluginInstall(expectedPreviewID: UUID) async -> String {
         guard let pending = pendingPluginInstall else {
             return "No plugin install is waiting for confirmation."
         }
-        guard Self.pathsMatch(pending.socketPath, activeSocketPath) else {
+        guard expectedPreviewID == pending.id else {
+            return "This plugin preview changed. Review the install again."
+        }
+        guard pending.bootID != nil || (remoteTarget == nil && Self.pathsMatch(pending.socketPath, activeSocketPath)) else {
             try? FileManager.default.removeItem(
                 at: pending.temporaryDirectory
             )
             pendingPluginInstall = nil
             return "Plugin install cancelled because the active Herdr session changed."
+        }
+        if let bootID = pending.bootID {
+            do { try await verifyPluginBoot(socketPath: pending.socketPath, bootID: bootID) }
+            catch { return "Plugin install cancelled: \(error.localizedDescription)" }
+            guard pendingPluginInstall?.id == expectedPreviewID, !Task.isCancelled else {
+                return "Plugin review changed or was cancelled."
+            }
         }
         let arguments = [
             "plugin", "install", pending.source,
@@ -4765,16 +5015,74 @@ final class RaiModel: ObservableObject {
         ]
         try? FileManager.default.removeItem(at: pending.temporaryDirectory)
         pendingPluginInstall = nil
-        return await commandOutput(
-            arguments,
-            fallback: "Herdr installed the plugin."
-        )
+        return await localPluginCommand(arguments, socketPath: pending.socketPath, fallback: "Herdr installed the plugin.")
     }
 
-    func cancelPluginInstall() async {
-        guard let pending = pendingPluginInstall else { return }
+    func cancelPluginInstall(expectedPreviewID: UUID) async {
+        guard let pending = pendingPluginInstall,
+              expectedPreviewID == pending.id else { return }
         try? FileManager.default.removeItem(at: pending.temporaryDirectory)
         pendingPluginInstall = nil
+    }
+
+    func endpointPluginInstall(_ operation: EndpointPluginOperation, socketPath: String, bootID: String) async throws -> JSONValue {
+        if case .cancelInstall(let id) = operation {
+            if let pending = pendingPluginInstall, Self.pathsMatch(pending.socketPath, socketPath) {
+                await cancelPluginInstall(expectedPreviewID: id)
+            }
+            return .object(["output": .string("Plugin preview closed.")])
+        }
+        try await verifyPluginBoot(socketPath: socketPath, bootID: bootID)
+        switch operation {
+        case .prepareInstall(let source, let reference):
+            let preview = await preparePluginInstall(source: source, reference: reference, socketPath: socketPath, bootID: bootID)
+            do { try await verifyPluginBoot(socketPath: socketPath, bootID: bootID) }
+            catch { await cancelPluginInstall(expectedPreviewID: preview.id); throw error }
+            return .object(["preview_id": .string(preview.id.uuidString), "can_confirm": .bool(preview.canConfirm),
+                            "output": .string(preview.output)])
+        case .confirmInstall(let id):
+            guard let pending = pendingPluginInstall, pending.id == id, pending.bootID == bootID,
+                  Self.pathsMatch(pending.socketPath, socketPath) else { throw HerdrEndpointError.staleIdentity }
+            return .object(["output": .string(await confirmPluginInstall(expectedPreviewID: id))])
+        case .uninstall(let id):
+            return .object(["output": .string(await localPluginCommand(["plugin", "uninstall", id], socketPath: socketPath,
+                                                                      fallback: "Herdr uninstalled the plugin."))])
+        default: throw HerdrEndpointError.malformed
+        }
+    }
+
+    private func verifyPluginBoot(socketPath: String, bootID: String) async throws {
+        try Task.checkCancellation()
+        let actualBoot: String
+        if let pluginBootReader { actualBoot = try await pluginBootReader(socketPath) }
+        else {
+            let endpoint = HerdrEndpointConnection()
+            defer { endpoint.disconnect() }
+            actualBoot = try await endpoint.connect(socketPath: RemoteConnection.clientSocketPath(for: socketPath)).bootID
+        }
+        try Task.checkCancellation()
+        guard actualBoot == bootID else { throw HerdrEndpointError.staleIdentity }
+    }
+
+    private func localPluginCommand(_ arguments: [String], socketPath: String, fallback: String) async -> String {
+        let process = configuredHerdrProcess(arguments, usesActiveSocket: false)
+        var environment = process.environment ?? [:]
+        environment["HERDR_SOCKET_PATH"] = socketPath
+        environment["HERDR_CONFIG_PATH"] = AppDataPaths.current.herdrConfigFile.path
+        process.environment = environment
+        let result: HerdrCommandResult
+        if let pluginInstallRunner { result = await pluginInstallRunner(arguments, environment) }
+        else {
+            do {
+                try Task.checkCancellation()
+                guard let executable = process.executableURL?.path else { return "Herdr is not installed." }
+                let output = try await MachineCommandRunner.capture(binary: executable, arguments: arguments,
+                                                                    timeout: 120, environment: environment)
+                result = .init(succeeded: output.status == 0, standardOutput: String(decoding: output.standardOutput, as: UTF8.self),
+                               standardError: String(decoding: output.standardError, as: UTF8.self))
+            } catch { return error.localizedDescription }
+        }
+        return result.displayOutput.isEmpty ? (result.succeeded ? fallback : "Herdr command failed.") : result.displayOutput
     }
 
     private func pluginPreviewFailure(
@@ -4859,11 +5167,18 @@ final class RaiModel: ObservableObject {
     }
 
     func integrationInstall(_ name: String) async -> String? {
-        await runHerdrCapture(["integration", "install", name])
+        await runIntegrationAction("install", name: name)
     }
 
     func integrationUninstall(_ name: String) async -> String? {
-        await runHerdrCapture(["integration", "uninstall", name])
+        await runIntegrationAction("uninstall", name: name)
+    }
+
+    private func runIntegrationAction(_ action: String, name: String) async -> String? {
+        guard AppDataPaths.current.canManageIntegration(name) else {
+            return "This integration requires a disposable test account. Its files cannot be isolated in this lab."
+        }
+        return await runHerdrCapture(["integration", action, name])
     }
 
     func configCheck() async -> String? {
@@ -4936,35 +5251,76 @@ final class RaiModel: ObservableObject {
         return await agentManifestStatus()
     }
 
+    func manageHerdr(_ request: HerdrManagementRequest) async -> HerdrManagementResult {
+        guard request.connectionID == bridgeHostCapabilities.connectionID,
+              bridgeHostCapabilities.supports(request.action) else {
+            return HerdrManagementResult(request: request, text: "The target changed or does not support this action. Review the server again.")
+        }
+        let text = switch request.action {
+        case .updateClient: await updateHerdr()
+        case .liveHandoff: await liveHandoff()
+        case .stopServer: await stopConfirmedServer(request)
+        }
+        return HerdrManagementResult(request: request, text: String(text.prefix(131_072)))
+    }
+
     func liveHandoff() async -> String {
+        guard !isManagingHerdr else { return "Another Herdr management action is still running." }
         guard remoteTarget == nil else {
             return "Live handoff is available only for a local Herdr server."
         }
+        guard serverInfo?.capabilities?.liveHandoff == true else {
+            return "This server does not advertise live handoff support."
+        }
+        isManagingHerdr = true
+        defer { isManagingHerdr = false }
+        let socketPath = client.socketPath
         let result = await runHerdrResult(["server", "live-handoff"])
         guard result.succeeded else {
             return result.errorOutput.isEmpty
                 ? "Herdr live handoff failed."
                 : result.errorOutput
         }
-        await reconnectAfterServerReplacement()
+        // A user can select another session while the old server hands off.
+        if client.socketPath == socketPath { await reconnectAfterServerReplacement() }
         return result.displayOutput.isEmpty
             ? "Herdr handed live panes to a new server."
             : result.displayOutput
     }
 
     func updateHerdr() async -> String {
+        guard !isManagingHerdr else { return "Another Herdr management action is still running." }
         guard remoteTarget == nil else {
             return "Herdr update is available only for a local server."
         }
-        let result = await runHerdrResult(
-            ["update", "--handoff"]
-        )
-        if result.succeeded,
-           result.displayOutput.localizedCaseInsensitiveContains(
-               "live handoff complete"
-           ) {
-            await reconnectAfterServerReplacement()
+        guard let serverInfo, let source = runtimeHerdrBinaryPath else {
+            return "Connect to a Herdr server before updating its client."
         }
+        isManagingHerdr = true
+        defer { isManagingHerdr = false }
+        let generation = connectionGeneration
+        let resource = resourceGeneration
+        do {
+            _ = try await HerdrClientArchive().retain(
+                source: URL(fileURLWithPath: source), protocolVersion: serverInfo.protocol
+            ) { executable in
+                let result = await self.runExternalResult(executable.path, ["api", "schema", "--json"])
+                guard result.succeeded,
+                      let data = result.standardOutput.data(using: .utf8),
+                      let schema = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let version = schema["protocol"] as? Int else {
+                    throw HerdrClientError.remote(code: "client_schema_unavailable", message: "Rai could not verify the retained client protocol. The installation was not updated.")
+                }
+                return version
+            }
+        } catch { return error.localizedDescription }
+        guard generation == connectionGeneration, resource == resourceGeneration else {
+            return "The connection changed. Start the update again."
+        }
+        terminalPool.runtimeExecutable = runtimeHerdrBinaryPath
+        let result = await runHerdrResult(
+            ["update"]
+        )
         if result.displayOutput.isEmpty {
             return result.succeeded
                 ? "Herdr is up to date."
@@ -4979,6 +5335,22 @@ final class RaiModel: ObservableObject {
             Self.loadProductAnnouncement(),
         ]
         .compactMap { $0 }
+    }
+
+    private func stopConfirmedServer(_ request: HerdrManagementRequest) async -> String {
+        guard !isManagingHerdr else { return "Another Herdr management action is still running." }
+        guard remoteTarget == nil, request.connectionID == bridgeHostCapabilities.connectionID,
+              bridgeHostCapabilities.supports(.stopServer) else {
+            return "The target changed. Review the server again."
+        }
+        isManagingHerdr = true
+        defer { isManagingHerdr = false }
+        let socketPath = client.socketPath
+        let session = currentSessionName
+        let process = configuredHerdrProcess(["server", "stop"], socketPath: socketPath)
+        let result = await runProcessResult(process)
+        return result.succeeded ? "Stopped Herdr server: \(session)." :
+            (result.errorOutput.isEmpty ? "Herdr could not stop the selected server." : result.errorOutput)
     }
 
     func stopServer() async -> Bool {
@@ -5008,6 +5380,9 @@ final class RaiModel: ObservableObject {
         // Show its row again and permit a later close attempt.
         closingTabIDs.removeAll()
         eventTask?.cancel()
+        eventSubscription?.close()
+        eventSubscription = nil
+        eventFilter = nil
         eventTask = nil
         flushTask?.cancel()
         flushTask = nil
@@ -5023,13 +5398,7 @@ final class RaiModel: ObservableObject {
         connectionGeneration = generation
         client = HerdrClient(socketPath: activeSocketPath)
         connectionState = .connecting
-        await refreshSnapshot(
-            keepSelection: true,
-            client: client,
-            generation: generation
-        )
-        guard generation == connectionGeneration else { return }
-        startEventLoop(client: client, generation: generation)
+        await startEventLoop(client: client, generation: generation, keepSelection: true)
     }
 
     private static func loadReleaseNotes() -> HerdrNewsItem? {
@@ -5136,15 +5505,7 @@ final class RaiModel: ObservableObject {
     }
 
     private static func herdrConfigDirectory() -> URL {
-        let environment = ProcessInfo.processInfo.environment
-        if let path = environment["HERDR_CONFIG_PATH"], !path.isEmpty {
-            return URL(fileURLWithPath: path).deletingLastPathComponent()
-        }
-        if let path = environment["XDG_CONFIG_HOME"], !path.isEmpty {
-            return URL(fileURLWithPath: path).appendingPathComponent("herdr")
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/herdr")
+        AppDataPaths.current.herdrConfigFile.deletingLastPathComponent()
     }
 
     private static func herdrStateDirectory() -> URL {
@@ -5206,7 +5567,7 @@ final class RaiModel: ObservableObject {
         }
     }
 
-    private struct HerdrCommandResult {
+    struct HerdrCommandResult {
         let succeeded: Bool
         let standardOutput: String
         let standardError: String
@@ -5245,14 +5606,16 @@ final class RaiModel: ObservableObject {
         _ executablePath: String,
         _ arguments: [String]
     ) async -> HerdrCommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
+        if let pluginPreviewRunner { return await pluginPreviewRunner(executablePath, arguments) }
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
-        process.environment = environment
-        return await runProcessResult(process)
+        do {
+            let result = try await MachineCommandRunner.capture(binary: executablePath, arguments: arguments,
+                                                               timeout: 60, environment: environment)
+            return .init(succeeded: result.status == 0,
+                         standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+                         standardError: String(decoding: result.standardError, as: UTF8.self))
+        } catch { return .init(succeeded: false, standardOutput: "", standardError: error.localizedDescription) }
     }
 
     private func runProcessResult(
@@ -5308,7 +5671,10 @@ final class RaiModel: ObservableObject {
         socketPath: String? = nil
     ) -> Process {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        // Installation and session management must never launch an archived server.
+        let executable = !usesActiveSocket || args == ["update"] || args == ["server", "live-handoff"]
+            ? HerdrCLI.resolvedBinaryPath : runtimeHerdrBinaryPath
+        process.executableURL = executable.map { URL(fileURLWithPath: $0) }
         process.arguments = args
         var environment = ProcessInfo.processInfo.environment
         let path = environment["PATH"] ?? ""

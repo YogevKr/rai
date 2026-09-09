@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Network
 import RaiCore
 import SystemConfiguration
@@ -169,10 +170,12 @@ final class RaiBridgeServer: ObservableObject {
     private static let enabledKey = "companionBridgeEnabled"
     private static let pushRegistrationsKey = "companionBridgePushRegistrations"
     private static let credentialMigrationKey = "companionBridgeCredentialMigrationV1"
+    private var machineObservation: AnyCancellable?
     private unowned let model: RaiModel
     private let userDefaults: UserDefaults
     private let queue = DispatchQueue(label: "ai.sawmills.rai.bridge")
     private var listener: NWListener?
+    private var hostActivity: BridgeHostActivity?
     private var clients: [ObjectIdentifier: BridgeClient] = [:]
     private let liveConnections = BridgeLiveConnectionRegistry()
     private let credentialStore: BridgeDeviceCredentialStore
@@ -199,8 +202,7 @@ final class RaiBridgeServer: ObservableObject {
     private var historyReceipts = HistoryReceiptLedger<ObjectIdentifier>()
     private var transcriptSnapshotSessionName: String?
     private let transcriptIndex = ClaudeTranscriptIndex(
-        claudeDirectory: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent(".claude", isDirectory: true)
+        claudeDirectory: AppDataPaths.current.claudeDirectory
     )
     var pushPreferencesDidChange: ((String, PushPreferences) -> Void)?
 
@@ -252,7 +254,15 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     func start() {
+        MachineDirectory.shared.notificationHandler = { [weak self] changes in
+            self?.relayMachineNotifications(changes)
+        }
+
         guard listener == nil else { return }
+        Task {
+            let directory = MachineDirectory.shared
+            await directory.perform(.init(revision: directory.state.revision, operation: .refresh))
+        }
         if credentialStore.validPairingCode() == nil {
             _ = credentialStore.regeneratePairingCode()
         }
@@ -272,8 +282,10 @@ final class RaiBridgeServer: ObservableObject {
                 return
             }
             let listener = try NWListener(using: parameters, on: nwPort)
-            listener.service = NWListener.Service(name: "rai", type: "_rai._tcp")
-            listener.stateUpdateHandler = { [weak self] state in
+            if !AppDataPaths.current.isIsolated {
+                listener.service = NWListener.Service(name: "rai", type: "_rai._tcp")
+            }
+            hostActivity = BridgeHostActivity(listener: listener) { [weak self] state in
                 Task { @MainActor in self?.listenerDidChange(state) }
             }
             listener.serviceRegistrationUpdateHandler = { [weak self] change in
@@ -307,11 +319,15 @@ final class RaiBridgeServer: ObservableObject {
         }
         listener?.cancel()
         listener = nil
+        hostActivity?.stop()
+        hostActivity = nil
         stopAllObserveStreams()
         for (id, client) in clients {
             historyDelivery.removeConnection(id)
             historyReceipts.removeConnection(id)
             client.connection.cancel()
+            client.explanationTask?.cancel()
+            client.endpointView?.stop()
         }
         clients.removeAll()
         liveConnections.removeAll()
@@ -329,6 +345,10 @@ final class RaiBridgeServer: ObservableObject {
     }
 
     private func startTailscaleServe() {
+        guard !AppDataPaths.current.isIsolated else {
+            tailscaleServeState = .stopped
+            return
+        }
         let previousTailscaleTask = tailscaleTask
         let tailscaleServe = tailscaleServe
         let bridgePort = port
@@ -384,6 +404,7 @@ final class RaiBridgeServer: ObservableObject {
         let revokedClients = liveConnections.revoke(deviceID: id)
         for clientID in revokedClients {
             stopObserveStreams(for: clientID)
+            clients[clientID]?.endpointView?.stop()
             clients.removeValue(forKey: clientID)
             historyDelivery.removeConnection(clientID)
             historyReceipts.removeConnection(clientID)
@@ -418,7 +439,7 @@ final class RaiBridgeServer: ObservableObject {
         transcriptSnapshotSessionName = model.currentSessionName
         invalidateTranscriptCache(using: snapshot)
         broadcast(
-            .snapshot(snapshot, sessionName: transcriptSnapshotSessionName),
+            .snapshot(snapshot, sessionName: transcriptSnapshotSessionName, capabilities: model.bridgeHostCapabilities),
             onlyToSubscribers: true
         )
         restartStreamsWhosePaneResized(snapshot)
@@ -460,6 +481,10 @@ final class RaiBridgeServer: ObservableObject {
         now: Date = Date(),
         calendar: Calendar = .current
     ) {
+        guard burst.canDeliver(remoteHost: model.remoteTarget != nil) else {
+            recordNoDelivery("Remote notifications require a saved machine identity.")
+            return
+        }
         let configuration = apnsSettings.configuration
         let registrations = pushRegistrations
         guard !registrations.isEmpty else {
@@ -525,6 +550,22 @@ final class RaiBridgeServer: ObservableObject {
             } else {
                 self.recordDelivery(reports.sorted { $0.id < $1.id })
             }
+        }
+    }
+
+    private func relayMachineNotifications(_ changes: MachineNotificationChanges) {
+        // Lab runs validate payloads and routes without contacting production APNs.
+        guard !AppDataPaths.current.isIsolated else { return }
+        if !changes.retiredIDs.isEmpty { retractPushNotifications(identifiers: changes.retiredIDs) }
+        for notice in changes.notices {
+            let resource = notice.resource
+            if resource.endpoint.profileID == nil,
+               MachineDirectory.shared.resolve(resource.endpoint, connectionID: resource.connectionID) == model.activeSocketPath { continue }
+            let event = PhonePushEvent(paneID: resource.paneID, paneName: notice.agentName,
+                workspaceID: notice.workspaceID, workspaceName: notice.machineLabel,
+                status: notice.status, allowsRemoteActions: false, occurredAt: notice.occurredAt,
+                machineResource: resource)
+            sendPush(PhonePushBurst(events: [event]))
         }
     }
 
@@ -666,18 +707,20 @@ final class RaiBridgeServer: ObservableObject {
             title: burst.title,
             subtitle: burst.workspaceName,
             body: burst.body,
-            paneID: burst.paneID,
-            requestID: burst.requestID,
+            paneID: registration.supportsScopedNotifications ? burst.paneID : nil,
+            requestID: registration.supportsScopedNotifications ? burst.requestID : nil,
             workspaceID: burst.workspaceID,
             workspace: burst.workspaceName,
-            category: burst.category,
+            category: registration.supportsScopedNotifications ? burst.category : nil,
             notificationIDs: burst.notificationIDs,
             threadID: burst.threadID,
             summaryArgument: burst.summaryArgument,
             summaryArgumentCount: burst.events.count,
             occurredAt: burst.occurredAt,
             interruptionLevel: burst.interruptionLevel,
-            badge: badge
+            badge: badge,
+            machineResource: burst.machineResource,
+            hostConnectionID: burst.hostConnectionID
         )
         let report = PushDeliveryReport(
             deviceToken: registration.deviceToken,
@@ -959,7 +1002,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(
                     message: "Bridge audit log is unavailable.",
                     code: .auditUnavailable,
-                    detail: "The Mac could not open the audit log."
+                    detail: "The Mac could not open the audit log.",
+                    requestID: auditEvent.targetIDs["request_id"]
                 ), to: client)
                 return
             }
@@ -972,7 +1016,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(.error(
                     message: "Bridge audit write failed.",
                     code: .auditUnavailable,
-                    detail: "The Mac could not append the audit event."
+                    detail: "The Mac could not append the audit event.",
+                    requestID: auditEvent.targetIDs["request_id"]
                 ), to: client)
                 return
             }
@@ -988,7 +1033,8 @@ final class RaiBridgeServer: ObservableObject {
                 send(
                     .snapshot(
                         snapshot.addingBeacons(model.beaconsForBridge),
-                        sessionName: transcriptSnapshotSessionName
+                        sessionName: transcriptSnapshotSessionName,
+                        capabilities: model.bridgeHostCapabilities
                     ),
                     to: client
                 )
@@ -1026,6 +1072,39 @@ final class RaiBridgeServer: ObservableObject {
         case let .detachStream(paneID):
             cancelPendingObserveStart(paneID: paneID, for: client)
             stopObserveStream(paneID: paneID, for: client)
+        case let .notificationAction(action):
+            guard action.isAllowed(currentConnectionID: model.bridgeHostCapabilities.connectionID, remote: model.remoteTarget != nil) else {
+                send(.error(message: "The notification host changed. Open the current terminal before responding.",
+                            code: .invalidRequest, detail: nil), to: client)
+                return
+            }
+            switch action.operation {
+            case .input(let bytes):
+                guard let data = Data(base64Encoded: bytes), data.count <= 65_536 else { return }
+                let hostClient = model.client
+                let bootID = await model.notificationEndpointBootID
+                let endpointIdentity = bootID.map {
+                    (socketPath: RemoteConnection.clientSocketPath(for: hostClient.socketPath), bootID: $0)
+                }
+                let requiresEndpoint = model.bridgeHostCapabilities.server?.capabilities?.endpointProtocolGeneration == 1
+                await perform(for: client) {
+                    guard !requiresEndpoint || endpointIdentity != nil else { throw HerdrEndpointError.staleIdentity }
+                    try await hostClient.sendInput(paneID: action.paneID, bytes: [UInt8](data),
+                        endpointIdentity: endpointIdentity, validateBeforeSend: { [weak self] in
+                            try await MainActor.run {
+                                guard let self,
+                                      action.isAllowed(currentConnectionID: self.model.bridgeHostCapabilities.connectionID,
+                                                       remote: self.model.remoteTarget != nil) else {
+                                    throw HerdrEndpointError.staleIdentity
+                                }
+                            }
+                        })
+                }
+            case .decide(let requestID, let decision):
+                let accepted = model.decide(paneID: action.paneID, requestID: requestID, decision: decision)
+                send(.decisionResult(paneID: action.paneID, requestID: requestID, accepted: accepted,
+                                     message: accepted ? nil : "That prompt already closed"), to: client)
+            }
         case let .input(paneID, bytesBase64):
             guard let data = Data(base64Encoded: bytesBase64) else {
                 send(.error(
@@ -1073,8 +1152,29 @@ final class RaiBridgeServer: ObservableObject {
             }
         case let .renameWorkspace(workspaceID, label):
             model.renameWorkspaceFromBridge(workspaceID: workspaceID, label: label)
-        case let .closeWorkspace(workspaceID):
-            model.closeWorkspaceFromBridge(workspaceID: workspaceID)
+        case let .closeWorkspace(workspaceID, connectionID):
+            await perform(for: client) {
+                try await self.model.closeWorkspaceFromBridge(workspaceID: workspaceID, connectionID: connectionID)
+            }
+        case let .closeWorkspaceGroup(workspaceID, expectedWorkspaceIDs, connectionID):
+            await perform(for: client) {
+                try await self.model.closeWorkspaceFromBridge(workspaceID: workspaceID, expectedWorkspaceIDs: expectedWorkspaceIDs, connectionID: connectionID)
+            }
+        case let .explainAgent(paneID, requestID, connectionID):
+            explainAgent(AgentExplanation(paneID: paneID, requestID: requestID, connectionID: connectionID), for: client)
+        case let .machineRequest(request):
+            await handleMachine(request, for: client)
+        case let .endpointRequest(request):
+            handleEndpoint(request, for: client)
+        case let .manageHerdr(request):
+            // An accepted management action continues if its phone disconnects.
+            // Keep reading phone messages while the command runs. Never replay it.
+            Task { [weak self, weak client] in
+                guard let self, let client else { return }
+                let result = await self.model.manageHerdr(request)
+                guard self.clients[ObjectIdentifier(client.connection)] === client else { return }
+                self.send(.herdrManagementResult(result), to: client)
+            }
         case let .broadcastInput(tabID, text):
             model.broadcastFromBridge(tabID: tabID, text: text)
         case .listSessions:
@@ -1238,7 +1338,8 @@ final class RaiBridgeServer: ObservableObject {
             client.decisionPushAuthorized = pushAuthorized
             updatePushRegistrationCapability(
                 deviceID: client.deviceID,
-                supported: pushAuthorized
+                supported: pushAuthorized,
+                scopedNotifications: client.info?.capabilities?.contains(BridgeCapability.notificationActions) == true
             )
             model.reevaluatePendingDecisions()
         case let .readScrollback(paneID, lines, rows, fullGrid, knownHash):
@@ -1394,7 +1495,8 @@ final class RaiBridgeServer: ObservableObject {
                 deviceToken: normalizedToken,
                 environment: environment,
                 deviceID: client.deviceID,
-                supportsPermissionDecisions: client.decisionPushAuthorized
+                supportsPermissionDecisions: client.decisionPushAuthorized,
+                supportsScopedNotifications: client.info?.capabilities?.contains(BridgeCapability.notificationActions) == true
             )
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
@@ -1405,7 +1507,7 @@ final class RaiBridgeServer: ObservableObject {
                 detail: "Pair and hello are handshake messages."
             ), to: client)
         case .paired, .welcome, .authFailed, .snapshot, .event, .paneFrame, .scrollback, .scrollbackUnchanged, .error,
-             .paneError, .decisionResult,
+             .paneError, .decisionResult, .agentExplanation, .herdrManagementResult, .endpointState, .machineState,
              .backgroundWork, .sessions, .historyPage, .historyError, .pushPrefsState:
             send(.error(
                 message: "Server-to-client message received from client.",
@@ -1526,12 +1628,15 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
-    nonisolated private static func runHerdrCapture(_ arguments: [String]) async -> Data? {
+    nonisolated private static func runHerdrCapture(_ arguments: [String], executable: String?, socketPath: String) async -> Data? {
         let process = Process()
         let cancellableProcess = CancellableCaptureProcess(process)
         let stdout = Pipe()
-        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        process.executableURL = executable.map { URL(fileURLWithPath: $0) }
         process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["HERDR_SOCKET_PATH"] = socketPath
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
@@ -1566,6 +1671,8 @@ final class RaiBridgeServer: ObservableObject {
         let nativeSize = fullGrid
             ? nativeGridSize(paneID: paneID, fallbackCols: cols, fallbackRows: rows)
             : nil
+        let executable = model.runtimeHerdrBinaryPath
+        let socketPath = model.client.socketPath
         Task { [weak self, weak client] in
             let frame: PaneFirstFrame?
             if let nativeSize {
@@ -1574,7 +1681,7 @@ final class RaiBridgeServer: ObservableObject {
                     cols: nativeSize.cols,
                     rows: nativeSize.rows,
                     run: { arguments in
-                        await Self.runHerdrCapture(arguments)
+                        await Self.runHerdrCapture(arguments, executable: executable, socketPath: socketPath)
                     }
                 )
             } else {
@@ -1700,7 +1807,10 @@ final class RaiBridgeServer: ObservableObject {
 
         let process = Process()
         let stdout = Pipe()
-        process.executableURL = URL(fileURLWithPath: HerdrCLI.binaryPath)
+        process.executableURL = model.runtimeHerdrBinaryPath.map { URL(fileURLWithPath: $0) }
+        var environment = ProcessInfo.processInfo.environment
+        environment["HERDR_SOCKET_PATH"] = model.client.socketPath
+        process.environment = environment
         process.arguments = fullGrid
             ? ["terminal", "session", "observe", paneID]
                 + (paneRows.map { ["--rows", String($0)] } ?? [])
@@ -1880,6 +1990,9 @@ final class RaiBridgeServer: ObservableObject {
     private func broadcast(_ message: BridgeMessage, onlyToSubscribers: Bool) {
         for client in clients.values
         where !onlyToSubscribers || client.isSubscribed {
+            if let view = client.endpointView, !endpointIdentityIsCurrent(view.identity, for: client) {
+                view.invalidate()
+            }
             send(message, to: client)
         }
     }
@@ -1911,8 +2024,78 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    private func endpointIdentityIsCurrent(_ identity: EndpointViewIdentity, for client: BridgeClient? = nil) -> Bool {
+        if client?.endpointView?.ownsRetainedConnection(identity) == true { return true }
+        if identity.machineEndpoint != nil { return MachineDirectory.shared.accepts(identity) }
+        return identity.connectionID == model.bridgeHostCapabilities.connectionID
+    }
+
+    private func handleMachine(_ request: MachineRequest, for client: BridgeClient) async {
+        guard client.info?.capabilities?.contains(BridgeCapability.machineDirectory) == true else {
+            send(.error(message: "Update the phone app to manage machines.", code: .invalidRequest,
+                detail: nil, requestID: request.id.uuidString), to: client)
+            return
+        }
+        if machineObservation == nil {
+            machineObservation = MachineDirectory.shared.$state.sink { [weak self] state in
+                guard let self else { return }
+                for client in self.clients.values where client.info?.capabilities?.contains(BridgeCapability.machineDirectory) == true {
+                    self.send(.machineState(state), to: client)
+                }
+            }
+        }
+        await MachineDirectory.shared.perform(request)
+        guard clients[ObjectIdentifier(client.connection)] === client else { return }
+        send(.machineState(MachineDirectory.shared.state), to: client)
+    }
+
+    private func handleEndpoint(_ request: EndpointBridgeRequest, for client: BridgeClient) {
+        if case .close = request.operation, let view = client.endpointView, view.identity == request.identity {
+            view.handle(request)
+            client.endpointView = nil
+            return
+        }
+        let machine = request.identity.machineEndpoint
+        let retained = client.endpointView?.ownsRetainedConnection(request.identity) == true
+        let supported = retained || (machine != nil
+            ? client.info?.capabilities?.contains(BridgeCapability.machineDirectory) == true
+            : model.bridgeHostCapabilities.operations.contains(BridgeCapability.nativeEndpoint))
+        guard client.info?.capabilities?.contains(BridgeCapability.nativeEndpoint) == true,
+              supported, endpointIdentityIsCurrent(request.identity, for: client) else {
+            send(.error(message: "This workspace view no longer matches the host connection.",
+                        code: .invalidRequest, detail: "Open the workspace view again.", requestID: request.requestID), to: client)
+            return
+        }
+        if case .open = request.operation {
+            guard request.sequence == 1, request.identity != client.endpointView?.identity else {
+                send(.error(message: "The workspace view request is stale.", code: .invalidRequest,
+                            detail: "Open a new workspace view.", requestID: request.requestID), to: client)
+                return
+            }
+            client.endpointView?.stop()
+            let identity = request.identity
+            let socketPath = machine.flatMap { MachineDirectory.shared.resolve($0, connectionID: identity.connectionID) }
+                ?? model.activeSocketPath
+            client.endpointView = EndpointBridgeHost(identity: identity, socketPath: socketPath,
+                remoteContext: machine == nil ? model.activeRemoteContext : nil) { [weak self, weak client] state, completion in
+                guard let self, let client, self.clients[ObjectIdentifier(client.connection)] === client,
+                      client.endpointView?.identity == identity else { completion(); return }
+                self.send(.endpointState(state), to: client, completion: completion)
+            }
+        }
+        guard let view = client.endpointView, view.identity == request.identity else {
+            send(.error(message: "The workspace view is closed.", code: .invalidRequest,
+                        detail: "Open a new workspace view.", requestID: request.requestID), to: client)
+            return
+        }
+        view.handle(request)
+        if case .close = request.operation { client.endpointView = nil }
+    }
+
     private func removeClient(_ id: ObjectIdentifier) {
         stopObserveStreams(for: id)
+        clients[id]?.explanationTask?.cancel()
+        clients[id]?.endpointView?.stop()
         clients.removeValue(forKey: id)
         liveConnections.remove(id: id)
         historyDelivery.removeConnection(id)
@@ -1925,11 +2108,34 @@ final class RaiBridgeServer: ObservableObject {
         connectedDeviceCount = liveConnections.connectedDeviceCount
     }
 
+    private func explainAgent(_ request: AgentExplanation, for client: BridgeClient) {
+        client.explanationTask?.cancel()
+        let herd = model.client
+        client.explanationTask = Task { [weak self, weak client] in
+            guard let self, let client else { return }
+            var response = request
+            if request.connectionID == self.model.bridgeHostCapabilities.connectionID {
+                do {
+                    let text = try await herd.explainAgent(request.paneID)
+                    response.text = text.count > 131_072
+                        ? String(text.prefix(131_072)) + "\nExplanation truncated."
+                        : text
+                } catch { response.text = error.localizedDescription }
+            }
+            guard !Task.isCancelled else { return }
+            if self.model.client !== herd || request.connectionID != self.model.bridgeHostCapabilities.connectionID {
+                response.text = "The server connection changed. Request the explanation again."
+            }
+            self.send(.agentExplanation(response), to: client)
+        }
+    }
+
     private func registerPush(
         deviceToken: String,
         environment: String,
         deviceID: String?,
-        supportsPermissionDecisions: Bool
+        supportsPermissionDecisions: Bool,
+        supportsScopedNotifications: Bool
     ) {
         pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
@@ -1938,7 +2144,8 @@ final class RaiBridgeServer: ObservableObject {
                 deviceToken: deviceToken,
                 environment: environment,
                 deviceID: deviceID,
-                supportsPermissionDecisions: supportsPermissionDecisions
+                supportsPermissionDecisions: supportsPermissionDecisions,
+                supportsScopedNotifications: supportsScopedNotifications
             )
         )
         persistPushRegistrations()
@@ -1953,19 +2160,20 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
-    private func updatePushRegistrationCapability(deviceID: String?, supported: Bool) {
+    private func updatePushRegistrationCapability(deviceID: String?, supported: Bool, scopedNotifications: Bool) {
         guard let deviceID else { return }
         var changed = false
         pushRegistrations = Set(pushRegistrations.map { registration in
             guard registration.deviceID == deviceID,
-                  registration.supportsPermissionDecisions != supported
+                  registration.supportsPermissionDecisions != supported || registration.supportsScopedNotifications != scopedNotifications
             else { return registration }
             changed = true
             return PushRegistration(
                 deviceToken: registration.deviceToken,
                 environment: registration.environment,
                 deviceID: registration.deviceID,
-                supportsPermissionDecisions: supported
+                supportsPermissionDecisions: supported,
+                supportsScopedNotifications: scopedNotifications
             )
         })
         if changed { persistPushRegistrations() }
@@ -2004,7 +2212,8 @@ final class RaiBridgeServer: ObservableObject {
         client.decisionPushAuthorized = info.supportsPermissionDecisionPush
         updatePushRegistrationCapability(
             deviceID: device.id,
-            supported: client.decisionPushAuthorized
+            supported: client.decisionPushAuthorized,
+            scopedNotifications: info.capabilities?.contains(BridgeCapability.notificationActions) == true
         )
         pushBadgeLedger.removeAll()
         let id = ObjectIdentifier(client.connection)
@@ -2040,25 +2249,29 @@ final class RaiBridgeServer: ObservableObject {
 /// One APNs registration. Identity is the token + environment pair: the
 /// paired-device id is metadata, so a ledger key rebuilt from a delivery
 /// report (which carries no device id) still finds the registration.
-private struct PushRegistration: Codable, Hashable, Sendable {
+struct PushRegistration: Codable, Hashable, Sendable {
     let deviceToken: String
     let environment: String
     let deviceID: String?
     let decisionCapable: Bool?
+    let scopedNotificationCapable: Bool?
 
     init(
         deviceToken: String,
         environment: String,
         deviceID: String? = nil,
-        supportsPermissionDecisions: Bool = false
+        supportsPermissionDecisions: Bool = false,
+        supportsScopedNotifications: Bool = false
     ) {
         self.deviceToken = deviceToken
         self.environment = environment
         self.deviceID = deviceID
         decisionCapable = supportsPermissionDecisions
+        scopedNotificationCapable = supportsScopedNotifications
     }
 
     var supportsPermissionDecisions: Bool { decisionCapable == true }
+    var supportsScopedNotifications: Bool { scopedNotificationCapable == true }
 
     static func == (lhs: PushRegistration, rhs: PushRegistration) -> Bool {
         lhs.deviceToken == rhs.deviceToken && lhs.environment == rhs.environment
@@ -2235,6 +2448,8 @@ private final class BridgeClient: @unchecked Sendable {
     var deviceLabel: String?
     var decisionAvailable = false
     var decisionPushAuthorized = false
+    var explanationTask: Task<Void, Never>?
+    var endpointView: EndpointBridgeHost?
 
     init(connection: NWConnection) {
         self.connection = connection

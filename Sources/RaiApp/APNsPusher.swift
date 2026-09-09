@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RaiCore
 
 /// Keeps APNs operations ordered for one device without coupling different devices.
 @MainActor
@@ -191,7 +192,9 @@ actor APNsPusher {
         summaryArgumentCount: Int,
         occurredAt: Date,
         interruptionLevel: APNsInterruptionLevel,
-        badge: Int? = nil
+        badge: Int? = nil,
+        machineResource: MachineResource? = nil,
+        hostConnectionID: String? = nil
     ) async -> Result {
         let payload: Data
         do {
@@ -210,7 +213,9 @@ actor APNsPusher {
                 summaryArgumentCount: summaryArgumentCount,
                 occurredAt: occurredAt,
                 interruptionLevel: interruptionLevel,
-                badge: badge
+                badge: badge,
+                machineResource: machineResource,
+                hostConnectionID: hostConnectionID
             )
         } catch {
             return Result(status: nil, reason: error.localizedDescription)
@@ -372,13 +377,17 @@ enum APNsPayloadBuilder {
         summaryArgumentCount: Int,
         occurredAt: Date,
         interruptionLevel: APNsInterruptionLevel,
-        badge: Int?
+        badge: Int?,
+        machineResource: MachineResource? = nil,
+        hostConnectionID: String? = nil
     ) throws -> Data {
         let title = title.apnsPrefix(maxBytes: 256)
         let subtitle = subtitle?.apnsPrefix(maxBytes: 256)
-        let paneID = paneID.flatMap {
+        let category = machineResource == nil ? category : nil
+        let requestID = machineResource == nil ? requestID : nil
+        let paneID = machineResource == nil ? paneID.flatMap {
             $0.utf8.count <= 512 ? $0 : nil
-        }
+        } : nil
         let workspaceID = workspaceID.flatMap {
             $0.utf8.count <= 512 ? $0 : nil
         }
@@ -404,6 +413,8 @@ enum APNsPayloadBuilder {
                 ),
                 paneID: paneID,
                 requestID: requestID,
+                machineResource: machineResource,
+                hostConnectionID: machineResource == nil ? hostConnectionID : nil,
                 workspaceID: workspaceID,
                 workspace: workspace,
                 notificationID: notificationIDs.count == 1 ? notificationIDs[0] : nil,
@@ -539,6 +550,8 @@ enum APNsPayloadBuilder {
         let aps: APS
         let paneID: String?
         let requestID: String?
+        let machineResource: MachineResource?
+        let hostConnectionID: String?
         let workspaceID: String?
         let workspace: String?
         let notificationID: String?
@@ -547,7 +560,7 @@ enum APNsPayloadBuilder {
         let triage: Bool?
 
         enum CodingKeys: String, CodingKey {
-            case aps, paneID, workspaceID, workspace
+            case aps, paneID, workspaceID, workspace, machineResource, hostConnectionID
             case notificationID, notificationIDs, notificationTimestamp, triage
             case requestID = "request_id"
         }

@@ -343,6 +343,48 @@ final class OutboxTests: XCTestCase {
         )
     }
 
+    func testCancelledReplyCleansTemporaryStreamWithoutDetachingNewOwner() async throws {
+        for openDuringWait in [false, true] {
+            let attached = expectation(description: "temporary reply attachment")
+            var attachments = 0
+            var detaches: [String] = []
+            var sentInput = false
+            let connection = BridgeConnection(messageSender: { message in
+                switch message {
+                case .attachStream:
+                    attachments += 1
+                    if attachments == 1 { attached.fulfill() }
+                case .detachStream(let paneID):
+                    detaches.append(paneID)
+                case .input, .notificationAction:
+                    sentInput = true
+                default:
+                    break
+                }
+            })
+            defer { connection.disconnect() }
+            connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+            let pairing = try Pairing(host: "fixture.invalid", port: 9876, token: "fixture")
+            let reply = Task {
+                await connection.connectAndSendComposedLine(line("cancelled reply"), to: "pane-a", pairing: pairing)
+            }
+            await fulfillment(of: [attached], timeout: 2)
+            for _ in 0..<100 where connection.actionError != PasswordPromptGuard.waiting {
+                await Task.yield()
+            }
+            XCTAssertEqual(connection.actionError, PasswordPromptGuard.waiting)
+            if openDuringWait { connection.openPane(paneID: "pane-a") }
+            reply.cancel()
+            let delivered = await reply.value
+            for _ in 0..<100 { await Task.yield() }
+
+            XCTAssertFalse(delivered)
+            XCTAssertFalse(sentInput)
+            XCTAssertTrue(connection.outbox.isEmpty)
+            XCTAssertEqual(detaches, openDuringWait ? [] : ["pane-a"])
+        }
+    }
+
     func testReplyDeadlineIncludesSlowAttachStep() async throws {
         let clearFrame = frame("$", paneID: "pane-a")
         var connection: BridgeConnection!

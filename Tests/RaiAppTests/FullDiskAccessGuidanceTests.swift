@@ -1,28 +1,32 @@
 import XCTest
 @testable import RaiApp
 
-@MainActor
 final class FullDiskAccessGuidanceTests: XCTestCase {
-    func testShowsOnceAcrossWindowsAndAppRestarts() throws {
-        let name = "rai-disk-access-tests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        let guidance = FullDiskAccessGuidance(defaults: defaults)
-
-        XCTAssertTrue(guidance.claimLaunchPresentation())
-        XCTAssertFalse(guidance.claimLaunchPresentation(), "A second window must not repeat the dialog")
-
-        let nextLaunch = FullDiskAccessGuidance(defaults: try XCTUnwrap(UserDefaults(suiteName: name)))
-        XCTAssertFalse(nextLaunch.claimLaunchPresentation(), "Relaunching must not nag after dismissal or opening Settings")
+    func testNoHelpWithoutAnAccessFailure() {
+        XCTAssertFalse(FullDiskAccessGuidance.isAccessFailure(nil))
+        for error in [NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError),
+                      NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError),
+                      NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)] {
+            XCTAssertFalse(FullDiskAccessGuidance.isAccessFailure(error))
+        }
     }
 
-    func testUpgradeShowsHelpWithoutChangingExistingPreferences() throws {
-        let name = "rai-disk-access-tests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set(true, forKey: "codexMicroEnabled")
+    func testOffersHelpForActualReadAndWriteDenials() {
+        for error in [NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError),
+                      NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError),
+                      NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)),
+                      NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))] {
+            XCTAssertTrue(FullDiskAccessGuidance.isAccessFailure(error))
+        }
+    }
 
-        XCTAssertTrue(FullDiskAccessGuidance(defaults: defaults).claimLaunchPresentation())
-        XCTAssertTrue(defaults.bool(forKey: "codexMicroEnabled"))
+    func testRecognizesWrappedAccessFailuresWithoutMatchingErrorText() {
+        let underlying = NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        let wrapped = NSError(domain: NSCocoaErrorDomain, code: NSFileReadUnknownError,
+                              userInfo: [NSUnderlyingErrorKey: underlying])
+        XCTAssertTrue(FullDiskAccessGuidance.isAccessFailure(wrapped))
+        let unrelated = NSError(domain: "test", code: Int(EACCES),
+                                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"])
+        XCTAssertFalse(FullDiskAccessGuidance.isAccessFailure(unrelated))
     }
 }

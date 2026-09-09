@@ -7,6 +7,15 @@ import Foundation
 public let bridgeProtocolVersion = 6
 
 public enum BridgeCapability {
+    public static let workspaceGroupClose = "workspace_group_close"
+    public static let museAgent = "muse_agent"
+    public static let agentExplanation = "agent_explanation"
+    public static let herdrManagement = "herdr_management"
+    public static let herdrServerStop = "herdr_server_stop"
+    public static let notificationActions = "notification_actions_v1"
+    public static let machineDirectory = "machine_directory_v1"
+    public static let nativeEndpoint = "native_endpoint_v1"
+    public static let independentPaneObservation = "independent_pane_observation"
     public static let permissionDecisions = "permission_decisions"
     public static let permissionDecisionPush = "permission_decision_push"
 }
@@ -302,7 +311,17 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case decide(paneID: String, requestID: String, decision: RemotePermissionDecision)
     case decisionAvailability(available: Bool, pushAuthorized: Bool)
     case renameWorkspace(workspaceID: String, label: String)
-    case closeWorkspace(workspaceID: String)
+    case closeWorkspace(workspaceID: String, connectionID: String? = nil)
+    case closeWorkspaceGroup(workspaceID: String, expectedWorkspaceIDs: [String], connectionID: String)
+    case explainAgent(paneID: String, requestID: String, connectionID: String)
+    case agentExplanation(AgentExplanation)
+    case endpointRequest(EndpointBridgeRequest)
+    case endpointState(EndpointBridgeState)
+    case notificationAction(HostNotificationAction)
+    case machineRequest(MachineRequest)
+    case machineState(MachineDirectoryState)
+    case manageHerdr(HerdrManagementRequest)
+    case herdrManagementResult(HerdrManagementResult)
     case broadcastInput(tabID: String, text: String)
     case listSessions
     case selectSession(name: String)
@@ -332,7 +351,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         detail: String? = nil,
         unrecognizedCode: String? = nil
     )
-    case snapshot(SessionSnapshot, sessionName: String?)
+    case snapshot(SessionSnapshot, sessionName: String?, capabilities: BridgeHostCapabilities? = nil)
     case event(BridgeEvent)
     /// `cols`/`rows` are the frame's grid dimensions (present on newer
     /// Macs): the client pins its emulator grid to them so a pane larger
@@ -376,6 +395,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case beforeTurnIndex, limit, sessionID, resolvedSessionID, requestID
         case turns, hasMore, sinceLastSeen, historyState
         case throughTurnIndex, herdSessionName
+        case capabilities, expectedWorkspaceIDs, connectionID
+        case explanation, management, endpoint, machines, notification
     }
 
     private enum MessageType: String, Codable {
@@ -384,7 +405,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case launchAgent, renamePane, renameTab, closePane, closeTab
         case registerPush, unregisterPush
         case readScrollback, scrollback, scrollbackUnchanged, sendKeys, decide, decisionAvailability
-        case renameWorkspace, closeWorkspace, broadcastInput
+        case renameWorkspace, closeWorkspace, closeWorkspaceGroup, broadcastInput
+        case explainAgent, agentExplanation
+        case manageHerdr, herdrManagementResult, endpointRequest, endpointState, machineRequest, machineState, notificationAction
         case listSessions, selectSession, history, historyReceived, historyPage, historyError
         case pushPrefs, pushPrefsState
         case backgroundWork, sessions
@@ -511,7 +534,36 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             )
         case .closeWorkspace:
             self = .closeWorkspace(
-                workspaceID: try container.decode(String.self, forKey: .workspaceID)
+                workspaceID: try container.decode(String.self, forKey: .workspaceID),
+                connectionID: try container.decodeIfPresent(String.self, forKey: .connectionID)
+            )
+        case .explainAgent:
+            self = .explainAgent(
+                paneID: try container.decode(String.self, forKey: .paneID),
+                requestID: try container.decode(String.self, forKey: .requestID),
+                connectionID: try container.decode(String.self, forKey: .connectionID)
+            )
+        case .agentExplanation:
+            self = .agentExplanation(try container.decode(AgentExplanation.self, forKey: .explanation))
+        case .notificationAction:
+            self = .notificationAction(try container.decode(HostNotificationAction.self, forKey: .notification))
+        case .machineRequest:
+            self = .machineRequest(try container.decode(MachineRequest.self, forKey: .machines))
+        case .machineState:
+            self = .machineState(try container.decode(MachineDirectoryState.self, forKey: .machines))
+        case .endpointRequest:
+            self = .endpointRequest(try container.decode(EndpointBridgeRequest.self, forKey: .endpoint))
+        case .endpointState:
+            self = .endpointState(try container.decode(EndpointBridgeState.self, forKey: .endpoint))
+        case .manageHerdr:
+            self = .manageHerdr(try container.decode(HerdrManagementRequest.self, forKey: .management))
+        case .herdrManagementResult:
+            self = .herdrManagementResult(try container.decode(HerdrManagementResult.self, forKey: .management))
+        case .closeWorkspaceGroup:
+            self = .closeWorkspaceGroup(
+                workspaceID: try container.decode(String.self, forKey: .workspaceID),
+                expectedWorkspaceIDs: try container.decode([String].self, forKey: .expectedWorkspaceIDs),
+                connectionID: try container.decode(String.self, forKey: .connectionID)
             )
         case .broadcastInput:
             self = .broadcastInput(
@@ -620,7 +672,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case .snapshot:
             self = .snapshot(
                 try container.decode(SessionSnapshot.self, forKey: .snapshot),
-                sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName)
+                sessionName: try container.decodeIfPresent(String.self, forKey: .sessionName),
+                capabilities: try container.decodeIfPresent(BridgeHostCapabilities.self, forKey: .capabilities)
             )
         case .event:
             self = .event(try container.decode(BridgeEvent.self, forKey: .event))
@@ -758,9 +811,44 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.renameWorkspace, forKey: .type)
             try container.encode(workspaceID, forKey: .workspaceID)
             try container.encode(label, forKey: .label)
-        case let .closeWorkspace(workspaceID):
+        case let .closeWorkspace(workspaceID, connectionID):
             try container.encode(MessageType.closeWorkspace, forKey: .type)
             try container.encode(workspaceID, forKey: .workspaceID)
+            try container.encodeIfPresent(connectionID, forKey: .connectionID)
+        case let .explainAgent(paneID, requestID, connectionID):
+            try container.encode(MessageType.explainAgent, forKey: .type)
+            try container.encode(paneID, forKey: .paneID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(connectionID, forKey: .connectionID)
+        case let .agentExplanation(explanation):
+            try container.encode(MessageType.agentExplanation, forKey: .type)
+            try container.encode(explanation, forKey: .explanation)
+        case let .notificationAction(action):
+            try container.encode(MessageType.notificationAction, forKey: .type)
+            try container.encode(action, forKey: .notification)
+        case let .machineRequest(request):
+            try container.encode(MessageType.machineRequest, forKey: .type)
+            try container.encode(request, forKey: .machines)
+        case let .machineState(state):
+            try container.encode(MessageType.machineState, forKey: .type)
+            try container.encode(state, forKey: .machines)
+        case let .endpointRequest(request):
+            try container.encode(MessageType.endpointRequest, forKey: .type)
+            try container.encode(request, forKey: .endpoint)
+        case let .endpointState(state):
+            try container.encode(MessageType.endpointState, forKey: .type)
+            try container.encode(state, forKey: .endpoint)
+        case let .manageHerdr(request):
+            try container.encode(MessageType.manageHerdr, forKey: .type)
+            try container.encode(request, forKey: .management)
+        case let .herdrManagementResult(result):
+            try container.encode(MessageType.herdrManagementResult, forKey: .type)
+            try container.encode(result, forKey: .management)
+        case let .closeWorkspaceGroup(workspaceID, expectedWorkspaceIDs, connectionID):
+            try container.encode(MessageType.closeWorkspaceGroup, forKey: .type)
+            try container.encode(workspaceID, forKey: .workspaceID)
+            try container.encode(expectedWorkspaceIDs, forKey: .expectedWorkspaceIDs)
+            try container.encode(connectionID, forKey: .connectionID)
         case let .broadcastInput(tabID, text):
             try container.encode(MessageType.broadcastInput, forKey: .type)
             try container.encode(tabID, forKey: .tabID)
@@ -836,10 +924,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(reason, forKey: .reason)
             try container.encodeIfPresent(code?.rawValue ?? unrecognizedCode, forKey: .code)
             try container.encodeIfPresent(detail, forKey: .detail)
-        case let .snapshot(snapshot, sessionName):
+        case let .snapshot(snapshot, sessionName, capabilities):
             try container.encode(MessageType.snapshot, forKey: .type)
             try container.encode(snapshot, forKey: .snapshot)
             try container.encodeIfPresent(sessionName, forKey: .sessionName)
+            try container.encodeIfPresent(capabilities, forKey: .capabilities)
         case let .event(event):
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(event, forKey: .event)

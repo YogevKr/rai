@@ -30,6 +30,15 @@ enum RemoteConnectionError: LocalizedError {
 
 @MainActor
 final class RemoteConnection {
+    struct Context: Equatable, Sendable {
+        let target: String
+        let sessionName: String
+        let remoteSocketPath: String
+    }
+
+    var context: Context { .init(target: target, sessionName: sessionName, remoteSocketPath: remoteSocketPath) }
+    var isRunning: Bool { ready && !intentionalStop && process.isRunning }
+
     let id = UUID()
     let target: String
     let sessionName: String
@@ -51,7 +60,8 @@ final class RemoteConnection {
         self.target = target
         self.sessionName = sessionName
         self.remoteSocketPath = remoteSocketPath
-        localSocketPath = "/tmp/rai-\(UUID().uuidString.prefix(12)).sock"
+        let root = AppDataPaths.current.isolatedRoot?.path ?? "/tmp"
+        localSocketPath = root + "/rai-\(UUID().uuidString.prefix(12)).sock"
         remoteClientSocketPath = Self.clientSocketPath(for: remoteSocketPath)
         localClientSocketPath = Self.clientSocketPath(for: localSocketPath)
     }
@@ -69,8 +79,10 @@ final class RemoteConnection {
     }
 
     var tunnelArguments: [String] {
-        [
+        ((try? Self.sshConfigurationArguments(target: target)) ?? []) + [
             "-N",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
             "-o", "StreamLocalBindUnlink=yes",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ConnectTimeout=10",
@@ -83,6 +95,11 @@ final class RemoteConnection {
     }
 
     func start() async throws {
+        var started = false
+        defer { if !started { stop() } }
+        if let fixture = try LabSSHConfiguration.load(root: AppDataPaths.current.isolatedRoot) {
+            try fixture.validate(target: target, socketPath: remoteSocketPath)
+        }
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = tunnelArguments
         process.standardInput = FileHandle.nullDevice
@@ -107,9 +124,11 @@ final class RemoteConnection {
         }
 
         for _ in 0..<100 {
+            try Task.checkCancellation()
             if FileManager.default.fileExists(atPath: localSocketPath),
                FileManager.default.fileExists(atPath: localClientSocketPath) {
                 ready = true
+                started = true
                 return
             }
             guard process.isRunning else {
@@ -151,6 +170,7 @@ final class RemoteConnection {
         guard isValid(target: target) else {
             throw RemoteConnectionError.invalidTarget
         }
+        _ = try sshConfigurationArguments(target: target)
         let trimmedName = rawSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionName = trimmedName.isEmpty ? "default" : trimmedName
         let result = await runSSH(
@@ -186,6 +206,7 @@ final class RemoteConnection {
 
     /// Lists the herdr sessions on a remote target, for the session menu.
     static func listSessions(target: String) async throws -> [HerdrSession] {
+        _ = try sshConfigurationArguments(target: target)
         let result = await runSSH(
             target: target,
             remoteArguments: ["herdr", "session", "list", "--json"]
@@ -257,42 +278,31 @@ final class RemoteConnection {
         target: String,
         remoteArguments: [String]
     ) async -> SSHResult {
-        await withCheckedContinuation { continuation in
-            let process = Process()
-            let standardOutput = Pipe()
-            let standardError = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
-                "-o", "ConnectTimeout=10",
-                target,
-            ] + remoteArguments
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = standardOutput
-            process.standardError = standardError
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(
-                    returning: SSHResult(
-                        succeeded: false,
-                        standardOutput: "",
-                        standardError: error.localizedDescription
-                    )
-                )
-                return
-            }
-            DispatchQueue.global(qos: .userInitiated).async {
-                let outputData = standardOutput.fileHandleForReading.readDataToEndOfFile()
-                let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                continuation.resume(
-                    returning: SSHResult(
-                        succeeded: process.terminationStatus == 0,
-                        standardOutput: String(data: outputData, encoding: .utf8) ?? "",
-                        standardError: String(data: errorData, encoding: .utf8) ?? ""
-                    )
-                )
-            }
+        let configuration: [String]
+        do { configuration = try sshConfigurationArguments(target: target) }
+        catch { return SSHResult(succeeded: false, standardOutput: "", standardError: error.localizedDescription) }
+        do {
+            let result = try await MachineCommandRunner.capture(binary: "/usr/bin/ssh", arguments: configuration + [
+                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", target,
+            ] + remoteArguments, timeout: 20)
+            return SSHResult(succeeded: result.status == 0,
+                             standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+                             standardError: String(decoding: result.standardError, as: UTF8.self))
+        } catch {
+            return SSHResult(succeeded: false, standardOutput: "", standardError: error.localizedDescription)
         }
+    }
+
+    static func foregroundArguments(target: String, sessionName: String, arguments: [String]) throws -> [String] {
+        let session = sessionName == "default" ? [] : ["--session", sessionName]
+        let command = (["herdr"] + session + arguments).map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
+        return try sshConfigurationArguments(target: target)
+            + ["-tt", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", target, command]
+    }
+
+    static func sshConfigurationArguments(target: String) throws -> [String] {
+        guard let fixture = try LabSSHConfiguration.load(root: AppDataPaths.current.isolatedRoot) else { return [] }
+        try fixture.validate(target: target)
+        return ["-F", fixture.configPath]
     }
 }

@@ -908,12 +908,18 @@ private struct HerdrServerSettingsView: View {
     @State private var news: [HerdrNewsItem] = []
     @State private var isRunningAction = false
     @State private var isStopConfirmationPresented = false
+    @State private var isHandoffConfirmationPresented = false
     @State private var isDiskAccessHelpPresented = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SettingsSection(title: "Current Server Status") {
+                    if let info = model.serverInfo {
+                        Text("Herdr \(info.version) · API \(info.protocol) · Endpoint \(info.capabilities?.endpointProtocolGeneration.map(String.init) ?? "unavailable")")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
                     ScrollView {
                         Text(serverOutput)
                             .font(.system(size: 11.5, design: .monospaced))
@@ -931,11 +937,12 @@ private struct HerdrServerSettingsView: View {
                     Button("Reload Config") {
                         Task { await reloadConfig() }
                     }
-                    Button("Live Handoff") {
-                        Task { await liveHandoff() }
+                    Button("Replace Server with Handoff…") {
+                        isHandoffConfirmationPresented = true
                     }
-                    .disabled(model.remoteTarget != nil)
-                    Button("Update herdr") {
+                    .disabled(model.remoteTarget != nil || model.serverInfo?.capabilities?.liveHandoff != true)
+                    .help("Requires live handoff support from the selected server.")
+                    Button("Update Herdr Client") {
                         Task { await updateHerdr() }
                     }
                     .disabled(model.remoteTarget != nil)
@@ -1064,6 +1071,12 @@ private struct HerdrServerSettingsView: View {
             }
         } message: {
             Text("This stops the active Herdr server and its running panes.")
+        }
+        .alert("Replace Herdr Server?", isPresented: $isHandoffConfirmationPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Replace with Handoff") { Task { await liveHandoff() } }
+        } message: {
+            Text("Replace the server for \(model.currentSessionDisplayName) and transfer its running panes to the new server.")
         }
     }
 
@@ -1451,8 +1464,8 @@ private struct PluginsSettingsView: View {
             await refreshPlugins()
         }
         .onDisappear {
-            guard isRunningAction else { return }
-            Task { await model.cancelPluginInstall() }
+            guard isRunningAction, let previewID = installPreview?.id else { return }
+            Task { await model.cancelPluginInstall(expectedPreviewID: previewID) }
         }
         .alert(
             "\(pluginPendingRemoval?.isManagedInstall == true ? "Uninstall" : "Unlink") "
@@ -1561,10 +1574,11 @@ private struct PluginsSettingsView: View {
     }
 
     private func confirmPluginInstall() {
+        guard let previewID = installPreview?.id else { return }
         installPreview = nil
         status = "Installing plugin…"
         Task {
-            let output = await model.confirmPluginInstall()
+            let output = await model.confirmPluginInstall(expectedPreviewID: previewID)
             await refreshPlugins()
             status = output
             isRunningAction = false
@@ -1572,9 +1586,10 @@ private struct PluginsSettingsView: View {
     }
 
     private func cancelPluginInstall() {
+        guard let previewID = installPreview?.id else { return }
         installPreview = nil
         Task {
-            await model.cancelPluginInstall()
+            await model.cancelPluginInstall(expectedPreviewID: previewID)
             status = "Plugin install cancelled."
             isRunningAction = false
         }
@@ -1862,6 +1877,7 @@ private struct IntegrationsSettingsView: View {
     @State private var hooksPreview: ClaudeHooksPreview?
     @State private var claudeSettingsPath = ClaudeHooksInstaller.defaultSettingsURL.path
     @State private var status = "No integration command run yet."
+    @State private var accessError: Error?
 
     private let integrations = [
         "pi", "omp", "claude", "codex", "copilot", "devin", "droid",
@@ -1968,6 +1984,7 @@ private struct IntegrationsSettingsView: View {
                 .foregroundStyle(Theme.textTertiary)
                 .lineLimit(2)
                 .textSelection(.enabled)
+            FullDiskAccessFailureHelp(error: accessError)
         }
         .settingsTabBackground()
         .sheet(item: $hooksPreview) { preview in
@@ -1980,6 +1997,7 @@ private struct IntegrationsSettingsView: View {
     }
 
     private func prepareHooksPreview(_ action: ClaudeHooksAction) {
+        accessError = nil
         do {
             let path = NSString(string: claudeSettingsPath).expandingTildeInPath
             hooksPreview = try ClaudeHooksInstaller.makePreview(
@@ -1989,6 +2007,7 @@ private struct IntegrationsSettingsView: View {
             )
             status = "Review the settings preview before you confirm."
         } catch {
+            accessError = error
             status = error.localizedDescription
         }
     }
@@ -2009,6 +2028,7 @@ private struct IntegrationsSettingsView: View {
     }
 
     private func applyHooksPreview(_ preview: ClaudeHooksPreview) {
+        accessError = nil
         do {
             try ClaudeHooksInstaller.apply(preview)
             status = preview.action == .install
@@ -2016,6 +2036,8 @@ private struct IntegrationsSettingsView: View {
                 : "Claude Code hook entries removed. Rai keeps the shared hook script."
             hooksPreview = nil
         } catch {
+            hooksPreview = nil
+            accessError = error
             status = error.localizedDescription
         }
     }
@@ -2025,6 +2047,7 @@ private struct IntegrationsSettingsView: View {
         install: Bool
     ) async {
         activeIntegration = integration
+        accessError = nil
         status = "\(install ? "Installing" : "Uninstalling") \(integration)…"
         let output = install
             ? await model.integrationInstall(integration)
@@ -2078,21 +2101,23 @@ private struct ConfigSettingsView: View {
 
     @State private var configText = ""
     @State private var status: String?
+    @State private var accessError: Error?
     @State private var fileExists = true
     @State private var isRunningAction = false
 
     private var configURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/herdr/config.toml")
+        AppDataPaths.current.herdrConfigFile
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Caution: this edits the shared global Herdr configuration.")
+            Text(AppDataPaths.current.isIsolated
+                 ? "This edits the isolated test server configuration."
+                 : "This edits the shared Herdr configuration.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
 
-            SettingsSection(title: "~/.config/herdr/config.toml") {
+            SettingsSection(title: AppDataPaths.current.herdrConfigFile.path) {
                 VStack(alignment: .leading, spacing: 9) {
                     if !fileExists {
                         Text("The config file does not exist yet. Saving will create it.")
@@ -2140,6 +2165,7 @@ private struct ConfigSettingsView: View {
                 }
                 .frame(maxHeight: 44)
             }
+            FullDiskAccessFailureHelp(error: accessError)
         }
         .settingsTabBackground()
         .task {
@@ -2148,6 +2174,7 @@ private struct ConfigSettingsView: View {
     }
 
     private func loadConfig() {
+        accessError = nil
         do {
             configText = try String(contentsOf: configURL, encoding: .utf8)
             fileExists = true
@@ -2160,10 +2187,12 @@ private struct ConfigSettingsView: View {
             configText = ""
             fileExists = FileManager.default.fileExists(atPath: configURL.path)
             status = "Unable to load config: \(error.localizedDescription)"
+            accessError = error
         }
     }
 
     private func saveConfig() {
+        accessError = nil
         do {
             try FileManager.default.createDirectory(
                 at: configURL.deletingLastPathComponent(),
@@ -2174,10 +2203,12 @@ private struct ConfigSettingsView: View {
             status = "Config saved."
         } catch {
             status = "Unable to save config: \(error.localizedDescription)"
+            accessError = error
         }
     }
 
     private func checkConfig() async {
+        accessError = nil
         isRunningAction = true
         status = await model.configCheck()
             ?? "Config check failed or returned no diagnostics."
@@ -2185,6 +2216,7 @@ private struct ConfigSettingsView: View {
     }
 
     private func reloadServer() async {
+        accessError = nil
         isRunningAction = true
         status = await model.reloadConfig()
             ? "Herdr server configuration reloaded."

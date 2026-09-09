@@ -1,5 +1,9 @@
 # rai roadmap — driving herdr's full surface
 
+Current release scope: [Herdr 0.9 support on macOS and iOS](herdr-0.9-support-plan.md).
+Yogev selected every release feature for both platforms on 2026-09-08.
+The coverage counts and priorities below describe earlier work.
+
 rai is a native macOS GUI for the `herdr` multiplexer. herdr exposes ~99 API
 methods across 16 domains; rai ships roughly a third today. This is the audit
 and the value-ordered build plan (weighted for a herd of ~13 live agents, not for

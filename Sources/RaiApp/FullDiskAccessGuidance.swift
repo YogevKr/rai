@@ -1,27 +1,38 @@
 import AppKit
 import SwiftUI
 
-/// This records an explanation, never an OS permission grant. There is no
-/// protected-file probe: showing help must not itself trigger a privacy prompt.
-@MainActor
-final class FullDiskAccessGuidance {
-    static let shared = FullDiskAccessGuidance()
-    private static let shownKey = "fullDiskAccessGuidanceShown"
+/// Inspect a failed operation's error, never probe protected files for permission.
+enum FullDiskAccessGuidance {
     static let settingsURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
     )!
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    static func isAccessFailure(_ error: Error?) -> Bool {
+        var current = error as NSError?
+        for _ in 0..<8 {
+            guard let failure = current else { return false }
+            if failure.domain == NSCocoaErrorDomain,
+               [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(failure.code) {
+                return true
+            }
+            if failure.domain == NSPOSIXErrorDomain,
+               [Int(EACCES), Int(EPERM)].contains(failure.code) {
+                return true
+            }
+            current = failure.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
+}
 
-    /// Shared by all windows. Existing installations see the explanation once
-    /// after upgrading; dismissing it or opening Settings prevents future nags.
-    func claimLaunchPresentation() -> Bool {
-        guard !defaults.bool(forKey: Self.shownKey) else { return false }
-        defaults.set(true, forKey: Self.shownKey)
-        return true
+struct FullDiskAccessFailureHelp: View {
+    let error: Error?
+    @State private var isPresented = false
+
+    var body: some View {
+        if FullDiskAccessGuidance.isAccessFailure(error) {
+            Button("File Access Help…") { isPresented = true }
+                .fullDiskAccessHelp(isPresented: $isPresented)
+        }
     }
 }
 
@@ -72,8 +83,8 @@ private struct FullDiskAccessDialog: View {
                 }
             }
 
-            Text("Commands such as 1Password CLI can cause repeated macOS requests to access data from other apps.")
-            Text("Full Disk Access can stop these prompts. It lets Rai and commands running through it access protected files, including Mail and Messages.")
+            Text("If macOS denies file access, check the file's permissions first. Full Disk Access can help with protected files.")
+            Text("This permission lets Rai and commands running through it access protected files, including Mail and Messages.")
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("1. Open Full Disk Access in System Settings.")
@@ -100,24 +111,9 @@ private struct FullDiskAccessDialog: View {
     }
 }
 
-private struct FullDiskAccessLaunchModifier: ViewModifier {
-    @State private var isPresented = false
-
-    func body(content: Content) -> some View {
-        content
-            .fullDiskAccessHelp(isPresented: $isPresented)
-            .task {
-                isPresented = FullDiskAccessGuidance.shared.claimLaunchPresentation()
-            }
-    }
-}
-
 extension View {
     func fullDiskAccessHelp(isPresented: Binding<Bool>) -> some View {
         modifier(FullDiskAccessHelpModifier(isPresented: isPresented))
     }
 
-    func fullDiskAccessLaunchGuidance() -> some View {
-        modifier(FullDiskAccessLaunchModifier())
-    }
 }

@@ -1,19 +1,34 @@
 import AppKit
+import RaiCore
 import SwiftUI
 
 @main
 struct RaiApp: App {
+    init() {
+        do {
+            try LabLaunch.validate(
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+                environment: ProcessInfo.processInfo.environment
+            )
+        } catch {
+            fputs("Rai lab: \(error.localizedDescription)\n", stderr)
+            exit(2)
+        }
+        if ProcessInfo.processInfo.arguments.contains("--validate-lab") { exit(0) }
+    }
+
     @MainActor static let sharedModel = RaiModel()
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = RaiApp.sharedModel
     @StateObject private var settings = SettingsStore.shared
     @StateObject private var appUpdates = AppUpdateController.shared
+    @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.endpointWindow) private var endpointWindow
 
     var body: some Scene {
         WindowGroup {
             RaiRootView(model: model)
-                .fullDiskAccessLaunchGuidance()
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
@@ -24,7 +39,15 @@ struct RaiApp: App {
         .defaultSize(width: 1240, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .newItem) {
+                Button("New Window") { openWindow(id: "independent") }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(model.serverInfo?.capabilities?.endpointProtocolGeneration != 1)
+                if endpointWindow != nil {
+                    Button("Close Window") { NSApp.keyWindow?.close() }
+                        .keyboardShortcut("w", modifiers: .command)
+                }
+            }
 
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
@@ -33,6 +56,10 @@ struct RaiApp: App {
             }
 
             CommandMenu("Tab") {
+              if let endpointWindow {
+                EndpointTabMenu(model: endpointWindow)
+              } else {
+              Group {
                 Button("New Tab") { model.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
                 Button("Reopen Closed Tab") { model.reopenClosedTab() }
@@ -54,9 +81,15 @@ struct RaiApp: App {
                     Button("Select Tab \(n)") { model.selectTab(index: n - 1) }
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
+              }
+              }
             }
 
             CommandMenu("Pane") {
+              if let endpointWindow {
+                EndpointPaneMenu(model: endpointWindow)
+              } else {
+              Group {
                 Button("Split Right") { model.splitRight() }
                     .keyboardShortcut("d", modifiers: .command)
                 Button("Split Down") { model.splitDown() }
@@ -84,6 +117,11 @@ struct RaiApp: App {
                     Button("Codex — Down") {
                         model.launchAgent(.codex, direction: .down)
                     }
+                    Divider()
+                    Button("Muse — Right") { model.launchAgent(.muse, direction: .right) }
+                        .disabled((model.serverInfo?.protocol ?? 0) < 22)
+                    Button("Muse — Down") { model.launchAgent(.muse, direction: .down) }
+                        .disabled((model.serverInfo?.protocol ?? 0) < 22)
                 }
                 Divider()
                 Button("Focus Left") { model.focusPane("left") }
@@ -94,6 +132,8 @@ struct RaiApp: App {
                     .keyboardShortcut(.upArrow, modifiers: [.command, .option])
                 Button("Focus Down") { model.focusPane("down") }
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+              }
+              }
             }
 
             CommandMenu("Agent") {
@@ -112,22 +152,33 @@ struct RaiApp: App {
                     )
                     .disabled(model.agentPanelEntries.count < n)
                 }
+                .disabled(endpointWindow != nil)
             }
 
             CommandMenu("Space") {
+              if let endpointWindow {
+                EndpointSpaceMenu(model: endpointWindow)
+              } else {
+              Group {
                 Button("New Space") { model.newWorkspace() }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Next Space") { model.nextWorkspace() }
                     .keyboardShortcut("]", modifiers: [.command, .shift])
                 Button("Previous Space") { model.prevWorkspace() }
                     .keyboardShortcut("[", modifiers: [.command, .shift])
+              }
+              }
             }
 
             CommandGroup(after: .toolbar) {
                 Button("Command Palette…") { model.toggleCommandPalette() }
                     .keyboardShortcut("k", modifiers: .command)
+                    .disabled(endpointWindow != nil)
                 Divider()
-                Button("Refresh") { model.refreshNow() }
+                Button("Refresh") {
+                    if let endpointWindow { endpointWindow.reconnect() }
+                    else { model.refreshNow() }
+                }
                     .keyboardShortcut("r", modifiers: .command)
             }
 
@@ -143,6 +194,12 @@ struct RaiApp: App {
                     .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
+
+        WindowGroup("Rai", id: "independent") {
+            // Independent views own their appearance preference.
+            EndpointWindow(socketPath: model.activeSocketPath, remoteContext: model.activeRemoteContext)
+        }
+        .defaultSize(width: 1240, height: 820)
 
         Settings {
             SettingsView(model: RaiApp.sharedModel)

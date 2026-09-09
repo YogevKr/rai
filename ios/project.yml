@@ -22,6 +22,21 @@ targets:
     platform: iOS
     sources:
       - path: rai-ios
+      - path: ../Sources/RaiApp/EndpointScrollOverlay.swift
+      - path: ../Sources/RaiApp/EndpointImagesSheet.swift
+      - path: ../Sources/RaiApp/EndpointPresentationSheet.swift
+      - path: ../Sources/RaiApp/EndpointAppearanceMenu.swift
+      - path: ../Sources/RaiApp/EndpointMetadataViews.swift
+      - path: ../Sources/RaiApp/MachinePickerSheet.swift
+      - path: ../Sources/RaiApp/EndpointLayoutSheet.swift
+      - path: ../Sources/RaiApp/EndpointWorktreesSheet.swift
+      - path: ../Sources/RaiApp/EndpointAgentLaunchSheet.swift
+      - path: ../Sources/RaiApp/EndpointPluginSheet.swift
+      - path: ../Sources/RaiApp/EndpointNotificationViews.swift
+      - path: ../Sources/RaiApp/EndpointAgentViewRows.swift
+      - path: ../Sources/RaiApp/EndpointNativeLinks.swift
+      - path: ../Sources/RaiApp/EndpointTextToolsSheet.swift
+      - path: ../Sources/RaiApp/EndpointClipboard.swift
     dependencies:
       - package: Rai
         product: RaiCore
@@ -85,6 +100,25 @@ targets:
     platform: iOS
     sources:
       - path: rai-iosTests
+      - path: ../Tests/RaiAppTests/EndpointThemePaletteTests.swift
+      - path: ../Tests/RaiAppTests/EndpointImageRendererTests.swift
+      - path: ../Tests/RaiAppTests/EndpointClipboardTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointGraphicsTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointCommandTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointPopupTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointBorderTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointMetadataTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointThemeTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointMouseTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointLayoutTests.swift
+      - path: ../Tests/RaiCoreTests/WorkspaceClosePreviewTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointWorktreeTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointTextTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointPluginTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointLinkTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointScrollTests.swift
+      - path: ../Tests/RaiCoreTests/EndpointGraphicsPolicyTests.swift
+      - path: ../Tests/RaiCoreTests/MachineNotificationTests.swift
     dependencies:
       - target: rai-ios
     settings:

@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import RaiCore
 import Security
 
 enum APNsKeyReadState: Equatable, Sendable {
@@ -157,6 +158,7 @@ final class APNsSettings: ObservableObject {
 
     private let defaults: UserDefaults
     private let keyReader: KeyReader
+    private let allowsLegacyMigration: Bool
     @Published private var migrationProblem: MigrationProblem?
     private let migrationAttemptGate: APNsMigrationAttemptGate
 
@@ -164,6 +166,7 @@ final class APNsSettings: ObservableObject {
         defaults: UserDefaults = .standard,
         keyFileURL: URL = APNsSettings.defaultKeyFileURL,
         migrateImmediately: Bool = false,
+        allowsLegacyMigration: Bool = !AppDataPaths.current.isIsolated,
         migrationAttemptGate: APNsMigrationAttemptGate? = nil,
         keyReader: @escaping KeyReader = APNsSettings.readLegacyKey
     ) {
@@ -171,6 +174,7 @@ final class APNsSettings: ObservableObject {
         self.keyFileURL = keyFileURL
         self.migrationAttemptGate = migrationAttemptGate ?? .process
         self.keyReader = keyReader
+        self.allowsLegacyMigration = allowsLegacyMigration
         migrationProblem = defaults.string(forKey: Key.migrationProblem)
             .flatMap(MigrationProblem.init(rawValue:))
         teamID = defaults.string(forKey: Key.teamID) ?? ""
@@ -205,6 +209,7 @@ final class APNsSettings: ObservableObject {
     }
 
     func migrateLegacyKeyIfNeeded() {
+        guard allowsLegacyMigration else { return }
         if FileManager.default.fileExists(atPath: keyFileURL.path) {
             migrationProblem = nil
             defaults.removeObject(forKey: Key.migrationProblem)
@@ -286,13 +291,7 @@ final class APNsSettings: ObservableObject {
     }
 
     nonisolated private static var defaultKeyFileURL: URL {
-        let support = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
-        return support
-            .appendingPathComponent("Rai", isDirectory: true)
+        AppDataPaths.current.applicationSupport
             .appendingPathComponent("apns-key.p8")
     }
 

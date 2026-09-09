@@ -183,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 if let panel = event.window as? AppUpdatePanel, panel.handleCloseShortcut(event) {
                     return nil
                 }
+                if let window = event.window, window.isKeyWindow,
+                   let term = window.firstResponder as? EndpointTerminalView, term.window === window,
+                   term.handleInterceptedKey(event) {
+                    return nil
+                }
                 guard let window = event.window,
                       let term = window.firstResponder as? FocusAwareTerminalView,
                       KeyRoutingDecision.shouldRouteToTerminal(
@@ -213,6 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     ?? event.locationInWindow
                 var view = content.hitTest(point)
                 while let current = view {
+                    if let term = current as? EndpointTerminalView {
+                        term.handleInterceptedScroll(event)
+                        return nil
+                    }
                     if let term = current as? FocusAwareTerminalView {
                         term.handleInterceptedScroll(event)
                         return nil
@@ -455,7 +464,8 @@ extension AppDelegate: RaiSnapshotObserver {
             suppressedDeviceIDs: model.bridgeServer.deviceIDsSuppressingHeldEvent(
                 status: transition.newStatus,
                 occurredAt: occurredAt
-            )
+            ),
+            hostConnectionID: model.bridgeHostCapabilities.connectionID
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)
@@ -551,7 +561,8 @@ extension AppDelegate: RaiSnapshotObserver {
                 notificationBody: AgentNotificationBody.composeDecision(beacon: beacon),
                 allowsRemoteActions: true,
                 requestID: requestID,
-                occurredAt: Date()
+                occurredAt: Date(),
+                hostConnectionID: model.bridgeHostCapabilities.connectionID
             )
             model.bridgeServer.sendPush(PhonePushBurst(events: [event]))
             return
@@ -589,7 +600,8 @@ extension AppDelegate: RaiSnapshotObserver {
                 ?? model.bridgeServer.deviceIDsSuppressingHeldEvent(
                     status: pane.agentStatus,
                     occurredAt: occurredAt
-                )
+                ),
+            hostConnectionID: prior?.hostConnectionID ?? model.bridgeHostCapabilities.connectionID
         )
         updatePresenceStatus()
         startPhonePushGate(model: model)

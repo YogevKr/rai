@@ -14,6 +14,7 @@ struct PaneTerminalView: View {
     @State private var isSendingImage = false
     @State private var imageError: String?
     @State private var showingCommandPalette = false
+    @State private var selectionSnapshot: TerminalTextSnapshot?
     @State private var destructiveArmed = false
     @State private var lineSendMessage: String?
     @FocusState private var composeFocused: Bool
@@ -340,6 +341,23 @@ struct PaneTerminalView: View {
         .navigationTitle(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Select Text", systemImage: "text.cursor") {
+                        selectionSnapshot = TerminalTextSnapshot(terminal: terminalSearch.terminal)
+                    }
+                    Button("Explain Status", systemImage: "info.circle") {
+                        connection.requestAgentExplanation(paneID: pane.paneID)
+                    }
+                    .disabled(connection.hostCapabilities?.supportsAgentExplanation != true || !connection.status.isConnected)
+                    if connection.hostCapabilities?.supportsAgentExplanation != true {
+                        Text("Status explanation requires an updated Mac app.")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Pane actions")
+            }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(pane.terminalTitleStripped ?? pane.agent ?? "Pane")
@@ -436,12 +454,37 @@ struct PaneTerminalView: View {
         .onChange(of: connection.pendingComposedDrafts[pane.paneID]) { _, _ in
             restorePendingDraft()
         }
+        .sheet(item: $selectionSnapshot) { snapshot in
+            TerminalTextSelectionSheet(snapshot: snapshot)
+        }
         .sheet(isPresented: $showingCommandPalette) {
             CommandPaletteSheet(
                 agent: pane.agent,
                 insert: { composedLine = $0 },
                 sendNow: { sendLine($0) }
             )
+        }
+        .sheet(item: $connection.agentExplanation) { _ in
+            NavigationStack {
+                ScrollView {
+                    if let text = connection.agentExplanation?.text {
+                        Text(text)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    } else {
+                        ProgressView("Reading agent status…").padding()
+                    }
+                }
+                .navigationTitle("Agent Status")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { connection.agentExplanation = nil }
+                    }
+                }
+            }
         }
         .alert(
             "Could Not Send Photo",
@@ -624,8 +667,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
     // so the TUI reflows to fill the screen.
     static let columns = 80
     private static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-    private static let background = ui(0x212121)
-    private static let foreground = ui(0xF8F8F2)
+    private static let background = EndpointTerminalAppearance.color(0x212121)
+    private static let foreground = EndpointTerminalAppearance.color(0xF8F8F2)
     private static let palette: [UInt32] = [
         0x21222C, 0xFF5555, 0x50FA7B, 0xFFCB6B, 0x82AAFF, 0xC792EA, 0x8BE9FD, 0xF8F8F2,
         0x545454, 0xFF6E6E, 0x69FF94, 0xFFCB6B, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xF8F8F2,
@@ -647,6 +690,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         let key = connection.terminalCacheKey(paneID: paneID)
         let surface = key.flatMap { connection.terminalViewCache.take($0) } ?? makeSurface()
         let terminal = surface.terminal
+        surface.scroll.delegate = context.coordinator
         context.coordinator.surface = surface
         context.coordinator.cacheKey = key
         context.coordinator.widthFloor = surface.widthFloor
@@ -710,9 +754,12 @@ private struct StreamingTerminalView: UIViewRepresentable {
         terminal.caretColor = Self.foreground
         terminal.caretTextColor = Self.background
         terminal.selectedTextBackgroundColor = Self.foreground
-        terminal.selectedTextForegroundColor = Self.ui(0x545454)
+        terminal.selectedTextForegroundColor = EndpointTerminalAppearance.color(0x545454)
         terminal.installColors(Self.palette.map(Self.st))
         terminal.indicatorStyle = .white
+        // UIKit overlays and dismisses this indicator after user scrolling.
+        terminal.showsVerticalScrollIndicator = true
+        terminal.showsHorizontalScrollIndicator = false
         terminal.changeScrollback(2_000)
         terminal.hideUntilFirstFrame()
         // Dragging down through the terminal tucks the keyboard away, the
@@ -731,6 +778,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         let scroll = UIScrollView()
         scroll.backgroundColor = Self.background
         scroll.showsHorizontalScrollIndicator = true
+        scroll.indicatorStyle = .white
         scroll.showsVerticalScrollIndicator = false
         scroll.alwaysBounceVertical = false
         scroll.isDirectionalLockEnabled = true
@@ -745,15 +793,6 @@ private struct StreamingTerminalView: UIViewRepresentable {
         )
     }
 
-
-    private static func ui(_ hex: UInt32) -> UIColor {
-        UIColor(
-            red: CGFloat((hex >> 16) & 0xFF) / 255,
-            green: CGFloat((hex >> 8) & 0xFF) / 255,
-            blue: CGFloat(hex & 0xFF) / 255,
-            alpha: 1
-        )
-    }
 
     private static func st(_ hex: UInt32) -> SwiftTerm.Color {
         func component(_ shift: UInt32) -> UInt16 {
@@ -810,7 +849,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         coordinator.surface = nil
     }
 
-    final class Coordinator: NSObject, TerminalViewDelegate {
+    final class Coordinator: NSObject, TerminalViewDelegate, UIScrollViewDelegate {
         let paneID: String
         var agent: String?
         let connection: BridgeConnection
@@ -827,6 +866,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
         var widthFloor: NSLayoutConstraint?
         var baseWidthFloor: CGFloat = 0
         var charWidth: CGFloat = 0
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            surface?.terminal.updateScrollIndicatorInsets()
+        }
 
         /// Widen the view's width floor when the streamed grid outgrows the
         /// 80-column base, so the outer scroll view can pan to every column.
@@ -884,7 +927,9 @@ private struct StreamingTerminalView: UIViewRepresentable {
         func setTerminalTitle(source: TerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         func scrolled(source: TerminalView, position: Double) {}
-        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+            Task { @MainActor in TerminalLink.open(link) }
+        }
         func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
     }
 }
@@ -900,7 +945,22 @@ private struct StreamingTerminalView: UIViewRepresentable {
 /// scrollback seed is empty because herdr's `recent` read of an alt-screen
 /// TUI is just the viewport the bridge drops. The grid then read as "" and
 /// prompt buttons never appeared.
-class GridReadableTerminalView: TerminalView {
+class GridReadableTerminalView: PhoneLinkTerminalView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateScrollIndicatorInsets()
+    }
+
+    /// Keep the vertical overlay on the visible edge of a horizontally cropped grid.
+    func updateScrollIndicatorInsets() {
+        guard let viewport = superview as? UIScrollView else { return }
+        let visible = convert(viewport.bounds, from: viewport)
+        let right = max(0, bounds.maxX - visible.maxX)
+        if verticalScrollIndicatorInsets.right != right {
+            verticalScrollIndicatorInsets.right = right
+        }
+    }
+
     enum FrameResult: Equatable {
         case ignored
         case applied

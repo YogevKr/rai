@@ -255,25 +255,39 @@ final class HerdrModelsTests: XCTestCase {
     func testSubscriptionsAddWorkspaceReorderedOnProtocol19() {
         XCTAssertEqual(
             HerdrClient.subscriptions(forProtocol: 19),
-            HerdrClient.defaultSubscriptions + ["workspace.reordered"]
+            HerdrClient.defaultSubscriptions + ["workspace.closed", "workspace.renamed", "workspace.reordered"]
         )
         XCTAssertEqual(
             HerdrClient.subscriptions(forProtocol: 20),
-            HerdrClient.defaultSubscriptions + ["workspace.reordered"]
+            HerdrClient.defaultSubscriptions + ["workspace.closed", "workspace.renamed", "workspace.reordered"]
         )
     }
 
     func testSubscriptionsStayBaselineForOldOrUnknownProtocol() {
-        // Pre-19 servers reject unknown subscription types with
+        // Servers reject unknown subscription types with
         // invalid_request, which would kill the whole event stream.
         XCTAssertEqual(
-            HerdrClient.subscriptions(forProtocol: 17),
+            HerdrClient.subscriptions(forProtocol: 0),
             HerdrClient.defaultSubscriptions
         )
         XCTAssertEqual(
             HerdrClient.subscriptions(forProtocol: nil),
             HerdrClient.defaultSubscriptions
         )
+    }
+
+    func testSubscriptionsAddWorkspaceRenamedOnProtocol14WithoutReordered() {
+        for version in [14, 16, 17, 18] {
+            XCTAssertEqual(HerdrClient.subscriptions(forProtocol: version),
+                HerdrClient.defaultSubscriptions + ["workspace.closed", "workspace.renamed"])
+        }
+    }
+
+    func testSubscriptionsAddWorkspaceClosedOnFirstNumberedProtocol() {
+        for version in [1, 2, 7, 13] {
+            XCTAssertEqual(HerdrClient.subscriptions(forProtocol: version),
+                HerdrClient.defaultSubscriptions + ["workspace.closed"])
+        }
     }
 
     private func decode(_ json: String) throws -> SessionSnapshot {

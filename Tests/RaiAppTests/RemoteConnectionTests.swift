@@ -45,6 +45,16 @@ final class RemoteConnectionTests: XCTestCase {
         XCTAssertEqual(arguments.last, "user@host")
     }
 
+    func testCapturedRemoteContextCreatesDistinctForwardedSocketPairs() {
+        let main = RemoteConnection(target: "user@host", sessionName: "review", remoteSocketPath: "/remote/review/herdr.sock")
+        let captured = main.context
+        let child = RemoteConnection(target: captured.target, sessionName: captured.sessionName, remoteSocketPath: captured.remoteSocketPath)
+        XCTAssertEqual(child.context, main.context)
+        XCTAssertNotEqual(child.localSocketPath, main.localSocketPath)
+        XCTAssertNotEqual(child.localClientSocketPath, main.localClientSocketPath)
+        XCTAssertTrue(EndpointWindowModel(socketPath: main.localSocketPath, remoteContext: captured).usesRemoteHost)
+    }
+
     func testLocalClientSocketPairsWithLocalSocket() {
         let connection = RemoteConnection(
             target: "user@host",

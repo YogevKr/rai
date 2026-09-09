@@ -31,6 +31,52 @@ final class ScrollbackRefreshTests: XCTestCase {
         ))
     }
 
+    func testIndependentObservationDoesNotSelectOrFocusTheMac() async throws {
+        let messages = Messages()
+        let attached = expectation(description: "observed pane attached")
+        let connection = BridgeConnection(messageSender: { message in
+            messages.values.append(message)
+            if case .attachStream = message { attached.fulfill() }
+        })
+        defer { connection.disconnect() }
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "lab")
+        let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(#"{"version":"0.9.0","protocol":22,"workspaces":[],"tabs":[],"panes":[],"layouts":[]}"#.utf8))
+        let server = try JSONDecoder().decode(HerdrServerInfo.self, from: Data(#"{"version":"0.9.0","protocol":22}"#.utf8))
+        connection.handle(.snapshot(snapshot, sessionName: "lab", capabilities: BridgeHostCapabilities(
+            operations: [BridgeCapability.independentPaneObservation], server: server, connectionID: "lab"
+        )))
+        connection.openPane(paneID: "phone-pane", cols: 45, rows: 60)
+        await fulfillment(of: [attached], timeout: 1)
+        for message in messages.values {
+            switch message {
+            case .selectPane, .focusPane: XCTFail("Observation must not change shared selection")
+            case let .readScrollback(paneID, _, _, fullGrid, _):
+                XCTAssertEqual(paneID, "phone-pane")
+                XCTAssertTrue(fullGrid)
+            case let .attachStream(paneID, cols, rows, fullGrid):
+                XCTAssertEqual(paneID, "phone-pane")
+                XCTAssertEqual(cols, 45)
+                XCTAssertEqual(rows, 60)
+                XCTAssertTrue(fullGrid)
+            default: break
+            }
+        }
+        XCTAssertEqual(messages.readCount, 1)
+        XCTAssertEqual(messages.attachCount, 1)
+    }
+
+    func testLegacyHostRetainsItsSelectionSequence() async throws {
+        let messages = Messages()
+        let connection = try await connected(messages)
+        defer { connection.disconnect() }
+        let selection = messages.values.filter {
+            if case .selectPane = $0 { return true }
+            if case .focusPane = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(selection, [.selectPane(paneID: "pane"), .focusPane(paneID: "pane")])
+    }
+
     func testOutputCoalescesReadsAndKeepsOnlyOneRequestInFlight() async throws {
         let messages = Messages()
         let connection = try await connected(messages)

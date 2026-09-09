@@ -73,6 +73,10 @@ terminal widget**.
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
   that hands screenshots straight to Claude Code.
 - **Settings** for the herdr server, appearance, plugins, and integrations.
+- **Independent Mac windows** — choose **File → New Window** or press **⇧⌘N** on compatible Herdr 0.9 hosts.
+  Each window keeps its own machine, workspace, tab, and pane selection.
+  Its controls include themes, metadata layouts, worktrees, plugins, notifications, and terminal history.
+  Herdr 0.9 can show another workspace's title after a resize with multiple clients. Pane selection remains independent.
 - **Rai Remote, an iPhone companion** — the whole herd in your pocket. See
   below.
 
@@ -97,6 +101,26 @@ crook for the herd:
   of scrollback seeded from herdr's history; swipe through what happened
   while you were away. A visible-grid frame paints the pane before streaming
   starts.
+- **Select and copy text** — open **Pane actions → Select Text** to capture the terminal buffer.
+  Select, copy, or share that text while the agent continues writing. Tap web links in either view.
+  Remote Mac file paths do not open as local iPhone files.
+- **Workspace View** — open the connection menu, then **Workspace View**, on compatible Herdr 0.9 hosts.
+  Use Actions for history pages and Return to Live Output. Scrollbars overlay the terminal and hide after scrolling stops.
+  Appearance offers System, Light, and Dark modes, plus Always, Auto, and Off pane borders.
+  Open views reconnect after a host restart or app suspension. Closed views stay closed.
+  Terminal images appear in place. Open **Inspect Images** for a captured image view.
+  Open **Commands** for configured Herdr commands, or **Herdr News** for release notes.
+  **Machines** manages local sessions and saved SSH targets, with separate connection state and agent search.
+  **Metadata Layouts** edits ordered rules and previews their colors and text.
+  **Theme Colors** imports Herdr themes and edits shared, light, and dark colors.
+  **Worktrees** lists, creates, opens, and removes worktrees on the selected machine.
+  **History and Search** captures retained output for search, selection, copying, and export.
+  **Agent Prompt** sends one complete prompt. Uncertain delivery requires checking the agent before another submission.
+  **Plugins and Views** manages plugins, integrations, terminal links, and agent filters.
+  **Notifications** shows endpoint notices. Machine notifications open their captured machine and pane.
+  Popup commands display their own terminal and images. Keys and paste go to the active popup.
+  This view owns its pane selection, tab creation, splits, zoom, and closure through the authenticated Mac bridge.
+  It supports semantic keys and paste. Backgrounding releases the view; **Reconnect** opens a fresh view.
 - **Conversation history** — read Claude prompts, replies, tool calls, and
   results as cards. Search, refresh, load older turns, or jump to your last prompt.
   History uses the Claude hook's transcript path and session ID. Rai never guesses
@@ -134,6 +158,11 @@ The Mac side is the hub: a per-device authenticated WebSocket bridge
   when the herd it points at is not running
 - Xcode command-line tools / Swift 5.9+ toolchain (to build)
 
+If Herdr is missing, Rai shows installation guidance and a Retry button.
+Install Herdr, then select Retry without closing Rai.
+Rai checks Homebrew, `~/.local/bin`, and absolute directories on `PATH`.
+`HERDR_BIN_PATH` selects one executable. Rai reports a missing override instead of selecting another installation.
+
 ## Install
 
 ### Homebrew
@@ -168,10 +197,10 @@ If replacement fails, it restores the previous app. Network failures during auto
 
 ### Optional Full Disk Access
 
-Commands such as 1Password CLI can cause repeated macOS requests to access data from other apps.
-Rai explains this once on launch, including the first launch after upgrading to this feature.
-Choose **Open System Settings** or **Not Now**. Neither choice grants access or causes Rai to repeat the dialog.
-You can review it again under **Settings → Herdr Server → Mac Privacy**.
+Rai shows no Full Disk Access dialog at startup, after installation, or after an upgrade.
+Denied configuration and Claude hook-setting operations offer **File Access Help…** beside the error.
+Select it to review file permissions and optional Full Disk Access. Successful actions and unrelated errors do not offer this help.
+You can also open the guide under **Settings → Herdr Server → Mac Privacy**.
 
 Full Disk Access is optional. It lets Rai and commands running through it access protected files, including other apps’ data.
 To enable it, open **System Settings → Privacy & Security → Full Disk Access** and enable the installed Rai app.

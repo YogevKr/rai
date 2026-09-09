@@ -415,10 +415,60 @@ struct BridgeAuditEvent: Equatable {
             self.init(action: "unregisterPush")
         case let .renameWorkspace(workspaceID, label):
             self.init(action: "renameWorkspace", targets: ["workspace_id": workspaceID], text: label)
-        case let .closeWorkspace(workspaceID):
-            self.init(action: "closeWorkspace", targets: ["workspace_id": workspaceID])
+        case let .closeWorkspace(workspaceID, connectionID):
+            self.init(action: "closeWorkspace", targets: ["workspace_id": workspaceID, "connection_id": connectionID ?? "unverified"])
+        case let .closeWorkspaceGroup(workspaceID, expectedWorkspaceIDs, connectionID):
+            self.init(action: "closeWorkspaceGroup", targets: [
+                "workspace_id": workspaceID, "workspace_ids": expectedWorkspaceIDs.joined(separator: ","),
+                "connection_id": connectionID
+            ])
         case let .broadcastInput(tabID, text):
             self.init(action: "broadcastInput", targets: ["tab_id": tabID], text: text)
+        case let .notificationAction(request):
+            self.init(action: "notificationAction", targets: ["connection_id": request.connectionID, "pane_id": request.paneID])
+        case let .machineRequest(request):
+            self.init(action: "machineRequest", targets: ["request_id": request.id.uuidString,
+                "catalog_revision": request.revision.uuidString])
+        case let .endpointRequest(request):
+            var targets = ["connection_id": request.identity.connectionID,
+                           "view_id": request.identity.viewID.uuidString, "request_id": request.requestID]
+            switch request.operation {
+            case .popupInput(let terminalID, let input):
+                targets["terminal_id"] = terminalID
+                self.init(action: "endpoint.popupInput", targets: targets, content: .bytes((try? input.input().byteCount) ?? 0))
+            case .input(let paneID, let input):
+                targets["pane_id"] = paneID
+                self.init(action: "endpoint.input", targets: targets, content: .bytes((try? input.input().byteCount) ?? 0))
+            case .terminalAction(let action):
+                targets["pane_id"] = action.paneID
+                self.init(action: action.historyRPC == nil ? "endpoint.agent.prompt" : "endpoint.pane.selection.read", targets: targets)
+            case .plugin(let plugin): self.init(plugin: plugin, targets: targets)
+            case .layout(let layout):
+                targets["workspace_id"] = layout.workspaceID
+                targets["tab_id"] = layout.tabID
+                self.init(action: "endpoint." + layout.action.method, targets: targets)
+            case .launchAgent(let launch):
+                targets["pane_id"] = launch.paneID
+                targets["boot_id"] = launch.bootID
+                targets["kind"] = launch.kind.rawValue
+                self.init(action: "endpoint.launchAgent", targets: targets)
+            case .worktree(let worktree):
+                targets["workspace_id"] = worktree.operation.rpc.params["workspace_id"]?.stringValue
+                self.init(action: "endpoint." + worktree.operation.rpc.method, targets: targets)
+            case .command(let command):
+                let rpc = command.rpc
+                for key in ["pane_id", "tab_id", "workspace_id", "target_pane_id", "source_workspace_id"] {
+                    if let value = rpc.params[key]?.stringValue { targets[key] = value }
+                }
+                self.init(action: "endpoint." + rpc.method, targets: targets)
+            case .open: self.init(action: "endpoint.open", targets: targets)
+            case .close: self.init(action: "endpoint.close", targets: targets)
+            case .resize: self.init(action: "endpoint.resize", targets: targets)
+            }
+        case let .manageHerdr(request):
+            self.init(action: request.action.rawValue, targets: [
+                "connection_id": request.connectionID, "request_id": request.id
+            ])
         case let .selectSession(name):
             self.init(action: "selectSession", targets: ["session": name])
         case .pushPrefs:
@@ -427,9 +477,36 @@ struct BridgeAuditEvent: Equatable {
              .history, .historyReceived, .decisionAvailability,
              .listSessions, .paired, .welcome, .authFailed, .snapshot, .event,
              .paneFrame, .scrollback, .scrollbackUnchanged, .backgroundWork, .sessions, .historyPage,
-             .historyError, .pushPrefsState, .error, .paneError, .decisionResult:
+             .historyError, .pushPrefsState, .error, .paneError, .decisionResult, .explainAgent, .agentExplanation,
+             .herdrManagementResult, .endpointState, .machineState:
             return nil
         }
+    }
+
+    private init(plugin: EndpointPluginRequest, targets: [String: String]) {
+        var targets = targets
+        targets["plugin_request_id"] = plugin.id.uuidString
+        let action: String
+        switch plugin.operation {
+        case .list: action = "plugin.list"
+        case .enable(let id): action = "plugin.enable"; targets["plugin_id"] = id
+        case .disable(let id): action = "plugin.disable"; targets["plugin_id"] = id
+        case .unlink(let id): action = "plugin.unlink"; targets["plugin_id"] = id
+        case .uninstall(let id): action = "plugin.uninstall"; targets["plugin_id"] = id
+        case .integrations: action = "integration.list"
+        case .installIntegration(let target): action = "integration.install"; targets["integration"] = target
+        case .setAgentView: action = "agent.view.set"
+        case .clearAgentView: action = "agent.view.clear"
+        case .activateLink(let link): action = "pane.link.activate"; targets["pane_id"] = link.paneID
+        case .openPane(let pane):
+            action = "plugin.pane.open"
+            targets["plugin_id"] = pane.pluginID; targets["entrypoint"] = pane.entrypoint
+            targets["pane_id"] = pane.paneID
+        case .prepareInstall: action = "plugin.install.review"
+        case .confirmInstall(let id): action = "plugin.install.confirm"; targets["preview_id"] = id.uuidString
+        case .cancelInstall(let id): action = "plugin.install.cancel"; targets["preview_id"] = id.uuidString
+        }
+        self.init(action: "endpoint." + action, targets: targets)
     }
 
     private init(
@@ -601,8 +678,7 @@ final class BridgeAuditLogger: @unchecked Sendable {
     }
 
     static var defaultURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Rai", isDirectory: true)
+        AppDataPaths.current.applicationSupport
             .appendingPathComponent("bridge-audit.jsonl")
     }
 

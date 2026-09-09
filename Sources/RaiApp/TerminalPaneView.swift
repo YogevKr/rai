@@ -12,14 +12,8 @@ import UniformTypeIdentifiers
 /// Ghostty Dracula+ ANSI colors; Light uses a legible matching ANSI set.
 @MainActor
 enum GhosttyTheme {
-    private static let darkPalette: [UInt32] = [
-        0x21222C, 0xFF5555, 0x50FA7B, 0xFFCB6B, 0x82AAFF, 0xC792EA, 0x8BE9FD, 0xF8F8F2,
-        0x545454, 0xFF6E6E, 0x69FF94, 0xFFCB6B, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xF8F8F2,
-    ]
-    private static let lightPalette: [UInt32] = [
-        0x30343B, 0xC9363E, 0x238636, 0x9A6700, 0x2563B9, 0x7651B2, 0x087F8C, 0xE8E8EC,
-        0x687386, 0xE0525B, 0x2DA44E, 0xB58407, 0x3B7DDD, 0x9067C6, 0x1597A5, 0xFFFFFF,
-    ]
+    private static let darkPalette = EndpointTerminalAppearance.darkColors
+    private static let lightPalette = EndpointTerminalAppearance.lightColors
 
     static func apply(to view: TerminalView) {
         let isDark = Theme.activeVariant == .dark
@@ -53,20 +47,41 @@ enum GhosttyTheme {
 }
 
 enum HerdrCLI {
-    static let binaryPath: String = {
-        if let env = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"],
-           !env.isEmpty, FileManager.default.isExecutableFile(atPath: env) {
-            return env
+    static var resolvedBinaryPath: String? {
+        resolve(environment: ProcessInfo.processInfo.environment, homeDirectory: NSHomeDirectory())
+    }
+
+    static func installationGuidance(environment: [String: String]) -> String {
+        if let override = environment["HERDR_BIN_PATH"], !override.isEmpty {
+            return "Herdr is unavailable at \(override). Install an executable there, then select Retry. "
+                + "To use another path, change HERDR_BIN_PATH and restart Rai."
         }
+        return "Install Herdr on this Mac, then select Retry."
+    }
+
+    static func resolve(
+        environment: [String: String],
+        homeDirectory: String,
+        isExecutable: (String) -> Bool = { ExecutableFile.isAvailable(at: $0) }
+    ) -> String? {
+        if let override = environment["HERDR_BIN_PATH"], !override.isEmpty {
+            if let root = environment["RAI_DATA_ROOT"],
+               (try? LabLaunch.requireContainedPath(override, root: URL(fileURLWithPath: root))) == nil {
+                return nil
+            }
+            return override.hasPrefix("/") && isExecutable(override) ? override : nil
+        }
+        guard environment["RAI_DATA_ROOT"] == nil else { return nil }
         let candidates = [
             "/opt/homebrew/bin/herdr",
             "/usr/local/bin/herdr",
-            NSHomeDirectory() + "/.local/bin/herdr",
+            homeDirectory + "/.local/bin/herdr",
             "/usr/bin/herdr",
         ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-            ?? "/opt/homebrew/bin/herdr"
-    }()
+        let pathCandidates = (environment["PATH"] ?? "").split(separator: ":")
+            .filter { $0.hasPrefix("/") }.map { String($0) + "/herdr" }
+        return (candidates + pathCandidates).first(where: isExecutable)
+    }
 }
 
 /// Reports a completed click without intercepting SwiftTerm's mouse handling.
@@ -195,6 +210,37 @@ enum DroppedPathEscaper {
 }
 
 final class FocusAwareTerminalView: TerminalProcessView {
+    private(set) var scrollIndicator: TerminalScrollIndicator?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        installScrollIndicator()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installScrollIndicator()
+    }
+
+    private func installScrollIndicator() {
+        // SwiftTerm reserves width for its own scroller, including overlay style.
+        // Keep that scroller hidden permanently and use a separate overlay.
+        TerminalScrollIndicator.hideBuiltIn(in: self)
+        scrollIndicator = TerminalScrollIndicator(terminal: self)
+        scrollIndicator?.scrollRemote = { [weak self] position in
+            self?.scrollbackSelection.scroll(toPosition: position)
+        }
+    }
+
+    override func scrolled(source: Terminal, yDisp: Int) {
+        super.scrolled(source: source, yDisp: yDisp)
+        scrollIndicator?.refresh()
+    }
+
+    var clipboardWriter: (String) -> Bool = { text in
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(text, forType: .string)
+    }
     var onPlainClick: (() -> Void)?
     var onContextAction: ((PaneMenuAction) -> Void)?
     /// The pane's working directory from the herdr snapshot, so a ⌘-clicked
@@ -651,6 +697,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
     }
 
     func beginExternalInput() {
+        scrollbackSelection.cancelIndicatorScroll()
         externalInputDepth += 1
         extendExternalInputFence()
         resetPredictions()
@@ -674,6 +721,9 @@ final class FocusAwareTerminalView: TerminalProcessView {
         get { scrollbackSelection.paneID }
         set {
             if scrollbackSelection.paneID != newValue {
+                scrollIndicator?.snapshotScroll = nil
+                scrollIndicator?.remoteScroll = nil
+                scrollIndicator?.hide()
                 scrolledOffset = 0
                 updateScrolledPill()
                 resetPredictions()
@@ -683,6 +733,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
             scrollbackSelection.onScrollOffsetChanged = { [weak self] scroll in
                 guard let self else { return }
                 self.scrolledOffset = scroll.offsetFromBottom
+                self.scrollIndicator?.remoteScroll = scroll
                 if PredictiveEchoViewPolicy.shouldClear(
                     for: .scroll(offsetFromBottom: scroll.offsetFromBottom)
                 ) {
@@ -704,6 +755,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
     // this on the focused terminal; returning true means we sent bytes to the PTY
     // and the monitor should swallow the event so SwiftTerm doesn't also handle it.
     func handleInterceptedKey(_ event: NSEvent) -> Bool {
+        scrollbackSelection.cancelIndicatorScroll()
         let flags = event.modifierFlags
         if let command = KeyRoutingDecision.terminalCommand(
             keyCode: event.keyCode,
@@ -786,6 +838,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
     // protocol before rai attaches, so terminal state doesn't reflect it — and
     // pasting into an agent is the overwhelmingly common case.)
     override func paste(_ sender: Any) {
+        scrollbackSelection.cancelIndicatorScroll()
         userInputEventPending = false
         resetPredictions()
         let clipboard = NSPasteboard.general
@@ -801,6 +854,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
     // that enable the kitty keyboard protocol (Claude Code), SwiftTerm re-encodes
     // it and loses non-ASCII text — so send non-ASCII as literal UTF-8 like Ghostty.
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        scrollbackSelection.cancelIndicatorScroll()
         let text: String
         switch string {
         case let s as String: text = s
@@ -839,9 +893,11 @@ final class FocusAwareTerminalView: TerminalProcessView {
         allowMouseReporting = false
         // Keep a finalized selection glued to its text while content scrolls.
         scrollbackSelection.noteWheel()
+        scrollIndicator?.noteScroll()
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        scrollbackSelection.cancelIndicatorScroll()
         let trackedUserInput = userInputEventPending
         let needsExternalFence = !trackedUserInput
         if needsExternalFence {
@@ -1119,36 +1175,43 @@ final class FocusAwareTerminalView: TerminalProcessView {
     override func copy(_ sender: Any) {
         if scrollbackSelection.hasExtendedSelection,
            let text = scrollbackSelection.assembledText(), !text.isEmpty {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(CopiedText.trimmed(text), forType: .string)
-            showCopiedToast()
+            _ = writeSelectionToClipboard(CopiedText.trimmed(text))
             return
         }
         if let selected = getSelection(), !selected.isEmpty {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(CopiedText.trimmed(selected), forType: .string)
+            _ = writeSelectionToClipboard(CopiedText.trimmed(selected))
             return
         }
         super.copy(sender)
     }
 
-    private func copyToClipboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(CopiedText.trimmed(text), forType: .string)
-        showCopiedToast()
+    @discardableResult
+    func copyToClipboard(_ text: String) -> Bool {
+        guard writeSelectionToClipboard(CopiedText.trimmed(text)) else { return false }
+        let copiedRange = getSelectionRange()
+        let copiedSelection = getSelection()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.selectNone()
+            guard let self, let copiedRange, let current = self.getSelectionRange(),
+                  current.start == copiedRange.start, current.end == copiedRange.end,
+                  self.getSelection() == copiedSelection else { return }
+            self.selectNone()
         }
+        return true
+    }
+
+    @discardableResult
+    func writeSelectionToClipboard(_ text: String) -> Bool {
+        let copied = clipboardWriter(text)
+        let message = copied ? "Copied to clipboard" : "Copy failed. The selection remains available."
+        if let notice = scrollbackSelection.onNotice { notice(message) }
+        else { showToast(message) }
+        return copied
     }
 
     /// A small "Copied to clipboard" pill that fades in near the pane's bottom
     /// and fades out on its own — the same confirmation herdr shows. It lives in
     /// a floating child NSPanel because the terminal renders through a
     /// CAMetalLayer that paints over any in-view subview or SwiftUI overlay.
-    private func showCopiedToast() {
-        showToast("Copied to clipboard")
-    }
-
     private func showToast(_ text: String) {
         copiedPanel?.orderOut(nil)
         guard let win = window else { return }
@@ -1236,6 +1299,8 @@ final class FocusAwareTerminalView: TerminalProcessView {
         // the first-time enable below.
         super.viewDidMoveToWindow()
         if window == nil {
+            scrollIndicator?.hide()
+            scrollbackSelection.cancelIndicatorScroll()
             firstResponderObservation = nil
             if PredictiveEchoViewPolicy.shouldClear(for: .removedFromWindow) {
                 resetPredictions()
@@ -1261,6 +1326,8 @@ final class FocusAwareTerminalView: TerminalProcessView {
 
     override func viewDidHide() {
         super.viewDidHide()
+        scrollIndicator?.hide()
+        scrollbackSelection.cancelIndicatorScroll()
         if PredictiveEchoViewPolicy.shouldClear(for: .hidden) {
             resetPredictions()
         }
@@ -1496,6 +1563,8 @@ struct TerminalPaneView: NSViewRepresentable {
     let terminalID: String
     var paneID: String?
     var paneCWD: String?
+    var paneScroll: PaneScroll?
+    var supportsDirectScrolling = false
     let isFocused: Bool
     let pool: TerminalPool
     let onPlainClick: () -> Void
@@ -1536,6 +1605,9 @@ struct TerminalPaneView: NSViewRepresentable {
         view.canReleaseAgent = canReleaseAgent
         view.paneID = paneID
         view.paneCWD = paneCWD
+        view.scrollbackSelection.supportsDirectScrolling = supportsDirectScrolling
+        view.scrollIndicator?.snapshotScroll = paneScroll
+        view.scrollIndicator?.knobStyle = Theme.activeVariant == .dark ? .light : .dark
         container.install(view)
         if isFocused, view.window?.firstResponder !== view {
             DispatchQueue.main.async { [weak container, weak view] in
