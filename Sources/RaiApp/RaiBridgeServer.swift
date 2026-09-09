@@ -1472,32 +1472,15 @@ final class RaiBridgeServer: ObservableObject {
                 highestTurnIndex: throughTurnIndex
             )
         case let .registerPush(deviceToken, environment):
-            guard environment == "sandbox" || environment == "production" else {
-                send(.error(
-                    message: "Push environment must be sandbox or production.",
-                    code: .invalidRequest,
-                    detail: environment
-                ), to: client)
-                return
-            }
-            let normalizedToken = deviceToken.lowercased()
-            guard normalizedToken.count == 64,
-                  normalizedToken.allSatisfy(\.isHexDigit)
-            else {
-                send(.error(
-                    message: "Push device token must be 64 hexadecimal characters.",
-                    code: .invalidRequest,
-                    detail: "The token format is invalid."
-                ), to: client)
-                return
-            }
-            registerPush(
-                deviceToken: normalizedToken,
+            if let error = registerPush(
+                deviceToken: deviceToken,
                 environment: environment,
                 deviceID: client.deviceID,
                 supportsPermissionDecisions: client.decisionPushAuthorized,
                 supportsScopedNotifications: client.info?.capabilities?.contains(BridgeCapability.notificationActions) == true
-            )
+            ) {
+                send(error, to: client)
+            }
         case let .unregisterPush(deviceToken):
             removePushRegistration(deviceToken: deviceToken.lowercased())
         case .pair, .hello:
@@ -2130,13 +2113,32 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
-    private func registerPush(
+    func registerPush(
         deviceToken: String,
         environment: String,
         deviceID: String?,
         supportsPermissionDecisions: Bool,
         supportsScopedNotifications: Bool
-    ) {
+    ) -> BridgeMessage? {
+        guard environment == "sandbox" || environment == "production" else {
+            return .error(
+                message: "Push environment must be sandbox or production.",
+                code: .invalidRequest,
+                detail: environment
+            )
+        }
+        // APNs tokens have variable lengths. Validate whole bytes, not a fixed size.
+        let deviceToken = deviceToken.lowercased()
+        guard !deviceToken.isEmpty,
+              deviceToken.utf8.count.isMultiple(of: 2),
+              deviceToken.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else {
+            return .error(
+                message: "Push device token must contain hexadecimal byte pairs.",
+                code: .invalidRequest,
+                detail: "The token format is invalid."
+            )
+        }
         pushBadgeLedger.removeDevices { $0.deviceToken == deviceToken }
         pushRegistrations = Set(pushRegistrations.filter { $0.deviceToken != deviceToken })
         pushRegistrations.insert(
@@ -2149,6 +2151,7 @@ final class RaiBridgeServer: ObservableObject {
             )
         )
         persistPushRegistrations()
+        return nil
     }
 
     private func removePushRegistration(deviceToken: String) {
