@@ -1,0 +1,126 @@
+name: iOS External TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: 'Existing Rai Remote 1.0 build to assign and submit for beta review'
+        type: string
+        required: true
+        default: '40'
+
+permissions:
+  contents: read
+
+# Serialize metadata and group changes, including retries for the same build.
+concurrency:
+  group: rai-ios-external-testflight
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install verified App Store Connect CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            https://github.com/rorkai/App-Store-Connect-CLI/releases/download/5.0.0/asc_5.0.0_linux_amd64 \
+            --output "$RUNNER_TEMP/asc"
+          printf '%s  %s\n' \
+            '76dc06fab91b0f6db73f42bb977fa1f61817b5ee5cb0958a38408f1aceeb3415' \
+            "$RUNNER_TEMP/asc" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/asc"
+          "$RUNNER_TEMP/asc" version
+
+      - name: Validate existing build and request external beta review
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || {
+            echo '::error::build_number must contain only digits'; exit 1;
+          }
+          : "${ASC_KEY_ID:?Missing Apple key ID}"
+          : "${ASC_ISSUER_ID:?Missing Apple issuer ID}"
+          : "${ASC_PRIVATE_KEY_B64:?Missing Apple API key}"
+
+          "$RUNNER_TEMP/asc" builds info \
+            --app 6795192509 --build-number "$BUILD_NUMBER" \
+            --version 1.0 --platform IOS --output json > "$RUNNER_TEMP/build.json"
+          BUILD_ID=$(jq -er '.data.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/build.json")
+          jq -e --arg number "$BUILD_NUMBER" '
+            .data.type == "builds" and .data.attributes.version == $number and
+            .data.attributes.processingState == "VALID" and .data.attributes.expired == false
+          ' "$RUNNER_TEMP/build.json" > /dev/null
+
+          "$RUNNER_TEMP/asc" builds app view --build-id "$BUILD_ID" \
+            --output json > "$RUNNER_TEMP/build-app.json"
+          jq -e '.data.id == "6795192509" and .data.attributes.bundleId == "com.whetstone.rai.ios"' \
+            "$RUNNER_TEMP/build-app.json" > /dev/null
+          "$RUNNER_TEMP/asc" builds pre-release-version view --build-id "$BUILD_ID" \
+            --output json > "$RUNNER_TEMP/build-version.json"
+          jq -e '.data.attributes.version == "1.0" and .data.attributes.platform == "IOS"' \
+            "$RUNNER_TEMP/build-version.json" > /dev/null
+
+          "$RUNNER_TEMP/asc" testflight groups list --app 6795192509 \
+            --external --name 'External Testers' --paginate --output json > "$RUNNER_TEMP/groups.json"
+          GROUP_ID=$(jq -er '
+            [.data[] | select(.attributes.name == "External Testers" and
+              .attributes.isInternalGroup == false)] |
+            select(length == 1) | .[0].id | select(type == "string" and length > 0)
+          ' "$RUNNER_TEMP/groups.json")
+
+          # Fill only missing English beta notes. Preserve existing notes and contacts.
+          # "builds test-notes" targets betaBuildLocalizations; "build-localizations" does not.
+          "$RUNNER_TEMP/asc" builds test-notes list --build-id "$BUILD_ID" \
+            --locale en-US --paginate --output json > "$RUNNER_TEMP/test-notes.json"
+          jq -e '.data | type == "array"' "$RUNNER_TEMP/test-notes.json" > /dev/null
+          jq '[.data[] | select(.attributes.locale == "en-US")]' \
+            "$RUNNER_TEMP/test-notes.json" > "$RUNNER_TEMP/english-notes.json"
+          NOTE_COUNT=$(jq -er 'length | select(. <= 1)' "$RUNNER_TEMP/english-notes.json")
+          TEST_NOTES='Test Herdr 0.9 support: Mac pairing, workspace and pane controls, terminal input, history search, text selection, copying, and opening links. Check reconnects, appearance settings, and scrolling.'
+          if [[ "$NOTE_COUNT" == 0 ]]; then
+            "$RUNNER_TEMP/asc" builds test-notes create --build-id "$BUILD_ID" \
+              --locale en-US --whats-new "$TEST_NOTES" --output json > "$RUNNER_TEMP/notes-write.json"
+          elif jq -e '.[0].attributes.whatsNew // "" | test("\\S") | not' \
+            "$RUNNER_TEMP/english-notes.json" > /dev/null; then
+            "$RUNNER_TEMP/asc" builds test-notes update --build-id "$BUILD_ID" \
+              --locale en-US --whats-new "$TEST_NOTES" --output json > "$RUNNER_TEMP/notes-write.json"
+          fi
+
+          # This also checks existing review contacts. Never modify contacts or testers.
+          "$RUNNER_TEMP/asc" validate testflight --app 6795192509 --build-id "$BUILD_ID" \
+            --strict --output json | tee "$RUNNER_TEMP/readiness.json"
+
+          "$RUNNER_TEMP/asc" builds add-groups --build-id "$BUILD_ID" --group "$GROUP_ID" \
+            --submit --confirm --output json | tee "$RUNNER_TEMP/assignment.json"
+
+          "$RUNNER_TEMP/asc" testflight groups list --build-id "$BUILD_ID" \
+            --output json > "$RUNNER_TEMP/membership.json"
+          jq -e --arg build "$BUILD_ID" --arg group "$GROUP_ID" '
+            .complete == true and .appId == "6795192509" and .buildId == $build and
+            any(.groups[]; .id == $group and .name == "External Testers" and .type == "external")
+          ' "$RUNNER_TEMP/membership.json" > /dev/null
+          "$RUNNER_TEMP/asc" testflight review submissions list --build-id "$BUILD_ID" \
+            --paginate --output json > "$RUNNER_TEMP/review.json"
+          "$RUNNER_TEMP/asc" testflight distribution view --build-id "$BUILD_ID" \
+            --output json > "$RUNNER_TEMP/distribution.json"
+          {
+            echo '## Rai Remote external TestFlight'
+            printf 'App: 6795192509. Version: 1.0. Build: %s. Group: External Testers.\n' "$BUILD_NUMBER"
+            echo 'Group assignment does not mean Apple approved this build. Read the review and distribution states below.'
+            echo '```json'
+            cat "$RUNNER_TEMP/membership.json" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/distribution.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e 'any(.data[];
+            .attributes.betaReviewState == "WAITING_FOR_REVIEW" or
+            .attributes.betaReviewState == "IN_REVIEW" or
+            .attributes.betaReviewState == "APPROVED")' "$RUNNER_TEMP/review.json" > /dev/null
