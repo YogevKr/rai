@@ -3,7 +3,7 @@ Rai now accepts APNs device tokens of variable length. This fixes registration f
 The update preserves existing phone pairing. No new iOS build is required. Rai Remote build 40 remains available through TestFlight.
 
 Validation confirmed actual Apple push delivery, the notification badge, and navigation to the correct pane in isolated apps.
-The Mac suite passed 942 tests, with seven skips and no failures. Focused push checks passed 54 tests.
+The Mac suite completed 942 tests, with seven skips and no failures. Focused push checks passed 54 tests.
 
 Silent retractions reached iOS, but automatic removal remains unverified. A direct debugger callback removed the test alert.
 The live sender check bypassed Mac notification preference gates. Full Herdr-event-to-APNs preference coverage remains unverified.
