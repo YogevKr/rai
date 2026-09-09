@@ -25,6 +25,7 @@ struct EndpointTabMenu: View {
                 .keyboardShortcut("t", modifiers: .command)
             if let tab = snapshot.focusedTabID {
                 EndpointActionButton(model: model, title: "Close Tab", method: "tab.close", params: ["tab_id": .string(tab)])
+                    .keyboardShortcut("w", modifiers: .command)
             }
             Divider()
             ForEach(snapshot.tabs.indices, id: \.self) { index in
@@ -50,6 +51,7 @@ struct EndpointPaneMenu: View {
                                  params: ["target_pane_id": .string(pane), "direction": .string("down"), "focus": .bool(true)])
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             EndpointActionButton(model: model, title: "Close Pane", method: "pane.close", params: ["pane_id": .string(pane)])
+                .keyboardShortcut("w", modifiers: [.command, .shift])
             EndpointActionButton(model: model, title: "Zoom Pane", method: "pane.zoom",
                                  params: ["pane_id": .string(pane), "mode": .string("toggle")])
                 .keyboardShortcut(.return, modifiers: [.command, .shift])

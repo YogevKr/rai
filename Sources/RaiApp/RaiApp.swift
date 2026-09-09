@@ -2,6 +2,17 @@ import AppKit
 import RaiCore
 import SwiftUI
 
+private struct PrimaryRaiWindowFocusKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+extension FocusedValues {
+    var primaryRaiWindow: Bool? {
+        get { self[PrimaryRaiWindowFocusKey.self] }
+        set { self[PrimaryRaiWindowFocusKey.self] = newValue }
+    }
+}
+
 @main
 struct RaiApp: App {
     init() {
@@ -25,10 +36,12 @@ struct RaiApp: App {
     @StateObject private var appUpdates = AppUpdateController.shared
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.endpointWindow) private var endpointWindow
+    @FocusedValue(\.primaryRaiWindow) private var primaryWindow
 
     var body: some Scene {
         WindowGroup {
             RaiRootView(model: model)
+                .focusedSceneValue(\.primaryRaiWindow, true)
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
@@ -43,10 +56,14 @@ struct RaiApp: App {
                 Button("New Window") { openWindow(id: "independent") }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     .disabled(model.serverInfo?.capabilities?.endpointProtocolGeneration != 1)
-                if endpointWindow != nil {
-                    Button("Close Window") { NSApp.keyWindow?.close() }
-                        .keyboardShortcut("w", modifiers: .command)
-                }
+            }
+
+            // SwiftUI's default Close command lives in saveItem and otherwise
+            // takes Command-W before the Tab menu can handle it.
+            CommandGroup(replacing: .saveItem) {
+                Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
+                    .keyboardShortcut("w", modifiers:
+                        primaryWindow == true || endpointWindow != nil ? [.command, .option] : .command)
             }
 
             CommandGroup(after: .appInfo) {
@@ -58,6 +75,7 @@ struct RaiApp: App {
             CommandMenu("Tab") {
               if let endpointWindow {
                 EndpointTabMenu(model: endpointWindow)
+                    .disabled(appUpdates.isPresented)
               } else {
               Group {
                 Button("New Tab") { model.newTab() }
@@ -66,11 +84,11 @@ struct RaiApp: App {
                     .keyboardShortcut("t", modifiers: [.command, .shift])
                     .disabled(!model.canReopenClosedTab)
                 Button("Close Tab") {
-                    guard !appUpdates.isPresented else { return }
+                    guard primaryWindow == true, !appUpdates.isPresented else { return }
                     model.closeTab()
                 }
-                    .keyboardShortcut("w", modifiers: .command)
-                    .disabled(appUpdates.isPresented)
+                    .keyboardShortcut(primaryWindow == true ? KeyboardShortcut("w", modifiers: .command) : nil)
+                    .disabled(primaryWindow != true || appUpdates.isPresented)
                 Divider()
                 Button("Next Tab") { model.nextTab() }
                     .keyboardShortcut(.tab, modifiers: .control)
@@ -88,6 +106,7 @@ struct RaiApp: App {
             CommandMenu("Pane") {
               if let endpointWindow {
                 EndpointPaneMenu(model: endpointWindow)
+                    .disabled(appUpdates.isPresented)
               } else {
               Group {
                 Button("Split Right") { model.splitRight() }
@@ -95,11 +114,11 @@ struct RaiApp: App {
                 Button("Split Down") { model.splitDown() }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("Close Pane") {
-                    guard !appUpdates.isPresented else { return }
+                    guard primaryWindow == true, !appUpdates.isPresented else { return }
                     model.closePane()
                 }
-                    .keyboardShortcut("w", modifiers: [.command, .shift])
-                    .disabled(appUpdates.isPresented)
+                    .keyboardShortcut(primaryWindow == true ? KeyboardShortcut("w", modifiers: [.command, .shift]) : nil)
+                    .disabled(primaryWindow != true || appUpdates.isPresented)
                 Button("Zoom Pane") { model.zoomPane() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()
@@ -200,6 +219,7 @@ struct RaiApp: App {
             EndpointWindow(socketPath: model.activeSocketPath, remoteContext: model.activeRemoteContext)
         }
         .defaultSize(width: 1240, height: 820)
+        .commandsRemoved()
 
         Settings {
             SettingsView(model: RaiApp.sharedModel)
