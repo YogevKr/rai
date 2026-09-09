@@ -245,6 +245,22 @@ See [Herdr 0.9 evidence](herdr-0.9-e2e.md) for current isolated app results and 
 
 ## Application updates
 
+### Close shortcuts
+
+Run these regression checks in a fresh app lab with disposable tabs and panes:
+
+1. Create two tabs. Press Command-W. Confirm that only the selected tab closes and the window stays open.
+2. Repeat in an independent window. Confirm that the other window keeps its selected tab.
+3. Split a pane in each window type. Press Command-Shift-W. Confirm that only the selected pane closes.
+4. Hold each close shortcut. Confirm that one press closes at most one resource.
+5. Open Settings and press Command-W. Confirm that Settings closes and the terminal tabs remain open.
+6. Open Check for Updates and press Command-W. Confirm that the panel closes and the terminal tabs remain open.
+7. Press Command-Option-W in a terminal window. Confirm that the window closes and its Herdr tabs remain available.
+
+Command-W closes the selected tab in terminal windows. Command-Shift-W closes the selected pane.
+Command-Option-W closes the window. In auxiliary windows, Command-W closes that window.
+The File menu replaces SwiftUI's default Close command to prevent competing Command-W shortcuts.
+
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test --filter 'AppReleaseTests|AppUpdate|AppTerminationTests'
