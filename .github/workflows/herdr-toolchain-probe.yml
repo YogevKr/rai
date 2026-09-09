@@ -86,11 +86,87 @@ jobs:
           uname -m | tee "$PROBE_REPORT_DIR/architecture.txt"
 
       - name: Run the unchanged close regression suite
+        id: close_tests
         shell: bash
         run: |
           set -euo pipefail
           swift test --jobs 4 --scratch-path "$PROBE_SCRATCH_DIR" \
             --filter CloseTabReopenTests 2>&1 | tee "$PROBE_REPORT_DIR/test.log"
+
+      - name: Record compiled deployment targets
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = Path(os.environ['PROBE_REPORT_DIR'])
+          report.mkdir(parents=True, exist_ok=True)
+          records = []
+          for path in Path(os.environ['PROBE_SCRATCH_DIR']).glob('*/debug/description.json'):
+              data = json.loads(path.read_text())
+              for name, command in data.get('swiftCommands', {}).items():
+                  arguments = command.get('otherArguments', [])
+                  target = arguments[arguments.index('-target') + 1] if '-target' in arguments else None
+                  records.append({'command': name, 'module': command.get('moduleName'), 'target': target})
+          (report / 'compiled-targets.json').write_text(json.dumps(records, indent=2) + '\n')
+          PY
+
+      - name: Capture Xcode26 test backtraces
+        if: failure() && matrix.label == 'head26' && steps.close_tests.outcome == 'failure'
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          report = Path(os.environ['PROBE_REPORT_DIR'])
+          scratch = Path(os.environ['PROBE_SCRATCH_DIR'])
+          bundles = list(scratch.glob('*/debug/raiPackageTests.xctest'))
+          assert len(bundles) == 1, 'Expected one compiled XCTest bundle'
+          bundle = bundles[0].resolve()
+          assert bundle.is_relative_to(scratch.resolve())
+          # An invalid xctest launch can print its environment. Pass no runner credentials.
+          environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+              'DEVELOPER_DIR': os.environ['DEVELOPER_DIR'], 'TMPDIR': os.environ['RUNNER_TEMP'] + '/'}
+          launcher = subprocess.check_output(['xcrun', '--find', 'xctest'], env=environment, text=True).strip()
+          results = []
+          for label, selection in [('single', 'RaiAppTests.CloseTabReopenTests/testCloseCommandStopsAfterHerdReplacement'),
+                                   ('suite', 'RaiAppTests.CloseTabReopenTests')]:
+              inferior = scratch / f'lldb-{label}-inferior.log'
+              commands = ['settings set target.inherit-env false',
+                  'settings set target.disable-aslr false',
+                  'settings set stop-disassembly-count 0',
+                  'settings set stop-line-count-before 0',
+                  'settings set stop-line-count-after 0',
+                  'settings set frame-format "frame #${frame.index}: ${module.file.basename} ${function.name} at ${line.file.basename}:${line.number}\\n"',
+                  'settings set thread-format "thread #${thread.index}: ${thread.stop-reason}\\n"',
+                  f'process launch --stdout "{inferior}" --stderr "{inferior}"']
+              arguments = ['xcrun', 'lldb', '--batch', '--no-lldbinit', '--no-use-colors']
+              for command in commands:
+                  arguments.extend(['-o', command])
+              arguments.extend(['-k', 'thread backtrace all --count 40', '--', launcher, '-XCTest', selection, str(bundle)])
+              with (report / f'lldb-{label}.log').open('w') as output:
+                  try:
+                      run = subprocess.run(arguments, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=90)
+                      result = {'case': label, 'filter': selection, 'debugger_exit_code': run.returncode}
+                  except subprocess.TimeoutExpired:
+                      result = {'case': label, 'filter': selection, 'debugger_timeout_seconds': 90}
+              # Retain test outcomes, not raw inferior output or launcher environment diagnostics.
+              lines = inferior.read_text(errors='replace').splitlines() if inferior.exists() else []
+              result['test_output'] = [line for line in lines if re.match(
+                  r'^(Test (Case|Suite) |\s*Executed \d+ tests?|error:|freed pointer was not the last allocation)', line)]
+              results.append(result)
+          (report / 'lldb-results.json').write_text(json.dumps(results, indent=2) + '\n')
+          PY
 
       - name: Collect structural crash diagnostics
         if: failure()
