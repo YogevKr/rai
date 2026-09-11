@@ -181,10 +181,10 @@ An iOS drift test requires one phone policy for every shared code.
 
 ## Attach hardening LANDED (2026-09-03)
 
-- Each phone attach gets one native-size visible frame before the observe stream.
-- A two-second read timeout skips a stalled first frame and continues with the stream.
-- The history seed still arrives first. Both live paints use full replacement frames.
-- This behavior changes no bridge message shape and needs no protocol version change.
+- Fast-capable phone clients start the full-grid observe stream before history loads.
+- The live stream paints the current pane while the history read runs in the background.
+- Legacy clients keep the visible-frame fallback and its two-second timeout.
+- The capability uses the existing client handshake and needs no protocol version change.
 
 ## Password prompt guard LANDED (2026-09-03)
 

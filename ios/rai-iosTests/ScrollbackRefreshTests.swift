@@ -109,6 +109,26 @@ final class ScrollbackRefreshTests: XCTestCase {
         XCTAssertEqual(messages.readCount, initialReads)
     }
 
+    func testInitialAttachStartsBeforeHistoryRead() async throws {
+        let messages = Messages()
+        let connection = BridgeConnection(messageSender: { messages.values.append($0) })
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        defer { connection.disconnect() }
+
+        connection.openPane(paneID: "pane")
+        try await Task.sleep(for: .milliseconds(30))
+
+        let attachIndex = try XCTUnwrap(messages.values.firstIndex {
+            if case .attachStream = $0 { return true }
+            return false
+        })
+        let readIndex = try XCTUnwrap(messages.values.firstIndex {
+            if case .readScrollback = $0 { return true }
+            return false
+        })
+        XCTAssertLessThan(attachIndex, readIndex)
+    }
+
     func testDisconnectCancelsTheScheduledHistoryRead() async throws {
         let messages = Messages()
         let connection = try await connected(messages)
@@ -255,6 +275,39 @@ final class ScrollbackRefreshTests: XCTestCase {
         terminal.receiveFrame(Data("\u{1B}[Hlive".utf8), full: true, grid: PaneGridSize(cols: 80, rows: 4))
         XCTAssertTrue(String(decoding: terminal.getTerminal().getBufferAsData(), as: UTF8.self)
             .contains("history before the first frame"))
+    }
+
+    func testLeavingDuringReconnectAttachDoesNotRequestHiddenPaneHistory() async throws {
+        let messages = Messages()
+        var delayAttach = false
+        var pendingAttach: CheckedContinuation<Void, Never>?
+        let attachStarted = expectation(description: "reconnect attachment started")
+        let connection = BridgeConnection(messageSender: { message in
+            messages.values.append(message)
+            if delayAttach, case .attachStream = message {
+                await withCheckedContinuation {
+                    pendingAttach = $0
+                    attachStarted.fulfill()
+                }
+            }
+        })
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        defer {
+            pendingAttach?.resume()
+            connection.disconnect()
+        }
+        connection.openPane(paneID: "pane")
+        try await Task.sleep(for: .milliseconds(30))
+        messages.values.removeAll()
+        delayAttach = true
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: nil)
+        await fulfillment(of: [attachStarted], timeout: 1)
+        connection.detachPane(paneID: "pane")
+        pendingAttach?.resume()
+        pendingAttach = nil
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(messages.attachCount, 1)
+        XCTAssertEqual(messages.readCount, 0)
     }
 
     func testExpensiveNetworkCoalescesOutputForTwoSeconds() async throws {

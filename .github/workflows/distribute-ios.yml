@@ -7,7 +7,7 @@ on:
         description: 'Existing Rai Remote 1.0 build to assign and submit for beta review'
         type: string
         required: true
-        default: '40'
+        default: '41'
 
 permissions:
   contents: read
@@ -85,7 +85,7 @@ jobs:
           jq '[.data[] | select(.attributes.locale == "en-US")]' \
             "$RUNNER_TEMP/test-notes.json" > "$RUNNER_TEMP/english-notes.json"
           NOTE_COUNT=$(jq -er 'length | select(. <= 1)' "$RUNNER_TEMP/english-notes.json")
-          TEST_NOTES='Test Herdr 0.9 support: Mac pairing, workspace and pane controls, terminal input, history search, text selection, copying, and opening links. Check reconnects, appearance settings, and scrolling.'
+          TEST_NOTES='Check app startup and session loading with Rai 0.1.59 or later. Open sessions with long history, switch panes, and reconnect. The live terminal should appear while history loads. Check terminal input, history search, text selection, copying, links, and scrolling.'
           if [[ "$NOTE_COUNT" == 0 ]]; then
             "$RUNNER_TEMP/asc" builds test-notes create --build-id "$BUILD_ID" \
               --locale en-US --whats-new "$TEST_NOTES" --output json > "$RUNNER_TEMP/notes-write.json"

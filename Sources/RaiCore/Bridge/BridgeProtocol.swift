@@ -18,6 +18,8 @@ public enum BridgeCapability {
     public static let independentPaneObservation = "independent_pane_observation"
     public static let permissionDecisions = "permission_decisions"
     public static let permissionDecisionPush = "permission_decision_push"
+    /// The client can render the live full-grid stream without a visible preview.
+    public static let fastPaneAttach = "fast_pane_attach"
 }
 
 public struct ClientInfo: Codable, Equatable, Sendable {
@@ -357,8 +359,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     /// Macs): the client pins its emulator grid to them so a pane larger
     /// than the phone viewport scrolls instead of clipping.
     case paneFrame(paneID: String, bytesBase64: String, full: Bool, seq: Int, cols: Int?, rows: Int?)
-    /// ANSI-formatted scrollback history for a pane, sent before its stream's
-    /// first frame. Clients that never sent readScrollback never receive it.
+    /// ANSI-formatted scrollback history for a pane. Fast clients can receive
+    /// stream frames before this history reply. Clients that never sent
+    /// readScrollback never receive it.
     case scrollback(paneID: String, bytesBase64: String)
     /// Only sent when a conditional read matches the client's retained history.
     case scrollbackUnchanged(paneID: String, contentHash: String)

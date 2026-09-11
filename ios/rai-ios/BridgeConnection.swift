@@ -919,16 +919,6 @@ final class BridgeConnection: ObservableObject {
                 // panes with no active stream — attaching with a stale size
                 // would leave the stream permanently smaller than the view.
                 let size = desiredStreams[paneID] ?? (cols, rows)
-                if !seededPanes.contains(paneID) {
-                    // Sent before attachStream: the server handles messages in
-                    // order, so history arrives before the first full frame.
-                    try await send(
-                        .readScrollback(
-                            paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true,
-                            knownHash: scrollbackHashes[paneID])
-                    )
-                }
-                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
                 // fullGrid: the stream is never smaller than the pane's grid;
                 // frames carry their dimensions and the emulator pins to them,
                 // scrolling a viewport instead of clipping the pane's bottom.
@@ -936,6 +926,16 @@ final class BridgeConnection: ObservableObject {
                     .attachStream(
                         paneID: paneID, cols: size.cols, rows: size.rows, fullGrid: true)
                 )
+                guard paneOpenIDs[paneID] == openID, connectionGeneration == generation else { return }
+                if !seededPanes.contains(paneID) {
+                    // Start the live stream before the history read. The Mac can
+                    // paint the current session while history loads.
+                    try await send(
+                        .readScrollback(
+                            paneID: paneID, lines: 1000, rows: size.rows, fullGrid: true,
+                            knownHash: scrollbackHashes[paneID])
+                    )
+                }
             } catch {
                 handleSocketFailure(error)
             }
@@ -1915,7 +1915,12 @@ final class BridgeConnection: ObservableObject {
             name: UIDevice.current.name,
             platform: "iOS",
             model: UIDevice.current.model,
-            capabilities: decisionAvailability.capabilities + [BridgeCapability.nativeEndpoint, BridgeCapability.machineDirectory, BridgeCapability.notificationActions]
+            capabilities: decisionAvailability.capabilities + [
+                BridgeCapability.nativeEndpoint,
+                BridgeCapability.machineDirectory,
+                BridgeCapability.notificationActions,
+                BridgeCapability.fastPaneAttach,
+            ]
         )
     }
 
@@ -2473,8 +2478,18 @@ final class BridgeConnection: ObservableObject {
                     let openID = openIDsToRestore[paneID]
                     guard self.desiredStreams[paneID] != nil,
                           self.paneOpenIDs[paneID] == openID else { continue }
-                    let needsSeed = !self.seededPanes.contains(paneID)
-                    if needsSeed {
+                    try await self.send(
+                        .attachStream(
+                            paneID: paneID,
+                            cols: size.cols,
+                            rows: size.rows,
+                            fullGrid: true
+                        ), over: socket
+                    )
+                    guard self.connectionGeneration == generation else { return }
+                    guard self.desiredStreams[paneID] != nil,
+                          self.paneOpenIDs[paneID] == openID else { continue }
+                    if !self.seededPanes.contains(paneID) {
                         try await self.send(
                             .readScrollback(
                                 paneID: paneID,
@@ -2485,17 +2500,6 @@ final class BridgeConnection: ObservableObject {
                             ), over: socket
                         )
                     }
-                    guard self.connectionGeneration == generation else { return }
-                    guard self.desiredStreams[paneID] != nil,
-                          self.paneOpenIDs[paneID] == openID else { continue }
-                    try await self.send(
-                        .attachStream(
-                            paneID: paneID,
-                            cols: size.cols,
-                            rows: size.rows,
-                            fullGrid: true
-                        ), over: socket
-                    )
                 }
             } catch {
                 self.handleSocketFailure(error)

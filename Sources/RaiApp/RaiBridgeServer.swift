@@ -1372,9 +1372,9 @@ final class RaiBridgeServer: ObservableObject {
                 }
             }
             if let stream = observeStreams[clientID]?[paneID] {
-                // Refresh reads must not hold up receiveMessage: the next
-                // WebSocket message can be a keystroke. Only the initial
-                // seed needs to finish before attachStream starts.
+                // History reads must not hold up receiveMessage: the next
+                // WebSocket message can be a keystroke. Fast clients also
+                // request their initial seed after attaching the stream.
                 guard stream.historyReadTask == nil else { return }
                 stream.historyReadTask = Task { [weak self, weak stream] in
                     guard let self, let stream else { return }
@@ -1649,6 +1649,19 @@ final class RaiBridgeServer: ObservableObject {
         for client: BridgeClient
     ) {
         let clientID = ObjectIdentifier(client.connection)
+        let supportsFastAttach = fullGrid
+            && client.info?.capabilities?.contains(BridgeCapability.fastPaneAttach) == true
+        if supportsFastAttach {
+            cancelPendingObserveStart(paneID: paneID, for: client)
+            startObserveStream(
+                paneID: paneID,
+                cols: cols,
+                rows: rows,
+                fullGrid: fullGrid,
+                for: client
+            )
+            return
+        }
         let startID = UUID()
         pendingObserveStartIDs[clientID, default: [:]][paneID] = startID
         let nativeSize = fullGrid

@@ -24,7 +24,7 @@ struct CachedHerdSnapshot: Codable, Equatable {
 }
 
 /// Stores only the herd model. Terminal frames stay memory-only.
-final class SnapshotCacheStore {
+final class SnapshotCacheStore: @unchecked Sendable {
     private let fileURL: URL
     private let queue: DispatchQueue
     private let encoder = JSONEncoder()
@@ -41,10 +41,12 @@ final class SnapshotCacheStore {
     }
 
     func load() -> CachedHerdSnapshot? {
-        queue.sync {
-            guard let data = try? Data(contentsOf: fileURL) else { return nil }
-            return try? decoder.decode(CachedHerdSnapshot.self, from: data)
-        }
+        queue.sync { read() }
+    }
+
+    private func read() -> CachedHerdSnapshot? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? decoder.decode(CachedHerdSnapshot.self, from: data)
     }
 
     func save(
@@ -383,15 +385,9 @@ final class AppModel: ObservableObject {
         }
         self.pairing = pairing
         if connect {
-            if connection.snapshot == nil, let cached = snapshotCacheStore.load() {
-                if cached.belongs(to: pairing) {
-                    connection.restoreCachedSnapshot(cached)
-                } else {
-                    snapshotCacheStore.clear()
-                }
-            }
-            connection.connect(to: pairing)
             pendingHistoryCachePairingID = CachedHerdSnapshot.pairingID(for: pairing)
+            connection.connect(to: pairing)
+            restoreCachedSnapshot(for: pairing)
         }
         guard persist else { return }
         do {
@@ -400,6 +396,25 @@ final class AppModel: ObservableObject {
             // Connecting must not depend on Keychain availability. In particular,
             // unsigned simulator builds may lack the required entitlement.
             NSLog("rai-ios: Could not persist pairing: \(error.localizedDescription)")
+        }
+    }
+
+    private func restoreCachedSnapshot(for pairing: Pairing) {
+        guard connection.snapshot == nil else { return }
+        let store = snapshotCacheStore
+        Task { [weak self] in
+            let cached = await Task.detached(priority: .userInitiated) {
+                store.load()
+            }.value
+            guard let self,
+                  self.pairing == pairing,
+                  self.connection.snapshot == nil else { return }
+            guard let cached else { return }
+            if cached.belongs(to: pairing) {
+                self.connection.restoreCachedSnapshot(cached)
+            } else {
+                store.clear()
+            }
         }
     }
 

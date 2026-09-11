@@ -99,8 +99,7 @@ crook for the herd:
   Action errors from older Macs no longer mark a healthy connection as failed.
 - **Live terminals** — the real pane, streamed and colored, with ~1000 lines
   of scrollback seeded from herdr's history; swipe through what happened
-  while you were away. A visible-grid frame paints the pane before streaming
-  starts.
+  while you were away. The live stream starts while scrollback loads.
 - **Select and copy text** — open **Pane actions → Select Text** to capture the terminal buffer.
   Select, copy, or share that text while the agent continues writing. Tap web links in either view.
   Remote Mac file paths do not open as local iPhone files.
