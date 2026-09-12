@@ -805,6 +805,10 @@ final class FocusAwareTerminalView: TerminalProcessView {
         case 124: // right arrow
             if mods == .command { bytes = [0x05] }             // ⌘→ → Ctrl-E (line end)
             else if mods == .option { bytes = [0x1b, 0x66] }   // ⌥→ → ESC f (word forward)
+        case 126: // up arrow
+            if mods == .option { bytes = [0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x41] } // ⌥↑ → CSI 1;3A
+        case 125: // down arrow
+            if mods == .option { bytes = [0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42] } // ⌥↓ → CSI 1;3B
         case 36:  // return
             if mods == .shift { bytes = [0x1b, 0x0d] }         // ⇧⏎ → ESC CR (Claude newline)
         default:
