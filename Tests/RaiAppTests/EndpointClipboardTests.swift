@@ -27,7 +27,7 @@ final class EndpointClipboardTests: XCTestCase {
         terminal.clipboard = clipboard
         terminal.feed(text: "COPY THIS\r\n")
         terminal.setSelectionRange(start: Position(col: 0, row: 0), end: Position(col: 4, row: 0))
-        let content = terminal.getTerminal().getBufferAsData()
+        let content = terminal.getBufferAsData()
         let sent = input.bytes
         terminal.copy(self)
         XCTAssertEqual(writes, ["COPY"])
@@ -35,7 +35,7 @@ final class EndpointClipboardTests: XCTestCase {
         XCTAssertEqual(terminal.getSelection(), "COPY")
         XCTAssertEqual(terminal.getSelectionRange()?.start, Position(col: 0, row: 0))
         XCTAssertEqual(terminal.getSelectionRange()?.end, Position(col: 4, row: 0))
-        XCTAssertEqual(terminal.getTerminal().getBufferAsData(), content)
+        XCTAssertEqual(terminal.getBufferAsData(), content)
         XCTAssertEqual(input.bytes, sent, "Copy failure must not send an interrupt or terminal input.")
 
         terminal.feed(text: "\u{1b}[5;1HOUTPUT CONTINUES")

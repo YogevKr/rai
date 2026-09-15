@@ -85,22 +85,25 @@ final class TerminalVisibilityTests: XCTestCase {
         try await waitUntil { view.process?.running == true }
         let originalProcess = try XCTUnwrap(view.process)
         view.feed(text: (0..<100).map { "cached row \($0)\r\n" }.joined())
-        let savedBuffer = view.getTerminal().getBufferAsData()
+        let savedBuffer = view.getBufferAsData()
 
+        // SwiftTerm 2 keeps `running` true until it reaps the child, and
+        // clears `shellPid` at that point, so capture the pid first.
+        let originalPid = originalProcess.shellPid
         view.removeFromSuperview()
         try await waitUntil { view.process == nil }
-        XCTAssertFalse(originalProcess.running)
-        try await waitUntil { kill(originalProcess.shellPid, 0) == -1 && errno == ESRCH }
+        try await waitUntil { !originalProcess.running }
+        try await waitUntil { kill(originalPid, 0) == -1 && errno == ESRCH }
         XCTAssertTrue(pool.view(for: "term-resume") === view)
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), savedBuffer)
+        XCTAssertEqual(view.getBufferAsData(), savedBuffer)
 
         show(view, in: host)
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), savedBuffer)
+        XCTAssertEqual(view.getBufferAsData(), savedBuffer)
         // A cached grid can accept input immediately. Waiting for another
         // resize or a fallback timer would drop the first keys after a switch.
         view.send(txt: "input after resume\n")
         try await waitUntil {
-            String(decoding: view.getTerminal().getBufferAsData(), as: UTF8.self).contains("input after resume")
+            String(decoding: view.getBufferAsData(), as: UTF8.self).contains("input after resume")
         }
         XCTAssertFalse(view.process === originalProcess)
     }
@@ -146,7 +149,7 @@ final class TerminalVisibilityTests: XCTestCase {
         let controls: [UInt8] = [0x03, 0x7f, 0x16, 0x41, 0x0d]
         view.send(source: view, data: controls[...])
         try await waitUntil {
-            String(decoding: view.getTerminal().getBufferAsData(), as: UTF8.self)
+            String(decoding: view.getBufferAsData(), as: UTF8.self)
                 .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
                 .contains("03 7f 16 41 0d")
         }
@@ -161,7 +164,7 @@ final class TerminalVisibilityTests: XCTestCase {
 
         host.isHidden = true
         try await waitUntil { view.process == nil }
-        XCTAssertFalse(process.running)
+        try await waitUntil { !process.running }
         host.isHidden = false
         try await waitUntil { view.process?.running == true }
         XCTAssertFalse(view.process === process)
@@ -186,7 +189,7 @@ final class TerminalVisibilityTests: XCTestCase {
         try await waitUntil { view.process?.running == true }
         let process = try XCTUnwrap(view.process)
         view.feed(text: "keep this output")
-        let savedBuffer = view.getTerminal().getBufferAsData()
+        let savedBuffer = view.getBufferAsData()
         XCTAssertEqual(kill(process.shellPid, SIGTERM), 0)
         try await waitUntil { !process.running }
         // Allow the main-queue exit callback to schedule its delayed retry.
@@ -195,10 +198,10 @@ final class TerminalVisibilityTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(600))
 
         XCTAssertNil(view.process)
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), savedBuffer)
+        XCTAssertEqual(view.getBufferAsData(), savedBuffer)
         show(view, in: host)
         try await waitUntil { view.process?.running == true }
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), savedBuffer)
+        XCTAssertEqual(view.getBufferAsData(), savedBuffer)
     }
 
     func testVisibleExitRetriesButEvictionCancelsFurtherRetries() async throws {

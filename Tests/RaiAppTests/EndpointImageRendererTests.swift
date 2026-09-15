@@ -54,8 +54,8 @@ final class EndpointImageRendererTests: XCTestCase {
                 view.feed(byteArray: Array(encoder.render(current.presentationGraphics, grid: current.presentationGrid))[...])
                 previous = key
             }
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.imagesById.count, imageCount)
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.placementsByKey.count, imageCount)
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.imagesById.count }, imageCount)
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.placementsByKey.count }, imageCount)
         }
     }
 
@@ -66,8 +66,8 @@ final class EndpointImageRendererTests: XCTestCase {
         for green in [false, true, true] {
             let bytes = encoder.render(try scene(green: green), grid: grid)
             view.feed(byteArray: Array(bytes)[...])
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.imagesById.count, 2)
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.placementsByKey.count, 2,
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.imagesById.count }, 2)
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.placementsByKey.count }, 2,
                            "Replacement and repaint must preserve both image placements")
         }
     }
@@ -78,14 +78,14 @@ final class EndpointImageRendererTests: XCTestCase {
         var encoder = EndpointGraphicsEncoder()
         let scene = try scene(green: false)
         view.feed(byteArray: Array(encoder.render(scene, grid: grid))[...])
-        XCTAssertEqual(view.getTerminal().kittyGraphicsState.imagesById.count, 2)
+        XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.imagesById.count }, 2)
         for _ in 0..<3 {
             view.feed(byteArray: Array(EndpointANSI.render(grid, previous: nil))[...])
-            XCTAssertTrue(view.getTerminal().kittyGraphicsState.imagesById.isEmpty,
+            XCTAssertTrue(view.withTerminal { $0.kittyGraphicsState.imagesById.isEmpty },
                           "A full text repaint invalidates cached terminal image data")
             view.feed(byteArray: Array(encoder.render(scene, grid: grid, reset: true))[...])
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.imagesById.count, 2)
-            XCTAssertEqual(view.getTerminal().kittyGraphicsState.placementsByKey.count, 2)
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.imagesById.count }, 2)
+            XCTAssertEqual(view.withTerminal { $0.kittyGraphicsState.placementsByKey.count }, 2)
         }
     }
 }

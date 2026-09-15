@@ -325,12 +325,13 @@ These samples verify this workload. They do not predict CPU use in a live herd.
 
 ## Typing latency benchmark
 
-The Mac terminal parses queued output in chunks of at most 16 KB.
-It returns to the event loop between chunks and paces their display updates.
-The PTY reader waits for each read to finish parsing before delivering another read.
-This keeps pending transport output within one 128 KB read. Keyboard writes use a separate path.
-Small keyboard echoes retain the immediate display path.
-Stopping or replacing a terminal releases blocked reads and discards output from the old process.
+SwiftTerm 2 parses process output on its own pipeline thread.
+Each read enters the parser before the pipeline delivers the next read, so the pipeline's ring of read buffers bounds outstanding output.
+SwiftTerm marks the frame dirty and paces frames from the display link. The host does not schedule repaints.
+Rai does not queue, chunk, or defer output. Keyboard writes use a separate path.
+Rai only records each output chunk for predictive echo. One coalesced main-thread task reconciles predictions against the cursor and mode flags.
+A chunk burst above 64 KB resets predictions instead of replaying the bytes.
+Stopping or replacing a terminal stops the driver, so output from the old process never reaches the view.
 
 Run the output and transport regression tests:
 
@@ -339,11 +340,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test --filter TerminalOutputTests
 ```
 
-These tests check event-loop progress, byte order, Unicode, synchronized output, cancellation, keyboard delivery, and PTY resizing.
-
-Frame pacing delays display updates, but it does not delay parsing reads of 16 KB or less.
-The reader acknowledges these reads immediately. Keyboard echoes can then follow background output without waiting for another frame.
-A regression test checks parsing, read acknowledgement, and echo order without advancing the event loop.
+These tests check main-thread progress under a 4 MB feed, byte order, Unicode, synchronized output, driver cancellation, prediction bookkeeping, keyboard delivery, and PTY resizing.
 
 Measure the production Rai view and a real, isolated PTY:
 
@@ -376,17 +373,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift run --scratch-path .build-tests rai-bench --latency --renderer cg
 ```
 
-Run the baseline without rai's small-feed decision:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift run --scratch-path .build-tests rai-bench --latency --renderer cg \
-  --no-fast-path
-```
-
-`--no-fast-path` does not bypass `TerminalView` input handling. SwiftTerm still
-uses its own recent-input fast path. This matches production before rai's
-size guard. Use `--samples N` to change the sample count.
+SwiftTerm owns the echo path. Rai adds no host-side fast path, so the harness has no `--no-fast-path` option.
+Use `--samples N` to change the sample count.
 
 The isolated lab measures the separate herdr attach cost:
 
@@ -406,8 +394,9 @@ Results from 2026-09-03 used a debug build on the same Mac:
 | terminal key to display update | 200 | 0.372 / 0.495 ms | 0.237 / 0.393 ms |
 | key to prediction overlay draw | 200 | 0.434 / 0.567 ms | 0.406 / 0.518 ms |
 
-The baseline command used `--no-fast-path`. The guarded command omitted it.
-The fast-path flag does not change the prediction path. Its difference is
+The baseline command used the former `--no-fast-path` option. The guarded command omitted it.
+SwiftTerm 2 removed the host-side fast path, so the option no longer exists.
+The fast-path flag did not change the prediction path. Its difference is
 run noise.
 
 The guarded terminal path cut the median by 0.135 ms, or 36%.

@@ -105,8 +105,8 @@ final class TerminalScrollIndicator: NSScroller {
             return
         }
         switch hitPart {
-        case .decrementPage: terminal.scrollUp(lines: terminal.getTerminal().rows)
-        case .incrementPage: terminal.scrollDown(lines: terminal.getTerminal().rows)
+        case .decrementPage: terminal.scrollUp(lines: terminal.terminalDimensions.rows)
+        case .incrementPage: terminal.scrollDown(lines: terminal.terminalDimensions.rows)
         case .knob: terminal.scroll(toPosition: doubleValue)
         default: break
         }

@@ -27,7 +27,12 @@ final class TypingLatencyProbeTests: XCTestCase {
         let display = ProbeDelegate()
         display.view = view
         view.terminalDelegate = display
+        // SwiftTerm binds its display link when the view enters the window
+        // and reads occlusion then; XCTest pumps no app events, so show the
+        // window first. `rangeChanged` stops the timer.
+        window.orderFrontRegardless()
         window.contentView = view
+        view.suspendsRenderingWhenNotVisible = false
         window.makeFirstResponder(view)
         view.notifyUpdateChanges = true
         view.configurePredictiveEcho(for: nil)
@@ -35,6 +40,7 @@ final class TypingLatencyProbeTests: XCTestCase {
             display.onDisplay = nil
             view.terminate()
             window.contentView = nil
+            window.orderOut(nil)
         }
 
         // This subprocess belongs only to this test. It never connects to
@@ -64,10 +70,10 @@ final class TypingLatencyProbeTests: XCTestCase {
             rawInput: true
         )
         for _ in 0..<300 {
-            if view.getTerminal().getCharData(col: 0, row: 0)?.getCharacter() == "#" { break }
+            if view.homeCellForTesting == "#" { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(view.getTerminal().getCharData(col: 0, row: 0)?.getCharacter(), "#")
+        XCTAssertEqual(view.homeCellForTesting, "#")
         var samples: [Double] = []
         for index in 0..<70 {
             let character = String(Character(UnicodeScalar(0x61 + index % 26)!))
@@ -76,7 +82,7 @@ final class TypingLatencyProbeTests: XCTestCase {
             let start = DispatchTime.now().uptimeNanoseconds
             display.onDisplay = { [weak view, weak display] in
                 guard let view,
-                      view.getTerminal().getCharData(col: 0, row: 0)?.getCharacter() == Character(character)
+                      view.homeCellForTesting == Character(character)
                 else { return }
                 elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
                 display?.onDisplay = nil
@@ -126,5 +132,13 @@ final class TypingLatencyProbeTests: XCTestCase {
         func scrolled(source: TerminalView, position: Double) {
             view?.scrolled(source: source, position: position)
         }
+    }
+}
+
+private extension TerminalView {
+    /// The character at the home cell. The probe never scrolls, so buffer
+    /// row 0 is screen row 0.
+    var homeCellForTesting: Character? {
+        getText(start: Position(col: 0, row: 0), end: Position(col: 1, row: 0)).first
     }
 }

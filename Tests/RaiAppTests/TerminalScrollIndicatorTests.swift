@@ -19,7 +19,7 @@ final class TerminalScrollIndicatorTests: XCTestCase {
         let reference = TerminalView(frame: view.frame)
         reference.subviews.compactMap { $0 as? NSScroller }.forEach { $0.isHidden = true }
         reference.setFrameSize(view.frame.size)
-        let content = view.getTerminal().getBufferAsData()
+        let content = view.getBufferAsData()
         let size = view.getOptimalFrameSize()
         XCTAssertEqual(indicator.alphaValue, 0)
         indicator.noteScroll()
@@ -27,18 +27,18 @@ final class TerminalScrollIndicatorTests: XCTestCase {
         for width in [640.0, 431.0, 920.0] {
             view.setFrameSize(NSSize(width: width, height: 400))
             reference.setFrameSize(view.frame.size)
-            XCTAssertEqual(view.getTerminal().cols, reference.getTerminal().cols)
-            let cols = view.getTerminal().cols
+            XCTAssertEqual(view.terminalDimensions.cols, reference.terminalDimensions.cols)
+            let cols = view.terminalDimensions.cols
             indicator.hide()
             view.setFrameSize(view.frame.size)
-            XCTAssertEqual(view.getTerminal().cols, cols)
+            XCTAssertEqual(view.terminalDimensions.cols, cols)
             indicator.noteScroll()
             view.setFrameSize(view.frame.size)
-            XCTAssertEqual(view.getTerminal().cols, cols)
+            XCTAssertEqual(view.terminalDimensions.cols, cols)
         }
         view.setFrameSize(NSSize(width: 640, height: 400))
         XCTAssertEqual(view.getOptimalFrameSize(), size)
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), content)
+        XCTAssertEqual(view.getBufferAsData(), content)
     }
 
     func testOnlyTheScrollingPaneShowsItsIndicatorAndItExpires() async throws {
@@ -72,13 +72,13 @@ final class TerminalScrollIndicatorTests: XCTestCase {
         XCTAssertFalse(scrollers.isEmpty)
         TerminalScrollIndicator.hideBuiltIn(in: view)
         view.feed(text: (0..<200).map { "line \($0)\r\n" }.joined())
-        let content = view.getTerminal().getBufferAsData()
+        let content = view.getBufferAsData()
         for width in [431.0, 920.0, 640.0] {
             view.setFrameSize(NSSize(width: width, height: 400))
             view.layoutSubtreeIfNeeded()
             XCTAssertTrue(scrollers.allSatisfy(\.isHidden))
         }
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), content)
+        XCTAssertEqual(view.getBufferAsData(), content)
     }
 
     func testRemoteUpdatesPreserveTheThumbUntilTrackingEnds() throws {
@@ -138,7 +138,7 @@ final class TerminalScrollIndicatorTests: XCTestCase {
         XCTAssertFalse(view.canScroll)
         indicator.remoteScroll = PaneScroll(offsetFromBottom: 50, maxOffsetFromBottom: 200, viewportRows: 40)
         XCTAssertTrue(indicator.isHidden, "Server output alone must not reveal the indicator")
-        let cols = view.getTerminal().cols
+        let cols = view.terminalDimensions.cols
         indicator.noteScroll()
         XCTAssertFalse(indicator.isHidden)
         XCTAssertTrue(indicator.isEnabled)
@@ -146,7 +146,7 @@ final class TerminalScrollIndicatorTests: XCTestCase {
         XCTAssertEqual(indicator.knobProportion, 1.0 / 6, accuracy: 0.001)
         indicator.hide()
         view.setFrameSize(view.frame.size)
-        XCTAssertEqual(view.getTerminal().cols, cols)
+        XCTAssertEqual(view.terminalDimensions.cols, cols)
         indicator.remoteScroll = PaneScroll(offsetFromBottom: 0, maxOffsetFromBottom: 0, viewportRows: 40)
         indicator.noteScroll()
         XCTAssertTrue(indicator.isHidden)

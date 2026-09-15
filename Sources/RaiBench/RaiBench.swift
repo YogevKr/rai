@@ -42,7 +42,6 @@ struct Options {
     var rendererSpecified = false
     var metalPresentsWithTransaction = false
     var metalDisplaySync = true
-    var latencyFastPath = true
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -67,7 +66,6 @@ struct Options {
             case "--rows": o.rows = Int(value() ?? "") ?? o.rows
             case "--latency": o.latency = true
             case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
-            case "--no-fast-path": o.latencyFastPath = false
             case "--metal-presents-with-transaction": o.metalPresentsWithTransaction = true
             case "--metal-display-sync": o.metalDisplaySync = (value() ?? "on") != "off"
             case "--help", "-h":
@@ -85,7 +83,6 @@ struct Options {
                   --cols / --rows  per-pane grid size (default 100x32)
                   --latency        measure byte feed and predictive overlay latency
                   --samples N      samples per latency path (default 200)
-                  --no-fast-path   keep terminal echoes on SwiftTerm's path
                   --metal-presents-with-transaction
                                    present Metal frames with Core Animation transactions
                   --metal-display-sync on|off
@@ -158,7 +155,6 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
     private var currentByte: UInt8 = 0x61
     private var terminalSamples: [Double] = []
     private var predictionSamples: [Double] = []
-    private var terminalRepaintState = TerminalFeedRepaintState()
 
     nonisolated init(options: Options) {
         self.options = options
@@ -169,8 +165,7 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         print(
             "latency-config renderer=\(options.useMetal ? "metal" : "coregraphics") "
                 + "presentsWithTransaction=\(options.metalPresentsWithTransaction) "
-                + "displaySync=\(options.metalDisplaySync) "
-                + "fastPath=\(options.latencyFastPath)"
+                + "displaySync=\(options.metalDisplaySync)"
         )
         terminalDelegate.onRangeChanged = { [weak self] in
             self?.terminalDisplayDidUpdate()
@@ -255,26 +250,10 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         terminalView.keyDown(with: syntheticKeyEvent(byte: currentByte))
     }
 
+    /// SwiftTerm parses the echo inline and paces its own frame.
     private func terminalDidSend(_ data: ArraySlice<UInt8>) {
         guard phase == .terminal, sampleStart != nil else { return }
-        guard options.latencyFastPath else {
-            terminalView.feed(byteArray: data)
-            return
-        }
-        let now = DispatchTime.now().uptimeNanoseconds
-        terminalRepaintState.noteUserInput(at: now)
-        let disposition = terminalRepaintState.disposition(
-            byteCount: data.count,
-            isFocused: true,
-            isVisible: true,
-            synchronizedOutputActive: false,
-            at: now
-        )
         terminalView.feed(byteArray: data)
-        if disposition == .feedNowAndRepaint {
-            terminalView.needsDisplay = true
-            terminalView.displayIfNeeded()
-        }
     }
 
     private func terminalDisplayDidUpdate() {
@@ -296,11 +275,11 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
 
     private func establishPredictionConfidence(completion: @escaping () -> Void) {
         let now = Date()
-        let cursor = terminalView.getTerminal().getCursorLocation()
+        let cursor = terminalView.cursorPosition
         prediction.noteKey(
             .printable("p"),
-            cursor: cursor,
-            columns: terminalView.getTerminal().cols,
+            cursor: (x: cursor.col, y: cursor.row),
+            columns: terminalView.terminalDimensions.cols,
             terminalMode: .plain,
             now: now
         )
@@ -326,14 +305,16 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         terminalView.keyDown(with: event)
     }
 
+    /// Matches production's key path: cursor, size, and mode flags are
+    /// single-lock copies; no row snapshot on the timed path.
     private func handlePredictionKey(_ event: NSEvent) {
         guard let character = event.characters?.first else { return }
-        let terminal = terminalView.getTerminal()
+        let cursor = terminalView.cursorPosition
         prediction.noteKey(
             .printable(character),
-            cursor: terminal.getCursorLocation(),
-            columns: terminal.cols,
-            terminalMode: terminalMode
+            cursor: (x: cursor.col, y: cursor.row),
+            columns: terminalView.terminalDimensions.cols,
+            terminalMode: terminalMode(terminalView.terminalModeFlags())
         )
         guard prediction.displayGlyphs() == [character] else {
             FileHandle.standardError.write(
@@ -378,27 +359,29 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
     /// Matches production's dataReceived order: feed, then reconcile those bytes.
     private func predictionDataReceived(_ bytes: ArraySlice<UInt8>, at now: Date) {
         terminalView.feed(byteArray: bytes)
-        let terminal = terminalView.getTerminal()
+        let state = terminalView.terminalStateSnapshot()
         prediction.reconcile(
-            cursor: terminal.getCursorLocation(),
-            terminalMode: terminalMode,
+            cursor: (x: state.cursor.col, y: state.cursor.row),
+            terminalMode: terminalMode(terminalView.terminalModeFlags()),
             outputBytes: bytes,
             readCell: { column, row in
-                guard let cell = terminal.getCharData(col: column, row: row) else { return nil }
-                let character = cell.getCharacter()
-                return character == "\u{0}" ? nil : character
+                guard let line = state.visibleRows.first(where: { $0.row == row }) else { return nil }
+                return PredictiveEchoViewPolicy.cellCharacter(
+                    rowText: line.text, cellWidths: line.cellWidths, column: column
+                )
             },
             now: now
         )
     }
 
-    private var terminalMode: PredictiveEchoEngine.TerminalMode {
-        let terminal = terminalView.getTerminal()
-        return .init(
-            alternateScreen: terminal.isCurrentBufferAlternate,
-            bracketedPaste: terminal.bracketedPasteMode,
-            applicationCursorKeys: terminal.applicationCursor,
-            mouseTracking: terminal.mouseMode != .off
+    private func terminalMode(
+        _ flags: TerminalModeFlags
+    ) -> PredictiveEchoEngine.TerminalMode {
+        .init(
+            alternateScreen: flags.alternateScreenActive,
+            bracketedPaste: flags.bracketedPasteMode,
+            applicationCursorKeys: flags.applicationCursorKeys,
+            mouseTracking: flags.mouseTrackingActive
         )
     }
 
@@ -605,16 +588,6 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
                 if start >= corpus.count { start = 0 }
                 let chunk = min(remaining, corpus.count - start)
                 view.feed(byteArray: corpus[start..<(start + chunk)])
-                TerminalFeedRepaintPolicy.repaintIfNeeded(
-                    byteCount: chunk,
-                    isFocused: index == 0,
-                    isVisible: true,
-                    hasRecentUnpaintedUserInput: false,
-                    synchronizedOutputActive: view.getTerminal().synchronizedOutputActive
-                ) {
-                    view.needsDisplay = true
-                    view.displayIfNeeded()
-                }
                 start += chunk
                 remaining -= chunk
                 if measuring { bytesFed += chunk }

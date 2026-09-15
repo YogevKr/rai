@@ -11,13 +11,17 @@ protocol TerminalProcessViewDelegate: AnyObject {
     func processTerminated(source: TerminalView, exitCode: Int32?)
 }
 
-/// Owns the public SwiftTerm process API so output delivery can apply
-/// backpressure until the main-thread parser has consumed each read.
+/// Owns the public SwiftTerm process API. Process output parses inline on
+/// SwiftTerm's pipeline thread; only process exit and prediction bookkeeping
+/// reach the main thread.
 class TerminalProcessView: TerminalView, TerminalViewDelegate {
     weak var processDelegate: TerminalProcessViewDelegate?
     private(set) var process: LocalProcess?
     private var outputDriver: TerminalProcessOutput?
     private var processGeneration: UInt64 = 0
+    /// Runs on the pipeline thread after each chunk enters the parser.
+    /// Subclasses set this once; it must not touch the view.
+    var outputObserver: (@Sendable (ArraySlice<UInt8>) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -31,7 +35,9 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
 
     deinit {
         outputDriver?.stop()
-        Self.terminateAndReap(process)
+        // Releasing the process sends SIGTERM, escalates to SIGKILL after
+        // its kill escalation delay, and reaps the child on its own thread.
+        process?.terminate()
     }
 
     var isTerminalVisible: Bool {
@@ -65,23 +71,17 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
         let generation = processGeneration
         let driver = TerminalProcessOutput(
             windowSize: getWindowSize(),
-            receive: { [weak self] bytes, complete in
-                guard let self, self.processGeneration == generation else {
-                    complete()
-                    return
-                }
-                self.dataReceived(slice: bytes[...], completion: complete)
-            },
+            feed: feedSender,
+            observe: outputObserver,
             exited: { [weak self] code in
                 guard let self, self.processGeneration == generation else { return }
                 self.processDelegate?.processTerminated(source: self, exitCode: code)
             }
         )
         outputDriver = driver
-        let process = LocalProcess(
-            delegate: driver,
-            dispatchQueue: DispatchQueue(label: "rai.terminal-output", qos: .userInitiated)
-        )
+        // Direct delivery parses each pipeline batch on the pipeline thread.
+        // SwiftTerm's ring of read buffers bounds the outstanding output.
+        let process = LocalProcess(delegate: driver, dispatchQueue: nil, directDelivery: true)
         self.process = process
         process.startProcess(
             executable: executable, args: args, environment: environment,
@@ -104,34 +104,20 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
         return tcsetattr(descriptor, TCSANOW, &attributes) == 0
     }
 
+    /// Stops feeding the view and signals the child. SwiftTerm reaps the
+    /// child itself: its exit monitor reaps a normal exit, and releasing the
+    /// process escalates to SIGKILL and reaps on a dedicated thread.
     func terminate() {
         processGeneration &+= 1
         outputDriver?.stop()
         outputDriver = nil
         discardPendingOutput()
-        Self.terminateAndReap(process)
+        process?.terminate()
         process = nil
     }
 
-    private nonisolated static func terminateAndReap(_ process: LocalProcess?) {
-        guard let process else { return }
-        let pid = process.shellPid
-        if process.running { process.terminate() }
-        guard pid > 0 else { return }
-        // SwiftTerm cancels its exit monitor when terminate() sends SIGTERM.
-        // Reap this child off the main queue so tab switches leave no zombies.
-        DispatchQueue.global(qos: .utility).async {
-            var status: Int32 = 0
-            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
-        }
-    }
-
+    /// Drops host-side bookkeeping for output of a stopped process.
     func discardPendingOutput() {}
-
-    func dataReceived(slice: ArraySlice<UInt8>, completion: @escaping () -> Void = {}) {
-        feed(byteArray: slice)
-        completion()
-    }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         process?.send(data: data)
@@ -146,7 +132,7 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
     }
 
     func getWindowSize() -> winsize {
-        let size = getTerminal().getDims()
+        let size = terminalDimensions
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
         let frame = getOptimalFrameSize()
         return winsize(
@@ -179,34 +165,35 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
-/// SwiftTerm calls this delegate synchronously on a private output queue.
-/// Waiting here bounds outstanding output to one PTY read (at most 128 KB).
-/// Input writes use a separate DispatchIO path and never wait on this queue.
+/// SwiftTerm calls this delegate inline on its pipeline thread. Each chunk
+/// parses before the next read is delivered, so the pipeline's own ring of
+/// read buffers bounds outstanding output. The driver never touches the view:
+/// it feeds through the view's sendable `feedSender` and hops to main only
+/// for process exit.
 final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
-    private var pending: DispatchSemaphore?
     private let windowSize: winsize
-    private let receive: @MainActor ([UInt8], @escaping () -> Void) -> Void
+    private let feed: TerminalFeedSender
+    private let observe: (@Sendable (ArraySlice<UInt8>) -> Void)?
     private let exited: @MainActor (Int32?) -> Void
 
     init(
         windowSize: winsize,
-        receive: @escaping @MainActor ([UInt8], @escaping () -> Void) -> Void,
+        feed: TerminalFeedSender,
+        observe: (@Sendable (ArraySlice<UInt8>) -> Void)?,
         exited: @escaping @MainActor (Int32?) -> Void
     ) {
         self.windowSize = windowSize
-        self.receive = receive
+        self.feed = feed
+        self.observe = observe
         self.exited = exited
     }
 
     func stop() {
         lock.lock()
         stopped = true
-        let pending = pending
-        self.pending = nil
         lock.unlock()
-        pending?.signal()
     }
 
     private var isStopped: Bool {
@@ -216,20 +203,9 @@ final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
     }
 
     func dataReceived(slice: ArraySlice<UInt8>) {
-        let complete = DispatchSemaphore(value: 0)
-        lock.lock()
-        guard !stopped else { lock.unlock(); return }
-        pending = complete
-        lock.unlock()
-        let bytes = Array(slice)
-        DispatchQueue.main.async { [self] in
-            guard !isStopped else { complete.signal(); return }
-            receive(bytes) { complete.signal() }
-        }
-        complete.wait()
-        lock.lock()
-        if pending === complete { pending = nil }
-        lock.unlock()
+        guard !isStopped else { return }
+        feed.feed(byteArray: slice)
+        observe?(slice)
     }
 
     func getWindowSize() -> winsize { windowSize }
@@ -239,5 +215,74 @@ final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
             guard !isStopped else { return }
             exited(exitCode)
         }
+    }
+}
+
+/// Collects output chunks for prediction bookkeeping on one coalesced main
+/// hop. The pipeline thread appends; at most one main task is pending.
+/// A burst above `limit` drops the bytes and records an overflow, so the
+/// main hop resets predictions instead of replaying the burst.
+final class TerminalOutputBookkeeping: @unchecked Sendable {
+    static let limit = 64 * 1024
+
+    struct Batch {
+        let bytes: [UInt8]
+        let overflowed: Bool
+        var isEmpty: Bool { bytes.isEmpty && !overflowed }
+    }
+
+    private let lock = NSLock()
+    private var bytes: [UInt8] = []
+    private var overflowed = false
+    private var hopPending = false
+    private let limit: Int
+    private let drain: @MainActor () -> Void
+
+    init(limit: Int = TerminalOutputBookkeeping.limit, drain: @escaping @MainActor () -> Void) {
+        self.limit = limit
+        self.drain = drain
+    }
+
+    /// Pipeline thread. Schedules the main hop when none is pending.
+    func append(_ chunk: ArraySlice<UInt8>) {
+        lock.lock()
+        if overflowed || bytes.count + chunk.count > limit {
+            overflowed = true
+            bytes.removeAll(keepingCapacity: true)
+        } else {
+            bytes.append(contentsOf: chunk)
+        }
+        let schedule = !hopPending
+        hopPending = true
+        lock.unlock()
+        guard schedule else { return }
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated { drain() }
+        }
+    }
+
+    /// Main thread. Returns everything since the previous take.
+    func take() -> Batch {
+        lock.lock()
+        defer { lock.unlock() }
+        let batch = Batch(bytes: bytes, overflowed: overflowed)
+        bytes.removeAll(keepingCapacity: true)
+        overflowed = false
+        hopPending = false
+        return batch
+    }
+
+    /// Main thread. A pending hop then finds nothing to reconcile.
+    func discard() {
+        lock.lock()
+        bytes.removeAll(keepingCapacity: true)
+        overflowed = false
+        lock.unlock()
+    }
+
+    var pendingByteCountForTesting: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return bytes.count
     }
 }

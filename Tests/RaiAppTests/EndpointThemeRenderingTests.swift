@@ -10,8 +10,8 @@ final class EndpointThemeRenderingTests: XCTestCase {
         _ = NSApplication.shared
         let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
         terminal.feed(text: "theme fixture\r\nunchanged pane")
-        let content = terminal.getTerminal().getBufferAsData()
-        let columns = terminal.getTerminal().cols
+        let content = terminal.getBufferAsData()
+        let columns = terminal.terminalDimensions.cols
         var theme = EndpointTheme()
         theme.light = ["text": "#123456", "panel_bg": "#abcdef"]
         theme.dark = ["text": "#fedcba", "panel_bg": "#654321"]
@@ -19,8 +19,8 @@ final class EndpointThemeRenderingTests: XCTestCase {
             EndpointTerminalAppearance.apply(terminal, dark: dark, theme: theme)
             let color = try XCTUnwrap(terminal.nativeForegroundColor.usingColorSpace(.deviceRGB))
             XCTAssertEqual(color.redComponent, Double(red) / 255, accuracy: 0.001)
-            XCTAssertEqual(terminal.getTerminal().getBufferAsData(), content)
-            XCTAssertEqual(terminal.getTerminal().cols, columns)
+            XCTAssertEqual(terminal.getBufferAsData(), content)
+            XCTAssertEqual(terminal.terminalDimensions.cols, columns)
         }
     }
 

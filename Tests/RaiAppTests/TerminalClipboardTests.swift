@@ -28,7 +28,7 @@ final class TerminalClipboardTests: XCTestCase {
 
     func testKeyboardCopyFailureDoesNotClaimSuccessOrChangeText() {
         let view = terminal()
-        let before = view.getTerminal().getBufferAsData()
+        let before = view.getBufferAsData()
         var notices: [String] = []
         view.scrollbackSelection.onNotice = { notices.append($0) }
         var copied: [String] = []
@@ -37,7 +37,7 @@ final class TerminalClipboardTests: XCTestCase {
         XCTAssertEqual(copied, ["COPY"])
         XCTAssertEqual(notices, ["Copy failed. The selection remains available."])
         XCTAssertNotNil(view.getSelectionRange())
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), before)
+        XCTAssertEqual(view.getBufferAsData(), before)
     }
 
     func testSuccessfulGestureCopyClearsOnlyAfterWriting() async throws {

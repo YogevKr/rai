@@ -230,7 +230,7 @@ final class EndpointTerminalView: EndpointMouseTerminalView {
         optionAsMetaKey = false
     }
 
-    var pasteText: ((String) -> Void)?
+    var onPasteText: ((String) -> Void)?
     var semanticKey: ((EndpointKey) -> Void)?
     var scrollRemote: ((String, UInt64) -> Void)?
     private var scrollTarget: (paneID: String, offset: UInt64)?
@@ -283,7 +283,7 @@ final class EndpointTerminalView: EndpointMouseTerminalView {
 
     override func paste(_ sender: Any) {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
-        pasteText?(text)
+        onPasteText?(text)
     }
 
     var clipboard = EndpointClipboard()
@@ -315,8 +315,8 @@ private struct EndpointTerminal: NSViewRepresentable {
         view.observeMouseSurface(model.$surface)
         TerminalScrollIndicator.hideBuiltIn(in: view)
         // The endpoint owns history. Local resize must not retain old screen rows.
-        view.getTerminal().changeScrollback(nil)
-        view.pasteText = { [weak model] text in model?.send(text, paste: true) }
+        view.changeScrollback(nil)
+        view.onPasteText = { [weak model] text in model?.send(text, paste: true) }
         view.semanticKey = { [weak model] key in model?.send(.key(key)) }
         view.semanticMouse = { [weak model] target, surface in
             guard let model, model.acceptsInput else { return false }

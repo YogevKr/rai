@@ -120,7 +120,7 @@ final class TerminalPool {
         // them when a full scrollback trims from the top — at the default 500
         // lines a long Claude stream makes a held selection crawl. A deep
         // scrollback keeps trimming (and the drift) out of normal use.
-        view.getTerminal().changeScrollback(10_000)
+        view.changeScrollback(10_000)
         // Bind the scrollback controller to THIS pool's herd. Its default
         // client points at the default socket, which is wrong the moment the
         // app is attached to another session (remote herd, herd switch).
@@ -372,7 +372,7 @@ private final class TerminalProcessCoordinator:
         let retry = DispatchWorkItem { [weak self] in
             guard let self, self.state == .waitingToRetry,
                   let view = self.view, view.isTerminalVisible else { return }
-            view.getTerminal().resetToInitialState()
+            view.resetToInitialState()
             self.launch()
         }
         pendingLaunch = retry

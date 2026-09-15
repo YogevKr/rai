@@ -1,5 +1,4 @@
 import AppKit
-import MetalKit
 import RaiCore
 import SwiftTerm
 import SwiftUI
@@ -28,7 +27,7 @@ enum GhosttyTheme {
         view.installColors((isDark ? darkPalette : lightPalette).map(st))
         // Ghostty `cursor-style = bar`, `cursor-style-blink = false`. This sets the
         // default; programs can still override via DECSCUSR, exactly as Ghostty does.
-        view.getTerminal().setCursorStyle(.steadyBar)
+        view.setCursorStyle(.steadyBar)
     }
 
     private static func ns(_ hex: UInt32) -> NSColor {
@@ -215,11 +214,13 @@ final class FocusAwareTerminalView: TerminalProcessView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         installScrollIndicator()
+        installOutputBookkeeping()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         installScrollIndicator()
+        installOutputBookkeeping()
     }
 
     private func installScrollIndicator() {
@@ -232,8 +233,8 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
     }
 
-    override func scrolled(source: Terminal, yDisp: Int) {
-        super.scrolled(source: source, yDisp: yDisp)
+    override func scrolled(source: TerminalView, position: Double) {
+        super.scrolled(source: source, position: position)
         scrollIndicator?.refresh()
     }
 
@@ -371,19 +372,12 @@ final class FocusAwareTerminalView: TerminalProcessView {
     private var predictionReconcileTimer: Timer?
     private var predictionExpiryRedraw: DispatchWorkItem?
     private var predictionExpiryDeadline: UInt64?
-    private var feedRepaintState = TerminalFeedRepaintState()
     private var userInputEventPending = false
     private var externalInputDepth = 0
     private var externalInputBlockedUntil: UInt64 = 0
-    private var terminalDisplayGeneration: UInt64 = 0
     private var predictionOverlayUpdatePending = false
-    private let deferredFeed = TerminalOutputQueue()
-    private var deferredFeedWorkItem: DispatchWorkItem?
-    private var outputDisplayWorkItem: DispatchWorkItem?
-    private var outputGeneration: UInt64 = 0
-    static let parserChunkBytes = 16 * 1024
-    var pendingOutputBytesForTesting: Int { deferredFeed.byteCount }
-    private var predictionDecisionsDeferred = false
+    /// Output the pipeline thread has fed, awaiting one coalesced main hop.
+    private var outputBookkeeping: TerminalOutputBookkeeping?
     private static let externalInputQuietPeriodNanoseconds: UInt64 = 500_000_000
 
     private struct PredictionReconcileResult {
@@ -391,13 +385,24 @@ final class FocusAwareTerminalView: TerminalProcessView {
         let wasVisible: Bool
         let isVisible: Bool
 
+        /// The overlay must change together with the terminal frame that
+        /// paints the confirming echo, or a glyph shows twice.
         var needsTerminalCoordination: Bool {
             pendingChanged && (wasVisible || isVisible)
         }
+    }
 
-        var needsFreshCaret: Bool {
-            pendingChanged && isVisible
+    /// SwiftTerm parses process output on its pipeline thread. The observer
+    /// runs there and must not touch the view; the main hop reconciles.
+    private func installOutputBookkeeping() {
+        let bookkeeping = TerminalOutputBookkeeping { [weak self] in
+            self?.reconcilePredictionsWithOutput()
         }
+        outputBookkeeping = bookkeeping
+        outputObserver = { chunk in bookkeeping.append(chunk) }
+        // The overlay refreshes on the frame edge, so every prepared frame
+        // must report through `rangeChanged`.
+        notifyUpdateChanges = true
     }
 
     func enablePredictiveEcho(for herdLocation: PredictiveEchoEngine.HerdLocation) {
@@ -426,13 +431,14 @@ final class FocusAwareTerminalView: TerminalProcessView {
         updatePredictionOverlay()
     }
 
-    private var predictiveTerminalMode: PredictiveEchoEngine.TerminalMode {
-        let terminal = getTerminal()
-        return .init(
-            alternateScreen: terminal.isCurrentBufferAlternate,
-            bracketedPaste: terminal.bracketedPasteMode,
-            applicationCursorKeys: terminal.applicationCursor,
-            mouseTracking: terminal.mouseMode != .off
+    private func predictiveTerminalMode(
+        _ flags: TerminalModeFlags
+    ) -> PredictiveEchoEngine.TerminalMode {
+        .init(
+            alternateScreen: flags.alternateScreenActive,
+            bracketedPaste: flags.bracketedPasteMode,
+            applicationCursorKeys: flags.applicationCursorKeys,
+            mouseTracking: flags.mouseTrackingActive
         )
     }
 
@@ -440,12 +446,12 @@ final class FocusAwareTerminalView: TerminalProcessView {
     /// Copy-mode keys never reach the pty, so callers skip those.
     private func notePredictionKey(_ event: NSEvent) {
         guard let engine = predictiveEcho else { return }
-        guard !predictionDecisionsDeferred, externalInputDepth == 0,
+        guard externalInputDepth == 0,
               DispatchTime.now().uptimeNanoseconds >= externalInputBlockedUntil else {
             resetPredictions()
             return
         }
-        let terminal = getTerminal()
+        let cursor = cursorPosition
         let mods = event.modifierFlags.intersection(
             [.command, .control, .option, .function])
         let key: PredictiveEchoEngine.KeyClass
@@ -463,9 +469,9 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
         engine.noteKey(
             key,
-            cursor: terminal.getCursorLocation(),
-            columns: terminal.cols,
-            terminalMode: predictiveTerminalMode
+            cursor: (x: cursor.col, y: cursor.row),
+            columns: terminalDimensions.cols,
+            terminalMode: predictiveTerminalMode(terminalModeFlags())
         )
         updatePredictionOverlay()
         ensurePredictionTimer()
@@ -486,24 +492,30 @@ final class FocusAwareTerminalView: TerminalProcessView {
         updateOverlay: Bool = true,
         outputBytes: ArraySlice<UInt8>? = nil
     ) -> PredictionReconcileResult? {
-        guard !predictionDecisionsDeferred, let engine = predictiveEcho else { return nil }
+        guard let engine = predictiveEcho else { return nil }
         guard scrolledOffset == 0 else {
             resetPredictions()
             return nil
         }
         let pendingBefore = engine.pending
         let wasVisible = !engine.displayGlyphs().isEmpty
-        let terminal = getTerminal()
+        let cursor = cursorPosition
+        // The snapshot copies every visible row. The engine reads cells only
+        // while predictions are pending on the cursor row, so copy it then.
+        var visibleRows: [TerminalVisibleRowSnapshot]?
         engine.reconcile(
-            cursor: terminal.getCursorLocation(),
-            terminalMode: predictiveTerminalMode,
+            cursor: (x: cursor.col, y: cursor.row),
+            terminalMode: predictiveTerminalMode(terminalModeFlags()),
             outputBytes: outputBytes
-        ) { column, row in
-            guard let cell = terminal.getCharData(col: column, row: row) else {
+        ) { [self] column, row in
+            let rows = visibleRows ?? terminalStateSnapshot().visibleRows
+            visibleRows = rows
+            guard let line = rows.first(where: { $0.row == row }) else {
                 return nil
             }
-            let character = cell.getCharacter()
-            return character == "\u{0}" ? nil : character
+            return PredictiveEchoViewPolicy.cellCharacter(
+                rowText: line.text, cellWidths: line.cellWidths, column: column
+            )
         }
         if updateOverlay {
             updatePredictionOverlay()
@@ -520,13 +532,6 @@ final class FocusAwareTerminalView: TerminalProcessView {
     }
 
     private func updatePredictionOverlay() {
-        guard PredictiveEchoViewPolicy.canPresent(
-            hasDeferredTerminalBytes: predictionDecisionsDeferred
-        ) else {
-            cancelPredictionExpiryRedraw()
-            predictionOverlay?.isHidden = true
-            return
-        }
         guard let engine = predictiveEcho,
               let first = engine.pending.first else {
             cancelPredictionExpiryRedraw()
@@ -539,10 +544,10 @@ final class FocusAwareTerminalView: TerminalProcessView {
             predictionOverlay?.isHidden = true
             return
         }
-        let cursor = getTerminal().getCursorLocation()
+        let cursor = cursorPosition
         guard PredictiveEchoViewPolicy.overlayPlacement(
             prediction: (column: first.column, row: first.row),
-            cursor: cursor,
+            cursor: (x: cursor.col, y: cursor.row),
             isAtLiveBottom: scrolledOffset == 0
         ) == .draw else {
             resetPredictions()
@@ -914,189 +919,50 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
         if trackedUserInput {
             userInputEventPending = false
-            feedRepaintState.noteUserInput()
         }
         super.send(source: source, data: data)
     }
 
+    /// Fires on main once per prepared frame. An overlay change that waits
+    /// for the confirming echo to paint applies here, on the frame edge.
     override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         super.rangeChanged(source: source, startY: startY, endY: endY)
-        terminalDisplayGeneration &+= 1
-        if deferredFeed.isEmpty && outputDisplayWorkItem == nil {
-            predictionDecisionsDeferred = false
-        }
-        if predictionOverlayUpdatePending && !predictionDecisionsDeferred {
+        if predictionOverlayUpdatePending {
             predictionOverlayUpdatePending = false
             updatePredictionOverlay()
         }
     }
 
-    /// The attach process delivers reads on the main queue. Select the feed
-    /// path before SwiftTerm sees bytes. This prevents its recent-input fast
-    /// path from repainting large chunks without a byte limit.
-    override func dataReceived(slice: ArraySlice<UInt8>, completion: @escaping () -> Void = {}) {
+    /// The coalesced main hop for output the pipeline thread already fed.
+    /// SwiftTerm paces the frames; this only prunes predictions against the
+    /// bytes that arrived and decides when the overlay may change.
+    private func reconcilePredictionsWithOutput() {
+        guard let batch = outputBookkeeping?.take(), !batch.isEmpty else { return }
         let now = DispatchTime.now().uptimeNanoseconds
         if externalInputDepth > 0 || now < externalInputBlockedUntil {
             // Keep old external echoes from confirming a new local burst.
             extendExternalInputFence(from: now)
         }
-        if deferredFeedWorkItem != nil {
-            deferredFeed.append(slice, completion: completion)
-            deferPredictionDecisionsUntilFeedDrains()
+        guard predictiveEcho != nil else { return }
+        guard !batch.overflowed else {
+            // A burst too large to attribute cannot confirm anything.
+            resetPredictions()
             return
         }
-        let disposition = feedRepaintState.disposition(
-            byteCount: slice.count,
-            isFocused: window?.firstResponder === self,
-            isVisible: window != nil && !isHiddenOrHasHiddenAncestor,
-            synchronizedOutputActive: getTerminal().synchronizedOutputActive,
-            at: now
+        let reconciliation = reconcilePredictions(
+            updateOverlay: false,
+            outputBytes: batch.bytes[...]
         )
-        if slice.count > Self.parserChunkBytes {
-            deferredFeed.append(slice, completion: completion)
-            deferPredictionDecisionsUntilFeedDrains()
-            scheduleDeferredFeed(deadlineUptimeNanoseconds: now + 1_000_000)
-            return
+        if reconciliation?.needsTerminalCoordination == true {
+            predictionOverlayUpdatePending = true
+        } else {
+            updatePredictionOverlay()
         }
-        switch disposition {
-        case .deferToFrame(let deadline):
-            deferPredictionDecisionsUntilFeedDrains()
-            // Keep the parser and PTY reader moving while display updates
-            // wait for their frame. Holding a read here makes later keyboard
-            // echoes queue behind background output in the terminal pipe.
-            getTerminal().feed(buffer: slice)
-            completion()
-            scheduleOutputDisplay(deadlineUptimeNanoseconds: deadline)
-        case .feedNowAndRepaint:
-            processReceived(slice: slice, immediateRepaintAllowed: true)
-            completion()
-        case .feedNormally:
-            processReceived(slice: slice, immediateRepaintAllowed: false)
-            completion()
-        }
-    }
-
-    private func deferPredictionDecisionsUntilFeedDrains() {
-        resetPredictions()
-        predictionDecisionsDeferred = true
-        predictionOverlay?.isHidden = true
-    }
-
-    private func scheduleDeferredFeed(deadlineUptimeNanoseconds: UInt64) {
-        let generation = outputGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.outputGeneration == generation else { return }
-            self.flushDeferredFeed()
-        }
-        deferredFeedWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: DispatchTime(uptimeNanoseconds: deadlineUptimeNanoseconds),
-            execute: workItem
-        )
-    }
-
-    private func flushDeferredFeed() {
-        deferredFeedWorkItem = nil
-        guard let chunk = deferredFeed.next(maxBytes: Self.parserChunkBytes) else { return }
-        // Feed only the parser here. View.feed would invoke SwiftTerm's
-        // recent-input display path once per chunk, bypassing frame pacing.
-        getTerminal().feed(buffer: chunk.bytes)
-        chunk.complete()
-        scheduleOutputDisplay()
-        if !deferredFeed.isEmpty {
-            // A future run-loop turn can handle keys before the next chunk.
-            scheduleDeferredFeed(deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 1_000_000)
-        }
-    }
-
-    private func scheduleOutputDisplay(deadlineUptimeNanoseconds: UInt64? = nil) {
-        guard outputDisplayWorkItem == nil else { return }
-        let generation = outputGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.outputGeneration == generation else { return }
-            self.outputDisplayWorkItem = nil
-            self.feedRepaintState.noteDeferredFramePaint()
-            // The view updates its caret, search cache and display range.
-            // SwiftTerm keeps synchronized output hidden until it ends.
-            self.feed(byteArray: [])
-        }
-        outputDisplayWorkItem = workItem
-        let deadline = deadlineUptimeNanoseconds.map { DispatchTime(uptimeNanoseconds: $0) }
-            ?? (.now() + .milliseconds(16))
-        DispatchQueue.main.asyncAfter(deadline: deadline, execute: workItem)
     }
 
     override func discardPendingOutput() {
-        outputGeneration &+= 1
-        deferredFeedWorkItem?.cancel()
-        deferredFeedWorkItem = nil
-        outputDisplayWorkItem?.cancel()
-        outputDisplayWorkItem = nil
-        deferredFeed.discard()
-        predictionDecisionsDeferred = false
+        outputBookkeeping?.discard()
         resetPredictions()
-    }
-
-    private func processReceived(
-        slice: ArraySlice<UInt8>,
-        immediateRepaintAllowed: Bool
-    ) {
-        let displayGenerationBeforeFeed = terminalDisplayGeneration
-        super.dataReceived(slice: slice)
-        let canRepaintImmediately = TerminalFeedRepaintPolicy
-            .allowsImmediateRepaintAfterFeed(
-                requested: immediateRepaintAllowed,
-                synchronizedOutputActive: getTerminal().synchronizedOutputActive
-            )
-        let terminalPaintedDuringFeed = terminalDisplayGeneration != displayGenerationBeforeFeed
-        let reconciliation = reconcilePredictions(
-            updateOverlay: false,
-            outputBytes: slice
-        )
-        let drawDecision = PredictiveEchoViewPolicy.coordinatedDraw(
-            needsCoordination: reconciliation?.needsTerminalCoordination == true,
-            terminalPaintedDuringFeed: terminalPaintedDuringFeed,
-            immediateRepaintAllowed: canRepaintImmediately
-        )
-        if canRepaintImmediately && !terminalPaintedDuringFeed {
-            prepareOverlayForImmediateDraw(
-                reconciliation,
-                terminalCaretIsFresh: false
-            )
-            drawTerminalNow()
-            return
-        }
-        switch drawDecision {
-        case .updateOverlay:
-            updatePredictionOverlay()
-        case .drawTogether:
-            prepareOverlayForImmediateDraw(reconciliation, terminalCaretIsFresh: false)
-            drawTerminalNow()
-        case .waitForTerminalDisplay:
-            predictionOverlayUpdatePending = true
-        }
-    }
-
-    private func prepareOverlayForImmediateDraw(
-        _ reconciliation: PredictionReconcileResult?,
-        terminalCaretIsFresh: Bool
-    ) {
-        if reconciliation?.needsFreshCaret == true && !terminalCaretIsFresh {
-            predictionOverlay?.isHidden = true
-            predictionOverlayUpdatePending = true
-        } else {
-            updatePredictionOverlay()
-        }
-    }
-
-    private func drawTerminalNow() {
-        if isUsingMetalRenderer,
-           let metalView = subviews.first(where: { $0 is MTKView }) as? MTKView {
-            metalView.draw()
-        } else {
-            needsDisplay = true
-            displayIfNeeded()
-        }
     }
 
     override func mouseDown(with event: NSEvent) {

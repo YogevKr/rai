@@ -940,7 +940,7 @@ private struct PaneDropDelegate: DropDelegate {
                 } else {
                     // Paste semantics, not typing: shells highlight it as a
                     // paste, Claude keeps it as pasted text.
-                    view.sendPaste(DroppedPathEscaper.line(for: urls))
+                    view.pasteText(DroppedPathEscaper.line(for: urls))
                 }
             }
         }

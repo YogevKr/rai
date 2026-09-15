@@ -379,6 +379,21 @@ public enum PredictiveEchoViewPolicy {
         !hasDeferredTerminalBytes
     }
 
+    /// Reads one visible cell from a copied row. `rowText` holds one
+    /// character per non-trailing cell (wide glyphs skip their trailing
+    /// cell) and is right-trimmed, so a column past its end reads nil.
+    public static func cellCharacter(
+        rowText: String, cellWidths: [Int], column: Int
+    ) -> Character? {
+        guard column >= 0, column < cellWidths.count, cellWidths[column] > 0 else {
+            return nil
+        }
+        let index = cellWidths[..<column].filter { $0 > 0 }.count
+        let characters = Array(rowText)
+        guard index < characters.count else { return nil }
+        return characters[index]
+    }
+
     public static func overlayPlacement(
         prediction: (column: Int, row: Int),
         cursor: (x: Int, y: Int),

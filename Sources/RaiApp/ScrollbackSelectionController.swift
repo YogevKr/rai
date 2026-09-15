@@ -262,7 +262,7 @@ final class ScrollbackSelectionController {
         // the grid changed under a screen-anchored highlight. Verify.
         if let text = stickyText, let start = stickyStart, let end = stickyEnd,
            view.selectionActive {
-            let current = view.getTerminal().getText(start: start, end: end)
+            let current = view.getText(start: start, end: end)
             if current != text {
                 view.selectNone()
                 clearSticky()
@@ -332,12 +332,13 @@ final class ScrollbackSelectionController {
                     maximumRows: readRows
                 )
                 self.model.ingest(pageText: visible.text, scroll: scroll)
-                let dimensions = view.getTerminal().getDims()
-                let terminalCursor = view.getTerminal().getCursorLocation()
+                let state = view.terminalStateSnapshot()
+                let dimensions = state.dimensions
+                let terminalCursor = state.cursor
                 let cursor = ScrollbackSelectionModel.Point(
                     row: ScrollbackSelectionModel.absoluteTop(of: scroll)
-                        + min(max(terminalCursor.y, 0), scroll.viewportRows - 1),
-                    col: min(max(terminalCursor.x, 0), max(0, dimensions.cols - 1))
+                        + min(max(terminalCursor.row, 0), scroll.viewportRows - 1),
+                    col: min(max(terminalCursor.col, 0), max(0, dimensions.cols - 1))
                 )
                 self.copyModeEntryScroll = scroll
                 self.lastScroll = scroll

@@ -1,5 +1,5 @@
 import AppKit
-import SwiftTerm
+@testable import SwiftTerm
 import XCTest
 
 @testable import RaiApp
@@ -11,7 +11,7 @@ final class TerminalLinkDetectionTests: XCTestCase {
     private func detectedLink(in line: String, col: Int) -> String? {
         let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 1200, height: 300))
         view.feed(text: line + "\r\n")
-        return view.getTerminal().link(at: .screen(Position(col: col, row: 0)), mode: .explicitAndImplicit)
+        return view.withTerminal { $0.link(at: .screen(Position(col: col, row: 0)), mode: .explicitAndImplicit) }
     }
 
     /// The sentence-ending period rides along: the path branch of the
