@@ -96,7 +96,10 @@ final class HerdrScrollTransportTests: XCTestCase {
             } catch UnixSocketError.lineTooLong(let limit) {
                 XCTAssertEqual(limit, HerdrEndpointWire.maximumFrameBytes)
             }
-            XCTAssertLessThan(started.duration(to: .now), .seconds(3))
+            // The client must give up before its own 5 s request timeout.
+            // Streaming a maximum-size frame through the socket alone takes
+            // about 3 s on a CI runner, so a tighter bound measures the runner.
+            XCTAssertLessThan(started.duration(to: .now), .seconds(5))
             XCTAssertEqual(try String(contentsOf: record).split(separator: "\n").count, 1)
         }
     }
