@@ -24,10 +24,12 @@ let package = Package(
         // (no per-repaint view-hierarchy churn from DECTCEM), plus a Metal
         // glyph-cache fix: a no-ink glyph (space) was re-rasterized through
         // CoreText every frame, forever, because only successful lookups were
-        // memoized.
+        // memoized, and a LocalProcess fix: the DispatchIO channel is now
+        // lock-guarded so terminate() can no longer race the read handler's
+        // re-arm retain ("API MISUSE: Resurrection of an object").
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "bf5121a"
+            revision: "97d70b0"
         ),
     ],
     targets: [
