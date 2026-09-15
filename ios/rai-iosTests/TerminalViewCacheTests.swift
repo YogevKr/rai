@@ -8,7 +8,7 @@ import XCTest
 final class TerminalViewCacheTests: XCTestCase {
     private func surface() -> TerminalSurface {
         let terminal = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 650, height: 70))
-        terminal.changeScrollback(2_000)
+        terminal.setScrollback(2_000)
         terminal.pinGridSize(cols: 80, rows: 4)
         let scroll = UIScrollView(frame: terminal.frame)
         scroll.addSubview(terminal)
@@ -33,25 +33,25 @@ final class TerminalViewCacheTests: XCTestCase {
         terminal.receiveHistory(history)
         terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: 80, rows: 4))
         terminal.scrollTo(row: 5)
-        let oldRow = terminal.getTerminal().buffer.yDisp
+        let oldRow = terminal.viewportTop
         let oldOffset = terminal.contentOffset
-        let oldCells = terminal.getTerminal().getBufferAsData()
-        let firstLine = terminal.getTerminal().getScrollInvariantLine(row: 0)
+        let oldCells = terminal.getBufferAsData()
+        let firstLine = terminal.mirroredTerminal.getScrollInvariantLine(row: 0)
         cache.store(surface, for: key)
 
         let restored = try XCTUnwrap(cache.take(key))
         XCTAssertTrue(restored === surface)
         XCTAssertEqual(cache.count, 0, "An active terminal has one owner")
         restored.terminal.awaitNextConnectionFrame()
-        XCTAssertEqual(restored.terminal.getTerminal().getBufferAsData(), oldCells)
+        XCTAssertEqual(restored.terminal.getBufferAsData(), oldCells)
         XCTAssertEqual(restored.terminal.cachedHistoryHash, PaneScrollback.contentHash(history))
         XCTAssertFalse(restored.terminal.hasLiveFrame, "Cached prompts are not live evidence")
         XCTAssertEqual(restored.terminal.receiveFrame(
             frame, full: true, grid: PaneGridSize(cols: 80, rows: 4)
         ), .applied, "A return must not schedule scrollToLive while reading history")
-        XCTAssertEqual(restored.terminal.getTerminal().buffer.yDisp, oldRow)
+        XCTAssertEqual(restored.terminal.viewportTop, oldRow)
         XCTAssertEqual(restored.terminal.contentOffset, oldOffset)
-        XCTAssertTrue(firstLine === restored.terminal.getTerminal().getScrollInvariantLine(row: 0))
+        XCTAssertTrue(firstLine === restored.terminal.mirroredTerminal.getScrollInvariantLine(row: 0))
         restored.terminal.receiveFrame(Data("\u{1B}[2;7H!".utf8), full: false, grid: nil)
         XCTAssertTrue(restored.terminal.liveGridText().contains("prompt!"))
     }
@@ -99,16 +99,16 @@ final class TerminalViewCacheTests: XCTestCase {
         let cellHeight = terminal.getOptimalFrameSize().height / 4
         terminal.awaitNextConnectionFrame()
         terminal.receiveHistory(history(3..<43))
-        XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 5, "Keep cached cells until a complete baseline")
+        XCTAssertEqual(terminal.viewportTop, 5, "Keep cached cells until a complete baseline")
         XCTAssertEqual(terminal.receiveFrame(frame, full: true, grid: grid), .applied)
-        XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 2)
-        XCTAssertEqual(terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "row 5")
+        XCTAssertEqual(terminal.viewportTop, 2)
+        XCTAssertEqual(terminal.visibleRowText(0), "row 5")
         XCTAssertEqual(terminal.contentOffset.y, max(0, offset - 3 * cellHeight), accuracy: 0.5)
 
         terminal.awaitNextConnectionFrame()
         terminal.receiveHistory(Data())
         terminal.receiveFrame(frame, full: true, grid: grid)
-        XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 0)
+        XCTAssertEqual(terminal.viewportTop, 0)
         XCTAssertLessThanOrEqual(terminal.contentOffset.y, max(0, terminal.contentSize.height - terminal.bounds.height))
     }
 
@@ -131,8 +131,8 @@ final class TerminalViewCacheTests: XCTestCase {
                 XCTAssertEqual(terminal.receiveFrame(
                     frame, full: true, grid: PaneGridSize(cols: 80, rows: rows)
                 ), .applied)
-                XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 5 - removed, "grid rows: \(rows)")
-                XCTAssertEqual(terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "row 5")
+                XCTAssertEqual(terminal.viewportTop, 5 - removed, "grid rows: \(rows)")
+                XCTAssertEqual(terminal.visibleRowText(0), "row 5")
                 XCTAssertEqual(terminal.contentOffset.y, expectedOffset, accuracy: 0.5)
                 terminal.frame.size.height = 90
                 terminal.setNeedsLayout()
@@ -205,21 +205,20 @@ final class TerminalViewCacheTests: XCTestCase {
                     }.joined(separator: "\n") + "\n").utf8)
                 }
                 func rowOfLineFive() -> Int? {
-                    String(decoding: terminal.getTerminal().getBufferAsData(), as: UTF8.self)
+                    String(decoding: terminal.getBufferAsData(), as: UTF8.self)
                         .components(separatedBy: "\n").firstIndex { $0.hasPrefix("line 5:") }
                 }
                 let frame = Data("\u{1B}[Hlive".utf8)
                 terminal.receiveHistory(history(0..<20))
                 terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: oldCols, rows: 4))
                 terminal.scrollTo(row: rowOfLineFive() ?? -1)
-                let attribute = terminal.getTerminal().getLine(row: 0)?[0].attribute
+                let attribute = terminal.visibleCell(col: 0, row: 0)?.attribute
                 terminal.awaitNextConnectionFrame()
                 terminal.receiveHistory(history(removed..<(20 + removed)))
                 terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: newCols, rows: 8))
-                XCTAssertEqual(terminal.getTerminal().buffer.yDisp, rowOfLineFive(), "\(oldCols) -> \(newCols)")
-                XCTAssertTrue(terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true)
-                    .hasPrefix("line 5:") == true)
-                XCTAssertEqual(terminal.getTerminal().getLine(row: 0)?[0].attribute, attribute)
+                XCTAssertEqual(terminal.viewportTop, rowOfLineFive(), "\(oldCols) -> \(newCols)")
+                XCTAssertTrue(terminal.visibleRowText(0)?.hasPrefix("line 5:") == true)
+                XCTAssertEqual(terminal.visibleCell(col: 0, row: 0)?.attribute, attribute)
             }
         }
     }
@@ -229,7 +228,7 @@ final class TerminalViewCacheTests: XCTestCase {
             for finalRows in [4, 50] {
                 let terminal = TrackingTerminal(frame: CGRect(x: 0, y: 0, width: 650, height: 100))
                 defer { terminal.updateUiClosed() }
-                terminal.changeScrollback(2_000)
+                terminal.setScrollback(2_000)
                 func history(_ range: Range<Int>) -> Data {
                     Data((range.map { "row \($0)" }.joined(separator: "\n") + "\n").utf8)
                 }
@@ -246,9 +245,9 @@ final class TerminalViewCacheTests: XCTestCase {
                 terminal.receiveFrame(Data("\u{1B}[2;1Hdelta".utf8), full: false, grid: nil)
                 terminal.fingerDown = false
                 await eventually {
-                    terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true) == "row 5"
+                    terminal.visibleRowText(0) == "row 5"
                 }
-                XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 5 - removed)
+                XCTAssertEqual(terminal.viewportTop, 5 - removed)
                 XCTAssertEqual(terminal.cachedHistoryHash, PaneScrollback.contentHash(history(removed..<(40 + removed))))
                 XCTAssertEqual(terminal.contentOffset.y, CGFloat(5 - removed) * cellHeight, accuracy: 0.5)
             }
@@ -258,7 +257,7 @@ final class TerminalViewCacheTests: XCTestCase {
     func testOrdinaryHistoryUpdateKeepsTheFinalGesturePosition() async {
         let terminal = TrackingTerminal(frame: CGRect(x: 0, y: 0, width: 650, height: 100))
         defer { terminal.updateUiClosed() }
-        terminal.changeScrollback(2_000)
+        terminal.setScrollback(2_000)
         func history(_ range: Range<Int>) -> Data {
             Data((range.map { "row \($0)" }.joined(separator: "\n") + "\n").utf8)
         }
@@ -271,8 +270,8 @@ final class TerminalViewCacheTests: XCTestCase {
         terminal.contentOffset.y = 20 * cellHeight
         terminal.fingerDown = false
         await eventually { terminal.cachedHistoryHash == PaneScrollback.contentHash(history(0..<44)) }
-        XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 20)
-        XCTAssertEqual(terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "row 20")
+        XCTAssertEqual(terminal.viewportTop, 20)
+        XCTAssertEqual(terminal.visibleRowText(0), "row 20")
         terminal.frame.size.height = 80
         terminal.setNeedsLayout()
         terminal.layoutIfNeeded()
@@ -282,7 +281,7 @@ final class TerminalViewCacheTests: XCTestCase {
     func testHistoryRefreshKeepsManualGridPositionAfterViewportResize() {
         let terminal = TrackingTerminal(frame: CGRect(x: 0, y: 0, width: 650, height: 100))
         defer { terminal.updateUiClosed() }
-        terminal.changeScrollback(2_000)
+        terminal.setScrollback(2_000)
         let grid = PaneGridSize(cols: 80, rows: 40)
         let frame = Data("\u{1B}[Htop\u{1B}[40;1Hlive cursor".utf8)
         terminal.receiveHistory(Data("old\n".utf8))
@@ -293,7 +292,7 @@ final class TerminalViewCacheTests: XCTestCase {
         terminal.fingerDown = true
         terminal.contentOffset.y = 6.5 * cellHeight
         terminal.fingerDown = false
-        XCTAssertEqual(terminal.getTerminal().buffer.yDisp, 1)
+        XCTAssertEqual(terminal.viewportTop, 1)
 
         terminal.awaitNextConnectionFrame()
         terminal.receiveHistory(Data("old\nnew\nnewer\n".utf8))
@@ -404,7 +403,7 @@ final class TerminalViewCacheTests: XCTestCase {
             paneID: "pane", bytesBase64: Data("\u{1B}[Hidle thread".utf8).base64EncodedString(),
             full: true, seq: 1, cols: 80, rows: 24
         ))
-        let cells = terminal.getTerminal().getBufferAsData()
+        let cells = terminal.getBufferAsData()
         XCTAssertTrue(String(decoding: cells, as: UTF8.self).contains("older line"))
         messages.removeAll()
         host.rootView = AnyView(Color.clear)
@@ -422,7 +421,7 @@ final class TerminalViewCacheTests: XCTestCase {
         }
         let returned = try XCTUnwrap(self.terminal(in: host.view))
         XCTAssertTrue(returned === terminal, "Returning must reuse the rendered terminal")
-        XCTAssertEqual(returned.getTerminal().getBufferAsData(), cells, "Cached content appears before any reply")
+        XCTAssertEqual(returned.getBufferAsData(), cells, "Cached content appears before any reply")
         let attachment = XCTAttachment(image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         })
@@ -435,7 +434,7 @@ final class TerminalViewCacheTests: XCTestCase {
         }
         XCTAssertEqual(hashes, [PaneScrollback.contentHash(history)])
         connection.handle(.scrollbackUnchanged(paneID: "pane", contentHash: hashes.first ?? ""))
-        XCTAssertEqual(returned.getTerminal().getBufferAsData(), cells)
+        XCTAssertEqual(returned.getBufferAsData(), cells)
 
         // The navigation destination stays open while its underlying terminal changes.
         let replacementJSON = try JSONEncoder().encode(snapshot)
@@ -461,7 +460,7 @@ final class TerminalViewCacheTests: XCTestCase {
             full: true, seq: 1, cols: 80, rows: 24
         ))
         XCTAssertTrue(newTerminal.liveGridText().contains("new terminal"))
-        XCTAssertFalse(String(decoding: newTerminal.getTerminal().getBufferAsData(), as: UTF8.self)
+        XCTAssertFalse(String(decoding: newTerminal.getBufferAsData(), as: UTF8.self)
             .contains("older line"))
     }
 

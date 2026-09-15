@@ -450,14 +450,14 @@ final class PromptDetectionTests: XCTestCase {
         terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: 80, rows: 24))
         controller.refresh(frameArrived: true)
         XCTAssertNotNil(controller.prompt)
-        let cachedCells = terminal.getTerminal().getBufferAsData()
+        let cachedCells = terminal.getBufferAsData()
 
         terminal.awaitNextConnectionFrame()
         controller.awaitNextFrame()
         let result = terminal.receiveFrame(Data("\u{1B}[20;1Hlate delta".utf8), full: false, grid: nil)
         XCTAssertEqual(result, .ignored)
         XCTAssertFalse(terminal.hasLiveFrame)
-        XCTAssertEqual(terminal.getTerminal().getBufferAsData(), cachedCells)
+        XCTAssertEqual(terminal.getBufferAsData(), cachedCells)
         controller.refresh(frameArrived: result != .ignored)
         XCTAssertNil(controller.prompt)
 

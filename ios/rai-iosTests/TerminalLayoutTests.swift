@@ -46,15 +46,15 @@ final class TerminalLayoutTests: XCTestCase {
         scroll.addSubview(terminal)
         NSLayoutConstraint.activate(TerminalPaneLayout.constraints(terminal: terminal, in: scroll, minWidth: 628))
         scroll.layoutIfNeeded()
-        let cols = terminal.getTerminal().cols
-        let rows = terminal.getTerminal().rows
+        let cols = terminal.terminalDimensions.cols
+        let rows = terminal.terminalDimensions.rows
         for offset in [0.0, 100.0, 238.0] {
             scroll.contentOffset.x = offset
             terminal.updateScrollIndicatorInsets()
             XCTAssertEqual(terminal.verticalScrollIndicatorInsets.right, 238 - offset, accuracy: 0.5)
             XCTAssertEqual(terminal.frame.width, 628, accuracy: 0.5)
-            XCTAssertEqual(terminal.getTerminal().cols, cols)
-            XCTAssertEqual(terminal.getTerminal().rows, rows)
+            XCTAssertEqual(terminal.terminalDimensions.cols, cols)
+            XCTAssertEqual(terminal.terminalDimensions.rows, rows)
         }
         scroll.frame.size.width = 844
         scroll.contentOffset.x = 0

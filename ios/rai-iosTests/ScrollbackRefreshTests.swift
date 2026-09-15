@@ -273,7 +273,7 @@ final class ScrollbackRefreshTests: XCTestCase {
         XCTAssertNil(hash, "Discarded pending data must not produce an unchanged reply")
         connection.handle(.scrollback(paneID: "pane", bytesBase64: history.base64EncodedString()))
         terminal.receiveFrame(Data("\u{1B}[Hlive".utf8), full: true, grid: PaneGridSize(cols: 80, rows: 4))
-        XCTAssertTrue(String(decoding: terminal.getTerminal().getBufferAsData(), as: UTF8.self)
+        XCTAssertTrue(String(decoding: terminal.getBufferAsData(), as: UTF8.self)
             .contains("history before the first frame"))
     }
 

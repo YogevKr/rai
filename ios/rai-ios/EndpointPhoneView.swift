@@ -342,7 +342,7 @@ private struct EndpointPhoneTerminal: UIViewRepresentable {
         let view = EndpointPhoneTerminalView(frame: .zero)
         view.clipboard = clipboard
         // The endpoint owns history. Local resize must not retain old screen rows.
-        view.getTerminal().changeScrollback(nil)
+        view.setScrollback(nil)
         view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         view.terminalDelegate = context.coordinator
         view.semanticInput = { [weak model] input in model?.input(input) }
@@ -375,7 +375,7 @@ private struct EndpointPhoneTerminal: UIViewRepresentable {
             coordinator.identity = model.identity
             coordinator.renderKey = nil
             coordinator.grid = nil
-            view.feed(text: "\u{1b}[2J\u{1b}[H")
+            view.feedMirrored(text: "\u{1b}[2J\u{1b}[H")
         }
         guard let surface = model.state?.surface else { return }
         let renderKey = EndpointSurfaceRenderKey(surface)
@@ -385,11 +385,11 @@ private struct EndpointPhoneTerminal: UIViewRepresentable {
         view.pinGridSize(cols: Int(surface.grid.width), rows: Int(surface.grid.height))
         let grid = surface.presentationGrid
         let bytes = EndpointANSI.render(grid, previous: !appearanceChanged && coordinator.renderKey?.bootID == surface.bootID ? coordinator.grid : nil)
-        view.feed(byteArray: Array(bytes)[...])
+        view.feedMirrored(byteArray: Array(bytes)[...])
         // Full text repaint clears SwiftTerm image data, even when geometry stays unchanged.
         let resetGraphics = appearanceChanged || coordinator.renderKey?.bootID != surface.bootID
             || coordinator.grid?.width != grid.width || coordinator.grid?.height != grid.height
-        view.feed(byteArray: Array(coordinator.graphics.render(surface.presentationGraphics, grid: grid, reset: resetGraphics))[...])
+        view.feedMirrored(byteArray: Array(coordinator.graphics.render(surface.presentationGraphics, grid: grid, reset: resetGraphics))[...])
         coordinator.grid = grid
         coordinator.renderKey = renderKey
     }

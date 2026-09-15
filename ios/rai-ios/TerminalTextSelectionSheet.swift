@@ -9,7 +9,7 @@ struct TerminalTextSnapshot: Identifiable {
 
     @MainActor
     init(terminal: TerminalView?) {
-        text = terminal.map { String(decoding: $0.getTerminal().getBufferAsData(), as: UTF8.self) } ?? ""
+        text = terminal.map { String(decoding: $0.getBufferAsData(), as: UTF8.self) } ?? ""
         terminal?.window?.endEditing(true)
     }
 }
@@ -33,9 +33,18 @@ enum TerminalLink {
 }
 
 /// SwiftTerm's hover activation requires a pointer. Touch links need their own hit test.
+///
+/// SwiftTerm 2 keeps its `Terminal` private: the view offers copied text and
+/// state, but no cell attributes, hyperlink payloads, or buffer edits. The
+/// phone needs those for link taps, styled screen comparisons, and history
+/// seeding, so every byte the view receives also feeds `mirror`, a private
+/// emulator with the same grid and scrollback. Feed the view only through
+/// `feedMirrored` and size its scrollback only through `setScrollback`;
+/// a direct `feed` or `changeScrollback` desynchronizes the mirror.
 class PhoneLinkTerminalView: TerminalView {
     var endpointLinkAt: ((String, CGPoint) -> Bool)?
     private var linkInteraction: TerminalLinkInteraction?
+    private var mirrorStorage: TerminalMirror?
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -43,13 +52,80 @@ class PhoneLinkTerminalView: TerminalView {
             linkInteraction = TerminalLinkInteraction(terminal: self)
         }
     }
+
+    /// The mirrored emulator, resized to the view's grid before every access.
+    ///
+    /// The view resizes its own terminal in `pinGridSize` and on layout; the
+    /// mirror follows here, before the next feed or read. Reflow happens on the
+    /// same cells either way because nothing feeds between the two resizes.
+    var mirroredTerminal: Terminal {
+        let dimensions = terminalDimensions
+        let mirror: TerminalMirror
+        if let existing = mirrorStorage {
+            mirror = existing
+        } else {
+            mirror = TerminalMirror(cols: dimensions.cols, rows: dimensions.rows, scrollback: mirrorScrollback)
+            mirrorStorage = mirror
+        }
+        mirror.resize(cols: dimensions.cols, rows: dimensions.rows)
+        return mirror.terminal
+    }
+
+    private var mirrorScrollback: Int? = TerminalOptions.default.scrollback
+
+    /// Feeds the view and its mirror. The parse completes before this returns.
+    func feedMirrored(byteArray: ArraySlice<UInt8>) {
+        let mirror = mirroredTerminal
+        feed(byteArray: byteArray)
+        mirror.feed(buffer: byteArray)
+    }
+
+    func feedMirrored(text: String) {
+        let mirror = mirroredTerminal
+        feed(text: text)
+        mirror.feed(text: text)
+    }
+
+    /// Changes the scrollback of the view and its mirror together.
+    func setScrollback(_ lines: Int?) {
+        mirrorScrollback = lines
+        changeScrollback(lines)
+        mirrorStorage?.terminal.changeScrollback(lines)
+    }
+}
+
+/// A `Terminal` that parses the same bytes as a view, for reads the view does not offer.
+@MainActor
+final class TerminalMirror {
+    private let sink = OffscreenTerminalSink()
+    let terminal: Terminal
+
+    init(cols: Int, rows: Int, scrollback: Int?) {
+        terminal = Terminal(
+            delegate: sink,
+            options: TerminalOptions(cols: max(1, cols), rows: max(1, rows), scrollback: scrollback ?? 0)
+        )
+        if scrollback == nil { terminal.changeScrollback(nil) }
+    }
+
+    func resize(cols: Int, rows: Int) {
+        let cols = max(1, cols)
+        let rows = max(1, rows)
+        guard terminal.cols != cols || terminal.rows != rows else { return }
+        terminal.resize(cols: cols, rows: rows)
+    }
+}
+
+/// Delegate for an emulator that only renders; replies go nowhere.
+final class OffscreenTerminalSink: TerminalDelegate {
+    func send(source: Terminal, data: ArraySlice<UInt8>) {}
 }
 
 @MainActor
 final class TerminalLinkInteraction: NSObject, UIGestureRecognizerDelegate {
-    private weak var terminal: TerminalView?
+    private weak var terminal: PhoneLinkTerminalView?
 
-    init(terminal: TerminalView) {
+    init(terminal: PhoneLinkTerminalView) {
         self.terminal = terminal
         super.init()
         let tap = UITapGestureRecognizer(target: self, action: #selector(openLink(_:)))
@@ -64,14 +140,15 @@ final class TerminalLinkInteraction: NSObject, UIGestureRecognizerDelegate {
 
     func link(at point: CGPoint) -> String? {
         guard let terminal, terminal.bounds.contains(point), !terminal.isDecelerating, terminal.getSelectionRange() == nil else { return nil }
-        let buffer = terminal.getTerminal()
+        let grid = terminal.terminalDimensions
         let size = terminal.getOptimalFrameSize()
-        guard buffer.cols > 0, buffer.rows > 0, size.width > 0, size.height > 0 else { return nil }
-        let column = Int(point.x / (size.width / CGFloat(buffer.cols)))
-        let row = Int(point.y / (size.height / CGFloat(buffer.rows)))
-        guard column >= 0, column < buffer.cols,
-              let link = buffer.link(at: .buffer(Position(col: column, row: row)), mode: .explicitAndImplicit),
-              TerminalLink.url(link) != nil || (terminal as? PhoneLinkTerminalView)?.endpointLinkAt != nil else { return nil }
+        guard grid.cols > 0, grid.rows > 0, size.width > 0, size.height > 0 else { return nil }
+        let column = Int(point.x / (size.width / CGFloat(grid.cols)))
+        let row = Int(point.y / (size.height / CGFloat(grid.rows)))
+        // The mirror holds the hyperlink payloads the view keeps private.
+        guard column >= 0, column < grid.cols,
+              let link = terminal.mirroredTerminal.link(at: .buffer(Position(col: column, row: row)), mode: .explicitAndImplicit),
+              TerminalLink.url(link) != nil || terminal.endpointLinkAt != nil else { return nil }
         return link
     }
 
@@ -82,7 +159,7 @@ final class TerminalLinkInteraction: NSObject, UIGestureRecognizerDelegate {
 
     func activateLink(at point: CGPoint) {
         guard let terminal, let link = link(at: point) else { return }
-        if (terminal as? PhoneLinkTerminalView)?.endpointLinkAt?(link, point) == true { return }
+        if terminal.endpointLinkAt?(link, point) == true { return }
         guard TerminalLink.url(link) != nil else { return }
         terminal.terminalDelegate?.requestOpenLink(source: terminal, link: link, params: [:])
     }

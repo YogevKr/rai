@@ -8,7 +8,7 @@ import XCTest
 final class TerminalHistoryTests: XCTestCase {
     private func view(rows: Int = 4, cols: Int = 80) -> GridReadableTerminalView {
         let view = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 650, height: 60))
-        view.changeScrollback(2_000)
+        view.setScrollback(2_000)
         view.pinGridSize(cols: cols, rows: rows)
         return view
     }
@@ -18,7 +18,7 @@ final class TerminalHistoryTests: XCTestCase {
     }
 
     private func rows(_ view: GridReadableTerminalView) -> [String] {
-        Array(String(decoding: view.getTerminal().getBufferAsData(), as: UTF8.self)
+        Array(String(decoding: view.getBufferAsData(), as: UTF8.self)
             .components(separatedBy: "\n").dropLast())
     }
 
@@ -50,18 +50,16 @@ final class TerminalHistoryTests: XCTestCase {
         let view = view()
         view.receiveHistory(history(["old"]))
         paint(["\u{1B}[31mשלום 🙂", "\u{1B}[32mgreen"], on: view)
-        let terminal = view.getTerminal()
-        let cursor = terminal.getCursorLocation()
-        let attribute = terminal.getCharData(col: 0, row: 1)?.attribute
+        let cursor = view.cursorPosition
+        let attribute = view.visibleCell(col: 0, row: 1)?.attribute
         let grid = view.liveGridText()
         view.receiveHistory(history(["old", "new"]))
         XCTAssertEqual(view.liveGridText(), grid)
-        XCTAssertEqual(terminal.getCursorLocation().x, cursor.x)
-        XCTAssertEqual(terminal.getCursorLocation().y, cursor.y)
-        XCTAssertEqual(terminal.getCharData(col: 0, row: 1)?.attribute, attribute)
-        view.feed(text: "!")
+        XCTAssertEqual(view.cursorPosition, cursor)
+        XCTAssertEqual(view.visibleCell(col: 0, row: 1)?.attribute, attribute)
+        view.receiveFrame(Data("!".utf8), kind: .delta, grid: nil)
         XCTAssertTrue(view.liveGridText().contains("green!"))
-        XCTAssertEqual(terminal.getCharData(col: 5, row: 1)?.attribute, attribute)
+        XCTAssertEqual(view.visibleCell(col: 5, row: 1)?.attribute, attribute)
     }
 
     func testUnchangedHistoryDoesNotRebuildTheBuffer() {
@@ -69,9 +67,9 @@ final class TerminalHistoryTests: XCTestCase {
         let data = history(["old"])
         view.receiveHistory(data)
         paint(["live"], on: view)
-        let firstLine = view.getTerminal().getScrollInvariantLine(row: 0)
+        let firstLine = view.mirroredTerminal.getScrollInvariantLine(row: 0)
         view.receiveHistory(data)
-        XCTAssertTrue(firstLine === view.getTerminal().getScrollInvariantLine(row: 0))
+        XCTAssertTrue(firstLine === view.mirroredTerminal.getScrollInvariantLine(row: 0))
     }
 
     func testLargerGridRestoresHistoryConsumedByTheResize() {
@@ -96,7 +94,7 @@ final class TerminalHistoryTests: XCTestCase {
         let oldCaret = view.caretFrame
         view.receiveHistory(history(["old", "new", "newer"]))
         try await Task.sleep(for: .milliseconds(50))
-        let cellHeight = view.getOptimalFrameSize().height / CGFloat(view.getTerminal().rows)
+        let cellHeight = view.getOptimalFrameSize().height / CGFloat(view.terminalDimensions.rows)
         XCTAssertEqual(view.caretFrame.origin.y, oldCaret.origin.y + 2 * cellHeight, accuracy: 0.5)
         XCTAssertEqual(view.caretFrame.origin.x, oldCaret.origin.x, accuracy: 0.5)
     }
@@ -116,9 +114,9 @@ final class TerminalHistoryTests: XCTestCase {
         view.scrollTo(row: 5)
         let offset = view.contentOffset
         view.receiveHistory(history((0..<24).map { "row \($0)" }))
-        XCTAssertEqual(view.getTerminal().buffer.yDisp, 5)
+        XCTAssertEqual(view.viewportTop, 5)
         XCTAssertEqual(view.contentOffset.y, offset.y, accuracy: 0.5)
-        XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "row 5")
+        XCTAssertEqual(view.visibleRowText(0), "row 5")
     }
 
     func testHistoryTrimmingKeepsTheSameScrolledText() {
@@ -127,8 +125,8 @@ final class TerminalHistoryTests: XCTestCase {
         paint(["live"], on: view)
         view.scrollTo(row: 5)
         view.receiveHistory(history((3..<23).map { "row \($0)" }))
-        XCTAssertEqual(view.getTerminal().buffer.yDisp, 2)
-        XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "row 5")
+        XCTAssertEqual(view.viewportTop, 2)
+        XCTAssertEqual(view.visibleRowText(0), "row 5")
     }
 
     func testHistoryTrimmingDistinguishesRepeatedRowsByTheirColors() {
@@ -139,10 +137,10 @@ final class TerminalHistoryTests: XCTestCase {
         view.receiveHistory(coloredRows(0..<20))
         paint(["live"], on: view)
         view.scrollTo(row: 5)
-        let attribute = view.getTerminal().getLine(row: 0)?[0].attribute
+        let attribute = view.visibleCell(col: 0, row: 0)?.attribute
         view.receiveHistory(coloredRows(3..<23))
-        XCTAssertEqual(view.getTerminal().buffer.yDisp, 2)
-        XCTAssertEqual(view.getTerminal().getLine(row: 0)?[0].attribute, attribute)
+        XCTAssertEqual(view.viewportTop, 2)
+        XCTAssertEqual(view.visibleCell(col: 0, row: 0)?.attribute, attribute)
     }
 
     func testSelectionDefersHistoryReplacementUntilSelectionEnds() async throws {
@@ -157,5 +155,24 @@ final class TerminalHistoryTests: XCTestCase {
         view.clearSelection()
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(rows(view).prefix(2), ["old", "new"])
+    }
+}
+
+extension PhoneLinkTerminalView {
+    /// The first buffer row on screen, from the view's copied state.
+    var viewportTop: Int { terminalStateSnapshot().viewportRow }
+
+    /// Text of one screen row, right-trimmed, from the view's copied state.
+    func visibleRowText(_ row: Int) -> String? {
+        guard let line = terminalStateSnapshot().visibleRows.first(where: { $0.row == row }) else { return nil }
+        var text = line.text
+        while text.last == " " { text.removeLast() }
+        return text
+    }
+
+    /// One styled cell of a screen row. Styles live only in the mirror.
+    func visibleCell(col: Int, row: Int) -> CharData? {
+        let mirror = mirroredTerminal
+        return mirror.getScrollInvariantLine(row: mirror.buffer.totalLinesTrimmed + viewportTop + row)?[col]
     }
 }

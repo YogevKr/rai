@@ -760,7 +760,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         // UIKit overlays and dismisses this indicator after user scrolling.
         terminal.showsVerticalScrollIndicator = true
         terminal.showsHorizontalScrollIndicator = false
-        terminal.changeScrollback(2_000)
+        terminal.setScrollback(2_000)
         terminal.hideUntilFirstFrame()
         // Dragging down through the terminal tucks the keyboard away, the
         // same gesture Messages and Notes use.
@@ -938,13 +938,16 @@ private struct StreamingTerminalView: UIViewRepresentable {
 /// active buffer. This deliberately ignores the user's scrollback viewport:
 /// historical prompts must never become live native actions.
 ///
-/// The terminal comes from `getTerminal()`, never from a delegate callback.
-/// An earlier version captured it in `bufferActivated`/`linefeed`, and for an
-/// agent pane neither ever fires: herdr's observe stream paints every cell by
-/// cursor address without a single line feed or alt-screen switch, and the
-/// scrollback seed is empty because herdr's `recent` read of an alt-screen
-/// TUI is just the viewport the bridge drops. The grid then read as "" and
-/// prompt buttons never appeared.
+/// The grid comes from the view's copied reads, never from a delegate
+/// callback. An earlier version captured it in `bufferActivated`/`linefeed`,
+/// and for an agent pane neither ever fires: herdr's observe stream paints
+/// every cell by cursor address without a single line feed or alt-screen
+/// switch, and the scrollback seed is empty because herdr's `recent` read of
+/// an alt-screen TUI is just the viewport the bridge drops. The grid then
+/// read as "" and prompt buttons never appeared.
+///
+/// Styled cells come from `mirroredTerminal`: every frame and every history
+/// seed feeds the view and its mirror with the same bytes.
 class GridReadableTerminalView: PhoneLinkTerminalView {
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -1039,17 +1042,17 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
         // the last character, so showing it only adds a differently styled
         // paint before the real one. Wait for the baseline.
         if kind == .preview { return .ignored }
-        let terminal = getTerminal()
         // Returning to a cached pane replays a full frame. When it renders the
         // cells the reader already sees, keep the screen instead of clearing
         // and repainting it.
         let unchanged = full && rendersRetainedScreen(data, grid: grid)
         let readingPosition = full ? (pendingReadingPosition ?? captureReadingPosition()) : nil
         let preservePosition = readingPosition != nil
-        var savedRow = terminal.buffer.yDisp
+        var savedRow = viewportRow
         var savedOffset = contentOffset
         if let grid {
-            if grid.cols != terminal.cols || grid.rows != terminal.rows {
+            let dimensions = terminalDimensions
+            if grid.cols != dimensions.cols || grid.rows != dimensions.rows {
                 // A deferred resize can return to the original dimensions
                 // after its full frame erased rows moved out of history.
                 appliedHistoryGrid = nil
@@ -1057,23 +1060,24 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
             pinGridSize(cols: grid.cols, rows: grid.rows)
         }
         if prepareHistoryForFrame(preserving: readingPosition) {
-            savedRow = terminal.buffer.yDisp
+            savedRow = viewportRow
             savedOffset = contentOffset
         }
         if !unchanged {
             if full {
-                feed(byteArray: Self.clearScreen[...])
+                feedMirrored(byteArray: Self.clearScreen[...])
                 fullRepaints += 1
             }
-            feed(byteArray: [UInt8](data)[...])
+            feedMirrored(byteArray: [UInt8](data)[...])
             cursorIntent.merge(Self.cursorIntent(in: data))
         }
         hasLiveFrame = true
         hasDisplayedFrame = true
         revealAfterFirstFrame()
         if preservePosition {
-            let row = min(savedRow, max(0, bufferRows().count - terminal.rows))
-            if terminal.buffer.yDisp != row { scrollTo(row: row) }
+            let row = min(savedRow, max(0, bufferRows().count - terminalDimensions.rows))
+            // scrollTo also refreshes the content size the offset clamps against.
+            scrollTo(row: row)
             restoreOffset(savedOffset)
         }
         prepareHistoryForFrame()
@@ -1087,17 +1091,17 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     /// cursor visibility and shape the frame requests. Any difference repaints.
     private func rendersRetainedScreen(_ data: Data, grid: PaneGridSize?) -> Bool {
         guard hasDisplayedFrame else { return false }
-        let terminal = getTerminal()
-        if let grid, grid.cols != terminal.cols || grid.rows != terminal.rows { return false }
+        let mirror = mirroredTerminal
+        if let grid, grid.cols != mirror.cols || grid.rows != mirror.rows { return false }
         guard cursorIntent.accepts(Self.cursorIntent(in: data)) else { return false }
         let sink = OffscreenTerminalSink()
         let rendered = Terminal(
             delegate: sink,
-            options: TerminalOptions(cols: terminal.cols, rows: terminal.rows, scrollback: 0)
+            options: TerminalOptions(cols: mirror.cols, rows: mirror.rows, scrollback: 0)
         )
         rendered.feed(byteArray: Self.clearScreen + [UInt8](data))
-        guard rendered.getCursorLocation() == terminal.getCursorLocation() else { return false }
-        return Self.screenCells(of: rendered) == Self.screenCells(of: terminal)
+        guard rendered.getCursorLocation() == mirror.getCursorLocation() else { return false }
+        return Self.screenCells(of: rendered) == Self.screenCells(of: mirror)
     }
 
     private struct ScreenCell: Equatable {
@@ -1187,22 +1191,26 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
 
     private func captureReadingPosition() -> ReadingPosition? {
         guard hasDisplayedFrame else { return nil }
-        let terminal = getTerminal()
-        let historyRows = max(0, bufferRows().count - terminal.rows)
-        let isHistory = terminal.buffer.yDisp < historyRows
+        let state = terminalStateSnapshot()
+        let rows = state.dimensions.rows
+        let historyRows = max(0, bufferRows().count - rows)
+        let isHistory = state.viewportRow < historyRows
         if !isHistory {
             // A tall grid can scroll above the cursor without entering history.
-            let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
-            let cursorBottom = CGFloat(historyRows + terminal.getCursorLocation().y + 1) * cellHeight
+            let cellHeight = getOptimalFrameSize().height / CGFloat(rows)
+            let cursorBottom = CGFloat(historyRows + state.cursor.row + 1) * cellHeight
             let maximum = max(0, contentSize.height - bounds.height + adjustedContentInset.bottom)
             let liveOffset = min(maximum, max(0, cursorBottom - bounds.height + adjustedContentInset.bottom))
             guard contentOffset.y < liveOffset - cellHeight / 2 else { return nil }
         }
         return ReadingPosition(
-            row: terminal.buffer.yDisp, offset: contentOffset, historyCount: historyRows,
+            row: state.viewportRow, offset: contentOffset, historyCount: historyRows,
             isHistory: isHistory, cells: isHistory ? historyCells(count: historyRows) : []
         )
     }
+
+    /// The first buffer row on screen, as SwiftTerm reports it.
+    private var viewportRow: Int { terminalStateSnapshot().viewportRow }
 
     func awaitNextConnectionFrame() {
         hasLiveFrame = false
@@ -1221,8 +1229,8 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     /// Returns true when rebuilding history also restores the reading position.
     @discardableResult
     private func prepareHistoryForFrame(preserving position: ReadingPosition? = nil) -> Bool {
-        let terminal = getTerminal()
-        let grid = PaneGridSize(cols: terminal.cols, rows: terminal.rows)
+        let dimensions = terminalDimensions
+        let grid = PaneGridSize(cols: dimensions.cols, rows: dimensions.rows)
         // Increasing the grid height can move history rows onto the screen.
         // Restore the cached seed before the new full frame overwrites them.
         guard let history = pendingHistory
@@ -1251,49 +1259,45 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
         }
 
         let readingPosition = pendingReadingPosition ?? position ?? captureReadingPosition()
-        guard !terminal.synchronizedOutputActive else {
+        guard !terminalModeFlags().synchronizedOutputActive else {
             if needsResizeAnchor { pendingReadingPosition = readingPosition }
             return false
         }
+        let mirror = mirroredTerminal
         let oldRows = bufferRows()
-        let historyCount = max(0, oldRows.count - terminal.rows)
-        let firstRow = terminal.buffer.totalLinesTrimmed + historyCount
-        let screen = hasDisplayedFrame ? (0..<terminal.rows).compactMap {
-            terminal.getScrollInvariantLine(row: firstRow + $0).map { BufferLine(from: $0) }
-        } : []
+        let historyCount = max(0, oldRows.count - dimensions.rows)
+        let screen = hasDisplayedFrame ? Self.screenProgram(of: mirror) : []
         // Native resizing can move rows from history into the live screen.
         // Use the anchor captured before that move when rebuilding the seed.
         let oldOffset = readingPosition?.offset ?? contentOffset
-        let oldDisplayRow = readingPosition?.row ?? terminal.buffer.yDisp
+        let oldDisplayRow = readingPosition?.row ?? viewportRow
         let wasReadingHistory = readingPosition?.isHistory == true
         let wasReadingGrid = readingPosition?.isHistory == false
         let oldHistoryCells = readingPosition?.cells ?? []
-        let scrollRegion = (terminal.buffer.scrollTop, terminal.buffer.scrollBottom)
-        let margins = (terminal.buffer.marginLeft, terminal.buffer.marginRight)
+        let scrollRegion = (mirror.buffer.scrollTop, mirror.buffer.scrollBottom)
+        let margins = (mirror.buffer.marginLeft, mirror.buffer.marginRight)
 
-        // Buffer.clear preserves the parser, cursor visibility, links, and
-        // saved cursor attributes. RIS would discard those live-stream modes.
-        terminal.feed(text: "\u{1B}7")
-        terminal.buffer.clear()
-        terminal.buffer.fillViewportRows()
-        terminal.feed(text: "\u{1B}[0m\u{1B}[?6l\u{1B}[?7h\u{1B}[?69l")
-        terminal.feed(byteArray: Self.normalizedHistory(history))
-        if terminal.getCursorLocation().x > 0 { terminal.feed(text: "\r\n") }
+        // SwiftTerm 2 exposes no buffer edits, so the rebuild is a byte
+        // program fed to the view and its mirror alike. DECSC keeps the
+        // cursor, its attributes, and the wrap, origin, and margin modes.
+        // Erasing the screen and scrollback keeps the parser, cursor
+        // visibility, and every other live-stream mode. RIS would discard
+        // those.
+        feedMirrored(text: "\u{1B}7\u{1B}[0m\u{1B}[?6l\u{1B}[?7h\u{1B}[?69l\u{1B}[r\u{1B}[2J\u{1B}[3J\u{1B}[H")
+        feedMirrored(byteArray: Self.normalizedHistory(history)[...])
+        if mirror.getCursorLocation().x > 0 { feedMirrored(text: "\r\n") }
         // History ends at a blank row. Reserve the rest of the live grid so
         // its first full repaint cannot overwrite the tail of that history.
-        terminal.feed(text: String(repeating: "\r\n", count: max(0, terminal.rows - 1)))
-        let newRows = bufferRows()
-        let newHistoryCount = max(0, newRows.count - terminal.rows)
-        let newFirstRow = terminal.buffer.totalLinesTrimmed + newHistoryCount
-        for (row, line) in screen.enumerated() {
-            terminal.getScrollInvariantLine(row: newFirstRow + row)?.copyFrom(line: line)
+        feedMirrored(text: String(repeating: "\r\n", count: max(0, dimensions.rows - 1)))
+        feedMirrored(byteArray: screen[...])
+        var restore = ""
+        if margins != (0, dimensions.cols - 1) {
+            restore += "\u{1B}[?69h\u{1B}[\(margins.0 + 1);\(margins.1 + 1)s"
         }
-        terminal.feed(text: "\u{1B}8")
-        terminal.buffer.scrollTop = scrollRegion.0
-        terminal.buffer.scrollBottom = scrollRegion.1
-        terminal.buffer.marginLeft = margins.0
-        terminal.buffer.marginRight = margins.1
-        terminal.updateFullScreen()
+        restore += "\u{1B}[\(scrollRegion.0 + 1);\(scrollRegion.1 + 1)r\u{1B}8"
+        feedMirrored(text: restore)
+        let newRows = bufferRows()
+        let newHistoryCount = max(0, newRows.count - dimensions.rows)
         pendingHistory = nil
         pendingReadingPosition = nil
         appliedHistory = history
@@ -1307,17 +1311,17 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
                 originalRow: oldDisplayRow
             )
             scrollTo(row: row)
-            let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
+            let cellHeight = getOptimalFrameSize().height / CGFloat(dimensions.rows)
             restoreOffset(CGPoint(
                 x: oldOffset.x,
                 y: oldOffset.y + CGFloat(row - oldDisplayRow) * cellHeight
             ))
         } else if wasReadingGrid {
             // scrollTo at the history boundary enables follow mode and clears
-            // SwiftTerm's offset inside the grid. Preserve that manual state.
-            terminal.buffer.yDisp = newHistoryCount
-            scrolled(source: terminal, yDisp: newHistoryCount)
-            let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
+            // SwiftTerm's offset inside the grid. restoreOffset re-enters the
+            // manual state at the restored offset.
+            scrollTo(row: newHistoryCount)
+            let cellHeight = getOptimalFrameSize().height / CGFloat(dimensions.rows)
             restoreOffset(CGPoint(
                 x: oldOffset.x,
                 y: oldOffset.y + CGFloat(newHistoryCount - (readingPosition?.historyCount ?? historyCount)) * cellHeight
@@ -1325,20 +1329,126 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
         } else {
             scrollToLive()
         }
-        // Use the view's feed completion to update its native caret and
-        // search cache after direct buffer edits, even without another frame.
-        feed(byteArray: [])
         return wasReadingHistory || wasReadingGrid
     }
 
+    /// SwiftTerm records a manual reading position only while a finger is
+    /// down. A restored offset is that position, so present it as a finger.
+    private var restoringOffset = false
+    override var isTracking: Bool { restoringOffset || super.isTracking }
+
     private func restoreOffset(_ offset: CGPoint) {
         let maximum = max(0, contentSize.height - bounds.height + adjustedContentInset.bottom)
+        restoringOffset = true
+        defer { restoringOffset = false }
         setContentOffset(CGPoint(x: 0, y: min(maximum, max(0, offset.y))), animated: false)
     }
 
     private func bufferRows() -> [String] {
-        Array(String(decoding: getTerminal().getBufferAsData(), as: UTF8.self)
+        Array(String(decoding: getBufferAsData(), as: UTF8.self)
             .components(separatedBy: "\n").dropLast())
+    }
+
+    /// Bytes that repaint the live screen rows of `terminal` cell by cell:
+    /// text, styles, and hyperlink targets. Null cells stay null: the cursor
+    /// steps over them, after erasing a styled run in its style. Soft-wrap
+    /// flags and hyperlink parameters do not survive the round trip.
+    private static func screenProgram(of terminal: Terminal) -> [UInt8] {
+        let total = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+            .components(separatedBy: "\n").dropLast().count
+        let firstRow = terminal.buffer.totalLinesTrimmed + max(0, total - terminal.rows)
+        let plain = CharData.Null.attribute
+        var attribute = plain
+        var link: String?
+        var program = "\u{1B}[0m\u{1B}]8;;\u{1B}\\"
+        for row in 0..<terminal.rows {
+            guard let line = terminal.getScrollInvariantLine(row: firstRow + row) else { continue }
+            let cells = line.getData()
+            let end = min(terminal.cols, line.getTrimmedLength())
+            program += "\u{1B}[\(row + 1);1H"
+            var column = 0
+            while column < end {
+                let cell = cells[column]
+                // The trailing half of a wide glyph, or a wrap spacer.
+                if cell.width == 0 {
+                    column += 1
+                    continue
+                }
+                let text = terminal.getText(for: cell)
+                if text == "\u{0}" {
+                    var count = 1
+                    while column + count < end, cells[column + count].width == 1,
+                          terminal.getText(for: cells[column + count]) == "\u{0}" {
+                        count += 1
+                    }
+                    if cell.attribute != plain {
+                        program += Self.sgr(cell.attribute, from: &attribute) + "\u{1B}[\(count)X"
+                    }
+                    program += "\u{1B}[\(count)C"
+                    column += count
+                    continue
+                }
+                program += Self.sgr(cell.attribute, from: &attribute)
+                let target = cell.hasPayload ? (cell.getPayload() as? String) : nil
+                if target != link {
+                    program += "\u{1B}]8;;\(target ?? "")\u{1B}\\"
+                    link = target
+                }
+                program += text
+                column += max(1, Int(cell.width))
+            }
+        }
+        program += "\u{1B}[0m\u{1B}]8;;\u{1B}\\"
+        return Array(program.utf8)
+    }
+
+    /// The SGR sequence that moves the parser from `current` to `attribute`.
+    private static func sgr(_ attribute: Attribute, from current: inout Attribute) -> String {
+        guard attribute != current else { return "" }
+        current = attribute
+        let style = attribute.style
+        var params = ["0"]
+        if style.contains(.bold) { params.append("1") }
+        if style.contains(.dim) { params.append("2") }
+        if style.contains(.italic) { params.append("3") }
+        if attribute.underlineStyle != .none {
+            params.append("4:\(attribute.underlineStyle.rawValue)")
+        } else if style.contains(.underline) {
+            params.append("4")
+        }
+        if style.contains(.blink) { params.append("5") }
+        if style.contains(.inverse) { params.append("7") }
+        if style.contains(.invisible) { params.append("8") }
+        if style.contains(.crossedOut) { params.append("9") }
+        params.append(sgrColor(attribute.fg, layer: .foreground))
+        params.append(sgrColor(attribute.bg, layer: .background))
+        if let underline = attribute.underlineColor {
+            params.append(sgrColor(underline, layer: .underline))
+        }
+        return "\u{1B}[" + params.joined(separator: ";") + "m"
+    }
+
+    private struct SGRLayer {
+        let simple: Int?
+        let bright: Int?
+        let extended: Int
+        let reset: Int
+        static let foreground = SGRLayer(simple: 30, bright: 90, extended: 38, reset: 39)
+        static let background = SGRLayer(simple: 40, bright: 100, extended: 48, reset: 49)
+        static let underline = SGRLayer(simple: nil, bright: nil, extended: 58, reset: 59)
+    }
+
+    private static func sgrColor(_ color: Attribute.Color, layer: SGRLayer) -> String {
+        switch color {
+        case .defaultColor, .defaultInvertedColor:
+            return "\(layer.reset)"
+        case .ansi256(let code):
+            if let simple = layer.simple, code < 8 { return "\(simple + Int(code))" }
+            if let bright = layer.bright, code < 16 { return "\(bright + Int(code) - 8)" }
+            return "\(layer.extended);5;\(code)"
+        case .trueColor(let red, let green, let blue):
+            return "\(layer.extended);2;\(red);\(green);\(blue)"
+        }
     }
 
     private enum HistoryCell: Equatable {
@@ -1347,10 +1457,10 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     }
 
     private func historyCells(count: Int) -> [[HistoryCell]] {
-        let terminal = getTerminal()
+        let mirror = mirroredTerminal
         return (0..<count).map { row in
-            guard let line = terminal.getScrollInvariantLine(
-                row: terminal.buffer.totalLinesTrimmed + row
+            guard let line = mirror.getScrollInvariantLine(
+                row: mirror.buffer.totalLinesTrimmed + row
             ) else { return [] }
             // Styles distinguish repeated text. Ignore unused cells at the
             // right edge, whose fill attributes depend on the preceding row.
@@ -1408,21 +1518,15 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     }
 
     func liveGridText() -> String {
-        let terminal = getTerminal()
-        guard let text = String(data: terminal.getBufferAsData(), encoding: .utf8)
+        guard let text = String(data: getBufferAsData(), encoding: .utf8)
         else { return "" }
 
         var lines = text.components(separatedBy: "\n")
         if lines.last == "" {
             lines.removeLast()
         }
-        return lines.suffix(terminal.rows).joined(separator: "\n")
+        return lines.suffix(terminalDimensions.rows).joined(separator: "\n")
     }
-}
-
-/// Delegate for an emulator that only renders; replies go nowhere.
-private final class OffscreenTerminalSink: TerminalDelegate {
-    func send(source: Terminal, data: ArraySlice<UInt8>) {}
 }
 
 enum ClaudePromptGate {

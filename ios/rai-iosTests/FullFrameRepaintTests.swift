@@ -8,7 +8,7 @@ import XCTest
 final class FullFrameRepaintTests: XCTestCase {
     private func view(rows: Int = 4, cols: Int = 80) -> GridReadableTerminalView {
         let view = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 650, height: 60))
-        view.changeScrollback(2_000)
+        view.setScrollback(2_000)
         view.pinGridSize(cols: cols, rows: rows)
         return view
     }
@@ -27,13 +27,13 @@ final class FullFrameRepaintTests: XCTestCase {
         let baseline = frame(["• Ran node", "  └ done", "", "› Ask Codex"], cursor: (4, 12))
         XCTAssertEqual(view.receiveFrame(baseline, kind: .full, grid: grid), .followLive)
         XCTAssertEqual(view.fullRepaints, 1)
-        let cells = view.getTerminal().getBufferAsData()
+        let cells = view.getBufferAsData()
 
         view.awaitNextConnectionFrame()
         XCTAssertEqual(view.receiveFrame(baseline, kind: .full, grid: grid), .followLive)
         XCTAssertEqual(view.fullRepaints, 1, "An unchanged baseline must not clear and repaint")
         XCTAssertTrue(view.hasLiveFrame, "The retained screen is live again after the baseline")
-        XCTAssertEqual(view.getTerminal().getBufferAsData(), cells)
+        XCTAssertEqual(view.getBufferAsData(), cells)
         XCTAssertEqual(view.receiveFrame(Data("\u{1B}[2;5Hnow".utf8), kind: .delta, grid: nil), .applied)
         XCTAssertTrue(view.liveGridText().contains("  └ now"), "Deltas keep applying to the kept screen")
     }
@@ -56,9 +56,9 @@ final class FullFrameRepaintTests: XCTestCase {
         view.awaitNextConnectionFrame()
         view.receiveFrame(frame(["\u{1F468}\u{200D}\u{1F4BB} working"]), kind: .full, grid: grid)
         XCTAssertEqual(view.fullRepaints, 2, "A different cluster in the same cell is a change")
-        let terminal = view.getTerminal()
-        let cell = try XCTUnwrap(terminal.getCharData(col: 0, row: 0))
-        XCTAssertEqual(terminal.getCharacter(for: cell), "\u{1F468}\u{200D}\u{1F4BB}")
+        let mirror = view.mirroredTerminal
+        let cell = try XCTUnwrap(mirror.getCharData(col: 0, row: 0))
+        XCTAssertEqual(mirror.getCharacter(for: cell), "\u{1F468}\u{200D}\u{1F4BB}")
     }
 
     func testChangedAttributesRepaint() {
@@ -87,7 +87,7 @@ final class FullFrameRepaintTests: XCTestCase {
         view.awaitNextConnectionFrame()
         view.receiveFrame(frame(["prompt"], cursor: (2, 1)), kind: .full, grid: grid)
         XCTAssertEqual(view.fullRepaints, 2)
-        XCTAssertEqual(view.getTerminal().getCursorLocation().y, 1)
+        XCTAssertEqual(view.cursorPosition.row, 1)
     }
 
     func testCursorVisibilityChangeRepaints() {
@@ -147,7 +147,7 @@ final class FullFrameRepaintTests: XCTestCase {
         view.awaitNextConnectionFrame()
         view.receiveFrame(frame(["one"]), kind: .full, grid: PaneGridSize(cols: 80, rows: 5))
         XCTAssertEqual(view.fullRepaints, 2)
-        XCTAssertEqual(view.getTerminal().rows, 5)
+        XCTAssertEqual(view.terminalDimensions.rows, 5)
     }
 
     func testPreviewIsAlwaysIgnored() {
@@ -161,11 +161,11 @@ final class FullFrameRepaintTests: XCTestCase {
 
         let retained = view()
         retained.receiveFrame(frame(["one", "two"]), kind: .full, grid: grid)
-        let cells = retained.getTerminal().getBufferAsData()
+        let cells = retained.getBufferAsData()
         retained.awaitNextConnectionFrame()
         XCTAssertEqual(retained.receiveFrame(preview, kind: .preview, grid: grid), .ignored)
         XCTAssertFalse(retained.hasLiveFrame, "A preview is not a stream baseline")
-        XCTAssertEqual(retained.getTerminal().getBufferAsData(), cells)
+        XCTAssertEqual(retained.getBufferAsData(), cells)
         XCTAssertEqual(retained.fullRepaints, 1)
         XCTAssertEqual(retained.receiveFrame(frame(["one", "two"]), kind: .full, grid: grid), .followLive)
         XCTAssertEqual(retained.fullRepaints, 1, "The matching baseline keeps the screen")
@@ -183,11 +183,11 @@ final class FullFrameRepaintTests: XCTestCase {
         XCTAssertEqual(view.alpha, 0, "The reveal waits for the deferred scroll")
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(view.alpha, 1)
-        let terminal = view.getTerminal()
-        let bufferRows = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+        let rows = view.terminalDimensions.rows
+        let bufferRows = String(decoding: view.getBufferAsData(), as: UTF8.self)
             .components(separatedBy: "\n").dropLast().count
-        XCTAssertGreaterThan(bufferRows, terminal.rows, "History rows sit above the live screen")
-        XCTAssertEqual(terminal.buffer.yDisp, bufferRows - terminal.rows, "Revealed at the live rows")
+        XCTAssertGreaterThan(bufferRows, rows, "History rows sit above the live screen")
+        XCTAssertEqual(view.viewportTop, bufferRows - rows, "Revealed at the live rows")
 
         let retained = self.view()
         _ = retained.receiveFrame(frame(["one"]), kind: .full, grid: grid)

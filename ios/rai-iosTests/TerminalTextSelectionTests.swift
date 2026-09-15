@@ -17,11 +17,11 @@ final class TerminalTextSelectionTests: XCTestCase {
     @MainActor
     func testTouchFindsImplicitAndExplicitLinksWithoutHover() {
         let terminal = EndpointPhoneTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
-        terminal.feed(text: "https://example.com\r\n\u{1b}]8;;https://example.org\u{1b}\\Label\u{1b}]8;;\u{1b}\\")
+        terminal.feedMirrored(text: "https://example.com\r\n\u{1b}]8;;https://example.org\u{1b}\\Label\u{1b}]8;;\u{1b}\\")
         let interaction = TerminalLinkInteraction(terminal: terminal)
         let size = terminal.getOptimalFrameSize()
-        let cell = CGSize(width: size.width / CGFloat(terminal.getTerminal().cols),
-                          height: size.height / CGFloat(terminal.getTerminal().rows))
+        let cell = CGSize(width: size.width / CGFloat(terminal.terminalDimensions.cols),
+                          height: size.height / CGFloat(terminal.terminalDimensions.rows))
         XCTAssertEqual(interaction.link(at: CGPoint(x: cell.width * 2, y: cell.height * 0.5)), "https://example.com")
         XCTAssertEqual(interaction.link(at: CGPoint(x: cell.width * 2, y: cell.height * 1.5)), "https://example.org")
         XCTAssertNil(interaction.link(at: CGPoint(x: -1, y: 0)))
@@ -33,9 +33,9 @@ final class TerminalTextSelectionTests: XCTestCase {
         let terminal = EndpointPhoneTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
         var inputs = 0
         terminal.semanticInput = { _ in inputs += 1 }
-        terminal.feed(text: "COPY THIS https://example.com\r\n")
+        terminal.feedMirrored(text: "COPY THIS https://example.com\r\n")
         let snapshot = TerminalTextSnapshot(terminal: terminal)
-        terminal.feed(text: "\u{1b}[2J\u{1b}[HREPLACED")
+        terminal.feedMirrored(text: "\u{1b}[2J\u{1b}[HREPLACED")
         XCTAssertTrue(snapshot.text.contains("COPY THIS https://example.com"))
         XCTAssertFalse(snapshot.text.contains("REPLACED"))
         XCTAssertEqual(inputs, 0)
@@ -45,7 +45,7 @@ final class TerminalTextSelectionTests: XCTestCase {
         let terminal = EndpointPhoneTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
         var inputs = 0
         terminal.semanticInput = { _ in inputs += 1 }
-        terminal.feed(text: "first word\r\n")
+        terminal.feedMirrored(text: "first word\r\n")
         let snapshot = TerminalTextSnapshot(terminal: terminal)
         let view = EndpointSelectableTextView(frame: terminal.frame)
         view.text = snapshot.text
