@@ -55,8 +55,8 @@ terminal widget**.
   Focus, visibility, and reconnect changes also clear it. A recent 20-confirm
   tail detects the daemon's bimodal delay. Unmatched output revokes confidence.
   Local prediction is off by default because silent password prompts cannot be
-  detected. Enable it under Settings → Appearance. Small echoes bypass the
-  display throttle. Local echo measured about 4 ms median and 22 ms p90.
+  detected. Enable it under Settings → Appearance. SwiftTerm paces frames on
+  its display link; predictions reconcile on one coalesced main hop.
   After a pause longer than 300 ms, the next key waits for its echo, local and
   remote.
   Measure both render paths with:
@@ -155,7 +155,7 @@ The Mac side is the hub: a per-device authenticated WebSocket bridge
 - macOS 14 (Sonoma) or newer
 - [**herdr**](https://herdr.dev) on your `PATH` — rai starts the server itself
   when the herd it points at is not running
-- Xcode command-line tools / Swift 5.9+ toolchain (to build)
+- Xcode 26 or newer (SwiftTerm 2 needs the Swift 6.2 toolchain) to build
 
 If Herdr is missing, Rai shows installation guidance and a Retry button.
 Install Herdr, then select Retry without closing Rai.

@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Xcode 26+, NOT the Mac release's Xcode 16 pin. App Store Connect rejects
+      # Xcode 26+, like the Mac workflows since SwiftTerm 2. App Store Connect rejects
       # any iOS build made with an SDK older than iOS 26:
       #   "This app was built with the iOS 18.5 SDK. All iOS and iPadOS apps must
       #    be built with the iOS 26 SDK or later, included in Xcode 26 or later."

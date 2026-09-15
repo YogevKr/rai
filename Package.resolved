@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/YogevKr/SwiftTerm.git",
       "state" : {
-        "branch" : "5ab7f43",
-        "revision" : "5ab7f43104181affc9b83ce4c725dead7b354620"
+        "branch" : "6b0a886",
+        "revision" : "6b0a886ef998cc28fe00e384055d9923df11ae3d"
       }
     }
   ],

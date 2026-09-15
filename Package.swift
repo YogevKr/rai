@@ -26,7 +26,7 @@ let package = Package(
         // Embedded experimental-feature setting (Xcode 26.0 link failure).
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "5ab7f43"
+            revision: "6b0a886"
         ),
     ],
     targets: [
