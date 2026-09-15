@@ -358,12 +358,6 @@ public enum PredictiveEchoViewPolicy {
         case retract
     }
 
-    public enum CoordinatedDraw: Equatable {
-        case updateOverlay
-        case drawTogether
-        case waitForTerminalDisplay
-    }
-
     public static func shouldClear(for event: Invalidation) -> Bool {
         switch event {
         case .resize, .enterCopyMode, .focusLost, .applicationResignedActive,
@@ -373,25 +367,6 @@ public enum PredictiveEchoViewPolicy {
         case .scroll(let offsetFromBottom):
             return offsetFromBottom != 0
         }
-    }
-
-    public static func canPresent(hasDeferredTerminalBytes: Bool) -> Bool {
-        !hasDeferredTerminalBytes
-    }
-
-    /// Reads one visible cell from a copied row. `rowText` holds one
-    /// character per non-trailing cell (wide glyphs skip their trailing
-    /// cell) and is right-trimmed, so a column past its end reads nil.
-    public static func cellCharacter(
-        rowText: String, cellWidths: [Int], column: Int
-    ) -> Character? {
-        guard column >= 0, column < cellWidths.count, cellWidths[column] > 0 else {
-            return nil
-        }
-        let index = cellWidths[..<column].filter { $0 > 0 }.count
-        let characters = Array(rowText)
-        guard index < characters.count else { return nil }
-        return characters[index]
     }
 
     public static func overlayPlacement(
@@ -405,15 +380,5 @@ public enum PredictiveEchoViewPolicy {
             return .retract
         }
         return .draw
-    }
-
-    public static func coordinatedDraw(
-        needsCoordination: Bool,
-        terminalPaintedDuringFeed: Bool,
-        immediateRepaintAllowed: Bool
-    ) -> CoordinatedDraw {
-        guard needsCoordination else { return .updateOverlay }
-        if terminalPaintedDuringFeed { return .updateOverlay }
-        return immediateRepaintAllowed ? .drawTogether : .waitForTerminalDisplay
     }
 }

@@ -681,15 +681,6 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.recentTailConfirmLatency, 0)
     }
 
-    func testDeferredTerminalBytesBlockPredictionPresentation() {
-        XCTAssertFalse(
-            PredictiveEchoViewPolicy.canPresent(hasDeferredTerminalBytes: true)
-        )
-        XCTAssertTrue(
-            PredictiveEchoViewPolicy.canPresent(hasDeferredTerminalBytes: false)
-        )
-    }
-
     func testCopyModeEntryInvalidatesPresentation() {
         XCTAssertTrue(PredictiveEchoViewPolicy.shouldClear(for: .enterCopyMode))
     }
@@ -711,25 +702,6 @@ final class PredictiveEchoTests: XCTestCase {
                 isAtLiveBottom: true
             ),
             .retract
-        )
-    }
-
-    func testCoordinatedDrawWaitsForTerminalBeforeMovingOverlay() {
-        XCTAssertEqual(
-            PredictiveEchoViewPolicy.coordinatedDraw(
-                needsCoordination: true,
-                terminalPaintedDuringFeed: false,
-                immediateRepaintAllowed: false
-            ),
-            .waitForTerminalDisplay
-        )
-        XCTAssertEqual(
-            PredictiveEchoViewPolicy.coordinatedDraw(
-                needsCoordination: true,
-                terminalPaintedDuringFeed: false,
-                immediateRepaintAllowed: true
-            ),
-            .drawTogether
         )
     }
 }

@@ -351,8 +351,8 @@ private struct EndpointTerminal: NSViewRepresentable {
         guard let surface = model.surface else { return }
         let renderKey = EndpointSurfaceRenderKey(surface)
         guard appearanceChanged || coordinator.renderKey != renderKey else { return }
-        coordinator.painting = true
-        defer { coordinator.painting = false }
+        coordinator.beginPaint()
+        defer { coordinator.endPaint() }
         view.resize(cols: Int(surface.grid.width), rows: Int(surface.grid.height))
         let grid = surface.presentationGrid
         let bytes = EndpointANSI.render(grid, previous: !appearanceChanged && coordinator.renderKey?.bootID == surface.bootID ? coordinator.grid : nil)
@@ -373,12 +373,41 @@ private struct EndpointTerminal: NSViewRepresentable {
         var graphics = EndpointGraphicsEncoder()
         var renderKey: EndpointSurfaceRenderKey?
         var generation: UUID?
-        var painting = false
+        /// True while a frame is being fed. Gates the synchronous callbacks.
+        private(set) var painting = false
+        /// Paints whose emulator replies may still be in flight.
+        ///
+        /// Typed text reaches `send` synchronously, but a reply the emulator
+        /// generates while a frame is fed arrives one main-actor hop later,
+        /// after the paint has returned, so `painting` alone lets it through
+        /// as keyboard input. Keyboard text still needs this delegate (plain
+        /// characters go through SwiftTerm's own key handling), so `send`
+        /// stays closed until a main-queue turn queued after the feed runs:
+        /// a reply enqueued during the paint runs first and is dropped; a key
+        /// event arrives in a later run-loop pass. Same shape as the iOS
+        /// coordinator.
+        private(set) var paintsAwaitingReplies = 0
         var dark: Bool?
         var theme: String?
 
         init(model: EndpointWindowModel, links: EndpointNativeLinks) { self.model = model; self.links = links }
-        func send(source: TerminalView, data: ArraySlice<UInt8>) { if !painting { model.send(data) } }
+
+        func beginPaint() {
+            painting = true
+            paintsAwaitingReplies += 1
+        }
+
+        func endPaint() {
+            painting = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.paintsAwaitingReplies = max(0, self.paintsAwaitingReplies - 1)
+            }
+        }
+
+        func send(source: TerminalView, data: ArraySlice<UInt8>) {
+            if paintsAwaitingReplies == 0 { model.send(data) }
+        }
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
             if !painting { model.resize(columns: newCols, rows: newRows) }
         }

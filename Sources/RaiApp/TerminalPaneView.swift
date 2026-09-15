@@ -192,6 +192,18 @@ enum CopiedText {
     }
 }
 
+/// Wraps pasted bytes the way xterm delivers a paste, without rewriting them.
+enum VerbatimPaste {
+    static let bracketedStart: [UInt8] = Array("\u{1B}[200~".utf8)
+    static let bracketedEnd: [UInt8] = Array("\u{1B}[201~".utf8)
+
+    static func bytes(_ text: String, bracketedPaste: Bool) -> [UInt8] {
+        let payload = Array(text.utf8)
+        guard bracketedPaste else { return payload }
+        return bracketedStart + payload + bracketedEnd
+    }
+}
+
 /// Ghostty-parity escaping for paths dropped onto a terminal: backslash-escape
 /// every character the shell (or Claude's @-path parsing) would otherwise
 /// interpret, leaving common path characters readable.
@@ -399,7 +411,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
             self?.reconcilePredictionsWithOutput()
         }
         outputBookkeeping = bookkeeping
-        outputObserver = { chunk in bookkeeping.append(chunk) }
+        outputObserver = { chunk, cursor in bookkeeping.append(chunk, cursor: cursor) }
         // The overlay refreshes on the frame edge, so every prepared frame
         // must report through `rangeChanged`.
         notifyUpdateChanges = true
@@ -487,10 +499,13 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
     }
 
+    /// `cursor` is the position recorded right after `outputBytes` parsed.
+    /// The live cursor may already be past a later chunk.
     @discardableResult
     private func reconcilePredictions(
         updateOverlay: Bool = true,
-        outputBytes: ArraySlice<UInt8>? = nil
+        outputBytes: ArraySlice<UInt8>? = nil,
+        cursor: Position? = nil
     ) -> PredictionReconcileResult? {
         guard let engine = predictiveEcho else { return nil }
         guard scrolledOffset == 0 else {
@@ -499,23 +514,18 @@ final class FocusAwareTerminalView: TerminalProcessView {
         }
         let pendingBefore = engine.pending
         let wasVisible = !engine.displayGlyphs().isEmpty
-        let cursor = cursorPosition
-        // The snapshot copies every visible row. The engine reads cells only
-        // while predictions are pending on the cursor row, so copy it then.
-        var visibleRows: [TerminalVisibleRowSnapshot]?
+        let cursor = cursor ?? cursorPosition
+        // The engine reads cells only while predictions are pending on the
+        // cursor row. Each read copies one cell; no row snapshot is taken.
+        var topRow: Int?
         engine.reconcile(
             cursor: (x: cursor.col, y: cursor.row),
             terminalMode: predictiveTerminalMode(terminalModeFlags()),
             outputBytes: outputBytes
         ) { [self] column, row in
-            let rows = visibleRows ?? terminalStateSnapshot().visibleRows
-            visibleRows = rows
-            guard let line = rows.first(where: { $0.row == row }) else {
-                return nil
-            }
-            return PredictiveEchoViewPolicy.cellCharacter(
-                rowText: line.text, cellWidths: line.cellWidths, column: column
-            )
+            let top = topRow ?? topVisibleBufferRow()
+            topRow = top
+            return screenCell(column: column, bufferRow: top + row)
         }
         if updateOverlay {
             updatePredictionOverlay()
@@ -529,6 +539,29 @@ final class FocusAwareTerminalView: TerminalProcessView {
             wasVisible: wasVisible,
             isVisible: !engine.displayGlyphs().isEmpty
         )
+    }
+
+    /// The buffer row shown at the top of the view. At the live bottom the
+    /// cursor's screen row plus this value is its buffer row.
+    private func topVisibleBufferRow() -> Int {
+        cellPosition(at: CGPoint(x: 0, y: bounds.maxY - 0.5)).row
+    }
+
+    /// One copied cell. `getText` trims trailing blanks, so an unwritten cell
+    /// reads as nil; a blank cell before content reads as a space. Cells hold
+    /// whole graphemes, so a multi-scalar glyph never shifts its neighbours.
+    private func screenCell(column: Int, bufferRow: Int) -> Character? {
+        guard column >= 0, bufferRow >= 0 else { return nil }
+        let text = getText(
+            start: Position(col: column, row: bufferRow),
+            end: Position(col: column + 1, row: bufferRow)
+        )
+        guard let first = text.first else { return nil }
+        return first == "\u{0}" ? " " : first
+    }
+
+    func predictionCellForTesting(column: Int, row: Int) -> Character? {
+        screenCell(column: column, bufferRow: topVisibleBufferRow() + row)
     }
 
     private func updatePredictionOverlay() {
@@ -561,17 +594,23 @@ final class FocusAwareTerminalView: TerminalProcessView {
             addSubview(overlay)
             predictionOverlay = overlay
         }
-        let caret = caretFrame
+        // SwiftTerm reports `rangeChanged` before it moves the caret view,
+        // so `caretFrame.origin` lags one frame. Place the overlay from the
+        // cursor cell instead; only the cell size comes from the caret.
+        let cell = caretFrame.size
+        let origin = Self.overlayOrigin(
+            cursor: cursor, cellSize: cell, viewHeight: frame.height
+        )
         overlay.glyphs = glyphs
-        overlay.cellWidth = caret.width
+        overlay.cellWidth = cell.width
         overlay.glyphFont = font
         overlay.textColor = nativeForegroundColor
         overlay.cellBackground = nativeBackgroundColor
         overlay.frame = NSRect(
-            x: caret.minX,
-            y: caret.minY,
-            width: caret.width * CGFloat(glyphs.count),
-            height: caret.height
+            x: origin.x,
+            y: origin.y,
+            width: cell.width * CGFloat(glyphs.count),
+            height: cell.height
         )
         overlay.isHidden = false
         overlay.needsDisplay = true
@@ -579,6 +618,29 @@ final class FocusAwareTerminalView: TerminalProcessView {
         schedulePredictionExpiryRedraw(
             at: engine.displayExpiryDeadlineUptimeNanoseconds
         )
+    }
+
+    /// The unflipped view origin of the cell under `cursor`. Rows count from
+    /// the top; the cursor row equals the screen row at the live bottom.
+    static func overlayOrigin(cursor: Position, cellSize: CGSize, viewHeight: CGFloat) -> CGPoint {
+        CGPoint(
+            x: cellSize.width * CGFloat(cursor.col),
+            y: viewHeight - cellSize.height * CGFloat(cursor.row + 1)
+        )
+    }
+
+    var predictionOverlayFrameForTesting: NSRect? {
+        guard let overlay = predictionOverlay, !overlay.isHidden else { return nil }
+        return overlay.frame
+    }
+
+    var predictionOverlayUpdatePendingForTesting: Bool {
+        predictionOverlayUpdatePending
+    }
+
+    /// Simulates the frame edge that `rangeChanged` reports.
+    func noteFramePresentedForTesting() {
+        rangeChanged(source: self, startY: 0, endY: 0)
     }
 
     private func schedulePredictionExpiryRedraw(at deadline: UInt64?) {
@@ -927,6 +989,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
     /// for the confirming echo to paint applies here, on the frame edge.
     override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         super.rangeChanged(source: source, startY: startY, endY: endY)
+        outputBookkeeping?.noteFramePresented()
         if predictionOverlayUpdatePending {
             predictionOverlayUpdatePending = false
             updatePredictionOverlay()
@@ -949,11 +1012,29 @@ final class FocusAwareTerminalView: TerminalProcessView {
             resetPredictions()
             return
         }
-        let reconciliation = reconcilePredictions(
-            updateOverlay: false,
-            outputBytes: batch.bytes[...]
-        )
-        if reconciliation?.needsTerminalCoordination == true {
+        // Each chunk reconciles against the cursor recorded right after its
+        // parse. The live cursor may be past a later chunk, and the engine
+        // would then confirm more glyphs than the chunk's bytes and drop the
+        // burst.
+        var reconciliation: PredictionReconcileResult?
+        for chunk in batch.chunks {
+            guard let step = reconcilePredictions(
+                updateOverlay: false,
+                outputBytes: chunk.bytes[...],
+                cursor: chunk.cursor
+            ) else { break }
+            reconciliation = PredictionReconcileResult(
+                pendingChanged: (reconciliation?.pendingChanged ?? false) || step.pendingChanged,
+                wasVisible: reconciliation?.wasVisible ?? step.wasVisible,
+                isVisible: step.isVisible
+            )
+        }
+        // The frame that paints this batch may have landed before this hop.
+        // Waiting for the next frame would then leave confirmed glyphs on
+        // screen until expiry or unrelated output.
+        if reconciliation?.needsTerminalCoordination == true,
+           let bookkeeping = outputBookkeeping,
+           !bookkeeping.framePresented(since: batch) {
             predictionOverlayUpdatePending = true
         } else {
             updatePredictionOverlay()
@@ -963,6 +1044,21 @@ final class FocusAwareTerminalView: TerminalProcessView {
     override func discardPendingOutput() {
         outputBookkeeping?.discard()
         resetPredictions()
+    }
+
+    /// Sends application-provided text as one paste, bytes verbatim.
+    ///
+    /// SwiftTerm 2's `pasteText` runs its paste encoder: control bytes become
+    /// spaces and LF becomes CR outside bracketed paste. `DroppedPathEscaper`
+    /// keeps every path byte behind a backslash, so that encoder would break
+    /// a path with a control character. This restores the old fork's
+    /// `sendPaste`: bracketed-paste markers when the application asked for
+    /// them, and the bytes unchanged.
+    func sendVerbatimPaste(_ text: String) {
+        let bytes = VerbatimPaste.bytes(
+            text, bracketedPaste: terminalModeFlags().bracketedPasteMode
+        )
+        send(data: bytes[...])
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1150,7 +1246,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
         // pane should become the selected one, exactly like a click.
         onPlainClick?()
         window?.makeFirstResponder(self)
-        send(txt: DroppedPathEscaper.line(for: urls))
+        sendVerbatimPaste(DroppedPathEscaper.line(for: urls))
         return true
     }
 

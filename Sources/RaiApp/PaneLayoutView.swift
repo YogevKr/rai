@@ -939,8 +939,9 @@ private struct PaneDropDelegate: DropDelegate {
                     }
                 } else {
                     // Paste semantics, not typing: shells highlight it as a
-                    // paste, Claude keeps it as pasted text.
-                    view.pasteText(DroppedPathEscaper.line(for: urls))
+                    // paste, Claude keeps it as pasted text. The bytes stay
+                    // verbatim; see `sendVerbatimPaste`.
+                    view.sendVerbatimPaste(DroppedPathEscaper.line(for: urls))
                 }
             }
         }

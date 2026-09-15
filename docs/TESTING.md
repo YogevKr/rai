@@ -329,7 +329,8 @@ SwiftTerm 2 parses process output on its own pipeline thread.
 Each read enters the parser before the pipeline delivers the next read, so the pipeline's ring of read buffers bounds outstanding output.
 SwiftTerm marks the frame dirty and paces frames from the display link. The host does not schedule repaints.
 Rai does not queue, chunk, or defer output. Keyboard writes use a separate path.
-Rai only records each output chunk for predictive echo. One coalesced main-thread task reconciles predictions against the cursor and mode flags.
+Rai only records each output chunk, with the cursor read right after its parse, for predictive echo.
+One coalesced main-thread task reconciles predictions chunk by chunk against that recorded cursor, the mode flags, and one-cell buffer reads.
 A chunk burst above 64 KB resets predictions instead of replaying the bytes.
 Stopping or replacing a terminal stops the driver, so output from the old process never reaches the view.
 

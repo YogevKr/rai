@@ -19,9 +19,10 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
     private(set) var process: LocalProcess?
     private var outputDriver: TerminalProcessOutput?
     private var processGeneration: UInt64 = 0
-    /// Runs on the pipeline thread after each chunk enters the parser.
-    /// Subclasses set this once; it must not touch the view.
-    var outputObserver: (@Sendable (ArraySlice<UInt8>) -> Void)?
+    /// Runs on the pipeline thread after each chunk enters the parser, with
+    /// the cursor read right after that parse. Subclasses set this once; it
+    /// must not touch the view.
+    var outputObserver: (@Sendable (ArraySlice<UInt8>, Position) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -72,6 +73,7 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
         let driver = TerminalProcessOutput(
             windowSize: getWindowSize(),
             feed: feedSender,
+            cursor: TerminalCursorProbe(view: self),
             observe: outputObserver,
             exited: { [weak self] code in
                 guard let self, self.processGeneration == generation else { return }
@@ -82,6 +84,13 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
         // Direct delivery parses each pipeline batch on the pipeline thread.
         // SwiftTerm's ring of read buffers bounds the outstanding output.
         let process = LocalProcess(delegate: driver, dispatchQueue: nil, directDelivery: true)
+        // Releasing the process arms SwiftTerm's SIGTERM-then-SIGKILL
+        // escalation. The default half second cuts `herdr terminal attach`
+        // off before it detaches its socket and restores the terminal mode.
+        // Five seconds matches the graceful exit the old SIGTERM-only path
+        // allowed. The output drain keeps its default timeout: the driver is
+        // already stopped when rai terminates, so a longer drain buys nothing.
+        process.killEscalationDelay = 5
         self.process = process
         process.startProcess(
             executable: executable, args: args, environment: environment,
@@ -170,26 +179,35 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
 /// read buffers bounds outstanding output. The driver never touches the view:
 /// it feeds through the view's sendable `feedSender` and hops to main only
 /// for process exit.
+///
+/// `stop()` and the feed share one lock. A read that passed the stopped
+/// check cannot be waiting for the terminal lock while `stop()` returns, so
+/// a reset or a new session that follows `stop()` never receives old bytes.
 final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
     private let windowSize: winsize
     private let feed: TerminalFeedSender
-    private let observe: (@Sendable (ArraySlice<UInt8>) -> Void)?
+    private let cursor: TerminalCursorProbe
+    private let observe: (@Sendable (ArraySlice<UInt8>, Position) -> Void)?
     private let exited: @MainActor (Int32?) -> Void
 
     init(
         windowSize: winsize,
         feed: TerminalFeedSender,
-        observe: (@Sendable (ArraySlice<UInt8>) -> Void)?,
+        cursor: TerminalCursorProbe,
+        observe: (@Sendable (ArraySlice<UInt8>, Position) -> Void)?,
         exited: @escaping @MainActor (Int32?) -> Void
     ) {
         self.windowSize = windowSize
         self.feed = feed
+        self.cursor = cursor
         self.observe = observe
         self.exited = exited
     }
 
+    /// Blocks until an in-flight feed returns. A feed parses at most one
+    /// pipeline batch.
     func stop() {
         lock.lock()
         stopped = true
@@ -203,9 +221,13 @@ final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
     }
 
     func dataReceived(slice: ArraySlice<UInt8>) {
-        guard !isStopped else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return }
         feed.feed(byteArray: slice)
-        observe?(slice)
+        // The cursor right after this chunk parsed. A later chunk can move it
+        // before the main hop runs, so the hop must not read it again.
+        observe?(slice, cursor.read())
     }
 
     func getWindowSize() -> winsize { windowSize }
@@ -218,23 +240,54 @@ final class TerminalProcessOutput: LocalProcessDelegate, @unchecked Sendable {
     }
 }
 
+/// Reads the cursor from any thread without retaining the view. One lock
+/// acquisition, no row copies.
+final class TerminalCursorProbe: @unchecked Sendable {
+    private weak var view: TerminalView?
+
+    init(view: TerminalView) {
+        self.view = view
+    }
+
+    func read() -> Position {
+        view?.cursorPosition ?? Position(col: 0, row: 0)
+    }
+}
+
 /// Collects output chunks for prediction bookkeeping on one coalesced main
 /// hop. The pipeline thread appends; at most one main task is pending.
 /// A burst above `limit` drops the bytes and records an overflow, so the
 /// main hop resets predictions instead of replaying the burst.
+///
+/// SwiftTerm marks the frame dirty before the observer appends, so the frame
+/// that paints a chunk can land before the main hop runs. Each batch records
+/// the display generation at its last append; the hop compares it with the
+/// current generation to learn whether that frame already landed.
 final class TerminalOutputBookkeeping: @unchecked Sendable {
     static let limit = 64 * 1024
 
-    struct Batch {
+    /// One parsed chunk and the cursor right after its parse.
+    struct Chunk: Equatable {
         let bytes: [UInt8]
+        let cursor: Position
+    }
+
+    struct Batch {
+        let chunks: [Chunk]
         let overflowed: Bool
-        var isEmpty: Bool { bytes.isEmpty && !overflowed }
+        /// The display generation when the last chunk was appended.
+        let displayGeneration: UInt64
+        var isEmpty: Bool { chunks.isEmpty && !overflowed }
+        var bytes: [UInt8] { chunks.flatMap(\.bytes) }
     }
 
     private let lock = NSLock()
-    private var bytes: [UInt8] = []
+    private var chunks: [Chunk] = []
+    private var byteCount = 0
     private var overflowed = false
     private var hopPending = false
+    private var appendGeneration: UInt64 = 0
+    private var frameGeneration: UInt64 = 0
     private let limit: Int
     private let drain: @MainActor () -> Void
 
@@ -244,14 +297,17 @@ final class TerminalOutputBookkeeping: @unchecked Sendable {
     }
 
     /// Pipeline thread. Schedules the main hop when none is pending.
-    func append(_ chunk: ArraySlice<UInt8>) {
+    func append(_ chunk: ArraySlice<UInt8>, cursor: Position) {
         lock.lock()
-        if overflowed || bytes.count + chunk.count > limit {
+        if overflowed || byteCount + chunk.count > limit {
             overflowed = true
-            bytes.removeAll(keepingCapacity: true)
+            chunks.removeAll(keepingCapacity: true)
+            byteCount = 0
         } else {
-            bytes.append(contentsOf: chunk)
+            chunks.append(Chunk(bytes: Array(chunk), cursor: cursor))
+            byteCount += chunk.count
         }
+        appendGeneration = frameGeneration
         let schedule = !hopPending
         hopPending = true
         lock.unlock()
@@ -265,24 +321,41 @@ final class TerminalOutputBookkeeping: @unchecked Sendable {
     func take() -> Batch {
         lock.lock()
         defer { lock.unlock() }
-        let batch = Batch(bytes: bytes, overflowed: overflowed)
-        bytes.removeAll(keepingCapacity: true)
+        let batch = Batch(
+            chunks: chunks, overflowed: overflowed, displayGeneration: appendGeneration
+        )
+        chunks.removeAll(keepingCapacity: true)
+        byteCount = 0
         overflowed = false
         hopPending = false
         return batch
     }
 
-    /// Main thread. A pending hop then finds nothing to reconcile.
-    func discard() {
+    /// Main thread, once per prepared frame (`rangeChanged`).
+    func noteFramePresented() {
         lock.lock()
-        bytes.removeAll(keepingCapacity: true)
-        overflowed = false
+        frameGeneration &+= 1
         lock.unlock()
     }
 
-    var pendingByteCountForTesting: Int {
+    /// The number of frames presented so far.
+    var displayGeneration: UInt64 {
         lock.lock()
         defer { lock.unlock() }
-        return bytes.count
+        return frameGeneration
+    }
+
+    /// True when a frame landed after the batch's last chunk was appended.
+    func framePresented(since batch: Batch) -> Bool {
+        displayGeneration != batch.displayGeneration
+    }
+
+    /// Main thread. A pending hop then finds nothing to reconcile.
+    func discard() {
+        lock.lock()
+        chunks.removeAll(keepingCapacity: true)
+        byteCount = 0
+        overflowed = false
+        lock.unlock()
     }
 }

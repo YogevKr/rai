@@ -1,5 +1,6 @@
 import AppKit
-import SwiftTerm
+import RaiCore
+@testable import SwiftTerm
 import XCTest
 @testable import RaiApp
 
@@ -106,10 +107,23 @@ final class TerminalOutputTests: XCTestCase {
         view.feed(text: "before")
         try await waitUntil { delegate.displays > 0 }
         XCTAssertGreaterThan(delegate.displays, 0, "frames arrive while the window is visible")
-        let displayed = delegate.displays
+        // A frame without content changes still reports the cursor row, so
+        // wait until the display is quiet before opening the batch.
+        var displayed = delegate.displays
+        var quietChecks = 0
+        while quietChecks < 8 {
+            try await Task.sleep(for: .milliseconds(20))
+            if delegate.displays == displayed { quietChecks += 1 } else {
+                displayed = delegate.displays
+                quietChecks = 0
+            }
+        }
         let bytes = Array(("\u{1B}[?2026h" + String(repeating: "\u{1B}[Hafter", count: 3_000)).utf8)
         view.feed(byteArray: bytes[...])
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil { view.terminalModeFlags().synchronizedOutputActive }
+        XCTAssertTrue(view.terminalModeFlags().synchronizedOutputActive)
+        // Stay well under SwiftTerm's one-second synchronized-output watchdog.
+        try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(view.terminalModeFlags().synchronizedOutputActive)
         XCTAssertEqual(delegate.displays, displayed, "no frame while the batch is open")
         view.feed(text: "\u{1B}[?2026l")
@@ -126,7 +140,8 @@ final class TerminalOutputTests: XCTestCase {
         let driver = TerminalProcessOutput(
             windowSize: winsize(),
             feed: view.feedSender,
-            observe: { observed.append($0) },
+            cursor: TerminalCursorProbe(view: view),
+            observe: { bytes, _ in observed.append(bytes) },
             exited: { _ in exits.fulfill() }
         )
         driver.dataReceived(slice: Array("live".utf8)[...])
@@ -145,22 +160,32 @@ final class TerminalOutputTests: XCTestCase {
         bookkeeping = TerminalOutputBookkeeping(limit: 8) {
             batches.append(bookkeeping.take())
         }
+        let first = Position(col: 3, row: 0)
+        let second = Position(col: 5, row: 0)
         DispatchQueue.global(qos: .userInitiated).sync {
-            bookkeeping.append([1, 2, 3][...])
-            bookkeeping.append([4, 5][...])
+            bookkeeping.append([1, 2, 3][...], cursor: first)
+            bookkeeping.append([4, 5][...], cursor: second)
         }
         try await waitUntil { batches.count == 1 }
         XCTAssertEqual(batches.map(\.bytes), [[1, 2, 3, 4, 5]])
+        XCTAssertEqual(batches.first?.chunks, [
+            .init(bytes: [1, 2, 3], cursor: first), .init(bytes: [4, 5], cursor: second),
+        ], "each chunk keeps the cursor recorded after its own parse")
         XCTAssertEqual(batches.map(\.overflowed), [false])
+        XCTAssertFalse(bookkeeping.framePresented(since: batches[0]))
+        bookkeeping.noteFramePresented()
+        XCTAssertTrue(bookkeeping.framePresented(since: batches[0]))
 
-        bookkeeping.append(Array(repeating: 9, count: 9)[...])
-        bookkeeping.append([1][...])
+        bookkeeping.append(Array(repeating: 9, count: 9)[...], cursor: first)
+        bookkeeping.append([1][...], cursor: first)
         try await waitUntil { batches.count == 2 }
         XCTAssertEqual(batches.count, 2)
         XCTAssertTrue(batches[1].overflowed, "a burst above the limit is not replayed")
         XCTAssertTrue(batches[1].bytes.isEmpty)
+        XCTAssertFalse(bookkeeping.framePresented(since: batches[1]),
+                       "the generation is recorded at the last append")
 
-        bookkeeping.append([7][...])
+        bookkeeping.append([7][...], cursor: first)
         bookkeeping.discard()
         try await waitUntil { batches.count == 3 }
         XCTAssertEqual(batches.count, 3)
@@ -187,11 +212,165 @@ final class TerminalOutputTests: XCTestCase {
         let echo = Array("x".utf8)
         DispatchQueue.global(qos: .userInitiated).async {
             sender.feed(byteArray: echo[...])
-            observer(echo[...])
+            observer(echo[...], view.cursorPosition)
         }
         try await waitUntil { view.pendingPredictionCountForTesting == 0 }
         XCTAssertEqual(view.pendingPredictionCountForTesting, 0)
         XCTAssertEqual(view.cursorPosition.col, 1)
+    }
+
+    /// A read that passed the stopped check must finish before `stop()`
+    /// returns. Otherwise `terminate()` resets the terminal while the read
+    /// still waits for the terminal lock, and the stale bytes land in the
+    /// cleared buffer or in the next session.
+    ///
+    /// The terminal lock cannot be held from a worker here: SwiftTerm's own
+    /// main-thread work takes it during the run-loop wait. The driver is
+    /// blocked inside its critical section instead, after the feed and
+    /// before `dataReceived` returns.
+    func testStopWaitsForAnInFlightFeedBeforeItReturns() async throws {
+        let view = view()
+        let inFlight = expectation(description: "read in flight")
+        let releaseRead = DispatchSemaphore(value: 0)
+        let driver = TerminalProcessOutput(
+            windowSize: winsize(),
+            feed: view.feedSender,
+            cursor: TerminalCursorProbe(view: view),
+            observe: { _, _ in
+                inFlight.fulfill()
+                releaseRead.wait()
+            },
+            exited: { _ in }
+        )
+        let workers = DispatchQueue(label: "rai.race", attributes: .concurrent)
+        workers.async {
+            driver.dataReceived(slice: Array("stale".utf8)[...])
+        }
+        await fulfillment(of: [inFlight], timeout: 2)
+        let stoppedEarly = expectation(description: "stop returned while a read was in flight")
+        stoppedEarly.isInverted = true
+        let stopped = expectation(description: "stop returned")
+        workers.async {
+            driver.stop()
+            stoppedEarly.fulfill()
+            stopped.fulfill()
+        }
+        await fulfillment(of: [stoppedEarly], timeout: 0.3)
+        releaseRead.signal()
+        await fulfillment(of: [stopped], timeout: 2)
+        XCTAssertTrue(text(of: view).hasPrefix("stale"), "the in-flight read completed before stop returned")
+        // Everything that follows stop() is ordered after the stale bytes.
+        view.resetToInitialState()
+        driver.dataReceived(slice: Array("late".utf8)[...])
+        XCTAssertFalse(text(of: view).contains("stale"))
+        XCTAssertFalse(text(of: view).contains("late"))
+    }
+
+    /// Builds a confident engine with "b" pending after "a" was echoed, so
+    /// the overlay draws. The view's cursor ends at column 1.
+    private func confidentEngine(in view: FocusAwareTerminalView, pending: String = "b") throws -> PredictiveEchoEngine {
+        let engine = PredictiveEchoEngine(displayLatencyThreshold: 0)
+        let typed = Date()
+        engine.noteKey(.printable("a"), cursor: (x: 0, y: 0), columns: 80, terminalMode: .plain, now: typed)
+        for character in pending {
+            engine.noteKey(.printable(character), cursor: (x: 0, y: 0), columns: 80, terminalMode: .plain, now: typed)
+        }
+        view.feed(text: "a")
+        engine.reconcile(
+            cursor: (x: 1, y: 0), terminalMode: .plain,
+            readCell: { column, row in column == 0 && row == 0 ? "a" : nil },
+            now: typed.addingTimeInterval(0.05)
+        )
+        XCTAssertEqual(engine.displayGlyphs(), Array(pending))
+        return engine
+    }
+
+    /// SwiftTerm reports `rangeChanged` before it moves the caret view, so
+    /// the overlay must follow the cursor cell, not the caret's stale origin.
+    func testOverlayFollowsTheCursorCellNotTheStaleCaret() async throws {
+        let view = view()
+        let window = onScreenWindow(for: view)
+        window.makeFirstResponder(view)
+        defer { window.contentView = nil; window.orderOut(nil) }
+        let engine = try confidentEngine(in: view)
+        view.showPredictiveEchoForTesting(engine)
+        let cell = view.caretFrame.size
+        XCTAssertGreaterThan(cell.width, 0)
+        let overlay = try XCTUnwrap(view.predictionOverlayFrameForTesting)
+        XCTAssertEqual(view.cursorPosition.col, 1)
+        XCTAssertEqual(overlay.origin.x, cell.width, accuracy: 0.01, "one column right of the echoed glyph")
+        XCTAssertEqual(overlay.origin.y, view.frame.height - cell.height, accuracy: 0.01)
+        // Once a frame lands, the caret agrees with the overlay.
+        try await waitUntil { abs(view.caretFrame.minX - cell.width) < 0.01 }
+        XCTAssertEqual(view.caretFrame.minX, overlay.origin.x, accuracy: 0.01)
+        XCTAssertEqual(
+            FocusAwareTerminalView.overlayOrigin(
+                cursor: Position(col: 7, row: 3), cellSize: CGSize(width: 10, height: 20), viewHeight: 200
+            ),
+            CGPoint(x: 70, y: 120)
+        )
+    }
+
+    /// The frame that paints the confirming echo can land before the main
+    /// hop runs. The hop must then update the overlay itself instead of
+    /// waiting for a frame that already happened.
+    func testConfirmingFrameBeforeTheMainHopStillRetractsTheOverlay() async throws {
+        let view = view()
+        let window = onScreenWindow(for: view)
+        window.makeFirstResponder(view)
+        defer { window.contentView = nil; window.orderOut(nil) }
+        let engine = try confidentEngine(in: view)
+        view.showPredictiveEchoForTesting(engine)
+        XCTAssertNotNil(view.predictionOverlayFrameForTesting)
+        let observer = try XCTUnwrap(view.outputObserver)
+        let echo = Array("b".utf8)
+        view.feed(byteArray: echo[...])
+        observer(echo[...], view.cursorPosition)
+        // The frame lands before the scheduled hop runs.
+        view.noteFramePresentedForTesting()
+        try await waitUntil { view.pendingPredictionCountForTesting == 0 }
+        XCTAssertEqual(view.pendingPredictionCountForTesting, 0)
+        XCTAssertFalse(view.predictionOverlayUpdatePendingForTesting, "no wait for a frame that already landed")
+        XCTAssertNil(view.predictionOverlayFrameForTesting, "the confirmed glyph is no longer overlaid")
+    }
+
+    /// Two chunks can parse before one hop runs. Each chunk must reconcile
+    /// against its own cursor, or the second chunk's cursor makes the first
+    /// chunk confirm two glyphs for one byte and the burst is dropped.
+    func testEachChunkReconcilesAgainstItsOwnCursor() async throws {
+        let view = view()
+        let window = onScreenWindow(for: view)
+        window.makeFirstResponder(view)
+        defer { window.contentView = nil; window.orderOut(nil) }
+        let engine = try confidentEngine(in: view, pending: "bcd")
+        view.showPredictiveEchoForTesting(engine)
+        XCTAssertEqual(view.pendingPredictionCountForTesting, 3)
+        let observer = try XCTUnwrap(view.outputObserver)
+        // The pipeline thread parses "b" then "c" before the hop runs.
+        DispatchQueue.global(qos: .userInitiated).sync {
+            for echo in ["b", "c"] {
+                view.feedSender.feed(byteArray: Array(echo.utf8)[...])
+                observer(Array(echo.utf8)[...], view.cursorPosition)
+            }
+        }
+        try await waitUntil { view.pendingPredictionCountForTesting == 1 }
+        XCTAssertEqual(view.pendingPredictionCountForTesting, 1, "\"d\" stays predicted")
+        XCTAssertEqual(engine.pending.map(\.character), ["d"])
+        XCTAssertTrue(engine.echoConfirmedThisBurst)
+    }
+
+    /// Cells are read one at a time from the buffer, so a grapheme that
+    /// Swift merges into one Character cannot shift the columns after it.
+    func testPredictionCellReadsFollowBufferColumns() throws {
+        let view = view()
+        view.feed(text: "a\u{1F44D}\u{1F3FD}b")
+        XCTAssertEqual(view.predictionCellForTesting(column: 0, row: 0), "a")
+        let afterGlyph = view.cursorPosition.col - 1
+        XCTAssertEqual(view.predictionCellForTesting(column: afterGlyph, row: 0), "b")
+        XCTAssertNil(view.predictionCellForTesting(column: afterGlyph + 1, row: 0), "an unwritten cell reads nil")
+        view.feed(text: "\r\n\u{1B}[3Cz")
+        XCTAssertEqual(view.predictionCellForTesting(column: 3, row: 1), "z")
+        XCTAssertEqual(view.predictionCellForTesting(column: 1, row: 1), " ", "a blank cell before content reads as a space")
     }
 
     func testTerminateDiscardsOldOutputAndTheNextSessionStartsClean() async throws {

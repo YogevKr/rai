@@ -356,19 +356,23 @@ final class LatencyBenchDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Matches production's dataReceived order: feed, then reconcile those bytes.
+    /// Matches production's order: feed, record the cursor, then reconcile
+    /// those bytes against one-cell copied reads.
     private func predictionDataReceived(_ bytes: ArraySlice<UInt8>, at now: Date) {
         terminalView.feed(byteArray: bytes)
-        let state = terminalView.terminalStateSnapshot()
+        let cursor = terminalView.cursorPosition
+        let top = terminalView.cellPosition(at: CGPoint(x: 0, y: terminalView.bounds.maxY - 0.5)).row
         prediction.reconcile(
-            cursor: (x: state.cursor.col, y: state.cursor.row),
+            cursor: (x: cursor.col, y: cursor.row),
             terminalMode: terminalMode(terminalView.terminalModeFlags()),
             outputBytes: bytes,
-            readCell: { column, row in
-                guard let line = state.visibleRows.first(where: { $0.row == row }) else { return nil }
-                return PredictiveEchoViewPolicy.cellCharacter(
-                    rowText: line.text, cellWidths: line.cellWidths, column: column
+            readCell: { [terminalView] column, row in
+                let text = terminalView!.getText(
+                    start: Position(col: column, row: top + row),
+                    end: Position(col: column + 1, row: top + row)
                 )
+                guard let first = text.first else { return nil }
+                return first == "\u{0}" ? " " : first
             },
             now: now
         )
