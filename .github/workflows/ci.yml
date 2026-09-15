@@ -16,10 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pin to the newest Xcode 16.x: it bundles the Metal toolchain (SwiftTerm has
-      # a .metal shader) and its concurrency checker matches local well enough.
-      - name: Select Xcode 16
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+      # SwiftTerm 2.x needs swift-tools-version 6.2, so Xcode 26 or newer. Its Metal
+      # shader is compiled at runtime, so the separate Metal toolchain is not needed.
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner image."; exit 1; }
+          sudo xcode-select -s "$XC"
 
       - name: Swift version
         run: swift --version

@@ -16,20 +16,17 @@ let package = Package(
         .executable(name: "rai-bench", targets: ["RaiBench"]),
     ],
     dependencies: [
-        // Fork of SwiftTerm 1.15.0 (branch rai-selection-autoscroll) adding
-        // public getSelectionRange/setSelectionRange + a pointer-based edge
-        // auto-scroll fix (remote-scrollback selection engine), pinGridSize
-        // (iOS) so the phone mirrors a pane's full grid and scrolls a
-        // viewport over it instead of clipping, and caret visibility toggles
-        // (no per-repaint view-hierarchy churn from DECTCEM), plus a Metal
-        // glyph-cache fix: a no-ink glyph (space) was re-rasterized through
-        // CoreText every frame, forever, because only successful lookups were
-        // memoized, and a LocalProcess fix: the DispatchIO channel is now
-        // lock-guarded so terminate() can no longer race the read handler's
-        // re-arm retain ("API MISUSE: Resurrection of an object").
+        // Fork of SwiftTerm 2.x (branch rai-v2, upstream base 233c6ba). rai's
+        // patches on top of upstream: host read APIs (cursorPosition,
+        // terminalModeFlags, getText, snapshot mode flags), selection
+        // embedding (getSelectionRange/setSelectionRange, cellPosition,
+        // cancelSelectionAutoScroll, bottom-edge auto-scroll fix), the iOS
+        // pinned grid + live follow, a checked-in build-info/terminfo pair
+        // instead of the build-tool plugin (multi-arch builds), and no
+        // Embedded experimental-feature setting (Xcode 26.0 link failure).
         .package(
             url: "https://github.com/YogevKr/SwiftTerm.git",
-            revision: "97d70b0"
+            revision: "5ab7f43"
         ),
     ],
     targets: [
