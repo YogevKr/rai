@@ -381,8 +381,14 @@ private struct EndpointPhoneTerminal: UIViewRepresentable {
         let renderKey = EndpointSurfaceRenderKey(surface)
         guard appearanceChanged || coordinator.renderKey != renderKey else { return }
         coordinator.painting = true
-        defer { coordinator.painting = false }
-        view.pinGridSize(cols: Int(surface.grid.width), rows: Int(surface.grid.height))
+        coordinator.paintsAwaitingReplies += 1
+        defer {
+            coordinator.painting = false
+            // SwiftTerm 2 delivers an emulator reply to `send` one main-queue
+            // turn after the feed. Keep dropping replies until that turn ran.
+            DispatchQueue.main.async { coordinator.paintsAwaitingReplies -= 1 }
+        }
+        view.pinMirroredGridSize(cols: Int(surface.grid.width), rows: Int(surface.grid.height))
         let grid = surface.presentationGrid
         let bytes = EndpointANSI.render(grid, previous: !appearanceChanged && coordinator.renderKey?.bootID == surface.bootID ? coordinator.grid : nil)
         view.feedMirrored(byteArray: Array(bytes)[...])
@@ -402,13 +408,17 @@ private struct EndpointPhoneTerminal: UIViewRepresentable {
         var grid: EndpointGrid?
         var graphics = EndpointGraphicsEncoder()
         var painting = false
+        var paintsAwaitingReplies = 0
         var dark: Bool?
         var theme: String?
         var scrollGesture: EndpointPhoneScrollGesture?
         var mouseGesture: EndpointPhoneMouseGesture?
         init(model: EndpointPhoneModel) { self.model = model }
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            if !painting, let input = EndpointBridgeInput.terminalBytes(data) { model.input(input) }
+            // Typed input arrives here inline; a painted frame's reply arrives
+            // one turn later, while paintsAwaitingReplies is still above zero.
+            guard paintsAwaitingReplies == 0, let input = EndpointBridgeInput.terminalBytes(data) else { return }
+            model.input(input)
         }
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
             if !painting { model.resize(columns: newCols, rows: newRows) }

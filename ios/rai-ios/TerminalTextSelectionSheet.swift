@@ -53,12 +53,17 @@ class PhoneLinkTerminalView: TerminalView {
         }
     }
 
-    /// The mirrored emulator, resized to the view's grid before every access.
-    ///
-    /// The view resizes its own terminal in `pinGridSize` and on layout; the
-    /// mirror follows here, before the next feed or read. Reflow happens on the
-    /// same cells either way because nothing feeds between the two resizes.
+    /// The mirrored emulator at the view's grid size.
     var mirroredTerminal: Terminal {
+        syncMirrorSize().terminal
+    }
+
+    /// Resizes the mirror to the view's grid. The view resizes its terminal
+    /// in `layoutSubviews` and `pinGridSize`; the mirror must follow each
+    /// resize while the cells are still the same, because two resizes that
+    /// cancel out (keyboard shown, then hidden) still pop and re-add rows.
+    @discardableResult
+    private func syncMirrorSize() -> TerminalMirror {
         let dimensions = terminalDimensions
         let mirror: TerminalMirror
         if let existing = mirrorStorage {
@@ -68,7 +73,18 @@ class PhoneLinkTerminalView: TerminalView {
             mirrorStorage = mirror
         }
         mirror.resize(cols: dimensions.cols, rows: dimensions.rows)
-        return mirror.terminal
+        return mirror
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        syncMirrorSize()
+    }
+
+    /// Pins the view's grid and resizes the mirror in the same step.
+    func pinMirroredGridSize(cols: Int, rows: Int) {
+        pinGridSize(cols: cols, rows: rows)
+        syncMirrorSize()
     }
 
     private var mirrorScrollback: Int? = TerminalOptions.default.scrollback

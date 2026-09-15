@@ -244,11 +244,15 @@ final class TerminalViewCacheTests: XCTestCase {
                 terminal.receiveFrame(frame, full: true, grid: PaneGridSize(cols: 80, rows: finalRows))
                 terminal.receiveFrame(Data("\u{1B}[2;1Hdelta".utf8), full: false, grid: nil)
                 terminal.fingerDown = false
+                // SwiftTerm 2 keeps history across a taller grid, so row 0
+                // reads "row 5" before the deferred seed applies the trimmed
+                // history. Wait for that seed, not for the text alone.
+                let refreshed = PaneScrollback.contentHash(history(removed..<(40 + removed)))
                 await eventually {
-                    terminal.visibleRowText(0) == "row 5"
+                    terminal.cachedHistoryHash == refreshed && terminal.visibleRowText(0) == "row 5"
                 }
                 XCTAssertEqual(terminal.viewportTop, 5 - removed)
-                XCTAssertEqual(terminal.cachedHistoryHash, PaneScrollback.contentHash(history(removed..<(40 + removed))))
+                XCTAssertEqual(terminal.cachedHistoryHash, refreshed)
                 XCTAssertEqual(terminal.contentOffset.y, CGFloat(5 - removed) * cellHeight, accuracy: 0.5)
             }
         }

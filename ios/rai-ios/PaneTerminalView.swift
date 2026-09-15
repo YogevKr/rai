@@ -1048,7 +1048,9 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
         let unchanged = full && rendersRetainedScreen(data, grid: grid)
         let readingPosition = full ? (pendingReadingPosition ?? captureReadingPosition()) : nil
         let preservePosition = readingPosition != nil
-        var savedRow = viewportRow
+        // The viewport read copies every visible row; take it only for the
+        // full frames that restore a reading position.
+        var savedRow = preservePosition ? viewportRow : 0
         var savedOffset = contentOffset
         if let grid {
             let dimensions = terminalDimensions
@@ -1057,9 +1059,9 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
                 // after its full frame erased rows moved out of history.
                 appliedHistoryGrid = nil
             }
-            pinGridSize(cols: grid.cols, rows: grid.rows)
+            pinMirroredGridSize(cols: grid.cols, rows: grid.rows)
         }
-        if prepareHistoryForFrame(preserving: readingPosition) {
+        if prepareHistoryForFrame(preserving: readingPosition), preservePosition {
             savedRow = viewportRow
             savedOffset = contentOffset
         }
@@ -1279,11 +1281,13 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
 
         // SwiftTerm 2 exposes no buffer edits, so the rebuild is a byte
         // program fed to the view and its mirror alike. DECSC keeps the
-        // cursor, its attributes, and the wrap, origin, and margin modes.
-        // Erasing the screen and scrollback keeps the parser, cursor
-        // visibility, and every other live-stream mode. RIS would discard
-        // those.
-        feedMirrored(text: "\u{1B}7\u{1B}[0m\u{1B}[?6l\u{1B}[?7h\u{1B}[?69l\u{1B}[r\u{1B}[2J\u{1B}[3J\u{1B}[H")
+        // cursor, its attributes, the active character set, and the wrap,
+        // origin, and margin modes. Erasing the screen and scrollback keeps
+        // the parser, cursor visibility, and every other live-stream mode.
+        // RIS would discard those. G0 and G1 become ASCII so history and the
+        // repainted rows never pass through a DEC line-drawing table the
+        // stream left active; DECRC then restores the active set.
+        feedMirrored(text: "\u{1B}7\u{1B}[0m\u{1B}(B\u{1B})B\u{1B}[?6l\u{1B}[?7h\u{1B}[?69l\u{1B}[r\u{1B}[2J\u{1B}[3J\u{1B}[H")
         feedMirrored(byteArray: Self.normalizedHistory(history)[...])
         if mirror.getCursorLocation().x > 0 { feedMirrored(text: "\r\n") }
         // History ends at a blank row. Reserve the rest of the live grid so
@@ -1351,8 +1355,9 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
 
     /// Bytes that repaint the live screen rows of `terminal` cell by cell:
     /// text, styles, and hyperlink targets. Null cells stay null: the cursor
-    /// steps over them, after erasing a styled run in its style. Soft-wrap
-    /// flags and hyperlink parameters do not survive the round trip.
+    /// steps over them, after erasing a styled run in its style, so a colored
+    /// erase-to-end-of-line keeps its background. Soft-wrap flags and
+    /// hyperlink parameters do not survive the round trip.
     private static func screenProgram(of terminal: Terminal) -> [UInt8] {
         let total = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
             .components(separatedBy: "\n").dropLast().count
@@ -1361,10 +1366,17 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
         var attribute = plain
         var link: String?
         var program = "\u{1B}[0m\u{1B}]8;;\u{1B}\\"
+        func isNull(_ cell: CharData) -> Bool { terminal.getText(for: cell) == "\u{0}" }
         for row in 0..<terminal.rows {
             guard let line = terminal.getScrollInvariantLine(row: firstRow + row) else { continue }
             let cells = line.getData()
-            let end = min(terminal.cols, line.getTrimmedLength())
+            // The screen erase before this program leaves plain null cells,
+            // so only those may be dropped from the tail.
+            var end = min(terminal.cols, cells.count)
+            while end > 0, cells[end - 1].width != 2, isNull(cells[end - 1]),
+                  cells[end - 1].attribute == plain {
+                end -= 1
+            }
             program += "\u{1B}[\(row + 1);1H"
             var column = 0
             while column < end {
@@ -1374,11 +1386,11 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
                     column += 1
                     continue
                 }
-                let text = terminal.getText(for: cell)
-                if text == "\u{0}" {
+                if isNull(cell) {
                     var count = 1
                     while column + count < end, cells[column + count].width == 1,
-                          terminal.getText(for: cells[column + count]) == "\u{0}" {
+                          cells[column + count].attribute == cell.attribute,
+                          isNull(cells[column + count]) {
                         count += 1
                     }
                     if cell.attribute != plain {
@@ -1388,6 +1400,7 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
                     column += count
                     continue
                 }
+                let text = terminal.getText(for: cell)
                 program += Self.sgr(cell.attribute, from: &attribute)
                 let target = cell.hasPayload ? (cell.getPayload() as? String) : nil
                 if target != link {
