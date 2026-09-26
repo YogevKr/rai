@@ -764,6 +764,41 @@ final class PromptDetectionTests: XCTestCase {
         XCTAssertTrue(ClaudePromptGate.allows(agent: "CLAUDE"))
     }
 
+    func testCodexQueuedFollowUpDetectorReadsSingularQuestion() {
+        let grid = """
+        Queued follow-up inputs
+        ? 1 question
+        ⌥+↑ to answer
+        """
+
+        XCTAssertEqual(
+            CodexQueuedFollowUpDetector.detect(in: grid),
+            CodexQueuedFollowUp(questionCount: 1)
+        )
+        XCTAssertTrue(CodexPromptGate.allows(agent: "codex"))
+        XCTAssertFalse(CodexPromptGate.allows(agent: "claude"))
+    }
+
+    func testCodexQueuedFollowUpDetectorReadsPluralQuestionAndRejectsIncompleteText() {
+        let grid = """
+        Queued follow-up inputs
+        ? 3 questions
+        ⌥+↑ to answer
+        """
+        XCTAssertEqual(
+            CodexQueuedFollowUpDetector.detect(in: grid)?.questionCount,
+            3
+        )
+        XCTAssertNil(CodexQueuedFollowUpDetector.detect(in: "? 3 questions\n⌥+↑ to answer"))
+    }
+
+    func testCodexQueuedFollowUpAnswerUsesOptionArrowUp() {
+        XCTAssertEqual(
+            CodexPromptKeys.answerQueuedFollowUp,
+            [0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x41]
+        )
+    }
+
     @MainActor
     func testTimedOutCheckboxRetryDoesNotToggleAnAppliedChoiceAgain() throws {
         var clock: TimeInterval = 0

@@ -111,6 +111,31 @@ struct PromptModel: Equatable {
     }
 }
 
+struct CodexQueuedFollowUp: Equatable {
+    let questionCount: Int
+}
+
+enum CodexQueuedFollowUpDetector {
+    static func detect(in gridText: String) -> CodexQueuedFollowUp? {
+        let lines = gridText.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "│"))) }
+        let recent = lines.suffix(24)
+        guard recent.contains(where: { $0.localizedCaseInsensitiveContains("Queued follow-up inputs") }),
+              recent.contains(where: { $0.contains("⌥+↑") && $0.localizedCaseInsensitiveContains("to answer") })
+        else { return nil }
+        let pattern = try! NSRegularExpression(pattern: #"^\s*\?\s*(\d+)\s+questions?\s*$"#)
+        for line in recent {
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = pattern.firstMatch(in: line, range: range),
+                  let countRange = Range(match.range(at: 1), in: line),
+                  let count = Int(line[countRange]), count > 0
+            else { continue }
+            return CodexQueuedFollowUp(questionCount: count)
+        }
+        return nil
+    }
+}
+
 enum PromptInstanceKey: Equatable {
     case untracked
     case observed(UInt64)

@@ -435,6 +435,10 @@ Each pane uses only the grammar for its detected agent kind.
 The strip can show mode, model, effort, agent count, directory, and branch.
 The terminal keeps its original rows.
 
+Codex queued follow-up inputs show a native question bar.
+The bar shows the number of queued questions.
+Tap **Answer** to send Option-Arrow-Up.
+
 ## Simulator e2e (for development)
 
 The simulator shares the Mac's network, so it reaches the bridge at `localhost`.

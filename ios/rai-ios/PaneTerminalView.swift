@@ -91,8 +91,14 @@ struct PaneTerminalView: View {
                 let currentPane = connection.snapshot?.panes.first {
                     $0.paneID == pane.paneID
                 }
-                if let prompt = promptController.prompt,
-                   ClaudePromptGate.allows(agent: pane.agent) {
+                if let queued = promptController.codexQueuedFollowUp,
+                        CodexPromptGate.allows(agent: pane.agent) {
+                    CodexQueuedFollowUpBar(
+                        questionCount: queued.questionCount,
+                        answer: { connection.sendInput(CodexPromptKeys.answerQueuedFollowUp, to: pane.paneID) }
+                    )
+                } else if let prompt = promptController.prompt,
+                          ClaudePromptGate.allows(agent: pane.agent) {
                     let decisionBeacon = pane.beacon?.awaitsDecision == true
                         ? pane.beacon
                         : nil
@@ -809,7 +815,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
         context.coordinator.send = send
         context.coordinator.agent = agent
         context.coordinator.statusline.refresh(agent: agent)
-        let allowsPrompts = ClaudePromptGate.allows(agent: agent)
+        let allowsPrompts = AgentPromptGate.allows(agent: agent)
         if prompts.beacon != beacon || prompts.allowsPrompts != allowsPrompts {
             prompts.beacon = beacon
             prompts.allowsPrompts = allowsPrompts
@@ -1431,6 +1437,22 @@ enum ClaudePromptGate {
     }
 }
 
+enum CodexPromptGate {
+    static func allows(agent: String?) -> Bool {
+        agent?.caseInsensitiveCompare("codex") == .orderedSame
+    }
+}
+
+enum AgentPromptGate {
+    static func allows(agent: String?) -> Bool {
+        ClaudePromptGate.allows(agent: agent) || CodexPromptGate.allows(agent: agent)
+    }
+}
+
+enum CodexPromptKeys {
+    static let answerQueuedFollowUp: [UInt8] = [0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x41]
+}
+
 enum FallbackDecisionBarGate {
     static func allows(
         renderedPaneID: String,
@@ -1461,6 +1483,7 @@ final class TerminalPromptController: ObservableObject {
     }
 
     @Published private(set) var prompt: PromptModel?
+    @Published private(set) var codexQueuedFollowUp: CodexQueuedFollowUp?
     @Published private(set) var isBusy = false
     @Published private(set) var focusComposerRequest = 0
     var readGrid: (() -> String)?
@@ -1488,6 +1511,7 @@ final class TerminalPromptController: ObservableObject {
         }
         guard !awaitsConnectionFrame else {
             prompt = nil
+            codexQueuedFollowUp = nil
             cancelChoreography()
             unconfirmedToggle = nil
             return
@@ -1495,10 +1519,12 @@ final class TerminalPromptController: ObservableObject {
         guard allowsPrompts, let grid = readGrid?() else {
             observedDialogSignature = nil
             prompt = nil
+            codexQueuedFollowUp = nil
             cancelChoreography()
             unconfirmedToggle = nil
             return
         }
+        codexQueuedFollowUp = CodexQueuedFollowUpDetector.detect(in: grid)
         let detected = trackedPrompt(in: grid)
         if choreography != nil {
             drive(with: detected)
@@ -1519,6 +1545,7 @@ final class TerminalPromptController: ObservableObject {
         observedDialogSignature = nil
         dismissedIdentity = nil
         prompt = nil
+        codexQueuedFollowUp = nil
         cancelChoreography()
         unconfirmedToggle = nil
     }
@@ -1528,6 +1555,7 @@ final class TerminalPromptController: ObservableObject {
         observedDialogSignature = nil
         dismissedIdentity = nil
         prompt = nil
+        codexQueuedFollowUp = nil
         cancelChoreography()
         unconfirmedToggle = nil
     }
@@ -2125,6 +2153,33 @@ private struct PromptBar: View {
         case .current: "circle.inset.filled"
         case .pending: "circle"
         }
+    }
+}
+
+private struct CodexQueuedFollowUpBar: View {
+    let questionCount: Int
+    let answer: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("? \(questionCount) question\(questionCount == 1 ? "" : "s")")
+                .font(.subheadline.weight(.semibold))
+            Spacer(minLength: 0)
+            Button("Answer", action: answer)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            Text("⌥+↑")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            Text("to answer")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(questionCount) queued follow-up question\(questionCount == 1 ? "" : "s"). Answer.")
     }
 }
 
