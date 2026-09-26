@@ -924,17 +924,13 @@ private struct PaneDropDelegate: DropDelegate {
                 model.select(paneID: paneID, focusInHerdr: true)
                 guard let view = model.terminalPool.view(for: terminalID) else { return }
                 if let images = FileDrop.imageOnlyURLs(urls) {
-                    // Behave like an image paste: the pane shows [Image #N]
-                    // right away. Ctrl-V makes Claude read the clipboard
-                    // image itself (same route as pasting a screenshot); one
-                    // image per keystroke, spaced so each read completes.
+                    // Save each image before pasting its path. Claude can then
+                    // attach it without reading the system clipboard.
                     for (index, url) in images.enumerated() {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45 * Double(index)) {
                             guard let image = NSImage(contentsOf: url) else { return }
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.writeObjects([image])
-                            view.send([0x16])
+                            guard let path = FocusAwareTerminalView.writeImageToTemp(image) else { return }
+                            view.sendPaste(DroppedPathEscaper.escape(path) + " ")
                         }
                     }
                 } else {

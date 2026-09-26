@@ -61,4 +61,39 @@ final class TerminalClipboardTests: XCTestCase {
         XCTAssertEqual(view.getSelection(), selected)
         XCTAssertEqual(view.getSelectionRange()?.start, Position(col: 5, row: 0))
     }
+
+    func testClipboardImageIsWrittenAsPNGForPathPaste() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("rai.tests.\(UUID().uuidString)"))
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+        image.unlockFocus()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([image]))
+
+        let view = terminal()
+        let recorder = ImagePasteRecorder(frame: .zero)
+        view.terminalDelegate = recorder
+        view.pasteboard = pasteboard
+        view.feed(text: "\u{1B}[?2004h")
+        view.paste(self)
+        let sent = String(decoding: recorder.bytes, as: UTF8.self)
+        XCTAssertTrue(sent.hasPrefix("\u{1B}[200~"))
+        XCTAssertTrue(sent.hasSuffix(" \u{1B}[201~"))
+        XCTAssertFalse(recorder.bytes.contains(0x16))
+        let path = String(sent.dropFirst(6).dropLast(7))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        XCTAssertNotNil(NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: path))))
+    }
+}
+
+@MainActor
+private final class ImagePasteRecorder: TerminalProcessView {
+    var bytes: [UInt8] = []
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        bytes.append(contentsOf: data)
+    }
 }

@@ -71,7 +71,8 @@ terminal widget**.
 - **Command palette** (⌘K) for fuzzy navigation.
 - **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
   Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
-  that hands screenshots straight to Claude Code.
+  that saves screenshots as temporary PNG files and inserts their paths for local agents.
+  Image drops also insert file paths without replacing the clipboard.
 - **Settings** for the herdr server, appearance, plugins, and integrations.
 - **Independent Mac windows** — choose **File → New Window** or press **⇧⌘N** on compatible Herdr 0.9 hosts.
   Each window keeps its own machine, workspace, tab, and pane selection.

@@ -119,9 +119,7 @@ enum ScrolledPillDecision {
 /// the whole window (`_PlatformDraggingDestinationView`), which wins the drop
 /// before the terminal view's NSDraggingDestination is ever consulted.
 enum FileDrop {
-    /// Extensions Claude (and the clipboard) treat as images. A drop made
-    /// entirely of these goes through the clipboard + Ctrl-V route so the
-    /// pane shows [Image #N] immediately — exactly like pasting a screenshot.
+    /// Image-only drops use temporary PNG paths, like pasted screenshots.
     static let imageExtensions: Set<String> = [
         "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff",
     ]
@@ -237,6 +235,7 @@ final class FocusAwareTerminalView: TerminalProcessView {
         scrollIndicator?.refresh()
     }
 
+    var pasteboard: NSPasteboard = .general
     var clipboardWriter: (String) -> Bool = { text in
         NSPasteboard.general.clearContents()
         return NSPasteboard.general.setString(text, forType: .string)
@@ -836,22 +835,41 @@ final class FocusAwareTerminalView: TerminalProcessView {
     }
 
     // SwiftTerm's paste only reads clipboard text, so an image (e.g. a screenshot)
-    // pastes nothing. When the clipboard holds an image, send Ctrl-V: Claude Code
-    // reads the clipboard image itself on Ctrl-V and attaches it as [image]. (We
-    // can't reliably tell Claude from a plain shell — the app enables its keyboard
-    // protocol before rai attaches, so terminal state doesn't reflect it — and
-    // pasting into an agent is the overwhelmingly common case.)
+    // pastes nothing. Write the image to a temp PNG and paste its path. Claude Code
+    // attaches images referenced by a path without reading the system clipboard.
     override func paste(_ sender: Any) {
         scrollbackSelection.cancelIndicatorScroll()
         userInputEventPending = false
         resetPredictions()
-        let clipboard = NSPasteboard.general
+        let clipboard = pasteboard
         if clipboard.string(forType: .string) == nil,
-           clipboard.canReadObject(forClasses: [NSImage.self], options: nil) {
-            send([0x16])  // Ctrl-V
+           clipboard.canReadObject(forClasses: [NSImage.self], options: nil),
+           let path = Self.writeClipboardImageToTemp(clipboard) {
+            sendPaste(DroppedPathEscaper.escape(path) + " ")
             return
         }
         super.paste(sender)
+    }
+
+    static func writeClipboardImageToTemp(_ pasteboard: NSPasteboard) -> String? {
+        guard let image = NSImage(pasteboard: pasteboard) else { return nil }
+        return writeImageToTemp(image)
+    }
+
+    static func writeImageToTemp(_ image: NSImage) -> String? {
+        guard let tiff = image.tiffRepresentation,
+              let representation = NSBitmapImageRep(data: tiff),
+              let png = representation.representation(using: .png, properties: [:])
+        else { return nil }
+
+        let name = "rai-paste-\(UUID().uuidString).png"
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name)
+        do {
+            try png.write(to: url)
+            return url.path
+        } catch {
+            return nil
+        }
     }
 
     // Text input (including Hebrew) arrives here via the input context. In apps
