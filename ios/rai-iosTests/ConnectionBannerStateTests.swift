@@ -5,16 +5,40 @@ import UIKit
 
 @MainActor
 final class ConnectionBannerStateTests: XCTestCase {
+    @MainActor
     private final class Delay {
         var durations: [Duration] = []
         var waiters: [CheckedContinuation<Void, Error>] = []
+        private var onStart: (() -> Void)?
 
         func sleep(_ duration: Duration) async throws {
             durations.append(duration)
-            try await withCheckedThrowingContinuation { waiters.append($0) }
+            try await withCheckedThrowingContinuation {
+                waiters.append($0)
+                onStart?()
+            }
         }
 
-        func finishNext() { waiters.removeFirst().resume() }
+        func waitForPending(_ count: Int = 1) async {
+            guard waiters.count < count else { return }
+            let started = XCTestExpectation(description: "Delay registered its continuation")
+            onStart = { [weak self] in
+                guard let self, self.waiters.count >= count else { return }
+                self.onStart = nil
+                started.fulfill()
+            }
+            defer { onStart = nil }
+            let result = await XCTWaiter.fulfillment(of: [started], timeout: 5)
+            XCTAssertEqual(result, .completed)
+        }
+
+        func finishNext() {
+            guard !waiters.isEmpty else {
+                XCTFail("Delay must start before the test completes it")
+                return
+            }
+            waiters.removeFirst().resume()
+        }
     }
 
     private let failure = ConnectionDiagnosis(
@@ -25,7 +49,7 @@ final class ConnectionBannerStateTests: XCTestCase {
         let delay = Delay()
         let state = ConnectionBannerState(sleep: delay.sleep)
         state.update(.failed(failure))
-        await yieldTasks()
+        await delay.waitForPending()
         XCTAssertEqual(delay.durations, [.seconds(3)])
         XCTAssertNil(state.diagnosis)
         state.update(.connected)
@@ -38,7 +62,7 @@ final class ConnectionBannerStateTests: XCTestCase {
         let delay = Delay()
         let state = ConnectionBannerState(sleep: delay.sleep)
         state.update(.failed(failure))
-        await yieldTasks()
+        await delay.waitForPending()
         state.update(.connecting)
         let latest = ConnectionDiagnosis(message: "Mac unavailable", rawDetails: "test", action: .reconnect)
         state.update(.failed(latest))
@@ -56,10 +80,10 @@ final class ConnectionBannerStateTests: XCTestCase {
         let delay = Delay()
         let state = ConnectionBannerState(sleep: delay.sleep)
         state.update(.failed(failure))
-        await yieldTasks()
+        await delay.waitForPending()
         state.update(.connected)
         state.update(.failed(failure))
-        await yieldTasks()
+        await delay.waitForPending(2)
         delay.finishNext()
         await yieldTasks()
         XCTAssertNil(state.diagnosis)
@@ -74,7 +98,7 @@ final class ConnectionBannerStateTests: XCTestCase {
         let delay = Delay()
         let state = ConnectionBannerState(sleep: delay.sleep)
         state.update(.failed(failure))
-        await yieldTasks()
+        await delay.waitForPending()
         let repair = ConnectionDiagnosis(message: "Pair again", rawDetails: "test", action: .pairAgain)
         state.update(.failed(repair))
         XCTAssertEqual(state.diagnosis, repair)
