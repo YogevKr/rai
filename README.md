@@ -249,6 +249,8 @@ citations open the file. A path that does not exist on this Mac only beeps.
 | `⌘1`…`⌘9` | Select tab by index |
 | `⌘D` / `⌘⇧D` | Split right / down |
 | `⌘⇧W` | Close pane |
+| `⌘⇧T` | Reopen closed tab at its saved position |
+| `⌘⇧P` | Reopen closed split pane |
 | `⌘⇧↩` | Zoom pane |
 | `⌥⌘←/→/↑/↓` | Focus pane in direction |
 | `⌘N` | New space (workspace) |
@@ -257,7 +259,12 @@ citations open the file. A path that does not exist on this Mac only beeps.
 | `⌘R` | Refresh |
 
 Double-click a tab or pane title to rename it; drag a tab or space in the sidebar
-to reorder.
+to reorder. Drop below the final tab to move a tab to the end of that space.
+
+In the main window, **Pane → Reopen Closed Pane** restores the last closed split pane as a right split.
+It restores the working directory and resumes an agent when session data is available.
+If the original tab is absent, Rai uses a pane in the same space.
+If the space is absent, Rai creates it again. Closing the last pane uses tab reopen instead.
 
 ## How it works
 

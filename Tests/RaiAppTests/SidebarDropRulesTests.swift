@@ -154,6 +154,30 @@ final class SidebarDropRulesTests: XCTestCase {
         )
     }
 
+    func testTabDropOnWorkspaceEndAppendsWithinSameWorkspace() {
+        XCTAssertEqual(
+            SidebarDropRules.endAction(
+                draggedTabID: "w1:t1",
+                hasTabType: true,
+                sourceWorkspaceID: "w1",
+                targetWorkspaceID: "w1"
+            ),
+            .reorderToEnd(workspaceID: "w1")
+        )
+    }
+
+    func testTabDropOnWorkspaceEndMovesForeignTabToEnd() {
+        XCTAssertEqual(
+            SidebarDropRules.endAction(
+                draggedTabID: "w1:t1",
+                hasTabType: true,
+                sourceWorkspaceID: "w1",
+                targetWorkspaceID: "w2"
+            ),
+            .moveTabToWorkspace(workspaceID: "w2", insertBeforeTabID: nil)
+        )
+    }
+
     // A dragged tab whose workspace can't be resolved from the snapshot must
     // not move anywhere.
     func testUnknownWorkspaceIsNotEligible() {

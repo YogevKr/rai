@@ -245,6 +245,55 @@ See [Herdr 0.9 evidence](herdr-0.9-e2e.md) for current isolated app results and 
 
 ## Application updates
 
+### Tab order, pane reopen, and scrolling
+
+Run the focused Mac checks with the Xcode developer directory:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter 'TabMovePlannerTests|CloseTabReopenTests|ClosedTabStoreTests|ClosedPaneStoreTests|SidebarDropRulesTests|TerminalContainerOwnershipTests|TerminalPredictionLifecycleTests'
+```
+
+On an isolated iOS simulator, run `FullFrameRepaintTests`, `TerminalViewCacheTests`, and `ScrollbackRefreshTests`.
+The mouse-mode test checks that observation frames cannot install a competing pan gesture.
+
+Use disposable tabs and panes in the signed app lab for these interaction checks:
+
+1. Close the middle of three tabs, then press Command-Shift-T. Check that its saved position returns.
+2. Close a split pane, then press Command-Shift-P. Check its working directory and agent session, when available.
+3. Drag the first tab below the last tab. Check that it stays in the same space.
+4. Scroll during terminal output on both platforms. Check that text stays below the Mac pane header.
+5. On iOS, open a program that enables mouse tracking. Check history scrolling before and after leaving that program.
+
+Pane reopen creates a right split. It uses another pane in the same space if the original tab is absent.
+It creates the space again if no anchor remains. Closing a tab's only pane uses tab reopen.
+Unit tests do not replace these interaction checks.
+
+#### Isolated verification, 2026-09-27
+
+Lab evidence: `/private/tmp/rai09-adq9vzbz/e2e-results.json`.
+The Mac app used bundle ID `gr.krig.rai.lab.e2e-7fb4721124ff` and a private Herdr socket.
+The phone app used bundle ID `gr.krig.rai.scrolltests` on the `RaiScrollTests` simulator.
+
+| Check | Result |
+| --- | --- |
+| Reopen the middle tab | Passed. The order returned to A, B, C. |
+| Reopen a split pane after changing directory | Passed. The pane retained its current directory. |
+| Reopen a pane after restarting the Mac app | Passed. The pane returned to its original tab. |
+| Mac wheel scrolling during output | Passed in both directions. Terminal text stayed below the headers. |
+| iOS accessibility scrolling with terminal mouse tracking | Passed in both directions. Older numbered rows and the tail remained reachable. |
+| Server insertion slot for the workspace end | Passed. Slot three produced B, C, A and preserved the next workspace. This does not test dragging. |
+| Drag a tab to the workspace end | Unverified. CUA drag produced no drop on new or existing targets. |
+| iOS touch scrolling | Unverified. CUA drag produced no scroll. Accessibility scrolling does not test touch recognition. |
+
+The pane test found a stale-directory bug. Pane closure now captures live process information before closing the pane.
+Review found an insertion-slot error. End drops now use the workspace tab count, as the server requires.
+The latest focused Mac run passed 65 tests. The focused iOS run passed 46 tests.
+The final full Mac run passed 954 tests, with seven skipped and zero failures.
+The final `autoreview --mode local --engine codex` run found no actionable defects after the insertion-slot correction.
+The quality check still reports 39 major findings, including duplication and growth in existing classes.
+Full gesture verification requires another UI automation tool or manual testing.
+CUA rules require explicit user permission before another UI automation tool can run.
+
 ### Close shortcuts
 
 Run these regression checks in a fresh app lab with disposable tabs and panes:

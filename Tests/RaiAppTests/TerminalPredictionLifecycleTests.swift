@@ -27,6 +27,23 @@ final class TerminalPredictionLifecycleTests: XCTestCase {
         )
     }
 
+    func testScrollClearsPendingPrediction() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        let view = FocusAwareTerminalView(frame: window.contentView!.bounds)
+        view.enablePredictiveEcho(for: .local)
+        window.contentView?.addSubview(view)
+        XCTAssertFalse(view.handleInterceptedKey(try makeKeyEvent(for: window)))
+        XCTAssertEqual(view.pendingPredictionCountForTesting, 1)
+
+        view.scrolled(source: view.getTerminal(), yDisp: 0)
+
+        XCTAssertEqual(view.pendingPredictionCountForTesting, 0)
+    }
+
     func testApplicationResignActiveClearsPendingPrediction() throws {
         let app = NSApplication.shared
         let window = NSWindow(

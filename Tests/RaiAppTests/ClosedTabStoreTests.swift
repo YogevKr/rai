@@ -26,6 +26,7 @@ final class ClosedTabStoreTests: XCTestCase {
             agentKind: .claude,
             agentSession: nil,
             label: "Agent",
+            workspaceTabIndex: 2,
             agentArgv: ["claude", "--resume", "abc"],
             shape: ClosedTabShape(
                 seeds: [
@@ -50,6 +51,7 @@ final class ClosedTabStoreTests: XCTestCase {
 
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded.first?.label, "Agent")
+        XCTAssertEqual(loaded.first?.workspaceTabIndex, 2)
         XCTAssertEqual(loaded.first?.agentArgv, ["claude", "--resume", "abc"])
         XCTAssertEqual(loaded.first?.shape, record.shape)
     }

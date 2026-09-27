@@ -6,6 +6,20 @@
 /// every remaining pane follows into that tab. Split geometry is not
 /// preserved — herdr has no way to transplant a layout across workspaces.
 public enum TabMovePlanner {
+    /// Herdr uses insertion slots before removing the source tab. A nil
+    /// target means the slot after all tabs, not the final tab's index.
+    public static func reorderInsertIndex(
+        sourceTabID: String,
+        before targetTabID: String?,
+        tabs: [HerdrTab]
+    ) -> Int? {
+        guard sourceTabID != targetTabID,
+              let source = tabs.first(where: { $0.tabID == sourceTabID }) else { return nil }
+        let workspaceTabs = tabs.filter { $0.workspaceID == source.workspaceID }
+        guard let targetTabID else { return workspaceTabs.count }
+        return workspaceTabs.firstIndex { $0.tabID == targetTabID }
+    }
+
     public struct Plan: Equatable, Sendable {
         public let leadPaneID: String
         public let followerPaneIDs: [String]

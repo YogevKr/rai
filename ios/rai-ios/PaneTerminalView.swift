@@ -952,6 +952,10 @@ private struct StreamingTerminalView: UIViewRepresentable {
 /// TUI is just the viewport the bridge drops. The grid then read as "" and
 /// prompt buttons never appeared.
 class GridReadableTerminalView: PhoneLinkTerminalView {
+    // Observation frames can enable terminal mouse mode. Keep UIKit's pan
+    // scrolling history instead of installing SwiftTerm's competing mouse pan.
+    override func mouseModeChanged(source: Terminal) {}
+
     override func layoutSubviews() {
         super.layoutSubviews()
         updateScrollIndicatorInsets()

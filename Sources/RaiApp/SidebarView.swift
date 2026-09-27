@@ -197,6 +197,12 @@ struct SidebarView: View {
                                     }
                                 )
                             }
+                            if !collapsed {
+                                WorkspaceTabDropEnd(
+                                    workspaceID: workspace.workspaceID,
+                                    model: model
+                                )
+                            }
                         }
                     }
                 }
@@ -1529,6 +1535,32 @@ private func sidebarDragProvider(id: String, type: UTType) -> NSItemProvider {
     return provider
 }
 
+/// A small target after the final tab. Dropping on the final row inserts
+/// before it, so the trailing target is the only unambiguous append action.
+private struct WorkspaceTabDropEnd: View {
+    let workspaceID: String
+    @ObservedObject var model: RaiModel
+    @State private var targeted = false
+
+    var body: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 18)
+            .background(targeted ? Theme.accent.opacity(0.12) : .clear)
+            .contentShape(Rectangle())
+            .onDrop(
+                of: [.raiTab],
+                delegate: SidebarReorderDropDelegate(
+                    targetID: workspaceID,
+                    type: .raiTab,
+                    model: model,
+                    targeted: $targeted,
+                    endOfWorkspaceID: workspaceID
+                )
+            )
+            .accessibilityHidden(true)
+    }
+}
+
 // The pure decision core of SidebarReorderDropDelegate, split out (and kept
 // SwiftUI-free) so tests can pin the rules without constructing a DropInfo.
 enum SidebarDropRules {
@@ -1550,8 +1582,21 @@ enum SidebarDropRules {
     // cross workspaces.
     enum Action: Equatable {
         case reorder
+        case reorderToEnd(workspaceID: String)
         case moveTabToWorkspace(workspaceID: String, insertBeforeTabID: String?)
         case movePaneToNewTab(workspaceID: String, insertBeforeTabID: String?)
+    }
+
+    static func endAction(
+        draggedTabID: String?,
+        hasTabType: Bool,
+        sourceWorkspaceID: String?,
+        targetWorkspaceID: String
+    ) -> Action? {
+        guard hasTabType, draggedTabID != nil, let sourceWorkspaceID else { return nil }
+        return sourceWorkspaceID == targetWorkspaceID
+            ? .reorderToEnd(workspaceID: targetWorkspaceID)
+            : .moveTabToWorkspace(workspaceID: targetWorkspaceID, insertBeforeTabID: nil)
     }
 
     static func paneAction(
@@ -1630,6 +1675,7 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     var onPaneDragHover: (() -> Void)?
     var paneDropWorkspaceID: String?
     var paneInsertBeforeTabID: String?
+    var endOfWorkspaceID: String? = nil
 
     private func isPaneDrag(_ info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [UTType.raiPane.identifier])
@@ -1656,6 +1702,14 @@ private struct SidebarReorderDropDelegate: DropDelegate {
         }
         let hasTabType = info.hasItemsConforming(to: [UTType.raiTab.identifier])
         let tabs = model.snapshot?.tabs
+        if let endOfWorkspaceID {
+            return SidebarDropRules.endAction(
+                draggedTabID: model.draggedTabID,
+                hasTabType: hasTabType,
+                sourceWorkspaceID: draggedTabWorkspaceID(tabs),
+                targetWorkspaceID: endOfWorkspaceID
+            )
+        }
         if type == .raiTab {
             return SidebarDropRules.tabRowAction(
                 draggedTabID: model.draggedTabID,
@@ -1717,6 +1771,9 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             } else if let src = model.draggedWorkspaceID {
                 model.moveWorkspace(sourceWorkspaceID: src, onto: targetID)
             }
+        case .reorderToEnd:
+            guard let src = model.draggedTabID else { return false }
+            model.moveTabToEnd(src)
         case let .moveTabToWorkspace(workspaceID, insertBeforeTabID):
             guard let src = model.draggedTabID else { return false }
             model.moveTab(

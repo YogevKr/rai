@@ -17,6 +17,7 @@ struct PaletteCommand: Identifiable, Equatable {
         case closeTab
         case broadcast
         case reopenClosedTab
+        case reopenClosedPane
         case rescanRepos
         case refresh
         case plugin(actionID: String, pluginID: String)
@@ -82,6 +83,12 @@ struct PaletteCommand: Identifiable, Equatable {
                 title: "Reopen Closed Tab",
                 subtitle: "Command · undo close",
                 effect: .reopenClosedTab
+            ),
+            PaletteCommand(
+                id: "command:reopen-closed-pane",
+                title: "Reopen Closed Pane",
+                subtitle: "Command · restore the last split pane",
+                effect: .reopenClosedPane
             ),
             PaletteCommand(
                 id: "command:rescan-repos",

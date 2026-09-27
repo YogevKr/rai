@@ -23,6 +23,12 @@ final class TerminalContainerOwnershipTests: XCTestCase {
         FocusAwareTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
     }
 
+    func testTerminalDrawingStaysInsideItsContainer() {
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        container.install(makeTerminal())
+        XCTAssertEqual(container.layer?.masksToBounds, true)
+    }
+
     func testNewerContainerAdoptsTerminalFromOlderOne() {
         let terminal = makeTerminal()
         let outgoing = TerminalContainerView(frame: .zero)

@@ -22,6 +22,18 @@ final class FullFrameRepaintTests: XCTestCase {
 
     private let grid = PaneGridSize(cols: 80, rows: 4)
 
+    func testMouseTrackingFramesKeepHistoryPanAvailable() {
+        let view = view()
+        let initialPans = view.gestureRecognizers?.filter { $0 is UIPanGestureRecognizer }.count
+        for mode in [1000, 1002, 1003] {
+            view.receiveFrame(Data("\u{1B}[?\(mode)h".utf8), kind: .full, grid: grid)
+            XCTAssertTrue(view.isScrollEnabled)
+            XCTAssertTrue(view.panGestureRecognizer.isEnabled)
+            XCTAssertEqual(view.gestureRecognizers?.filter { $0 is UIPanGestureRecognizer }.count, initialPans)
+            view.receiveFrame(Data("\u{1B}[?\(mode)l".utf8), kind: .delta, grid: nil)
+        }
+    }
+
     func testIdenticalFullFrameKeepsTheRetainedScreen() {
         let view = view()
         let baseline = frame(["• Ran node", "  └ done", "", "› Ask Codex"], cursor: (4, 12))

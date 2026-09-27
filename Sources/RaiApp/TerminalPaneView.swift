@@ -232,6 +232,9 @@ final class FocusAwareTerminalView: TerminalProcessView {
 
     override func scrolled(source: Terminal, yDisp: Int) {
         super.scrolled(source: source, yDisp: yDisp)
+        // A scroll moves the caret away from the live prompt. Drop any
+        // predictive glyph overlay so it cannot remain over a header row.
+        resetPredictions()
         scrollIndicator?.refresh()
     }
 
@@ -1671,6 +1674,8 @@ final class TerminalContainerView: NSView {
         serial = Self.nextSerial
         Self.nextSerial += 1
         super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = true
     }
 
     @available(*, unavailable)

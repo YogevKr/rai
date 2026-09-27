@@ -2,6 +2,28 @@
 import XCTest
 
 final class TabMovePlannerTests: XCTestCase {
+    func testEndDropUsesSlotAfterAllTabsInSourceWorkspace() {
+        let tabs = [tab("a", label: "A"), tab("b", label: "B"), tab("c", label: "C"),
+                    tab("other", label: "Other", workspace: "w2")]
+        for source in ["a", "b", "c"] {
+            XCTAssertEqual(
+                TabMovePlanner.reorderInsertIndex(sourceTabID: source, before: nil, tabs: tabs),
+                3
+            )
+        }
+        XCTAssertEqual(
+            TabMovePlanner.reorderInsertIndex(sourceTabID: "a", before: "c", tabs: tabs),
+            2
+        )
+    }
+
+    func testReorderRejectsMissingSourceAndForeignTarget() {
+        let tabs = [tab("a", label: "A"), tab("other", label: "Other", workspace: "w2")]
+        XCTAssertNil(TabMovePlanner.reorderInsertIndex(sourceTabID: "missing", before: nil, tabs: tabs))
+        XCTAssertNil(TabMovePlanner.reorderInsertIndex(sourceTabID: "a", before: "other", tabs: tabs))
+        XCTAssertNil(TabMovePlanner.reorderInsertIndex(sourceTabID: "a", before: "a", tabs: tabs))
+    }
+
     // MARK: plan
 
     func testSinglePaneTabPlansLeadWithoutFollowers() {
@@ -112,10 +134,10 @@ final class TabMovePlannerTests: XCTestCase {
 
     // MARK: helpers
 
-    private func tab(_ id: String, label: String) -> HerdrTab {
+    private func tab(_ id: String, label: String, workspace: String = "w1") -> HerdrTab {
         HerdrTab(
             tabID: id,
-            workspaceID: "w1",
+            workspaceID: workspace,
             number: 1,
             label: label,
             focused: false,

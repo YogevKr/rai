@@ -119,6 +119,9 @@ struct RaiApp: App {
                 }
                     .keyboardShortcut(primaryWindow == true ? KeyboardShortcut("w", modifiers: [.command, .shift]) : nil)
                     .disabled(primaryWindow != true || appUpdates.isPresented)
+                Button("Reopen Closed Pane") { model.reopenClosedPane() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .disabled(primaryWindow != true || appUpdates.isPresented || !model.canReopenClosedPane)
                 Button("Zoom Pane") { model.zoomPane() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()

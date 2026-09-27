@@ -152,6 +152,9 @@ struct ClosedTabRecord: Equatable, Codable {
     let agentKind: AgentLaunchKind?
     let agentSession: AgentSession?
     let label: String
+    /// The tab's position in its space when it closed. Older records omit it
+    /// and reopen at the end, which keeps their old behavior.
+    var workspaceTabIndex: Int? = nil
     /// The workspace's label at close time. Closing a workspace's last tab
     /// closes the workspace itself, so reopen recreates the space — under its
     /// original name — rather than dropping the tab into another space.
@@ -172,8 +175,40 @@ struct ClosedTabRecord: Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case workspaceID, cwd, agentKind, agentSession, label, workspaceLabel,
+        case workspaceID, cwd, agentKind, agentSession, label, workspaceTabIndex, workspaceLabel,
             agentArgv, shape
+    }
+}
+
+/// A pane removed from a split. The record keeps enough host state to create
+/// a new pane in the original tab and resume its agent when safe.
+struct ClosedPaneRecord: Equatable, Codable {
+    let id = UUID()
+    let workspaceID: String
+    let tabID: String
+    var cwd: String
+    let agentKind: AgentLaunchKind?
+    let agentSession: AgentSession?
+    let label: String
+    var workspaceLabel: String? = nil
+    var agentArgv: [String]? = nil
+
+    var canResumeAgent: Bool {
+        agentKind != nil && (agentSession != nil || agentArgv != nil)
+    }
+
+    @MainActor
+    mutating func captureProcessInfo(_ info: PaneProcessInfo) {
+        if let currentCWD = info.foregroundProcesses.first?.cwd, !currentCWD.isEmpty {
+            cwd = currentCWD
+        }
+        if let agentKind, let argv = RaiModel.agentArgv(from: info, kind: agentKind) {
+            agentArgv = argv
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workspaceID, tabID, cwd, agentKind, agentSession, label, workspaceLabel, agentArgv
     }
 }
 
@@ -509,6 +544,9 @@ final class RaiModel: ObservableObject {
         // so a relaunch keeps whatever ⌘⇧T could reach when the app quit.
         didSet { closedTabStore.save(closedTabs, herdKey: currentHerdKey) }
     }
+    @Published private(set) var closedPanes: [ClosedPaneRecord] = [] {
+        didSet { closedPaneStore.save(closedPanes, herdKey: currentHerdKey) }
+    }
     /// Tabs whose close has been decided but whose herd refresh has not landed.
     /// A close is not instant — capturing each agent pane's argv can take up to
     /// two seconds — and until this existed nothing on screen changed meanwhile,
@@ -521,6 +559,8 @@ final class RaiModel: ObservableObject {
     /// before the next record is reconstructed. Concurrent reconstructs of
     /// siblings from one closed space would recreate a space apiece.
     private var reopenTask: Task<Void, Never>?
+    @Published private var pendingPaneCloseIDs: Set<UUID> = []
+    private var closingPaneIDs: Set<String> = []
     /// Dead workspace ID → the space reopen recreated for it, for records
     /// already popped when the recreation happened (their stack entries can
     /// no longer be remapped). Reset with the per-herd stack swap.
@@ -552,6 +592,7 @@ final class RaiModel: ObservableObject {
     private var phoneReachabilityGrace = PhoneReachabilityGrace()
     private let workspaceGitStatusCache = WorkspaceGitStatusCache()
     private lazy var closedTabStore = ClosedTabStore(userDefaults: userDefaults)
+    private lazy var closedPaneStore = ClosedPaneStore(userDefaults: userDefaults)
 
     private var currentHerdKey: String {
         ClosedTabStore.herdKey(
@@ -1037,6 +1078,10 @@ final class RaiModel: ObservableObject {
         !closedTabs.isEmpty
     }
 
+    var canReopenClosedPane: Bool {
+        closedPanes.last.map { !pendingPaneCloseIDs.contains($0.id) } ?? false
+    }
+
     func isWorkspaceCollapsed(_ workspaceID: String) -> Bool {
         collapsedWorkspaceIDs.contains(workspaceID)
     }
@@ -1505,6 +1550,7 @@ final class RaiModel: ObservableObject {
         // app launches. The replacement map names the previous herd's
         // workspaces, so it goes with the stack.
         closedTabs = closedTabStore.load(herdKey: currentHerdKey)
+        closedPanes = closedPaneStore.load(herdKey: currentHerdKey)
         recreatedWorkspaceIDs = [:]
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
@@ -1534,6 +1580,8 @@ final class RaiModel: ObservableObject {
         // Their closes can never land now, and a stale ID would hide a row of
         // the same name in the next herd.
         closingTabIDs.removeAll()
+        closingPaneIDs.removeAll()
+        pendingPaneCloseIDs.removeAll()
         eventTask?.cancel()
         eventSubscription?.close()
         eventSubscription = nil
@@ -2126,6 +2174,7 @@ final class RaiModel: ObservableObject {
         case .closeTab: closeTab()
         case .broadcast: isBroadcastPresented = true
         case .reopenClosedTab: reopenClosedTab()
+        case .reopenClosedPane: reopenClosedPane()
         case .rescanRepos: refreshRepoIndex()
         case .refresh: refreshNow()
         case .plugin(let actionID, let pluginID):
@@ -2479,6 +2528,9 @@ final class RaiModel: ObservableObject {
             agentKind: agentKind,
             agentSession: agentPane?.agentSession,
             label: tab.label,
+            workspaceTabIndex: snapshot.tabs
+                .filter { $0.workspaceID == tab.workspaceID }
+                .firstIndex { $0.tabID == tab.tabID },
             workspaceLabel: snapshot.workspaces.first {
                 $0.workspaceID == tab.workspaceID
             }?.label,
@@ -2806,18 +2858,11 @@ final class RaiModel: ObservableObject {
         )
     }
 
-    func moveTab(sourceTabID: String, onto targetTabID: String) {
-        guard sourceTabID != targetTabID,
-              let snapshot,
-              let source = snapshot.tabs.first(where: { $0.tabID == sourceTabID }),
-              let target = snapshot.tabs.first(where: { $0.tabID == targetTabID }),
-              source.workspaceID == target.workspaceID else {
-            return
-        }
-        let tabs = snapshot.tabs.filter { $0.workspaceID == target.workspaceID }
-        guard let insertIndex = tabs.firstIndex(where: { $0.tabID == targetTabID }) else {
-            return
-        }
+    func moveTab(sourceTabID: String, onto targetTabID: String?) {
+        guard let snapshot,
+              let insertIndex = TabMovePlanner.reorderInsertIndex(
+                sourceTabID: sourceTabID, before: targetTabID, tabs: snapshot.tabs
+              ) else { return }
         let client = client
         let generation = connectionGeneration
         Task {
@@ -2831,6 +2876,11 @@ final class RaiModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Appends a tab to the end of its current space.
+    func moveTabToEnd(_ sourceTabID: String) {
+        moveTab(sourceTabID: sourceTabID, onto: nil)
     }
 
     /// Relocates a whole tab into another workspace. herdr's tab.move cannot
@@ -3563,7 +3613,8 @@ final class RaiModel: ObservableObject {
         runAction(["pane", "split", pane, "--direction", direction, "--focus"])
     }
     func closePane(_ paneID: String? = nil) {
-        guard let pane = paneID ?? selectedPaneID else { return }
+        guard let pane = paneID ?? selectedPaneID,
+              !closingPaneIDs.contains(pane) else { return }
         // Closing a tab's only pane kills the tab either way; the direct pane
         // path just loses the ⌘⇧T record. Route it through close(tab:) so the
         // tab is recorded for reopen, whichever surface asked — the pane ✕,
@@ -3575,7 +3626,113 @@ final class RaiModel: ObservableObject {
             close(tab: tab)
             return
         }
-        runAction(["pane", "close", pane])
+        guard let record = closedPaneRecord(for: pane) else {
+            runAction(["pane", "close", pane])
+            return
+        }
+        closedPanes.append(record)
+        if closedPanes.count > ClosedPaneStore.maxRecords {
+            closedPanes.removeFirst(closedPanes.count - ClosedPaneStore.maxRecords)
+        }
+        closingPaneIDs.insert(pane)
+        pendingPaneCloseIDs.insert(record.id)
+        let context = CloseConnectionContext(
+            generation: connectionGeneration, socketPath: activeSocketPath
+        )
+        Task {
+            // The snapshot can predate a shell's latest cd. Read the live
+            // foreground process before closing shells as well as agents.
+            if let info = await processInfo(for: pane, timeout: .seconds(2)),
+               context.matches(connectionGeneration),
+               let index = closedPanes.lastIndex(where: { $0.id == record.id }) {
+                closedPanes[index].captureProcessInfo(info)
+            }
+            guard context.matches(connectionGeneration) else { return }
+            let arguments = ["pane", "close", pane]
+            let closed: Bool
+            if let closeCommandRunner {
+                closed = await closeCommandRunner(arguments, context.socketPath)
+            } else {
+                closed = await runHerdr(arguments, socketPath: context.socketPath)
+            }
+            guard context.matches(connectionGeneration) else { return }
+            if !closed { closedPanes.removeAll { $0.id == record.id } }
+            await refreshSnapshot(keepSelection: true)
+            guard context.matches(connectionGeneration) else { return }
+            pendingPaneCloseIDs.remove(record.id)
+            closingPaneIDs.remove(pane)
+        }
+    }
+
+    private func closedPaneRecord(for paneID: String) -> ClosedPaneRecord? {
+        guard let pane = snapshot?.panes.first(where: { $0.paneID == paneID }) else {
+            return nil
+        }
+        return ClosedPaneRecord(
+            workspaceID: pane.workspaceID,
+            tabID: pane.tabID,
+            cwd: pane.foregroundCWD ?? pane.cwd,
+            agentKind: Self.agentLaunchKind(for: pane),
+            agentSession: pane.agentSession,
+            label: pane.terminalTitleStripped ?? pane.agent ?? pane.paneID,
+            workspaceLabel: snapshot?.workspaces.first { $0.workspaceID == pane.workspaceID }?.label
+        )
+    }
+
+    /// Recreates the most recent closed split pane in its original tab. Herdr
+    /// has no pane undo call, so a right split is the stable fallback shape.
+    func reopenClosedPane() {
+        guard canReopenClosedPane, snapshot != nil,
+              let record = closedPanes.popLast() else { return }
+        let generation = connectionGeneration
+        let previous = reopenTask
+        reopenTask = Task {
+            await previous?.value
+            guard generation == connectionGeneration else { return }
+            let workspaceID = recreatedWorkspaceIDs[record.workspaceID] ?? record.workspaceID
+            let panes = snapshot?.panes ?? []
+            let anchor = panes.first { $0.tabID == record.tabID }
+                ?? panes.first { $0.workspaceID == workspaceID }
+            guard let anchor else {
+                let previousPaneIDs = Set(panes.map(\.paneID))
+                await reconstructClosedTab(ClosedTabRecord(
+                    workspaceID: workspaceID, cwd: record.cwd,
+                    agentKind: record.agentKind, agentSession: record.agentSession,
+                    label: record.label, workspaceLabel: record.workspaceLabel,
+                    agentArgv: record.agentArgv
+                ), generation: generation)
+                guard generation == connectionGeneration else { return }
+                if snapshot?.panes.contains(where: { !previousPaneIDs.contains($0.paneID) }) != true {
+                    closedPanes.append(record)
+                }
+                return
+            }
+            guard let output = await runHerdrCapture([
+                "pane", "split", anchor.paneID,
+                "--direction", SplitDirection.right.rawValue,
+                "--cwd", record.cwd,
+                "--focus",
+            ]), let paneID = Self.paneID(fromSplitOutput: output) else {
+                if generation == connectionGeneration { closedPanes.append(record) }
+                return
+            }
+            guard generation == connectionGeneration else { return }
+            if let kind = record.agentKind, record.canResumeAgent {
+                await typeResumeCommand(
+                    Self.resumeCommand(
+                        kind: kind,
+                        argv: record.agentArgv,
+                        agentSession: record.agentSession
+                    ),
+                    into: paneID,
+                    expecting: kind,
+                    generation: generation
+                )
+            }
+            guard generation == connectionGeneration else { return }
+            selectedPaneID = paneID
+            await refreshSnapshot(keepSelection: true)
+        }
     }
 
     func renamePane(paneID: String, to rawLabel: String) {
@@ -4566,6 +4723,20 @@ final class RaiModel: ObservableObject {
             return
         }
 
+        // herdr creates a tab at the end. Restore the recorded slot after the
+        // new tab is visible, keeping the surrounding tabs in their order.
+        if let recordedIndex = record.workspaceTabIndex,
+           let currentTabs = snapshot?.tabs.filter({ $0.workspaceID == workspaceID }),
+           !currentTabs.isEmpty {
+            let insertIndex = min(max(recordedIndex, 0), currentTabs.count - 1)
+            if insertIndex != currentTabs.firstIndex(where: { $0.tabID == reopenedTab.tabID }) {
+                try? await client.moveTab(reopenedTab.tabID, insertIndex: insertIndex)
+                guard generation == connectionGeneration else { return }
+                await refreshSnapshot(keepSelection: false)
+            }
+        }
+        guard generation == connectionGeneration else { return }
+
         if snapshot?.displayLabel(for: reopenedTab) != record.label {
             _ = await runHerdr(["tab", "rename", reopenedTab.tabID, record.label])
         }
@@ -5384,6 +5555,8 @@ final class RaiModel: ObservableObject {
         // A close from the old client can no longer finish its refresh.
         // Show its row again and permit a later close attempt.
         closingTabIDs.removeAll()
+        closingPaneIDs.removeAll()
+        pendingPaneCloseIDs.removeAll()
         eventTask?.cancel()
         eventSubscription?.close()
         eventSubscription = nil
