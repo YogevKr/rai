@@ -31,12 +31,15 @@ final class EndpointPhoneMouseGesture: NSObject, UIGestureRecognizerDelegate {
 
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         guard let surface = model?.state?.surface, let terminal, terminal.getSelectionRange() == nil else { return false }
-        return target(recognizer.location(in: terminal), surface: surface, kind: .moved) != nil
+        return EndpointPhoneScrollGesture.mouseTarget(at: recognizer.location(in: terminal), surface: surface,
+                                                      terminal: terminal, kind: .moved) != nil
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        gestureRecognizer is UIPanGestureRecognizer && EndpointPhoneScrollGesture.isNativePan(otherGestureRecognizer)
+        guard gestureRecognizer is UIPanGestureRecognizer else { return false }
+        if otherGestureRecognizer.delegate is EndpointPhoneScrollGesture { return true }
+        return EndpointPhoneScrollGesture.isNativePan(otherGestureRecognizer)
     }
 
     @objc private func tap(_ recognizer: UITapGestureRecognizer) {
@@ -63,14 +66,16 @@ final class EndpointPhoneMouseGesture: NSObject, UIGestureRecognizerDelegate {
             dragIdentity = model.identity
             let translation = recognizer.translation(in: terminal)
             let start = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
-            guard let down = target(start, surface: surface, kind: .down, button: .left) else { return }
+            guard let down = EndpointPhoneScrollGesture.mouseTarget(at: start, surface: surface, terminal: terminal,
+                                                                     kind: .down, button: .left) else { return }
             dragCapture = EndpointMouseCapture(target: down, surface: surface)
             model.input(.mouse(down.input))
         }
         guard dragIdentity == model.identity, model.acceptsInput else { dragCapture?.observe(nil); return }
         if finished {
             if let release = dragCapture?.release(in: surface) { model.input(.mouse(release.input)) }
-        } else if let next = target(point, surface: surface, kind: .drag, button: .left),
+        } else if let next = EndpointPhoneScrollGesture.mouseTarget(at: point, surface: surface, terminal: terminal,
+                                                                     kind: .drag, button: .left),
                   let drag = dragCapture?.drag(next, in: surface) {
             model.input(.mouse(drag.input))
         }
@@ -78,15 +83,9 @@ final class EndpointPhoneMouseGesture: NSObject, UIGestureRecognizerDelegate {
 
     private func send(_ point: CGPoint, surface: HerdrEndpointSurface, kind: EndpointMouse.Kind,
                       button: EndpointMouse.Button? = nil) {
-        guard let target = target(point, surface: surface, kind: kind, button: button) else { return }
+        guard let terminal else { return }
+        guard let target = EndpointPhoneScrollGesture.mouseTarget(at: point, surface: surface, terminal: terminal,
+                                                                  kind: kind, button: button) else { return }
         model?.input(.mouse(target.input))
-    }
-
-    private func target(_ point: CGPoint, surface: HerdrEndpointSurface, kind: EndpointMouse.Kind,
-                        button: EndpointMouse.Button? = nil) -> EndpointMouseTarget? {
-        guard let size = terminal?.getOptimalFrameSize(), size.width > 0, size.height > 0 else { return nil }
-        return surface.mouse(atColumn: Double(point.x) * Double(surface.grid.width) / size.width,
-                             row: Double(point.y) * Double(surface.grid.height) / size.height,
-                             kind: kind, button: button)
     }
 }
