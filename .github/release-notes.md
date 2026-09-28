@@ -1,5 +1,7 @@
-Rai 0.1.64 improves tab ordering, pane recovery, and terminal scrolling.
+Rai 0.1.65 improves desktop notifications, terminal scrolling, and tab ordering.
 
+- macOS notifications appear when Rai is on another desktop.
+- Vertical iOS pans scroll the terminal without changing pane selection.
 - Reopened tabs return to their saved position in the space.
 - Use **Pane → Reopen Closed Pane** or **⌘⇧P** to restore a closed split pane.
 - Reopened panes retain their working directory and resume agents when session data is available.

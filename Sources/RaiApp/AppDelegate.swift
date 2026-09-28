@@ -287,6 +287,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.dockTile.badgeLabel = count == 0 ? nil : String(count)
     }
 
+    /// macOS deactivates Rai when the user switches to another Space.
+    private var raiIsVisibleOnActiveSpace: Bool {
+        guard NSApp.isActive else { return false }
+        return NSApp.windows.contains { window in
+            window.isVisible && !window.isMiniaturized && window.isOnActiveSpace
+        }
+    }
+
     private func focusPendingPane(
         in snapshot: SessionSnapshot,
         model: RaiModel
@@ -400,7 +408,11 @@ extension AppDelegate: RaiSnapshotObserver {
         microController?.update(snapshot: snapshot)
 
         guard !model.notificationsMuted else { return }
-        for transition in transitions where transition.paneID != model.selectedPaneID {
+        for transition in transitions where NotificationDeliveryPolicy.shouldDeliver(
+            paneID: transition.paneID,
+            selectedPaneID: model.selectedPaneID,
+            raiIsVisible: raiIsVisibleOnActiveSpace
+        ) {
             guard let pane = snapshot.panes.first(where: {
                 $0.paneID == transition.paneID
             }) else { continue }
@@ -414,7 +426,11 @@ extension AppDelegate: RaiSnapshotObserver {
                     guard let self, let model else { return }
                     let pending = await model.pendingBackgroundWork(forPane: pane.paneID)
                     guard pending.isEmpty else { return }
-                    guard model.selectedPaneID != pane.paneID,
+                    guard NotificationDeliveryPolicy.shouldDeliver(
+                        paneID: pane.paneID,
+                        selectedPaneID: model.selectedPaneID,
+                        raiIsVisible: self.raiIsVisibleOnActiveSpace
+                    ),
                           model.snapshot?.panes.first(where: {
                               $0.paneID == pane.paneID
                           })?.agentStatus == transition.newStatus else { return }
