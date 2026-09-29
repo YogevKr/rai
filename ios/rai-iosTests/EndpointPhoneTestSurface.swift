@@ -3,7 +3,7 @@ import RaiCore
 
 enum EndpointPhoneTestSurface {
     static func make(paneID: String = "w1:p1", mouseReporting: Bool = false,
-                     popupMouseReporting: Bool = false) throws -> HerdrEndpointSurface {
+                     popupMouseReporting: Bool = false, alternateScreen: Bool = false) throws -> HerdrEndpointSurface {
         let width = popupMouseReporting ? 5 : 1
         let height = popupMouseReporting ? 5 : 1
         let rect: [String: Any] = ["x": 0, "y": 0, "width": width, "height": height]
@@ -21,7 +21,7 @@ enum EndpointPhoneTestSurface {
             "panes": [["paneID": paneID, "contentRevision": 1, "rect": rect, "innerRect": rect,
                        "focused": true, "mouseReporting": mouseReporting, "pixelMouse": false,
                        "scroll": ["offset": 0, "maximum": 100, "rows": 20],
-                       "alternateScreen": false, "pixelWidth": 8, "pixelHeight": 16]],
+                       "alternateScreen": alternateScreen, "pixelWidth": 8, "pixelHeight": 16]],
             "splits": [], "graphics": ["assets": [], "placements": [], "retained": []],
         ]
         if let popup { surfaceObject["popup"] = popup }

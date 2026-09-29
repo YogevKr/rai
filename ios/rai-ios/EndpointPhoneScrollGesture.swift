@@ -82,7 +82,7 @@ final class EndpointPhoneScrollGesture: NSObject, UIGestureRecognizerDelegate {
         guard targetIdentity == model.identity, targetBoot == surface.bootID, let target else { return }
         if pan.state == .began || pan.state == .changed || pan.state == .ended {
             let lines = Int(pan.translation(in: terminal).y / cellHeight)
-            if surface.popup?.mouseReporting ?? target.mouseReporting {
+            if surface.popup?.mouseReporting ?? (target.mouseReporting || target.alternateScreen) {
                 if sendMouseScroll(lines: lines, surface: surface, terminal: terminal, paneID: target.paneID) { return }
             }
             if let metrics = target.scroll {
@@ -100,7 +100,7 @@ final class EndpointPhoneScrollGesture: NSObject, UIGestureRecognizerDelegate {
         guard let mouseTarget = Self.mouseTarget(at: startPoint, surface: surface, terminal: terminal,
                                                  kind: kind, lines: UInt16(count)),
               surface.popup != nil || mouseTarget.paneID == paneID else { return false }
-        model?.input(.mouse(mouseTarget.input))
+        model?.wheel(mouseTarget.input)
         sentMouseLines += delta > 0 ? count : -count
         return true
     }
