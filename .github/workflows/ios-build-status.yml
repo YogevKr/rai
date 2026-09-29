@@ -17,7 +17,7 @@ permissions:
 jobs:
   status:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +37,8 @@ jobs:
         env:
           BUILD_NUMBER: ${{ inputs.build_number }}
           MARKETING_VERSION: ${{ inputs.version }}
+          IOS_BUILD_STATUS_MAX_ATTEMPTS: 40
+          IOS_BUILD_STATUS_RETRY_SECONDS: 15
           ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           ASC_PRIVATE_KEY_B64: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -49,7 +51,23 @@ jobs:
           : "${ASC_ISSUER_ID:?Missing Apple issuer ID}"
           : "${ASC_PRIVATE_KEY_B64:?Missing Apple API key}"
 
-          bash scripts/wait-ios-build.sh "$RUNNER_TEMP/asc"
+          wait_status=0
+          bash scripts/wait-ios-build.sh "$RUNNER_TEMP/asc" || wait_status=$?
+          if [ "$wait_status" -eq 2 ]; then
+            echo "::warning::Apple has not listed build $BUILD_NUMBER yet. The upload may still be processing."
+            jq -n --arg version "$MARKETING_VERSION" --arg build "$BUILD_NUMBER" \
+              '{status: "PENDING", version: $version, build: $build}' \
+              | tee "$RUNNER_TEMP/build-status.json"
+            {
+              echo '## Rai Remote build status'
+              echo "Apple has not listed build $BUILD_NUMBER yet. The upload may still be processing."
+              echo '```json'
+              cat "$RUNNER_TEMP/build-status.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$wait_status" -eq 0 ] || exit "$wait_status"
           BUILD_ID=$(jq -er '.data.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/build.json")
           jq -e --arg number "$BUILD_NUMBER" '.data.attributes.version == $number' \
             "$RUNNER_TEMP/build.json" > /dev/null
