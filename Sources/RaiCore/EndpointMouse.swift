@@ -88,7 +88,8 @@ extension HerdrEndpointSurface {
             width = Double(popup.grid.width); height = Double(popup.grid.height)
             pixelWidth = popup.pixelWidth; pixelHeight = popup.pixelHeight; pixels = popup.pixelMouse
         } else {
-            guard focused.mouseReporting else { return nil }
+            let wheel = kind == .scrollUp || kind == .scrollDown
+            guard focused.mouseReporting || (wheel && focused.alternateScreen) else { return nil }
             originX = Double(focused.innerRect.x); originY = Double(focused.innerRect.y)
             width = Double(focused.innerRect.width); height = Double(focused.innerRect.height)
             pixelWidth = focused.pixelWidth; pixelHeight = focused.pixelHeight; pixels = focused.pixelMouse

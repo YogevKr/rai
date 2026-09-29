@@ -16,6 +16,13 @@
 rai is a fast native client for the herdr daemon. Your agents keep running in
 herdr while rai gives you a clear window to watch, guide, and switch between them.
 
+## The name
+
+**rai** comes from Arabic **رَاعِي** (*rāʿī*), meaning *shepherd*.
+Its root, **ر‑ع‑ي** (*r‑ʿ‑y*), carries the meaning of tending, guarding, and caring.
+
+**herdr** keeps the herd of agents; **rai** is the shepherd that watches over them.
+
 ## What you get
 
 - Live workspaces, tabs, splits, and terminal panes.
