@@ -16,7 +16,24 @@ jobs:
   release:
     runs-on: macos-15
     steps:
+      - name: Validate manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must match vX.Y.Z."
+            exit 1
+          fi
+          if ! gh api --silent "repos/${{ github.repository }}/git/ref/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "::error::Release tag ${RELEASE_TAG} does not exist."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.sha }}
 
       # Pin to the newest Xcode 16.x: it bundles the Metal toolchain (SwiftTerm has
       # a .metal shader) that newer Xcode ships as a separate, hard-to-use component.
@@ -25,11 +42,17 @@ jobs:
 
       - name: Resolve version
         id: v
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+            TAG="$INPUT_TAG"
           else
             TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must match vX.Y.Z."
+            exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
@@ -186,10 +209,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.v.outputs.tag }}" \
-            dist/Rai-*.dmg dist/Rai-*.zip \
-            --title "rai ${{ steps.v.outputs.version }}" \
-            --notes-file .github/release-notes.md
+          TAG="${{ steps.v.outputs.tag }}"
+          TITLE="rai ${{ steps.v.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; keeping existing assets."
+            EXISTING_ASSETS="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+            for ASSET in dist/Rai-*.dmg dist/Rai-*.zip; do
+              if [ ! -f "$ASSET" ]; then
+                echo "::error::Missing release asset $ASSET."
+                exit 1
+              fi
+              NAME="${ASSET##*/}"
+              if printf '%s\n' "$EXISTING_ASSETS" | grep -Fqx "$NAME"; then
+                echo "Keeping existing asset $NAME."
+              else
+                gh release upload "$TAG" "$ASSET"
+              fi
+            done
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file .github/release-notes.md \
+              --draft=false
+          else
+            gh release create "$TAG" \
+              dist/Rai-*.dmg dist/Rai-*.zip \
+              --title "$TITLE" \
+              --notes-file .github/release-notes.md \
+              --verify-tag
+          fi
 
       # Keep the Homebrew cask in lockstep with the release. Pushes with a
       # write deploy key on YogevKr/homebrew-tap, stored as the
@@ -199,10 +246,17 @@ jobs:
       # never fails on a missing key — you can still bump the cask by hand.
       - name: Update Homebrew cask
         env:
+          GH_TOKEN: ${{ github.token }}
           TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           VER="${{ steps.v.outputs.version }}"
-          DMG="dist/Rai-${VER}-macos.dmg"
+          RELEASE_ASSET_DIR="$RUNNER_TEMP/release-assets"
+          mkdir -p "$RELEASE_ASSET_DIR"
+          gh release download "${{ steps.v.outputs.tag }}" \
+            --pattern "Rai-${VER}-macos.dmg" \
+            --dir "$RELEASE_ASSET_DIR" \
+            --clobber
+          DMG="$RELEASE_ASSET_DIR/Rai-${VER}-macos.dmg"
           SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
           echo "Rai-${VER}-macos.dmg sha256=${SHA}"
           if [ -z "${TAP_DEPLOY_KEY}" ]; then
