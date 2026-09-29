@@ -100,7 +100,7 @@ final class EndpointPhoneScrollGesture: NSObject, UIGestureRecognizerDelegate {
         guard let mouseTarget = Self.mouseTarget(at: startPoint, surface: surface, terminal: terminal,
                                                  kind: kind, lines: UInt16(count)),
               surface.popup != nil || mouseTarget.paneID == paneID else { return false }
-        model?.input(.mouse(mouseTarget.input))
+        model?.wheel(mouseTarget.input)
         sentMouseLines += delta > 0 ? count : -count
         return true
     }

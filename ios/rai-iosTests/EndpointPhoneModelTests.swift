@@ -331,6 +331,34 @@ final class EndpointPhoneModelTests: XCTestCase {
         model.disconnect()
     }
 
+    func testAlternateScreenWheelInputIsSentWhileBridgeIsBusy() async throws {
+        let model = EndpointPhoneModel()
+        var requests: [EndpointBridgeRequest] = []
+        model.open(connectionID: "mac") { requests.append($0) }
+        let initial = try state(model)
+        let surface = try EndpointPhoneTestSurface.make(mouseReporting: false, alternateScreen: true)
+        model.receive(.init(identity: initial.identity, sequence: 1, snapshot: initial.snapshot,
+                            surface: surface, methods: ["pane.scroll"], busy: true, error: nil))
+        let terminal = EndpointPhoneTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        terminal.pinGridSize(cols: 1, rows: 1)
+        let gesture = EndpointPhoneScrollGesture(terminal: terminal, model: model)
+        let pan = HistoryTestPan()
+        let cell = terminal.getOptimalFrameSize()
+        pan.movement = CGPoint(x: 0, y: cell.height * 5)
+        pan.point = CGPoint(x: cell.width / 2, y: cell.height * 5.5)
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan))
+        pan.phase = .began
+        gesture.scroll(pan)
+        for _ in 0..<20 { await Task.yield() }
+        let input = try XCTUnwrap(requests.compactMap { request -> EndpointMouse? in
+            guard case let .input(_, .mouse(mouse)) = request.operation else { return nil }
+            return mouse
+        }.last)
+        XCTAssertEqual(input.kind, .scrollUp)
+        XCTAssertEqual(input.lines, 5)
+        model.disconnect()
+    }
+
     func testPopupMouseReportingPanSurvivesStateUpdates() async throws {
         let model = EndpointPhoneModel()
         var requests: [EndpointBridgeRequest] = []

@@ -133,6 +133,20 @@ final class EndpointPhoneModel: ObservableObject {
 
     func input(_ input: EndpointBridgeInput) {
         guard acceptsInput, let paneID = state?.snapshot?.focusedPaneID else { return }
+        sendInput(input, paneID: paneID)
+    }
+
+    func wheel(_ mouse: EndpointMouse) {
+        guard mouse.kind == .scrollUp || mouse.kind == .scrollDown,
+              error == nil, let snapshot = state?.snapshot, let surface = state?.surface,
+              snapshot.bootID == surface.bootID, surface.projectionRevision <= snapshot.revision,
+              let paneID = snapshot.focusedPaneID,
+              surface.panes.first(where: { $0.focused })?.paneID == paneID,
+              (try? EndpointBridgeInput.mouse(mouse).input()) != nil else { return }
+        sendInput(.mouse(mouse), paneID: paneID)
+    }
+
+    private func sendInput(_ input: EndpointBridgeInput, paneID: String) {
         if let terminalID = state?.surface?.popup?.terminalID {
             enqueue(.popupInput(terminalID: terminalID, input: input))
         } else { enqueue(.input(paneID: paneID, input: input)) }
