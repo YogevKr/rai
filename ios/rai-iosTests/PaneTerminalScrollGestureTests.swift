@@ -94,6 +94,18 @@ final class PaneTerminalScrollGestureTests: XCTestCase {
         XCTAssertEqual(view.contentOffset, .zero, "Codex owns the movement")
     }
 
+    func testFastSwipeAddsBoundedInertialWheelInput() async {
+        pan.velocityValue = CGPoint(x: 0, y: 800)
+        move(2, state: .began)
+        move(2, state: .ended)
+        let inputs = await wheelInputs()
+        XCTAssertEqual(inputs.count, 2)
+        XCTAssertEqual(inputs.map(\.kind), [.scrollUp, .scrollUp])
+        XCTAssertEqual(inputs.first?.lines, 2)
+        XCTAssertGreaterThan(inputs.last?.lines ?? 0, 0)
+        XCTAssertLessThanOrEqual(inputs.last?.lines ?? 0, 60)
+    }
+
     func testShellHorizontalMovementAndSelectionKeepNativeGestures() {
         pan.movement = CGPoint(x: 0, y: 50)
         XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan))
@@ -217,10 +229,11 @@ private final class WheelTestPan: UIPanGestureRecognizer {
     var phase: UIGestureRecognizer.State = .possible
     var point = CGPoint.zero
     var movement = CGPoint.zero
+    var velocityValue: CGPoint?
     override var state: UIGestureRecognizer.State { get { phase } set { phase = newValue } }
     override func location(in view: UIView?) -> CGPoint { point }
     override func translation(in view: UIView?) -> CGPoint { movement }
-    override func velocity(in view: UIView?) -> CGPoint { movement }
+    override func velocity(in view: UIView?) -> CGPoint { velocityValue ?? movement }
 }
 
 private final class WheelInputSink: TerminalViewDelegate {

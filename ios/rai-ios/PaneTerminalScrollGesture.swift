@@ -5,6 +5,10 @@ import UIKit
 /// Swipes over an alternate-screen application send semantic wheel input.
 @MainActor
 final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
+    private static let flingVelocityThreshold: CGFloat = 240
+    private static let flingProjection: CGFloat = 0.18
+    private static let maximumFlingLines = 60
+
     private weak var view: GridReadableTerminalView?
     private var origin: CGPoint?
     private var grid: PaneGridSize?
@@ -105,13 +109,21 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
               target?.alternateScreen == pane.alternateScreen else { cancel(); return }
         let lines = Int(pan.translation(in: view).y / cellHeight)
         let delta = lines - sentLines
-        guard delta != 0 else { return }
         let count = min(abs(delta), 120)
         let width = Int(pane.innerRect.width), height = Int(pane.innerRect.height)
         guard width > 0, height > 0 else { return }
         let column = max(0, min(width - 1, Int(origin.x / cellWidth)))
         let row = max(0, min(height - 1, Int(origin.y / cellHeight)))
-        sendWheel(up: delta > 0, lines: count, column: column, row: row, pane: pane, model: model)
-        sentLines += delta > 0 ? count : -count
+        if delta != 0 {
+            sendWheel(up: delta > 0, lines: count, column: column, row: row, pane: pane, model: model)
+            sentLines += delta > 0 ? count : -count
+        }
+        guard pan.state == .ended else { return }
+        let velocity = pan.velocity(in: view).y
+        guard abs(velocity) >= Self.flingVelocityThreshold else { return }
+        let projected = Int(velocity * Self.flingProjection / cellHeight)
+        guard projected != 0 else { return }
+        let fling = min(abs(projected), Self.maximumFlingLines)
+        sendWheel(up: projected > 0, lines: fling, column: column, row: row, pane: pane, model: model)
     }
 }
