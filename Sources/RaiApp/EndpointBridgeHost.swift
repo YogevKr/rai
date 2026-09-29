@@ -75,13 +75,15 @@ final class EndpointBridgeHost {
         case .close: stop()
         case .resize(let columns, let rows): try resize(columns: columns, rows: rows)
         case .input(let paneID, let input):
-            guard model.acceptsInput, model.surface?.popup == nil,
+            let event = try input.input()
+            guard model.accepts(event), model.surface?.popup == nil,
                   let revision = request.projectionRevision else { throw HerdrEndpointError.busy }
-            model.send(try input.input(), paneID: paneID, bootID: request.bootID, projectionRevision: revision)
+            model.send(event, paneID: paneID, bootID: request.bootID, projectionRevision: revision)
         case .popupInput(let terminalID, let input):
+            let event = try input.input()
             guard model.acceptsInput, model.surface?.popup?.terminalID == terminalID,
                   let revision = request.projectionRevision else { throw HerdrEndpointError.staleIdentity }
-            model.send(try input.input(), bootID: request.bootID, projectionRevision: revision)
+            model.send(event, bootID: request.bootID, projectionRevision: revision)
         case .terminalAction(let action):
             guard model.performTerminalAction(action) else { throw HerdrEndpointError.staleIdentity }
         case .layout(let layout):

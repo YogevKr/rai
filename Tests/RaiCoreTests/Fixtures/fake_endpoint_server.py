@@ -30,11 +30,13 @@ def cell(symbol):
     return text(symbol) + integer(0x02010203) + b"\x00\x01\x00\x00"
 
 
-def surface(projection=3, revision=1, popup=False, content_revision=1, width=1, history_rows=None):
+def surface(projection=3, revision=1, popup=False, content_revision=1, width=1, history_rows=None,
+            alternate_screen=False):
     grid = integer(width) + cell("A") * width + integer(width) + b"\x01\x00\x00\x00"
     rect = b"\x00\x00" + integer(width) + b"\x01"
     scroll = b"\x00" if history_rows is None else b"\x01" + integer(0) + integer(history_rows - 1) + integer(1)
-    pane = text("phone") + integer(content_revision) + rect + rect + b"\x00" + scroll + b"\x01\x00\x00\x00" + integer(width * 8) + integer(16)
+    pane = text("phone") + integer(content_revision) + rect + rect + b"\x00" + scroll \
+        + bytes([1, 0, 0, int(alternate_screen)]) + integer(width * 8) + integer(16)
     modal = b"\x01" + text("popup") + text("Test popup") + b"\x00\x00" + grid + b"\x00\x00\x08\x10" if popup else b"\x00"
     return b"\x0d" + text("boot") + integer(projection) + integer(revision) + grid + b"\x01" + pane + b"\x00" + modal + b"\x00\x00\x00"
 
@@ -209,15 +211,15 @@ class Handler(socketserver.StreamRequestHandler):
                     record.write(json.dumps(request) + "\n")
                 response = dict(id=request["id"], result=dict(type="plugin_pane_opened"))
                 self.send(b"\x12" + text("boot") + text(request["id"]) + b"\x01" + blob(json.dumps(response).encode()))
-        if mode in ("surface", "input_stall", "input_record", "paste", "window_title", "mutation"):
-            self.send(surface())
+        if mode in ("surface", "input_stall", "input_record", "input_record_wheel", "paste", "window_title", "mutation"):
+            self.send(surface(alternate_screen=mode == "input_record_wheel"))
         if mode == "surface":
             self.send(patch())
         if mode == "window_title":
             self.send(b"\x06\x01" + text("Rai scoped title"))
             self.read_message()
             self.send(b"\x06\x00")
-        if mode == "input_record":
+        if mode in ("input_record", "input_record_wheel"):
             while self.read_message() is not None:
                 pass
             return

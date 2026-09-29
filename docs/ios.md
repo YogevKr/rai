@@ -60,6 +60,11 @@ Column changes match styled text across wrapped rows. Deferred resizing retains 
 Ordinary history updates use the final gesture position.
 The outer scroll view controls horizontal movement. The terminal controls vertical movement to prevent double horizontal offsets.
 
+Vertical swipes over the live alternate screen send wheel input to the application.
+Both apps permit these wheel events while the bridge processes another request.
+Text, keys, dragging, and commands remain blocked during that request.
+Update both apps for this behavior. A disconnected pane keeps native scrolling through its saved history.
+
 History requests include a SHA-256 hash when the phone retains the corresponding history.
 The updated Mac returns `scrollbackUnchanged` when the content matches, without sending the history again.
 Changed history receives a complete replacement, including an empty replacement when previous rows disappear.

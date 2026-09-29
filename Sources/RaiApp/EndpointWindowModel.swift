@@ -90,10 +90,24 @@ final class EndpointWindowModel: ObservableObject {
     }
 
     var acceptsInput: Bool {
+        accepts(.text(""))
+    }
+
+    func accepts(_ input: EndpointInput) -> Bool {
         guard let snapshot, let surface else { return false }
-        return error == nil && !busy && surface.bootID == snapshot.bootID
-            && surface.projectionRevision <= snapshot.revision
-            && surface.panes.first(where: \.focused)?.paneID == snapshot.focusedPaneID
+        let wheel: Bool
+        if case .mouse(let mouse) = input {
+            wheel = mouse.isValid && (mouse.kind == .scrollUp || mouse.kind == .scrollDown)
+        } else { wheel = false }
+        guard error == nil, surface.bootID == snapshot.bootID,
+              surface.projectionRevision <= snapshot.revision,
+              surface.panes.first(where: \.focused)?.paneID == snapshot.focusedPaneID else { return false }
+        if busy, wheel {
+            guard surface.popup == nil,
+                  let pane = surface.panes.first(where: \.focused),
+                  pane.mouseReporting || pane.alternateScreen else { return false }
+        } else if busy { return false }
+        return true
     }
 
     func start() {
@@ -710,7 +724,7 @@ final class EndpointWindowModel: ObservableObject {
     }
 
     func send(_ input: EndpointInput, paneID: String? = nil, bootID: String? = nil, projectionRevision: UInt64? = nil) {
-        guard acceptsInput, let endpoint, let snapshot, let pane = snapshot.focusedPaneID else { return }
+        guard accepts(input), let endpoint, let snapshot, let pane = snapshot.focusedPaneID else { return }
         guard paneID == nil || paneID == pane, bootID == nil || bootID == snapshot.bootID else {
             error = HerdrEndpointError.staleIdentity.localizedDescription
             return

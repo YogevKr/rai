@@ -31,6 +31,13 @@ final class EndpointPhoneModel: ObservableObject {
         return snapshot.bootID == surface.bootID && surface.projectionRevision <= snapshot.revision
             && surface.panes.first(where: \.focused)?.paneID == snapshot.focusedPaneID
     }
+    var acceptsWheelInput: Bool {
+        guard error == nil, let snapshot = state?.snapshot, let surface = state?.surface,
+              surface.popup == nil, snapshot.bootID == surface.bootID,
+              surface.projectionRevision <= snapshot.revision,
+              let pane = surface.panes.first(where: \.focused), pane.paneID == snapshot.focusedPaneID else { return false }
+        return pane.mouseReporting || pane.alternateScreen
+    }
 
     func open(connectionID: String, machineEndpoint: MachineEndpoint? = nil, sender: @escaping (EndpointBridgeRequest) async throws -> Void) {
         disconnect()
@@ -139,6 +146,7 @@ final class EndpointPhoneModel: ObservableObject {
     func wheel(_ mouse: EndpointMouse) {
         guard mouse.kind == .scrollUp || mouse.kind == .scrollDown,
               error == nil, let snapshot = state?.snapshot, let surface = state?.surface,
+              surface.popup == nil ? acceptsWheelInput : acceptsInput,
               snapshot.bootID == surface.bootID, surface.projectionRevision <= snapshot.revision,
               let paneID = snapshot.focusedPaneID,
               surface.panes.first(where: { $0.focused })?.paneID == paneID,

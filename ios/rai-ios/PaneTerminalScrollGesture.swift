@@ -2,7 +2,7 @@ import RaiCore
 import SwiftTerm
 import UIKit
 
-/// Swipes over a live mouse-reporting application are wheel input, not button drags.
+/// Swipes over an alternate-screen application send semantic wheel input.
 @MainActor
 final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
     private weak var view: GridReadableTerminalView?
@@ -25,16 +25,16 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
         (terminal.superview as? UIScrollView)?.panGestureRecognizer.require(toFail: pan)
     }
 
-    private var acceptsInput: Bool {
+    private var canSendWheel: Bool {
         guard let view else { return false }
-        guard view.hasLiveFrame, view.terminalDelegate != nil, view.getSelectionRange() == nil,
-              let model = view.scrollModel, model.acceptsInput, let surface = model.state?.surface,
+        guard view.hasLiveFrame, view.getSelectionRange() == nil,
+              let model = view.scrollModel, model.acceptsWheelInput, let surface = model.state?.surface,
               surface.popup == nil, let pane = surface.panes.first(where: { $0.paneID == view.scrollPaneID }) else { return false }
         return pane.focused && (pane.mouseReporting || pane.alternateScreen)
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard acceptsInput, let view,
+        guard canSendWheel, let view,
               let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
         let terminal = view.getTerminal()
@@ -47,7 +47,7 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
     }
 
     func scrollPage(up: Bool) -> Bool {
-        guard acceptsInput, let view, let model = view.scrollModel,
+        guard canSendWheel, let view, let model = view.scrollModel,
               let pane = model.state?.surface?.panes.first(where: { $0.paneID == view.scrollPaneID }),
               view.getTerminal().buffer.yDisp >= view.liveGridStartRow else { return false }
         sendWheel(up: up, lines: min(120, max(1, view.getTerminal().rows - 1)),
@@ -62,7 +62,7 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
             row: Double(pane.innerRect.y) + Double(row) + 0.5,
             kind: up ? .scrollUp : .scrollDown, lines: UInt16(lines)),
               target.paneID == pane.paneID else { return }
-        model.input(.mouse(target.input))
+        model.wheel(target.input)
     }
 
     func cancel() {
@@ -78,7 +78,7 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
         defer {
             if [.ended, .cancelled, .failed].contains(pan.state) { cancel() }
         }
-        guard acceptsInput, let view, let model = view.scrollModel,
+        guard canSendWheel, let view, let model = view.scrollModel,
               let surface = model.state?.surface,
               let pane = surface.panes.first(where: { $0.paneID == view.scrollPaneID }) else { cancel(); return }
         let terminal = view.getTerminal()

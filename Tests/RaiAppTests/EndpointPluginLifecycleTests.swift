@@ -351,6 +351,64 @@ final class EndpointPluginLifecycleTests: XCTestCase {
         }
     }
 
+    func testBusyPhoneHostDeliversVerticalWheelAndBlocksOtherInput() async throws {
+        var pending: CheckedContinuation<JSONValue, Never>?
+        try await withEndpoint(mode: "input_record_wheel", install: { _, _, _ in
+            await withCheckedContinuation { pending = $0 }
+        }) { model, process in
+            for _ in 0..<100 where !model.acceptsInput { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(model.acceptsInput)
+            let identity = EndpointViewIdentity(connectionID: "busy-wheel")
+            var latest: EndpointBridgeState?
+            let host = EndpointBridgeHost(identity: identity, socketPath: model.apiSocketPath, model: model) { state, done in
+                latest = state; done()
+            }
+            defer { pending?.resume(returning: .null); pending = nil; host.stop() }
+            XCTAssertTrue(model.performPlugin(.init(bootID: "boot", operation: .prepareInstall(source: "owner/repo", reference: ""))))
+            for _ in 0..<100 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertNotNil(pending)
+            XCTAssertTrue(model.busy)
+            XCTAssertFalse(model.acceptsInput)
+            XCTAssertTrue(model.surface?.panes.first?.alternateScreen == true)
+
+            let blocked: [EndpointInput] = [.text("blocked"), .paste("blocked"), .key(.init(code: .special(.enter))),
+                .mouse(.init(kind: .drag, button: .left, column: 0, row: 0, columns: 1, rows: 1)),
+                .mouse(.init(kind: .scrollLeft, column: 0, row: 0, columns: 1, rows: 1)),
+                .mouse(.init(kind: .scrollUp, column: 1, row: 0, columns: 1, rows: 1))]
+            for input in blocked {
+                XCTAssertFalse(model.accepts(input))
+                model.send(input)
+            }
+
+            var expected: [String] = []
+            for (index, kind) in [EndpointMouse.Kind.scrollUp, .scrollDown].enumerated() {
+                let mouse = EndpointMouse(kind: kind, column: 0, row: 0, columns: 1, rows: 1, lines: 5)
+                host.handle(.init(identity: identity, sequence: UInt64(index + 1), bootID: "boot", projectionRevision: 3,
+                    operation: .input(paneID: "phone", input: .mouse(mouse))))
+                var frame = Data([13])
+                HerdrEndpointWire.appendString("phone", to: &frame)
+                frame.append(1) // The endpoint resolves the projection to this pane's content revision.
+                EndpointInput.mouse(mouse).encode(to: &frame)
+                expected.append(frame.map { String(format: "%02x", $0) }.joined())
+            }
+            let record = try XCTUnwrap(process.arguments?.last)
+            var received: [String] = []
+            for _ in 0..<200 {
+                received = try String(contentsOfFile: record).split(separator: "\n")
+                    .map(String.init).filter { $0.hasPrefix("0d") }
+                if received.count >= expected.count { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(received, expected)
+            XCTAssertNil(latest?.error)
+            XCTAssertEqual(latest?.sequence, 2)
+            XCTAssertTrue(model.busy)
+            host.handle(.init(identity: identity, sequence: 3, bootID: "boot", operation: .command(.focusPane("phone"))))
+            for _ in 0..<100 where latest?.error == nil { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(latest?.error, HerdrEndpointError.busy.localizedDescription)
+        }
+    }
+
     func testStoppingTheEndpointClearsItsTitle() async throws {
         try await withEndpoint(mode: "window_title", install: { _, _, _ in .object([:]) }) { model, _ in
             for _ in 0..<100 {

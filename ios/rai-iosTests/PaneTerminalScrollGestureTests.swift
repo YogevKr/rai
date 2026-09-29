@@ -61,13 +61,14 @@ final class PaneTerminalScrollGestureTests: XCTestCase {
     }
 
     private func receiveSurface(mouse: Bool = true, alternate: Bool = false,
-                                paneID: String = "w1:p1", columns: Int = 80) throws {
+                                paneID: String = "w1:p1", columns: Int = 80,
+                                snapshotRevision: Int = 1, error: String? = nil) throws {
         let snapshot = try JSONDecoder().decode(HerdrEndpointSnapshot.self,
-            from: JSONSerialization.data(withJSONObject: ["boot_id": "boot", "revision": 1, "focused_pane_id": paneID]))
+            from: JSONSerialization.data(withJSONObject: ["boot_id": "boot", "revision": snapshotRevision, "focused_pane_id": paneID]))
         model.receive(.init(identity: try XCTUnwrap(model.identity), sequence: 1,
             snapshot: snapshot, surface: try EndpointPhoneTestSurface.make(paneID: paneID,
                 mouseReporting: mouse, alternateScreen: alternate, columns: columns, rows: 24),
-            methods: ["pane.focus"], busy: false, error: nil))
+            methods: ["pane.focus"], busy: false, error: error))
     }
 
     private func wheelInputs() async -> [EndpointMouse] {
@@ -114,6 +115,26 @@ final class PaneTerminalScrollGestureTests: XCTestCase {
         XCTAssertTrue(view.panGestureRecognizer.isEnabled)
         move(3, state: .began)
         XCTAssertTrue(sink.inputs.isEmpty)
+    }
+
+    func testStaleSurfaceKeepsNativeScrolling() async throws {
+        try receiveSurface(mouse: false, alternate: true, snapshotRevision: 0)
+        pan.movement = CGPoint(x: 0, y: 50)
+        XCTAssertFalse(gesture.gestureRecognizerShouldBegin(pan))
+        XCTAssertFalse(gesture.scrollPage(up: true))
+        move(3, state: .began)
+        let inputs = await wheelInputs()
+        XCTAssertTrue(inputs.isEmpty)
+    }
+
+    func testEndpointErrorKeepsNativeScrolling() async throws {
+        try receiveSurface(mouse: false, alternate: true, error: "Connection failed")
+        pan.movement = CGPoint(x: 0, y: 50)
+        XCTAssertFalse(gesture.gestureRecognizerShouldBegin(pan))
+        XCTAssertFalse(gesture.scrollPage(up: true))
+        move(3, state: .began)
+        let inputs = await wheelInputs()
+        XCTAssertTrue(inputs.isEmpty)
     }
 
     func testReconnectCancelsTheSwipeUntilANewGesture() async {
