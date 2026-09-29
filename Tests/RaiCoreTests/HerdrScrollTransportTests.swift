@@ -96,7 +96,10 @@ final class HerdrScrollTransportTests: XCTestCase {
             } catch UnixSocketError.lineTooLong(let limit) {
                 XCTAssertEqual(limit, HerdrEndpointWire.maximumFrameBytes)
             }
-            XCTAssertLessThan(started.duration(to: .now), .seconds(3))
+            // The client must give up before its own 5 s request timeout.
+            // Streaming a maximum-size frame through the socket alone takes
+            // about 3 s on a CI runner, so a tighter bound measures the runner.
+            XCTAssertLessThan(started.duration(to: .now), .seconds(5))
             XCTAssertEqual(try String(contentsOf: record).split(separator: "\n").count, 1)
         }
     }
@@ -126,6 +129,26 @@ final class HerdrScrollTransportTests: XCTestCase {
                 let params = try XCTUnwrap(json["params"] as? [String: String])
                 XCTAssertEqual(params, ["target": "w1:p1", "text": prompt])
             }
+        }
+    }
+
+    func testStalledFocusTimesOutWithoutBlockingSnapshots() async throws {
+        try await withServer(mode: "focus_stall") { client, record in
+            let started = ContinuousClock.now
+            let pending = Task { try await client.focusPane("w1:p1", timeout: .milliseconds(200)) }
+            for _ in 0..<100 {
+                if FileManager.default.fileExists(atPath: record.path) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            _ = try await client.snapshot()
+            do {
+                try await pending.value
+                XCTFail("Expected a focus timeout")
+            } catch let error as URLError { XCTAssertEqual(error.code, .timedOut) }
+            XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+            let requests = try String(contentsOf: record).split(separator: "\n")
+            XCTAssertEqual(requests.filter { $0.contains("pane.focus") }.count, 1)
+            XCTAssertEqual(requests.filter { $0.contains("session.snapshot") }.count, 1)
         }
     }
 

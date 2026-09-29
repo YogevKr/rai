@@ -1,4 +1,5 @@
 import XCTest
+import RaiCore
 
 @testable import RaiApp
 
@@ -41,7 +42,27 @@ final class ResumeCommandTests: XCTestCase {
     func testCodexKeepsFlags() {
         XCTAssertEqual(
             RaiModel.resumeCommand(kind: .codex, argv: ["codex", "--full-auto"]),
-            "codex --full-auto resume --last || codex --full-auto"
+            "codex --no-alt-screen --full-auto resume --last || codex --no-alt-screen --full-auto"
+        )
+    }
+
+    func testFallbackLaunchKeepsCodexScrollback() {
+        XCTAssertEqual(RaiModel.agentLaunchCommand(kind: .codex), "codex --no-alt-screen")
+        XCTAssertEqual(RaiModel.agentLaunchCommand(kind: .claude), "claude")
+        XCTAssertEqual(RaiModel.agentLaunchCommand(kind: .muse), "muse")
+    }
+
+    func testCodexDefaultAndExactResumeKeepScrollback() throws {
+        XCTAssertEqual(
+            RaiModel.resumeCommand(kind: .codex, argv: nil),
+            "codex --no-alt-screen resume --last || codex --no-alt-screen"
+        )
+        let session = try JSONDecoder().decode(AgentSession.self, from: Data(
+            #"{"agent":"codex","kind":"id","source":"herdr:codex","value":"session-123"}"#.utf8
+        ))
+        XCTAssertEqual(
+            RaiModel.resumeCommand(kind: .codex, argv: ["codex", "--no-alt-screen"], agentSession: session),
+            "codex --no-alt-screen resume session-123 || codex --no-alt-screen"
         )
     }
 }

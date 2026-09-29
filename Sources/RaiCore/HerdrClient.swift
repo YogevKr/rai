@@ -338,11 +338,10 @@ public actor HerdrClient {
         }
     }
 
-    public func focusPane(_ paneID: String) async throws {
-        let _: JSONValue = try call(
-            method: "pane.focus",
-            params: ["pane_id": .string(paneID)]
-        )
+    public nonisolated func focusPane(_ paneID: String, timeout: Duration = .seconds(5)) async throws {
+        _ = try await boundedRequest(timeout: timeout) { client in
+            try await client.call(method: "pane.focus", params: ["pane_id": .string(paneID)])
+        }
     }
 
     /// Direct scrollback control (protocol 22). Never retry a dispatched write.

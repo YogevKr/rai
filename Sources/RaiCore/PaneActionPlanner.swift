@@ -69,6 +69,15 @@ public enum PaneActionPlanner {
         kind: String,
         paneID: String
     ) -> [String] {
-        ["agent", "start", name, "--kind", kind, "--pane", paneID]
+        let options = interactiveArguments(kind: kind)
+        return ["agent", "start", name, "--kind", kind, "--pane", paneID]
+            + (options.isEmpty ? [] : ["--"] + options)
+    }
+
+    /// Codex's alternate screen retains only the current viewport in Herdr.
+    /// Inline mode keeps prior turns available to Mac and phone scrollback.
+    public static func interactiveArguments(kind: String, arguments: [String] = []) -> [String] {
+        guard kind == "codex", !arguments.contains("--no-alt-screen") else { return arguments }
+        return ["--no-alt-screen"] + arguments
     }
 }
