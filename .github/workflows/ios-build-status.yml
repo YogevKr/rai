@@ -76,6 +76,11 @@ jobs:
                expired: .data.attributes.expired,
                uploadedDate: .data.attributes.uploadedDate}' \
             "$RUNNER_TEMP/build.json" | tee "$RUNNER_TEMP/build-status.json"
+          processing_state=$(jq -r '.data.attributes.processingState // ""' "$RUNNER_TEMP/build.json")
+          if [[ "$processing_state" == "INVALID" || "$processing_state" == "FAILED" ]]; then
+            echo "::error::App Store Connect marked build $BUILD_NUMBER as $processing_state."
+            exit 1
+          fi
 
           "$RUNNER_TEMP/asc" testflight distribution view \
             --build-id "$BUILD_ID" --output json \
