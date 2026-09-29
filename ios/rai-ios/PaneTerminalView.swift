@@ -17,6 +17,7 @@ struct PaneTerminalView: View {
     @State private var selectionSnapshot: TerminalTextSnapshot?
     @State private var destructiveArmed = false
     @State private var lineSendMessage: String?
+    @State private var endpointOwner = UUID()
     @FocusState private var composeFocused: Bool
     @StateObject private var terminalSearch = TerminalSearchController()
     @StateObject private var promptController = TerminalPromptController()
@@ -438,7 +439,10 @@ struct PaneTerminalView: View {
                 }
             }
         }
-        .onDisappear { connection.detachPane(paneID: pane.paneID) }
+        .onDisappear {
+            connection.detachPane(paneID: pane.paneID)
+            connection.closePaneEndpoint(owner: endpointOwner)
+        }
         // A view identity can change while the navigation destination stays
         // visible. Every terminal binding needs its own seed and full frame.
         .task(id: connection.terminalCacheKey(for: pane)) {
@@ -449,6 +453,7 @@ struct PaneTerminalView: View {
                 connection.restoreScrollbackHash(terminal.cachedHistoryHash, paneID: pane.paneID)
             }
             connection.openPane(paneID: pane.paneID, resetStream: true)
+            connection.openPaneEndpoint(pane.paneID, owner: endpointOwner)
         }
         .onChange(of: promptController.focusComposerRequest) { _, _ in
             composeFocused = true
@@ -703,6 +708,8 @@ private struct StreamingTerminalView: UIViewRepresentable {
         context.coordinator.baseWidthFloor = surface.baseWidthFloor
         context.coordinator.charWidth = surface.charWidth
         terminal.terminalDelegate = context.coordinator
+        terminal.scrollModel = connection.endpointView
+        terminal.scrollPaneID = paneID
         context.coordinator.terminal = terminal
         search.terminal = terminal
         prompts.readGrid = { [weak terminal] in
@@ -755,6 +762,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
 
     private func makeSurface() -> TerminalSurface {
         let terminal = GridReadableTerminalView(frame: .zero, font: Self.font)
+        terminal.allowMouseReporting = false
         terminal.nativeBackgroundColor = Self.background
         terminal.nativeForegroundColor = Self.foreground
         terminal.caretColor = Self.foreground
@@ -952,9 +960,30 @@ private struct StreamingTerminalView: UIViewRepresentable {
 /// TUI is just the viewport the bridge drops. The grid then read as "" and
 /// prompt buttons never appeared.
 class GridReadableTerminalView: PhoneLinkTerminalView {
-    // Observation frames can enable terminal mouse mode. Keep UIKit's pan
-    // scrolling history instead of installing SwiftTerm's competing mouse pan.
+    weak var scrollModel: EndpointPhoneModel?
+    var scrollPaneID: String?
+    private var scrollGesture: PaneTerminalScrollGesture?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil, scrollGesture == nil {
+            scrollGesture = PaneTerminalScrollGesture(terminal: self)
+        }
+    }
+
+    // SwiftTerm's mouse pan sends button drags. This pane sends wheel events
+    // through its own recognizer and leaves taps available for text selection.
     override func mouseModeChanged(source: Terminal) {}
+
+    var liveGridStartRow: Int { max(0, bufferRows().count - getTerminal().rows) }
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        if (direction == .up || direction == .down), scrollGesture?.scrollPage(up: direction == .up) == true {
+            UIAccessibility.post(notification: .pageScrolled, argument: nil)
+            return true
+        }
+        return super.accessibilityScroll(direction)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -1006,6 +1035,7 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     var cachedHistoryHash: String? { appliedHistory.map(PaneScrollback.contentHash) }
 
     func suspendHistoryRefresh() {
+        scrollGesture?.cancel()
         historyRetry?.cancel()
         historyRetry = nil
     }
@@ -1215,6 +1245,7 @@ class GridReadableTerminalView: PhoneLinkTerminalView {
     }
 
     func awaitNextConnectionFrame() {
+        scrollGesture?.cancel()
         hasLiveFrame = false
         historyRetry?.cancel()
         historyRetry = nil
