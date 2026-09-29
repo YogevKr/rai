@@ -132,6 +132,26 @@ final class HerdrScrollTransportTests: XCTestCase {
         }
     }
 
+    func testStalledFocusTimesOutWithoutBlockingSnapshots() async throws {
+        try await withServer(mode: "focus_stall") { client, record in
+            let started = ContinuousClock.now
+            let pending = Task { try await client.focusPane("w1:p1", timeout: .milliseconds(200)) }
+            for _ in 0..<100 {
+                if FileManager.default.fileExists(atPath: record.path) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            _ = try await client.snapshot()
+            do {
+                try await pending.value
+                XCTFail("Expected a focus timeout")
+            } catch let error as URLError { XCTAssertEqual(error.code, .timedOut) }
+            XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+            let requests = try String(contentsOf: record).split(separator: "\n")
+            XCTAssertEqual(requests.filter { $0.contains("pane.focus") }.count, 1)
+            XCTAssertEqual(requests.filter { $0.contains("session.snapshot") }.count, 1)
+        }
+    }
+
     func testStalledAgentPromptHasDeadlineWithoutReplay() async throws {
         try await withServer(mode: "prompt_stall") { client, record in
             let start = ContinuousClock.now

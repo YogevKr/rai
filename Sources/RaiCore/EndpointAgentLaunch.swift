@@ -23,7 +23,10 @@ public struct EndpointAgentLaunchRequest: Codable, Equatable, Sendable, Identifi
         return name.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }
     }
     public var params: [String: JSONValue] {
-        ["pane_id": .string(paneID), "name": .string(name), "kind": .string(kind.rawValue), "timeout_ms": .number(10_000)]
+        var params: [String: JSONValue] = ["pane_id": .string(paneID), "name": .string(name), "kind": .string(kind.rawValue), "timeout_ms": .number(10_000)]
+        let arguments = PaneActionPlanner.interactiveArguments(kind: kind.rawValue)
+        if !arguments.isEmpty { params["args"] = .array(arguments.map(JSONValue.string)) }
+        return params
     }
     public func resultAfterLaunch(_ value: JSONValue, focus: () async throws -> Void) async throws -> EndpointAgentLaunchResult {
         try validateResult(value)

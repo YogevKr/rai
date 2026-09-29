@@ -4,164 +4,31 @@
 
 # rai
 
-**A native macOS window for your [herdr](https://herdr.dev) herd.**
+**A native macOS window for your live [herdr](https://herdr.dev) sessions.**
 
-herdr is a terminal multiplexer and live daemon for AI coding agents - but its
-frontend is a TUI. `rai` is a thin, fast native client over herdr's socket API:
-a real AppKit/SwiftUI window with a workspace sidebar, tabs, splits, drag, and
-per-pane terminals - driving the **unchanged** herdr daemon underneath.
-
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-1a1a1a?logo=apple)
-![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-46ce7c)
 [![CI](https://github.com/YogevKr/rai/actions/workflows/ci.yml/badge.svg)](https://github.com/YogevKr/rai/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/YogevKr/rai?sort=semver&display_name=tag&label=download&color=46ce7c)](https://github.com/YogevKr/rai/releases/latest)
+[![Platform](https://img.shields.io/badge/macOS-14%2B-1a1a1a?logo=apple)](https://github.com/YogevKr/rai/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-46ce7c)](LICENSE)
 
 </div>
 
----
+rai is a fast native client for the herdr daemon. Your agents keep running in
+herdr while rai gives you a clear window to watch, guide, and switch between them.
 
-## The name
+## What you get
 
-**rai** comes from the Arabic **رَاعِي** (*rāʿī*) - a *shepherd*, one who tends
-and watches over a flock. It's built on the triliteral root **ر‑ع‑ي** (*r‑ʿ‑y*),
-which carries the sense of pasturing, guarding, and caring for; the same root
-gives **رِعَايَة** (*riʿāya*), "care" or "guardianship."
+- Live workspaces, tabs, splits, and terminal panes.
+- Direct Claude and Codex launch, input broadcast, and command search.
+- Fast typing, scrollback search, copy mode, image paste, and file links.
+- Native notifications for blocked and finished agents.
+- Claude hook beacons for permission and question prompts.
+- Independent windows with separate workspace and pane selection.
+- Drag to reorder. Double-click to rename. Reopen closed tabs and panes.
+- A native iPhone companion for triage, terminals, history, prompts, and alerts.
 
-The fit is deliberate: **herdr** keeps the *herd* of agents; **rai** is the
-shepherd that watches over them - a calm window from which you keep an eye on the
-flock and step in only when one needs you.
-
-## Why
-
-herdr is a **live daemon**: detach and your agents keep running mid-flight;
-reattach to the same live processes, locally or over SSH. That's its edge over
-"save & resume" GUIs that stop processes on quit and reconstruct the layout
-later. `rai` keeps herdr's daemon-grade detach + remote + plugin/agent ecosystem
-and adds the native single-window GUI — no herdr fork, no runtime patches, no
-AppleScript terminal-puppetry. The app is fundamentally **socket client +
-terminal widget**.
-
-## Features
-
-- **Live workspace sidebar** - workspaces → tabs → panes straight from
-  `session.snapshot`, kept live by herdr's event stream (no polling loop).
-- **Real terminal panes** — powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm);
-  type, watch output, search the scrollback (⌘F).
-  Inactive pane views disconnect their display clients after one second. Their agents keep running in Herdr.
-  Rai keeps cached scrollback and reconnects when a pane returns.
-- **Low-latency typing** — confirmed shell echo predicts safe ASCII bursts.
-  TUI modes, copy mode, resizing, and scrollback always clear the prediction.
-  Focus, visibility, and reconnect changes also clear it. A recent 20-confirm
-  tail detects the daemon's bimodal delay. Unmatched output revokes confidence.
-  Local prediction is off by default because silent password prompts cannot be
-  detected. Enable it under Settings → Appearance. Small echoes bypass the
-  display throttle. Local echo measured about 4 ms median and 22 ms p90.
-  After a pause longer than 300 ms, the next key waits for its echo, local and
-  remote.
-  Measure both render paths with:
-  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --scratch-path .build-tests rai-bench --latency --renderer cg`.
-- **Nested splits** — rendered from the daemon's own split geometry and ratios.
-- **Split &amp; launch an agent** — spawn Claude or Codex directly into a new pane.
-- **Broadcast input** — send one command to every pane in a tab.
-- **Drag to reorder** tabs and spaces; **double-click** to rename a tab or pane.
-- **Native notifications** + dock badge when an agent goes *blocked* or *done*.
-- **Claude hook beacons** put real tool requests or questions in notifications
-  and blocked sidebar rows. Rai Remote can answer waiting permission requests.
-- **Command palette** (⌘K) for fuzzy navigation.
-- **Ghostty-matched theme** (Dracula+) with a configurable terminal font, plus
-  Ghostty line-editing key parity, non-ASCII (e.g. Hebrew) input, and image paste
-  that saves screenshots as temporary PNG files and inserts their paths for local agents.
-  Image drops also insert file paths without replacing the clipboard.
-- **Settings** for the herdr server, appearance, plugins, and integrations.
-- **Independent Mac windows** — choose **File → New Window** or press **⇧⌘N** on compatible Herdr 0.9 hosts.
-  Each window keeps its own machine, workspace, tab, and pane selection.
-  Its controls include themes, metadata layouts, worktrees, plugins, notifications, and terminal history.
-  Herdr 0.9 can show another workspace's title after a resize with multiple clients. Pane selection remains independent.
-- **Rai Remote, an iPhone companion** — the whole herd in your pocket. See
-  below.
-
-## Rai Remote — iPhone companion
-
-A native iOS app (`ios/`) that pairs with the Mac over your LAN or Tailscale
-(QR code, deep link, or manual entry) and turns the phone into a shepherd's
-crook for the herd:
-
-- **Triage first** — agents that *need you* float to the top, with Working /
-  Idle groups and per-workspace status. A **Triage groups** toggle in the
-  connection menu turns the groups and the pulse line off for a plain
-  space → tab → pane list.
-- **Useful offline** — the last herd appears at launch with its saved time.
-  Rai mutes cached rows and replaces them after the Mac sends a live snapshot.
-- **Clear connection help** — the phone names DNS, route, listener, TLS,
-  pairing, and missing-herdr failures. Raw connection details remain available.
-  A compact banner shows automatic recovery. Tap its message for the failure details.
-  Saved agent rows stay muted until a fresh snapshot arrives after reconnection.
-  Action errors from older Macs no longer mark a healthy connection as failed.
-- **Live terminals** — the real pane, streamed and colored, with ~1000 lines
-  of scrollback seeded from herdr's history; swipe through what happened
-  while you were away. The live stream starts while scrollback loads.
-- **Select and copy text** — open **Pane actions → Select Text** to capture the terminal buffer.
-  Select, copy, or share that text while the agent continues writing. Tap web links in either view.
-  Remote Mac file paths do not open as local iPhone files.
-- **Workspace View** — open the connection menu, then **Workspace View**, on compatible Herdr 0.9 hosts.
-  Use Actions for history pages and Return to Live Output. Scrollbars overlay the terminal and hide after scrolling stops.
-  Appearance offers System, Light, and Dark modes, plus Always, Auto, and Off pane borders.
-  Open views reconnect after a host restart or app suspension. Closed views stay closed.
-  Terminal images appear in place. Open **Inspect Images** for a captured image view.
-  Open **Commands** for configured Herdr commands, or **Herdr News** for release notes.
-  **Machines** manages local sessions and saved SSH targets, with separate connection state and agent search.
-  **Metadata Layouts** edits ordered rules and previews their colors and text.
-  **Theme Colors** imports Herdr themes and edits shared, light, and dark colors.
-  **Worktrees** lists, creates, opens, and removes worktrees on the selected machine.
-  **History and Search** captures retained output for search, selection, copying, and export.
-  **Agent Prompt** sends one complete prompt. Uncertain delivery requires checking the agent before another submission.
-  **Plugins and Views** manages plugins, integrations, terminal links, and agent filters.
-  **Notifications** shows endpoint notices. Machine notifications open their captured machine and pane.
-  Popup commands display their own terminal and images. Keys and paste go to the active popup.
-  This view owns its pane selection, tab creation, splits, zoom, and closure through the authenticated Mac bridge.
-  It supports semantic keys and paste. Backgrounding releases the view; **Reconnect** opens a fresh view.
-- **Conversation history** — read Claude prompts, replies, tool calls, and
-  results as cards. Search, refresh, load older turns, or jump to your last prompt.
-  History uses the Claude hook's transcript path and session ID. Rai never guesses
-  from a pane directory. Settings → Integrations explains how to enable the hook.
-  Cached history must match the live beacon. Rai marks history without one as previous.
-- **Answer Claude without reading a TUI** — permission, trust, plan, and
-  AskUserQuestion dialogs render as native controls. Wizards show steps,
-  descriptions, checkboxes, free-text entry, and Submit. Each key waits for
-  visible terminal proof. Permission hooks send data decisions, with keys as
-  the fallback for older Macs. Sensitive permission text stays off the lock
-  screen. Background decisions track notification permission and later grants.
-- **Type for real** — a compose bar with quick replies and an agent-aware
-  slash-command palette, or put the keyboard straight into the pty; input
-  rides herdr's key semantics, so Enter submits and Backspace erases. Line
-  actions stop at password prompts. Direct keyboard input remains available.
-- **Launch from anywhere** — Claude, Codex, or a plain terminal, into any
-  workspace or a fresh one at a chosen directory.
-- **Push notifications** (APNs) when agents block or finish. Bursts coalesce,
-  workspaces group, handled alerts retract, and single alerts keep actions.
-- **Phone notification controls** set blocked and finished alerts per paired device.
-  The phone also sets snooze periods and a daily do-not-disturb window.
-  Changes remain pending during reconnects and sync after the next welcome.
-- **Agent status strip** keeps mode, model, effort, agents, and directory above the compose bar.
-- The Mac validates its P-256 APNs key and stores it in an owner-only file.
-
-The Mac side is the hub: a per-device authenticated WebSocket bridge
-(**Settings → iPhone**) that the phone reaches over the LAN or through
-`tailscale serve`. Build, pairing, and push setup live in
-[docs/ios.md](docs/ios.md).
-
-## Requirements
-
-- macOS 14 (Sonoma) or newer
-- [**herdr**](https://herdr.dev) on your `PATH` — rai starts the server itself
-  when the herd it points at is not running
-- Xcode command-line tools / Swift 5.9+ toolchain (to build)
-
-If Herdr is missing, Rai shows installation guidance and a Retry button.
-Install Herdr, then select Retry without closing Rai.
-Rai checks Homebrew, `~/.local/bin`, and absolute directories on `PATH`.
-`HERDR_BIN_PATH` selects one executable. Rai reports a missing override instead of selecting another installation.
+rai uses herdr's socket API. It does not fork herdr or stop your sessions when
+the app closes.
 
 ## Install
 
@@ -173,160 +40,109 @@ brew install --cask yogevkr/tap/rai
 
 ### Download
 
-Grab the latest `.dmg` from the
-[**Releases**](https://github.com/YogevKr/rai/releases/latest) page, open it, and
-drag **Rai** into Applications. The build is a universal binary (Apple Silicon +
-Intel).
-
-Releases are signed with a Developer ID and notarized by Apple, with the ticket
-stapled into both the app and the disk image, so Gatekeeper accepts them on the
-first launch — offline included. (Builds before 0.1.26 were ad-hoc signed and
-needed `xattr -dr com.apple.quarantine`; that is no longer necessary.)
-
-### Updates
-
-Rai checks for a new stable release after launch and every six hours.
-An opaque dialog shows **Update** and **Skip** when a newer version is available.
-**Update** downloads the release, verifies it, installs it, and restarts Rai. Herdr keeps your agent sessions running.
-**Skip** hides that version across launches. A later version will still appear.
-Use **Rai → Check for Updates…** to check again, including a version you skipped.
-
-Installation requires a writable Applications folder. The installer checks the archive hash, Rai's Developer ID signature, and notarization.
-It keeps the previous app in a hidden `.rai-update-*` folder beside Rai for recovery.
-If replacement fails, it restores the previous app. Network failures during automatic checks stay quiet.
-
-### Optional Full Disk Access
-
-Rai shows no Full Disk Access dialog at startup, after installation, or after an upgrade.
-Denied configuration and Claude hook-setting operations offer **File Access Help…** beside the error.
-Select it to review file permissions and optional Full Disk Access. Successful actions and unrelated errors do not offer this help.
-You can also open the guide under **Settings → Herdr Server → Mac Privacy**.
-
-Full Disk Access is optional. It lets Rai and commands running through it access protected files, including other apps’ data.
-To enable it, open **System Settings → Privacy & Security → Full Disk Access** and enable the installed Rai app.
-Quit and reopen Rai when macOS asks. Herdr keeps agent sessions running.
-Rai does not read protected files to test this permission or report an unverified permission status.
+Download the latest signed `.dmg` from the
+[Releases](https://github.com/YogevKr/rai/releases/latest) page. Move Rai to
+Applications and launch it. The release is a universal macOS 14+ app.
 
 ### Build from source
+
+Requirements: macOS 14+, Swift 5.9+, and [herdr](https://herdr.dev) on your
+`PATH`.
 
 ```sh
 git clone https://github.com/YogevKr/rai.git
 cd rai
-./scripts/bundle.sh          # builds and installs Rai Dev.app with a stable signing identity
+./scripts/bundle.sh
 open -a "Rai Dev"
 ```
 
-Or run straight from the package during development:
+For a quick development loop:
 
 ```sh
 swift run rai
 ```
 
-`rai` connects to `~/.config/herdr/herdr.sock` by default. Set
-`HERDR_SOCKET_PATH` to point at a different socket (e.g. a named session).
+Set `HERDR_SOCKET_PATH` to use a named herdr session. Rai starts a stopped
+local server when it can find the herdr executable.
 
-See [docs/TESTING.md](docs/TESTING.md) for the full local workflow: building,
-screenshotting the running app, and end-to-end verification against a live herdr
-daemon without disturbing your running agents.
-
-## Usage
-
-Launch `rai` and the sidebar populates with your live herd. If that herd's server
-is not running, rai starts it and connects once it is ready. Click a tab to
-attach its panes; type as you would in any terminal.
-
-⌘-click a URL or a file path in a pane to open it with its default app.
-Relative paths resolve against the pane's working directory, and `path:line:col`
-citations open the file. A path that does not exist on this Mac only beeps.
-
-### Keyboard shortcuts
+## Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
 | `⌘K` | Command palette |
 | `⌘T` / `⌘W` | New / close tab |
 | `⌃⇥` / `⌃⇧⇥` | Next / previous tab |
-| `⌘1`…`⌘9` | Select tab by index |
+| `⌘1`…`⌘9` | Select tab |
 | `⌘D` / `⌘⇧D` | Split right / down |
 | `⌘⇧W` | Close pane |
-| `⌘⇧T` | Reopen closed tab at its saved position |
-| `⌘⇧P` | Reopen closed split pane |
+| `⌘⇧T` | Reopen closed tab |
+| `⌘⇧P` | Reopen closed pane |
 | `⌘⇧↩` | Zoom pane |
-| `⌥⌘←/→/↑/↓` | Focus pane in direction |
-| `⌘N` | New space (workspace) |
-| `⌘⇧]` / `⌘⇧[` | Next / previous space |
-| `⌘F` / `⌘G` / `⌘⇧G` | Find / next / previous in scrollback |
+| `⌥⌘←/→/↑/↓` | Focus a pane |
+| `⌘N` | New workspace |
+| `⌘⇧]` / `⌘⇧[` | Next / previous workspace |
+| `⌘F` / `⌘G` / `⌘⇧G` | Find in scrollback |
 | `⌘R` | Refresh |
 
-Double-click a tab or pane title to rename it; drag a tab or space in the sidebar
-to reorder. Drop below the final tab to move a tab to the end of that space.
+## Rai Remote
 
-In the main window, **Pane → Reopen Closed Pane** restores the last closed split pane as a right split.
-It restores the working directory and resumes an agent when session data is available.
-If the original tab is absent, Rai uses a pane in the same space.
-If the space is absent, Rai creates it again. Closing the last pane uses tab reopen instead.
+Build the iPhone companion from `ios/`. Pair it from **Settings → iPhone** by
+QR code, deep link, or manual entry. It connects through the authenticated
+bridge on your LAN or Tailscale.
+
+The phone app shows the herd, keeps a useful offline snapshot, streams terminal
+output, supports history and text selection, and sends prompt decisions. It can
+also launch agents, manage machines and worktrees, inspect images, and receive
+push alerts.
+
+See [docs/ios.md](docs/ios.md) for pairing and push setup.
 
 ## How it works
 
-```
-  herdr daemon (unchanged)
-        │  unix socket: ~/.config/herdr/herdr.sock
-        │  newline-delimited JSON-RPC + a live event stream
-        ▼
-  rai (native macOS app)
-   ├─ HerdrClient   session.snapshot + events.subscribe → an observable model
-   ├─ Hook socket   Claude lifecycle JSON → correlated pane beacons
-   ├─ Transcripts   Claude JSONL → paged conversation history
-   ├─ Sidebar/Tabs  SwiftUI/AppKit views bound to that model
-   ├─ PaneView      terminal widget:
-   │                  content   ← pane read / terminal frame stream
-   │                  keystrokes → pane input
-   │                  splits     ← layout snapshots + ratios
-   └─ Bridge        per-device authenticated WebSocket for Rai Remote
-        ▲
-        │  ws:// on the LAN · wss:// via tailscale serve
-  Rai Remote (iPhone)
+```text
+herdr daemon ── Unix socket ── rai macOS app ── authenticated bridge ── iPhone
 ```
 
-rai speaks herdr's documented `herdr.sock` RPC: `session.snapshot` for the tree,
-`events.subscribe` for live deltas (`layout.updated`,
-`pane.created/closed/moved/focused`, `pane.agent_status_changed`, `tab.closed`),
-plus `pane`/`tab`/`workspace`/`agent` methods to drive it. Two connections are
-held open — one for RPC, one for the event push.
+The Mac client reads `session.snapshot`, listens for herdr events, and attaches
+terminal views to live panes. The daemon owns the processes, layouts, and
+scrollback.
 
-### Explore the API without Swift
-
-The `poc/` folder has a small Python client that exercises the same socket, handy
-for poking at herdr directly:
+Explore the socket without Swift:
 
 ```sh
-poc/herdr_client.py tree               # render the live workspace/tab/pane tree
-poc/herdr_client.py watch              # stream live events
-poc/herdr_client.py read <pane_id>     # dump a pane's recent content
+poc/herdr_client.py tree
+poc/herdr_client.py watch
+poc/herdr_client.py read <pane_id>
 poc/herdr_client.py send <pane_id> "echo hi\n"
 ```
 
-## Project layout
+## Test and contribute
 
+Run the focused Swift tests:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --scratch-path .build-tests
 ```
-Sources/RaiApp     SwiftUI/AppKit app — views, terminal panes, settings, commands
-Sources/RaiCore    HerdrClient (socket RPC + event stream), model types, fuzzy match
-Sources/RaiProbe   headless socket probe (rai-probe) for transport checks
-Tests/RaiCoreTests unit tests
-scripts/bundle.sh  builds and installs Rai Dev.app (release channel builds Rai.app)
-poc/               reference Python herdr socket client
-ios/               Rai Remote — the iPhone companion (xcodegen project)
-docs/ios.md        iOS companion app — build, run on device, pairing
-docs/ios-parity.md macOS ↔ iOS parity matrix + backlog
-docs/collie-gap.md feature-gap audit vs collie (the herdr phone PWA)
-docs/TESTING.md    build, screenshot, and safe end-to-end verification workflow
-docs/ROADMAP.md    herdr API coverage + build plan
+
+Use [docs/TESTING.md](docs/TESTING.md) for isolated Mac and iOS app tests,
+Herdr labs, release checks, and end-to-end evidence.
+
+Project map:
+
+```text
+Sources/RaiApp       macOS app and views
+Sources/RaiCore      herdr client, wire types, and shared logic
+Tests                 macOS and shared tests
+ios                   iPhone app and simulator tests
+scripts               build and lab tools
+poc                   Python socket client
 ```
 
 ## Credits
 
-Terminal emulation by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
-(Miguel de Icaza, MIT). Built on top of [herdr](https://herdr.dev).
+Terminal emulation uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
+The app runs on [herdr](https://herdr.dev).
 
 ## License
 

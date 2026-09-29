@@ -133,6 +133,9 @@ class Handler(socketserver.StreamRequestHandler):
         if mode == "prompt_stall" and request["method"] == "agent.prompt":
             self.rfile.read()
             return
+        if mode == "focus_stall" and request["method"] == "pane.focus":
+            self.rfile.read()
+            return
         if mode == "prompt_oversized" and request["method"] == "agent.prompt":
             self.wfile.write(b"x" * (2 * 1024 * 1024 + 1))
             self.wfile.flush()

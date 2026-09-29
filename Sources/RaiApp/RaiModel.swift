@@ -435,7 +435,14 @@ final class RaiModel: ObservableObject {
     var herdrInstallationGuidance: String {
         HerdrCLI.installationGuidance(environment: ProcessInfo.processInfo.environment)
     }
-    @Published var selectedPaneID: String?
+    @Published var selectedPaneID: String? {
+        didSet {
+            if !applyingSnapshotSelection { selectionRevision = UUID() }
+        }
+    }
+    private(set) var selectionRevision = UUID()
+    private var applyingSnapshotSelection = false
+    private var pendingFocusRequest: UUID?
     @Published var draggedPaneID: String?
     // Sidebar reorder drag state (mirrors draggedPaneID) — read synchronously by
     // the drop delegates rather than round-tripping through NSItemProvider.
@@ -1889,9 +1896,17 @@ final class RaiModel: ObservableObject {
             recordVisit(tabID: pane.tabID, workspaceID: pane.workspaceID)
         }
         guard focusInHerdr else { return }
+        let focusRequest = UUID()
+        pendingFocusRequest = focusRequest
         let client = client
         let generation = connectionGeneration
         Task {
+            defer {
+                if pendingFocusRequest == focusRequest {
+                    pendingFocusRequest = nil
+                    selectionRevision = UUID()
+                }
+            }
             do {
                 try await client.focusPane(paneID)
             } catch {
@@ -2459,6 +2474,14 @@ final class RaiModel: ObservableObject {
         argv: [String]?,
         agentSession: AgentSession? = nil
     ) -> String {
+        var argv = argv
+        if kind == .codex {
+            let arguments = argv.flatMap { tokens in
+                tokens.first.map { ($0 as NSString).lastPathComponent } == "codex"
+                    ? Array(tokens.dropFirst()) : nil
+            } ?? []
+            argv = ["codex"] + PaneActionPlanner.interactiveArguments(kind: "codex", arguments: arguments)
+        }
         if agentSession?.agent == kind.rawValue,
            let plan = agentSession?.exactResumePlan(argv: argv) {
             let resume = plan.resumeArgv.map(DroppedPathEscaper.escape)
@@ -3345,9 +3368,11 @@ final class RaiModel: ObservableObject {
         client: HerdrClient,
         generation: UUID
     ) async -> Bool {
+        let requestedSelectionRevision = selectionRevision
         do {
             let newSnapshot = try await client.snapshot()
             guard generation == connectionGeneration else { return false }
+            let previousSnapshot = snapshot
             let connectedState = ConnectionState.connected(
                 version: newSnapshot.version,
                 protocolVersion: newSnapshot.protocol
@@ -3399,15 +3424,12 @@ final class RaiModel: ObservableObject {
             refreshBackgroundWork()
             guard snapshotChanged else { return true }
 
-            let selectionStillValid = selectedPaneID.map { id in
-                newSnapshot.panes.contains { $0.paneID == id }
-            } ?? false
-
-            if !(keepSelection && selectionStillValid) {
-                selectedPaneID = newSnapshot.focusedPaneID
-                    ?? newSnapshot.panes.first(where: \.focused)?.paneID
-                    ?? newSnapshot.panes.first?.paneID
-            }
+            applySnapshotSelection(
+                previous: previousSnapshot,
+                next: newSnapshot,
+                keepSelection: keepSelection,
+                requestedSelectionRevision: requestedSelectionRevision
+            )
 
             snapshotObserver?.raiModel(
                 self,
@@ -3483,6 +3505,65 @@ final class RaiModel: ObservableObject {
             }
             return false
         }
+    }
+
+    func applySnapshotSelection(
+        previous: SessionSnapshot?,
+        next: SessionSnapshot,
+        keepSelection: Bool,
+        requestedSelectionRevision: UUID
+    ) {
+        // Server refreshes must not count as local actions. Otherwise an
+        // overlapping refresh can suppress a later external focus change.
+        applyingSnapshotSelection = true
+        defer { applyingSnapshotSelection = false }
+        selectedPaneID = Self.selectionAfterSnapshot(
+            previous: previous, next: next, current: selectedPaneID,
+            keepSelection: keepSelection,
+            protectLocalSelection: pendingFocusRequest != nil
+                || requestedSelectionRevision != selectionRevision
+        )
+    }
+
+    /// Keep a local selection during ordinary refreshes, but follow a focus
+    /// change made by another Herdr client. The server focus is the only
+    /// reliable signal for an external tab or workspace navigation.
+    static func selectionAfterSnapshot(
+        previous: SessionSnapshot?,
+        next: SessionSnapshot,
+        current: String?,
+        keepSelection: Bool,
+        protectLocalSelection: Bool = false
+    ) -> String? {
+        let serverSelection = next.focusedPaneID.flatMap { focusedID in
+            next.panes.contains { $0.paneID == focusedID } ? focusedID : nil
+        } ?? next.panes.first(where: \.focused)?.paneID
+            ?? next.panes.first?.paneID
+        let currentIsValid = current.map { selectedID in
+            next.panes.contains { $0.paneID == selectedID }
+        } ?? false
+        guard currentIsValid else { return serverSelection }
+        guard !protectLocalSelection else { return current }
+        guard keepSelection else { return serverSelection }
+        guard let previous else { return current }
+        let serverFocusChanged = Self.effectiveFocus(in: previous)
+            != Self.effectiveFocus(in: next)
+        return serverFocusChanged ? serverSelection : current
+    }
+
+    private struct EffectiveFocus: Equatable {
+        let workspaceID: String?
+        let tabID: String?
+        let paneID: String?
+    }
+
+    private static func effectiveFocus(in snapshot: SessionSnapshot) -> EffectiveFocus {
+        let focusedPane = snapshot.panes.first(where: \.focused)
+        return EffectiveFocus(
+            workspaceID: snapshot.focusedWorkspaceID ?? focusedPane?.workspaceID,
+            tabID: snapshot.focusedTabID ?? focusedPane?.tabID,
+            paneID: snapshot.focusedPaneID ?? focusedPane?.paneID
+        )
     }
 
     /// Snapshot changes restart the loop. The cache limits Git work to one
@@ -4361,7 +4442,7 @@ final class RaiModel: ObservableObject {
             guard generation == connectionGeneration else { return }
             if outcome == .safeToRetype {
                 await typeResumeCommand(
-                    kind.rawValue,
+                    Self.agentLaunchCommand(kind: kind),
                     into: agentPaneID,
                     expecting: kind,
                     generation: generation
@@ -4503,7 +4584,7 @@ final class RaiModel: ObservableObject {
             return true
         case .safeToRetype:
             return await typeResumeCommand(
-                kind.rawValue,
+                Self.agentLaunchCommand(kind: kind),
                 into: agentPaneID,
                 expecting: kind,
                 generation: generation
@@ -4511,6 +4592,11 @@ final class RaiModel: ObservableObject {
         case .otherFailure:
             return false
         }
+    }
+
+    static func agentLaunchCommand(kind: AgentLaunchKind) -> String {
+        ([kind.rawValue] + PaneActionPlanner.interactiveArguments(kind: kind.rawValue))
+            .map(DroppedPathEscaper.escape).joined(separator: " ")
     }
 
     /// The root pane of a `workspace create` / `tab create` JSON response —

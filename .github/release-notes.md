@@ -1,14 +1,10 @@
-Rai 0.1.65 improves desktop notifications, terminal scrolling, and tab ordering.
+Rai 0.1.66 improves pane focus, Codex scrolling, CI stability, and the README.
 
-- macOS notifications appear when Rai is on another desktop.
-- Vertical iOS pans scroll the terminal without changing pane selection.
-- Reopened tabs return to their saved position in the space.
-- Use **Pane → Reopen Closed Pane** or **⌘⇧P** to restore a closed split pane.
-- Reopened panes retain their working directory and resume agents when session data is available.
-- Drop a tab below the final tab to keep it at the end of the same space.
-- Terminal scrolling clears prediction overlays and keeps terminal text below pane headers.
-
-Pane recovery creates a right split in the main window. It uses another tab in the space when needed.
+- Rai follows a pane focus change made by another Herdr client.
+- Rai starts and resumes Codex with `--no-alt-screen`, preserving scrollback across messages on Mac and iPhone.
+- Existing Codex sessions need a restart with `codex --no-alt-screen resume` to enable terminal scrollback.
+- The CI timeout matches the request timeout on slower runners.
+- The README now gives the install and feature paths in one short page.
 
 Update through **Rai → Check for Updates…**, download the DMG, or run:
 
