@@ -39,7 +39,9 @@ When an agent or user changes a source resource, Rai sends the action to Herdr. 
 
 An optional Rai API can expose saved view operations later. That API must edit presentation state only. It must not become a second command path for Herdr resources.
 
-The current UI slice opens a Rai View sheet from the primary window. It lists connected Herdr workspaces, saves selected spaces, and opens their panes in a mixed tab.
+The regular Rai window lists saved Rai spaces and tabs beside the existing Herdr spaces.
+Selecting a Rai tab renders its mixed panes in the regular detail area.
+An Add Herdr workspace picker imports source spaces without creating another work screen.
 
 The UI can add a workspace as Rai tabs or add its panes to the selected Rai tab. It uses one endpoint connection and terminal pool per machine session.
 
