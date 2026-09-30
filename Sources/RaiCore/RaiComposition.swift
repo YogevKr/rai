@@ -342,6 +342,36 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
+    /// Reorders a Rai pane slot inside one Rai tab.
+    ///
+    /// This changes local presentation state only. It does not change the
+    /// source pane or send an action to Herdr.
+    public mutating func movePaneSlot(id: UUID, before targetID: UUID?, in tabID: UUID) throws {
+        guard spaces.contains(where: { $0.tabs.contains { $0.id == tabID } }) else {
+            throw RaiCompositionError.missingTab(tabID)
+        }
+
+        var next = self
+        guard let nextSpaceIndex = next.spaces.firstIndex(where: { $0.tabs.contains { $0.id == tabID } }),
+              let nextTabIndex = next.spaces[nextSpaceIndex].tabs.firstIndex(where: { $0.id == tabID }),
+              let sourceIndex = next.spaces[nextSpaceIndex].tabs[nextTabIndex].paneSlots.firstIndex(where: { $0.id == id }) else {
+            throw RaiCompositionError.missingSlot(id)
+        }
+        if let targetID, targetID == id { return }
+
+        let slot = next.spaces[nextSpaceIndex].tabs[nextTabIndex].paneSlots.remove(at: sourceIndex)
+        if let targetID {
+            guard let targetIndex = next.spaces[nextSpaceIndex].tabs[nextTabIndex].paneSlots.firstIndex(where: { $0.id == targetID }) else {
+                throw RaiCompositionError.missingSlot(targetID)
+            }
+            next.spaces[nextSpaceIndex].tabs[nextTabIndex].paneSlots.insert(slot, at: targetIndex)
+        } else {
+            next.spaces[nextSpaceIndex].tabs[nextTabIndex].paneSlots.append(slot)
+        }
+        try next.validate()
+        self = next
+    }
+
     public mutating func attachPaneSlot(
         id: UUID,
         connectionID: String,

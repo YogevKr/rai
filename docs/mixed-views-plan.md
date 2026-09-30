@@ -43,7 +43,12 @@ The current UI slice opens a Rai View sheet from the primary window. It lists co
 
 The UI can add a workspace as Rai tabs or add its panes to the selected Rai tab. It uses one endpoint connection and terminal pool per machine session.
 
-The UI renders a two-column first layout. Later work can add saved pane geometry and drag operations without changing source ownership.
+The UI renders a two-column first layout. Later work can add saved pane
+geometry without changing source ownership.
+
+The current follow-up adds a local Rai tab button and drag reorder for pane
+slots. Rai saves both changes in the existing composition file. The reorder
+changes only the Rai slot order. It never changes Herdr tab or pane ownership.
 
 The UI must keep these rules:
 

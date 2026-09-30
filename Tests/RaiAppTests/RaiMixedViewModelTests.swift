@@ -45,6 +45,25 @@ final class RaiMixedViewModelTests: XCTestCase {
         XCTAssertEqual(try model.resolutions(for: tab.id), [.endpointOffline])
     }
 
+    func testModelReordersAndPersistsMixedPaneSlots() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
+        let space = RaiSpace(label: "Local", source: .init(endpoint: local, workspaceID: "w1"))
+        let first = RaiPaneSlot(source: .init(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p1"))
+        let second = RaiPaneSlot(source: .init(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p2"))
+        let tab = RaiTab(label: "Mixed", paneSlots: [first, second])
+        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
+        XCTAssertTrue(model.addTab(tab, to: space.id))
+        XCTAssertTrue(model.movePaneSlot(second.id, before: first.id, in: tab.id))
+        XCTAssertEqual(model.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
+        XCTAssertTrue(model.save())
+
+        let reloaded = RaiMixedViewModel(store: store)
+        XCTAssertTrue(reloaded.load())
+        XCTAssertEqual(reloaded.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
+    }
+
     func testInvalidCompositionDoesNotReplaceCurrentState() {
         let model = RaiMixedViewModel()
         let original = model.composition

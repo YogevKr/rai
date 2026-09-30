@@ -33,6 +33,14 @@ struct RaiMixedWorkspaceView: View {
                 Button("Done") { dismiss() }
             }
             ToolbarItem {
+                Button {
+                    newTab()
+                } label: {
+                    Label("New Tab", systemImage: "plus")
+                }
+                .disabled(model.composition.spaces.isEmpty)
+            }
+            ToolbarItem {
                 Button("Save") { _ = model.save() }
                     .disabled(model.composition.spaces.isEmpty)
             }
@@ -118,6 +126,15 @@ struct RaiMixedWorkspaceView: View {
                 }
             }
         }
+    }
+
+    private func newTab() {
+        guard let space = model.composition.spaces.first else { return }
+        let number = space.tabs.count + 1
+        let tab = RaiTab(label: "Rai Tab \(number)")
+        guard model.addTab(tab, to: space.id) else { return }
+        selectedTabID = tab.id
+        _ = model.save()
     }
 
     private func syncSessions() {

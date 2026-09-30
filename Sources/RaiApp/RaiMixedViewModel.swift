@@ -97,6 +97,20 @@ final class RaiMixedViewModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func movePaneSlot(_ slotID: UUID, before targetID: UUID?, in tabID: UUID) -> Bool {
+        do {
+            var next = composition
+            try next.movePaneSlot(id: slotID, before: targetID, in: tabID)
+            composition = next
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     func receive(endpoint: MachineEndpoint, connectionID: String, snapshot: HerdrEndpointSnapshot) {
         endpoints[endpoint] = RaiEndpointProjection(
             endpoint: endpoint,
