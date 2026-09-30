@@ -64,6 +64,7 @@ struct RaiMixedWorkspaceView: View {
         .onDisappear {
             for session in sessions.values { session.stop() }
             sessions.removeAll()
+            primaryModel.terminalPool.removeAll()
         }
         .onChange(of: model.composition) { _, value in
             selectedTabID = selectedTabID.flatMap { value.tab(id: $0)?.id }

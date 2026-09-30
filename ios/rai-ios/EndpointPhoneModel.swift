@@ -140,6 +140,7 @@ final class EndpointPhoneModel: ObservableObject {
         guard mouse.kind == .scrollUp || mouse.kind == .scrollDown,
               error == nil, let snapshot = state?.snapshot, let surface = state?.surface,
               snapshot.bootID == surface.bootID, surface.projectionRevision <= snapshot.revision,
+              !busy || surface.popup == nil,
               let paneID = snapshot.focusedPaneID,
               surface.panes.first(where: { $0.focused })?.paneID == paneID,
               (try? EndpointBridgeInput.mouse(mouse).input()) != nil else { return }

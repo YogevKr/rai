@@ -359,6 +359,22 @@ final class EndpointPhoneModelTests: XCTestCase {
         model.disconnect()
     }
 
+    func testPopupWheelInputIsIgnoredWhileBridgeIsBusy() async throws {
+        let model = EndpointPhoneModel()
+        var requests: [EndpointBridgeRequest] = []
+        model.open(connectionID: "mac") { requests.append($0) }
+        let initial = try state(model)
+        let surface = try EndpointPhoneTestSurface.make(popupMouseReporting: true)
+        model.receive(.init(identity: initial.identity, sequence: 1, snapshot: initial.snapshot,
+                            surface: surface, methods: ["pane.scroll"], busy: true, error: nil))
+        let mouse = try XCTUnwrap(surface.mouse(atColumn: 2, row: 2, kind: .scrollUp)?.input)
+        model.wheel(mouse)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(requests.dropFirst().isEmpty)
+        XCTAssertNotNil(model.state)
+        model.disconnect()
+    }
+
     func testPopupMouseReportingPanSurvivesStateUpdates() async throws {
         let model = EndpointPhoneModel()
         var requests: [EndpointBridgeRequest] = []

@@ -17,6 +17,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     private var hasTerminalIDSnapshot = false
     private let metadataClient: HerdrClient
     private weak var projectionModel: RaiMixedViewModel?
+    private let ownsPool: Bool
 
     init(
         endpoint: MachineEndpoint,
@@ -28,6 +29,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     ) {
         self.endpoint = endpoint
         self.projectionModel = projectionModel
+        ownsPool = sharedTerminalPool == nil
         metadataClient = HerdrClient(socketPath: socketPath)
         model = EndpointWindowModel(
             socketPath: socketPath,
@@ -78,6 +80,7 @@ final class RaiMixedEndpointSession: ObservableObject {
         terminalIDTask = nil
         metadataClient.disconnect()
         model.stop()
+        if ownsPool { pool.removeAll() }
         snapshot = nil
         terminalIDs = [:]
         hasTerminalIDSnapshot = false
