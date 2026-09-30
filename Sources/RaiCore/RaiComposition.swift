@@ -6,6 +6,7 @@ public enum RaiCompositionLimits {
     public static let maxPanesPerTab = 16
     public static let maxTabs = 128
     public static let maxPaneSlots = 512
+    public static let maxColumnsPerTab = 4
     public static let maxTextBytes = 256
     public static let maxEncodedBytes = 1_048_576
 }
@@ -156,11 +157,40 @@ public struct RaiTab: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var label: String
     public var paneSlots: [RaiPaneSlot]
+    public var columnCount: Int
 
-    public init(id: UUID = UUID(), label: String = "", paneSlots: [RaiPaneSlot] = []) {
+    public init(
+        id: UUID = UUID(),
+        label: String = "",
+        paneSlots: [RaiPaneSlot] = [],
+        columnCount: Int = 2
+    ) {
         self.id = id
         self.label = label
         self.paneSlots = paneSlots
+        self.columnCount = columnCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, paneSlots, columnCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        label = try container.decode(String.self, forKey: .label)
+        paneSlots = try container.decode([RaiPaneSlot].self, forKey: .paneSlots)
+        columnCount = try container.decodeIfPresent(Int.self, forKey: .columnCount) ?? 2
+        try RaiCompositionValidation.columnCount(columnCount)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try RaiCompositionValidation.columnCount(columnCount)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(paneSlots, forKey: .paneSlots)
+        try container.encode(columnCount, forKey: .columnCount)
     }
 }
 
@@ -271,6 +301,7 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
                     throw RaiCompositionError.duplicateIdentifier(tab.id)
                 }
                 try RaiCompositionValidation.label(tab.label, name: "tab label")
+                try RaiCompositionValidation.columnCount(tab.columnCount)
                 guard tab.paneSlots.count <= RaiCompositionLimits.maxPanesPerTab else {
                     throw RaiCompositionError.limitExceeded("panes per tab")
                 }
@@ -370,6 +401,15 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
         }
         try next.validate()
         self = next
+    }
+
+    public mutating func setColumnCount(_ columnCount: Int, for tabID: UUID) throws {
+        try RaiCompositionValidation.columnCount(columnCount)
+        guard let spaceIndex = spaces.firstIndex(where: { $0.tabs.contains { $0.id == tabID } }),
+              let tabIndex = spaces[spaceIndex].tabs.firstIndex(where: { $0.id == tabID }) else {
+            throw RaiCompositionError.missingTab(tabID)
+        }
+        spaces[spaceIndex].tabs[tabIndex].columnCount = columnCount
     }
 
     public mutating func attachPaneSlot(
@@ -473,5 +513,11 @@ private enum RaiCompositionValidation {
     static func runtime(connectionID: String, bootID: String) throws {
         try text(connectionID, name: "connection identifier")
         try text(bootID, name: "server boot identifier")
+    }
+
+    static func columnCount(_ value: Int) throws {
+        guard (1...RaiCompositionLimits.maxColumnsPerTab).contains(value) else {
+            throw RaiCompositionError.invalid("The Rai tab column count is invalid.")
+        }
     }
 }

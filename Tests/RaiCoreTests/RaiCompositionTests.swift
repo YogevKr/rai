@@ -84,6 +84,25 @@ final class RaiCompositionTests: XCTestCase {
         XCTAssertEqual(composition.tab(id: tab.id)?.paneSlots.map(\.id), [first.id])
     }
 
+    func testTabColumnCountDefaultsForOlderSavedTabsAndValidatesChanges() throws {
+        let tabID = UUID()
+        let legacy = try JSONSerialization.data(withJSONObject: [
+            "id": tabID.uuidString,
+            "label": "Legacy",
+            "paneSlots": [],
+        ])
+        let decoded = try JSONDecoder().decode(RaiTab.self, from: legacy)
+        XCTAssertEqual(decoded.columnCount, 2)
+
+        var composition = RaiComposition(spaces: [space(endpoint: local, workspace: "work")])
+        try composition.addTab(decoded, to: composition.spaces[0].id)
+        try composition.setColumnCount(3, for: tabID)
+        XCTAssertEqual(composition.tab(id: tabID)?.columnCount, 3)
+        XCTAssertThrowsError(try composition.setColumnCount(0, for: tabID)) { error in
+            XCTAssertEqual(error as? RaiCompositionError, .invalid("The Rai tab column count is invalid."))
+        }
+    }
+
     func testSourceIdentityDoesNotUseLabelsOrConnectionIDs() throws {
         let endpoint = MachineEndpoint(profileID: "profile", session: "default")
         let one = RaiPaneReference(endpoint: endpoint, workspaceID: "w", tabID: "t", paneID: "p")

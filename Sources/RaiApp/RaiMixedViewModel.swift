@@ -111,6 +111,20 @@ final class RaiMixedViewModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func setColumnCount(_ columnCount: Int, for tabID: UUID) -> Bool {
+        do {
+            var next = composition
+            try next.setColumnCount(columnCount, for: tabID)
+            composition = next
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     func receive(endpoint: MachineEndpoint, connectionID: String, snapshot: HerdrEndpointSnapshot) {
         endpoints[endpoint] = RaiEndpointProjection(
             endpoint: endpoint,

@@ -55,12 +55,14 @@ final class RaiMixedViewModelTests: XCTestCase {
         let tab = RaiTab(label: "Mixed", paneSlots: [first, second])
         let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
         XCTAssertTrue(model.addTab(tab, to: space.id))
+        XCTAssertTrue(model.setColumnCount(3, for: tab.id))
         XCTAssertTrue(model.movePaneSlot(second.id, before: first.id, in: tab.id))
         XCTAssertEqual(model.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
         XCTAssertTrue(model.save())
 
         let reloaded = RaiMixedViewModel(store: store)
         XCTAssertTrue(reloaded.load())
+        XCTAssertEqual(reloaded.composition.tab(id: tab.id)?.columnCount, 3)
         XCTAssertEqual(reloaded.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
     }
 

@@ -17,6 +17,10 @@ struct RaiMixedTabView: View {
         model.composition.tab(id: tabID)?.paneSlots ?? []
     }
 
+    private var columnCount: Int {
+        model.composition.tab(id: tabID)?.columnCount ?? 2
+    }
+
     var body: some View {
         Group {
             if slots.isEmpty {
@@ -29,12 +33,32 @@ struct RaiMixedTabView: View {
         .task {
             for endpoint in endpoints.values { endpoint.start() }
         }
+        .toolbar {
+            ToolbarItem {
+                Picker("Columns", selection: Binding(
+                    get: { columnCount },
+                    set: { value in
+                        guard model.setColumnCount(value, for: tabID) else { return }
+                        _ = model.save()
+                    }
+                )) {
+                    ForEach(1...RaiCompositionLimits.maxColumnsPerTab, id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .help("Columns in this Rai tab")
+            }
+        }
     }
 
     private var paneGrid: some View {
         let resolutions = (try? model.resolutions(for: tabID)) ?? []
         return ScrollView {
-            LazyVGrid(columns: [GridItem(.flexible(minimum: 280)), GridItem(.flexible(minimum: 280))], spacing: 8) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(minimum: 220)), count: columnCount),
+                spacing: 8
+            ) {
                 ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
                     RaiMixedPaneSlotView(
                         slot: slot,

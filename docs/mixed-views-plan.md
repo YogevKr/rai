@@ -50,6 +50,9 @@ The current follow-up adds a local Rai tab button and drag reorder for pane
 slots. Rai saves both changes in the existing composition file. The reorder
 changes only the Rai slot order. It never changes Herdr tab or pane ownership.
 
+Each Rai tab also saves a local column count from one to four. This changes
+only Rai presentation geometry and does not resize or rearrange Herdr panes.
+
 The UI must keep these rules:
 
 - A source action uses the source endpoint and current boot identity.
