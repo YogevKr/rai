@@ -5,21 +5,36 @@ struct RaiRootView: View {
     @ObservedObject var model: RaiModel
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var mixedController: RaiMixedController
     // Keep the sidebar shown by default (collapsing it would slide the panes under
     // the traffic lights / toggle).
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var showingMixedView = false
+
+    init(model: RaiModel) {
+        self.model = model
+        _mixedController = StateObject(wrappedValue: RaiMixedController(primaryModel: model))
+    }
 
     var body: some View {
         ZStack {
             NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView(model: model)
+                SidebarView(
+                    model: model,
+                    mixedController: mixedController,
+                    onPrimarySelection: mixedController.selectPrimary
+                )
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
-                if showingMixedView {
-                    // Rai View shares the primary terminal pool. Remove the visible
-                    // host before the mixed view attaches those terminal views.
-                    Theme.base.ignoresSafeArea()
+                if let selectedTabID = mixedController.selectedTabID {
+                    RaiMixedTabView(
+                        model: mixedController.model,
+                        tabID: selectedTabID,
+                        endpoints: mixedController.sessions
+                    )
+                    .padding(.top, Theme.contentTopInset)
+                    .background(Theme.base)
+                    .ignoresSafeArea(.container, edges: .top)
+                    .transaction { $0.animation = nil }
                 } else {
                     // No header — the panes fill the whole screen. The selected agent's
                     // details (status · space · cwd) live in the sidebar tab row.
@@ -50,19 +65,13 @@ struct RaiRootView: View {
         }
         .background(WindowConfigurator())
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
+        .task { mixedController.start() }
         .onAppear { settings.updateSystemColorScheme(colorScheme) }
         .onChange(of: colorScheme) { _, value in
             settings.updateSystemColorScheme(value)
         }
-        .toolbar {
-            ToolbarItem {
-                Button("Rai View") { showingMixedView = true }
-                    .accessibilityIdentifier("rai.mixed-view")
-            }
-        }
-        .sheet(isPresented: $showingMixedView) {
-            RaiMixedWorkspaceView(primaryModel: model)
-                .frame(minWidth: 980, minHeight: 640)
+        .sheet(isPresented: $mixedController.sourcePickerPresented) {
+            RaiMixedSourcePicker(controller: mixedController)
         }
     }
 }

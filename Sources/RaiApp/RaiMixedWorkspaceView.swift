@@ -263,19 +263,3 @@ struct RaiMixedWorkspaceView: View {
         } ?? []
     }
 }
-
-private struct MixedWorkspace: Identifiable {
-    let id: String
-    let workspaceID: String
-    let label: String
-    let reference: RaiWorkspaceReference
-}
-
-private struct MixedTab {
-    let id: String
-    let label: String
-}
-
-private struct MixedPane {
-    let id: String
-}

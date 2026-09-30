@@ -9,6 +9,8 @@ extension UTType {
 
 struct SidebarView: View {
     @ObservedObject var model: RaiModel
+    @ObservedObject var mixedController: RaiMixedController
+    let onPrimarySelection: () -> Void
     @State private var broadcastPresented = false
 
     /// Whether the selected space sits in a git checkout. Gates the worktree
@@ -32,6 +34,7 @@ struct SidebarView: View {
                         AgentPanelSection(
                             model: model,
                             listHeight: panel.list,
+                            onPrimarySelection: onPrimarySelection,
                             onDrag: { translation in
                                 guard geometry.size.height > 0 else { return }
                                 model.setSidebarSplit(
@@ -115,6 +118,7 @@ struct SidebarView: View {
                 // This intentionally removes pinned headers. Do not restore
                 // lazy pinning without a macOS 26 CPU regression test.
                 VStack(alignment: .leading, spacing: 2) {
+                    MixedSidebarSection(controller: mixedController)
                     let entries = model.workspaceListEntries
                     let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
                         AttentionFilter.includes(
@@ -166,7 +170,10 @@ struct SidebarView: View {
                                         tab: tab,
                                         label: snapshot.displayLabel(for: tab),
                                         selected: model.selectedTabID == tab.tabID,
-                                        onSelect: { model.select(tab: tab) },
+                                        onSelect: {
+                                            onPrimarySelection()
+                                            model.select(tab: tab)
+                                        },
                                         onPaneDragHover: {
                                             model.previewTabDuringPaneDrag(tab)
                                         },
@@ -182,6 +189,7 @@ struct SidebarView: View {
                                     displayLabel: entry.displayLabel,
                                     displayStatus: entry.displayStatus,
                                     focusedInHerdr: focused,
+                                    onPrimarySelection: onPrimarySelection,
                                     indented: entry.indented,
                                     collapsed: collapsed,
                                     hiddenCount: allTabs.count - visibleTabs.count,
@@ -813,6 +821,7 @@ private struct WorkspaceHeader: View {
     let displayLabel: String
     let displayStatus: AgentStatus
     let focusedInHerdr: Bool
+    let onPrimarySelection: () -> Void
     var indented = false
     var collapsed: Bool = false
     var hiddenCount: Int = 0
@@ -923,7 +932,10 @@ private struct WorkspaceHeader: View {
         }
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
-        .onTapGesture { model.select(workspace: workspace) }
+        .onTapGesture {
+            onPrimarySelection()
+            model.select(workspace: workspace)
+        }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
             return sidebarDragProvider(id: workspace.workspaceID, type: .raiWorkspace)
@@ -943,7 +955,10 @@ private struct WorkspaceHeader: View {
             Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
             Button("New Space") { model.newWorkspace() }
             Divider()
-            Button("Focus") { model.select(workspace: workspace) }
+            Button("Focus") {
+                onPrimarySelection()
+                model.select(workspace: workspace)
+            }
             Button("Rename") { model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
@@ -1793,11 +1808,100 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     }
 }
 
+private struct MixedSidebarSection: View {
+    @ObservedObject var controller: RaiMixedController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Text("RAI")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer()
+                Button {
+                    controller.newTab()
+                } label: {
+                    Image(systemName: "plus.rectangle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .disabled(controller.spaces.isEmpty)
+                .help("New Rai tab")
+                Button {
+                    controller.openSourcePicker()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help("Add Herdr workspace to Rai")
+            }
+            .padding(.horizontal, 11)
+            .padding(.top, 10)
+            .padding(.bottom, 3)
+
+            if controller.spaces.isEmpty {
+                Button {
+                    controller.openSourcePicker()
+                } label: {
+                    Label("Add Herdr workspace", systemImage: "rectangle.stack.badge.plus")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .modifier(SidebarRowChrome(selected: false, hovering: false))
+            } else {
+                ForEach(controller.spaces) { space in
+                    Text(space.label.uppercased())
+                        .font(.system(size: 9.5, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.leading, 18)
+                        .padding(.top, 7)
+                    ForEach(space.tabs) { tab in
+                        Button {
+                            controller.selectTab(tab.id)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "rectangle.split.2x1")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Theme.textTertiary)
+                                Text(tab.label.isEmpty ? "Tab" : tab.label)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text("\(tab.paneSlots.count)")
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .modifier(SidebarRowChrome(
+                            selected: controller.selectedTabID == tab.id,
+                            hovering: false,
+                            indent: 10
+                        ))
+                    }
+                }
+            }
+        }
+        .padding(.bottom, 6)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+}
+
 /// The sidebar's agents panel: every agent pane in the herd, flat, ordered by
 /// who needs you (or by herd order). Mirrors herdr's own agents section.
 private struct AgentPanelSection: View {
     @ObservedObject var model: RaiModel
     let listHeight: CGFloat
+    let onPrimarySelection: () -> Void
     let onDrag: (CGFloat) -> Void
 
     static let headerHeight: CGFloat = 30
@@ -1917,7 +2021,8 @@ private struct AgentPanelSection: View {
                         AgentPanelRow(
                             model: model,
                             entry: entry,
-                            selected: model.selectedPaneID == entry.paneID
+                            selected: model.selectedPaneID == entry.paneID,
+                            onPrimarySelection: onPrimarySelection
                         )
                     }
                 }
@@ -1933,6 +2038,7 @@ private struct AgentPanelRow: View {
     @ObservedObject var model: RaiModel
     let entry: AgentPanelEntry
     let selected: Bool
+    let onPrimarySelection: () -> Void
 
     @State private var hovering = false
 
@@ -1995,6 +2101,7 @@ private struct AgentPanelRow: View {
     }
 
     private func select() {
+        onPrimarySelection()
         model.select(paneID: entry.paneID, focusInHerdr: true)
     }
 }
