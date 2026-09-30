@@ -8,6 +8,7 @@ struct RaiRootView: View {
     // Keep the sidebar shown by default (collapsing it would slide the panes under
     // the traffic lights / toggle).
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showingMixedView = false
 
     var body: some View {
         ZStack {
@@ -46,6 +47,16 @@ struct RaiRootView: View {
         .onAppear { settings.updateSystemColorScheme(colorScheme) }
         .onChange(of: colorScheme) { _, value in
             settings.updateSystemColorScheme(value)
+        }
+        .toolbar {
+            ToolbarItem {
+                Button("Rai View") { showingMixedView = true }
+                    .accessibilityIdentifier("rai.mixed-view")
+            }
+        }
+        .sheet(isPresented: $showingMixedView) {
+            RaiMixedWorkspaceView()
+                .frame(minWidth: 980, minHeight: 640)
         }
     }
 }
