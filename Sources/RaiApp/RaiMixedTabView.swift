@@ -31,20 +31,22 @@ struct RaiMixedTabView: View {
         }
         .background(Theme.base)
         .toolbar {
-            ToolbarItem {
-                Picker("Columns", selection: Binding(
-                    get: { columnCount },
-                    set: { value in
-                        guard model.setColumnCount(value, for: tabID) else { return }
-                        _ = model.save()
+            if !slots.isEmpty {
+                ToolbarItem {
+                    Picker("Columns", selection: Binding(
+                        get: { columnCount },
+                        set: { value in
+                            guard model.setColumnCount(value, for: tabID) else { return }
+                            _ = model.save()
+                        }
+                    )) {
+                        ForEach(1...RaiCompositionLimits.maxColumnsPerTab, id: \.self) { value in
+                            Text("\(value)").tag(value)
+                        }
                     }
-                )) {
-                    ForEach(1...RaiCompositionLimits.maxColumnsPerTab, id: \.self) { value in
-                        Text("\(value)").tag(value)
-                    }
+                    .pickerStyle(.menu)
+                    .help("Columns in this Rai tab")
                 }
-                .pickerStyle(.menu)
-                .help("Columns in this Rai tab")
             }
         }
     }

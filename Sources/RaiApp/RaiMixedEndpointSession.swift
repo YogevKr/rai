@@ -17,6 +17,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     private var terminalIDs: [String: String] = [:]
     private var hasTerminalIDSnapshot = false
     private let metadataClient: HerdrClient
+    private let socketPath: String
     private weak var projectionModel: RaiMixedViewModel?
     private let ownsPool: Bool
     private let configuredAttachExecutable: String?
@@ -35,6 +36,7 @@ final class RaiMixedEndpointSession: ObservableObject {
         self.projectionModel = projectionModel
         ownsPool = sharedTerminalPool == nil
         configuredAttachExecutable = attachExecutable
+        self.socketPath = socketPath
         metadataClient = HerdrClient(socketPath: socketPath)
         model = EndpointWindowModel(
             socketPath: socketPath,
@@ -71,11 +73,14 @@ final class RaiMixedEndpointSession: ObservableObject {
         model.start()
         let client = metadataClient
         let configuredAttachExecutable = configuredAttachExecutable
+        let socketPath = socketPath
         terminalIDTask = Task { [weak self] in
             do {
                 let info = try await client.serverInfo()
                 let executable = try await Self.attachExecutable(
-                    for: info.protocol, localExecutable: configuredAttachExecutable ?? HerdrCLI.resolvedBinaryPath
+                    for: info.protocol,
+                    localExecutable: configuredAttachExecutable ?? HerdrCLI.resolvedBinaryPath,
+                    socketPath: socketPath
                 )
                 try Task.checkCancellation()
                 self?.pool.runtimeExecutable = executable
@@ -110,22 +115,58 @@ final class RaiMixedEndpointSession: ObservableObject {
     }
 
     static func attachExecutable(for protocolVersion: Int, localExecutable: String?,
+                                 socketPath: String? = nil,
                                  archive: HerdrClientArchive = HerdrClientArchive()) async throws -> String {
         if let archived = archive.executable(for: protocolVersion) {
             return archived.path
         }
+        var environment = ProcessInfo.processInfo.environment
+        if let socketPath { environment["HERDR_SOCKET_PATH"] = socketPath }
         guard let local = localExecutable,
-              let result = try? await MachineCommandRunner.capture(
-                  binary: local, arguments: ["api", "schema", "--json"], timeout: 30
-              ), result.status == 0,
-              let schema = try? JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any],
-              let localProtocol = schema["protocol"] as? Int,
+              let localProtocol = await Self.probeProtocol(
+                  executable: local,
+                  environment: environment
+              ),
               localProtocol == protocolVersion else {
             throw HerdrEndpointError.incompatible(
                 "Install a Herdr client that matches this server (protocol \(protocolVersion)), then reconnect."
             )
         }
         return local
+    }
+
+    private static func probeProtocol(
+        executable: String,
+        environment: [String: String]
+    ) async -> Int? {
+        let schemaURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("rai-herdr-schema-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: schemaURL) }
+
+        if let result = try? await MachineCommandRunner.capture(
+            binary: executable,
+            arguments: ["api", "schema", "--output", schemaURL.path],
+            timeout: 30,
+            environment: environment
+        ), result.status == 0,
+           let data = try? Data(contentsOf: schemaURL),
+           let schema = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let localProtocol = schema["protocol"] as? Int {
+            return localProtocol
+        }
+
+        // Small test clients and older Herdr builds print the schema to stdout.
+        // Keep this fallback after --output so full schemas never hit capture's size limit.
+        guard let result = try? await MachineCommandRunner.capture(
+            binary: executable,
+            arguments: ["api", "schema", "--json"],
+            timeout: 30,
+            environment: environment
+        ), result.status == 0,
+        let schema = try? JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any] else {
+            return nil
+        }
+        return schema["protocol"] as? Int
     }
 
     func focus(paneID: String) {
