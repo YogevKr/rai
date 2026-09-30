@@ -30,9 +30,6 @@ struct RaiMixedTabView: View {
             }
         }
         .background(Theme.base)
-        .task {
-            for endpoint in endpoints.values { endpoint.start() }
-        }
         .toolbar {
             ToolbarItem {
                 Picker("Columns", selection: Binding(
@@ -104,7 +101,7 @@ private struct RaiMixedPaneSlotView: View {
                     unavailable("Endpoint is offline")
                 }
             case .endpointOffline:
-                unavailable("Endpoint is offline")
+                unavailable(endpoint?.error ?? "Endpoint is offline")
             case .paneMissing:
                 unavailable("Pane is no longer available")
             case .paneIdentityChanged:

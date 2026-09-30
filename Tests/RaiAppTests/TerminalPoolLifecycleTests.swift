@@ -25,6 +25,15 @@ final class TerminalPoolLifecycleTests: XCTestCase {
         XCTAssertNil(pool.view(for: "term-closed"))
     }
 
+    func testMixedPoolWaitsForSelectedClientBeforeCreatingTerminal() {
+        let pool = TerminalPool(socketPath: socket, requiresRuntimeExecutable: true)
+        defer { pool.removeAll() }
+        XCTAssertNil(pool.view(for: "terminal"))
+        XCTAssertTrue(pool.poolStateForTesting.pooled.isEmpty)
+        pool.runtimeExecutable = "/usr/bin/true"
+        XCTAssertNotNil(pool.view(for: "terminal"))
+    }
+
     func testTerminalHerdrStillReportsIsStillCreated() {
         let pool = TerminalPool(socketPath: socket, attachExecutable: "/usr/bin/true")
         defer { pool.removeAll() }

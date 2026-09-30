@@ -9,6 +9,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     let model: EndpointWindowModel
     let pool: TerminalPool
     @Published private(set) var snapshot: HerdrEndpointSnapshot?
+    @Published private(set) var error: String?
 
     private var snapshotObservation: AnyCancellable?
     private var errorObservation: AnyCancellable?
@@ -18,6 +19,9 @@ final class RaiMixedEndpointSession: ObservableObject {
     private let metadataClient: HerdrClient
     private weak var projectionModel: RaiMixedViewModel?
     private let ownsPool: Bool
+    private let configuredAttachExecutable: String?
+    private var prepared = false
+    private var stopped = false
 
     init(
         endpoint: MachineEndpoint,
@@ -30,21 +34,26 @@ final class RaiMixedEndpointSession: ObservableObject {
         self.endpoint = endpoint
         self.projectionModel = projectionModel
         ownsPool = sharedTerminalPool == nil
+        configuredAttachExecutable = attachExecutable
         metadataClient = HerdrClient(socketPath: socketPath)
         model = EndpointWindowModel(
             socketPath: socketPath,
             machineEndpoint: endpoint,
             machineConnectionID: connectionID
         )
-        pool = sharedTerminalPool ?? TerminalPool(socketPath: socketPath, attachExecutable: attachExecutable)
+        pool = sharedTerminalPool ?? TerminalPool(
+            socketPath: socketPath,
+            attachExecutable: attachExecutable,
+            requiresRuntimeExecutable: true
+        )
         snapshot = model.snapshot
         snapshotObservation = model.$snapshot.sink { [weak self] snapshot in
             self?.receive(snapshot)
         }
         errorObservation = model.$error.sink { [weak self] error in
             guard error != nil, let self else { return }
-            self.snapshot = nil
-            self.projectionModel?.disconnect(endpoint: self.endpoint)
+            self.error = error
+            self.stop()
         }
     }
 
@@ -55,36 +64,68 @@ final class RaiMixedEndpointSession: ObservableObject {
 
     var connectionID: String? { model.machineConnectionID }
     var apiSocketPath: String { model.apiSocketPath }
-    var hasError: Bool { model.error != nil }
+    var hasError: Bool { error != nil }
 
     func start() {
+        guard !stopped, terminalIDTask == nil else { return }
         model.start()
-        terminalIDTask?.cancel()
         let client = metadataClient
+        let configuredAttachExecutable = configuredAttachExecutable
         terminalIDTask = Task { [weak self] in
-            if let info = try? await client.serverInfo(),
-               let executable = HerdrClientArchive().executable(for: info.protocol) {
-                await MainActor.run { self?.pool.runtimeExecutable = executable.path }
-            }
-            while !Task.isCancelled {
-                if let raw = try? await client.snapshot() {
-                    await MainActor.run { self?.mergeTerminalIDs(from: raw) }
+            do {
+                let info = try await client.serverInfo()
+                let executable = try await Self.attachExecutable(
+                    for: info.protocol, localExecutable: configuredAttachExecutable ?? HerdrCLI.resolvedBinaryPath
+                )
+                try Task.checkCancellation()
+                self?.pool.runtimeExecutable = executable
+                self?.prepared = true
+                while !Task.isCancelled {
+                    let raw = try await client.snapshot()
+                    try Task.checkCancellation()
+                    self?.mergeTerminalIDs(from: raw)
+                    try await Task.sleep(for: .seconds(1))
                 }
-                try? await Task.sleep(for: .seconds(1))
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.error = error.localizedDescription
+                self.stop()
             }
         }
     }
 
     func stop() {
+        stopped = true
+        prepared = false
         terminalIDTask?.cancel()
         terminalIDTask = nil
         metadataClient.disconnect()
         model.stop()
-        if ownsPool { pool.removeAll() }
+        // Late SwiftUI updates cannot recreate clients after this session ends.
+        if ownsPool { pool.retain(terminalIDs: []) }
         snapshot = nil
         terminalIDs = [:]
         hasTerminalIDSnapshot = false
         projectionModel?.disconnect(endpoint: endpoint)
+    }
+
+    static func attachExecutable(for protocolVersion: Int, localExecutable: String?,
+                                 archive: HerdrClientArchive = HerdrClientArchive()) async throws -> String {
+        if let archived = archive.executable(for: protocolVersion) {
+            return archived.path
+        }
+        guard let local = localExecutable,
+              let result = try? await MachineCommandRunner.capture(
+                  binary: local, arguments: ["api", "schema", "--json"], timeout: 30
+              ), result.status == 0,
+              let schema = try? JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any],
+              let localProtocol = schema["protocol"] as? Int,
+              localProtocol == protocolVersion else {
+            throw HerdrEndpointError.incompatible(
+                "Install a Herdr client that matches this server (protocol \(protocolVersion)), then reconnect."
+            )
+        }
+        return local
     }
 
     func focus(paneID: String) {
@@ -96,13 +137,13 @@ final class RaiMixedEndpointSession: ObservableObject {
     }
 
     private func receive(_ next: HerdrEndpointSnapshot?) {
-        guard let next else { return }
+        guard !stopped, let next else { return }
         let merged = Self.withTerminalIDs(next, terminalIDs: terminalIDs) ?? next
         snapshot = merged
         if hasTerminalIDSnapshot {
             pool.retain(terminalIDs: Set(terminalIDs.values))
         }
-        guard let connectionID else { return }
+        guard prepared, let connectionID else { return }
         projectionModel?.receive(endpoint: endpoint, connectionID: connectionID, snapshot: merged)
     }
 

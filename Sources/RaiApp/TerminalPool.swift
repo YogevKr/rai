@@ -19,6 +19,7 @@ final class TerminalPool {
     private var recency: LRUTracker<String>
     private var socketPath: String
     private let attachExecutable: String?
+    private let requiresRuntimeExecutable: Bool
     var runtimeExecutable: String? {
         didSet {
             guard attachExecutable == nil, let runtimeExecutable else { return }
@@ -49,11 +50,13 @@ final class TerminalPool {
     init(
         capacity: Int = TerminalPool.minimumCapacity,
         socketPath: String = HerdrClient.defaultSocketPath(),
-        attachExecutable: String? = nil
+        attachExecutable: String? = nil,
+        requiresRuntimeExecutable: Bool = false
     ) {
         recency = LRUTracker(capacity: capacity)
         self.socketPath = socketPath
         self.attachExecutable = attachExecutable
+        self.requiresRuntimeExecutable = requiresRuntimeExecutable
         // Re-theme + repaint every live terminal the instant the palette changes
         // (RunLoop.main delivery lands after the @Published value has updated).
         themeObserver = SettingsStore.shared.objectWillChange
@@ -104,7 +107,8 @@ final class TerminalPool {
         if let knownTerminalIDs, !knownTerminalIDs.contains(terminalID) {
             return nil
         }
-        guard let executable = attachExecutable ?? runtimeExecutable ?? HerdrCLI.resolvedBinaryPath else { return nil }
+        guard let executable = attachExecutable ?? runtimeExecutable
+                ?? (requiresRuntimeExecutable ? nil : HerdrCLI.resolvedBinaryPath) else { return nil }
 
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font

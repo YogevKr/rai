@@ -80,6 +80,18 @@ final class RaiMixedViewModelTests: XCTestCase {
         XCTAssertNotNil(model.error)
     }
 
+    func testNewTabUsesSelectedSpaceAndFallsBackWhenSelectionIsMissing() throws {
+        let first = RaiSpace(source: .init(endpoint: local, workspaceID: "w1"), tabs: [RaiTab()])
+        let second = RaiSpace(source: .init(endpoint: local, workspaceID: "w2"), tabs: [RaiTab()])
+        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [first, second]))
+        let added = try XCTUnwrap(model.newTab(after: second.tabs[0].id))
+        XCTAssertEqual(model.composition.spaces[0].tabs, first.tabs)
+        XCTAssertEqual(model.composition.spaces[1].tabs.last?.id, added)
+        let fallback = try XCTUnwrap(model.newTab(after: UUID()))
+        XCTAssertEqual(model.composition.spaces[0].tabs.last?.id, fallback)
+        XCTAssertNil(RaiMixedViewModel().newTab(after: nil))
+    }
+
     private func snapshot() throws -> HerdrEndpointSnapshot {
         let object: [String: Any] = [
             "boot_id": "boot",

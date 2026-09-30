@@ -115,6 +115,9 @@ struct RaiMixedWorkspaceView: View {
                         Label(entry.label, systemImage: entry.health == .online ? "arrow.clockwise" : "link")
                     }
                     .disabled(entry.connectionID == nil || machines.resolve(entry.endpoint, connectionID: entry.connectionID ?? "") == nil)
+                    if let error = session?.error {
+                        Text(error).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -143,11 +146,8 @@ struct RaiMixedWorkspaceView: View {
     }
 
     private func newTab() {
-        guard let space = model.composition.spaces.first else { return }
-        let number = space.tabs.count + 1
-        let tab = RaiTab(label: "Rai Tab \(number)")
-        guard model.addTab(tab, to: space.id) else { return }
-        selectedTabID = tab.id
+        guard let tabID = model.newTab(after: selectedTabID) else { return }
+        selectedTabID = tabID
         _ = model.save()
     }
 

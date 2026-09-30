@@ -97,6 +97,15 @@ final class RaiMixedViewModel: ObservableObject {
         }
     }
 
+    func newTab(after selectedTabID: UUID?) -> UUID? {
+        let space = composition.spaces.first { space in
+            space.tabs.contains { $0.id == selectedTabID }
+        } ?? composition.spaces.first
+        guard let space else { return nil }
+        let tab = RaiTab(label: "Rai Tab \(space.tabs.count + 1)")
+        return addTab(tab, to: space.id) ? tab.id : nil
+    }
+
     @discardableResult
     func movePaneSlot(_ slotID: UUID, before targetID: UUID?, in tabID: UUID) -> Bool {
         do {
