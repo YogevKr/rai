@@ -55,7 +55,7 @@ struct RaiRootView: View {
             }
         }
         .sheet(isPresented: $showingMixedView) {
-            RaiMixedWorkspaceView()
+            RaiMixedWorkspaceView(primaryModel: model)
                 .frame(minWidth: 980, minHeight: 640)
         }
     }

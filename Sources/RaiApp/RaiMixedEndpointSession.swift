@@ -13,6 +13,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     private var snapshotObservation: AnyCancellable?
     private var terminalIDTask: Task<Void, Never>?
     private var terminalIDs: [String: String] = [:]
+    private var hasTerminalIDSnapshot = false
     private let metadataClient: HerdrClient
     private weak var projectionModel: RaiMixedViewModel?
 
@@ -21,6 +22,7 @@ final class RaiMixedEndpointSession: ObservableObject {
         connectionID: String,
         socketPath: String,
         attachExecutable: String? = nil,
+        sharedTerminalPool: TerminalPool? = nil,
         projectionModel: RaiMixedViewModel? = nil
     ) {
         self.endpoint = endpoint
@@ -31,14 +33,20 @@ final class RaiMixedEndpointSession: ObservableObject {
             machineEndpoint: endpoint,
             machineConnectionID: connectionID
         )
-        pool = TerminalPool(socketPath: socketPath, attachExecutable: attachExecutable)
+        pool = sharedTerminalPool ?? TerminalPool(socketPath: socketPath, attachExecutable: attachExecutable)
         snapshot = model.snapshot
         snapshotObservation = model.$snapshot.sink { [weak self] snapshot in
             self?.receive(snapshot)
         }
     }
 
+    deinit {
+        terminalIDTask?.cancel()
+        metadataClient.disconnect()
+    }
+
     var connectionID: String? { model.machineConnectionID }
+    var apiSocketPath: String { model.apiSocketPath }
 
     func start() {
         model.start()
@@ -60,6 +68,8 @@ final class RaiMixedEndpointSession: ObservableObject {
         metadataClient.disconnect()
         model.stop()
         snapshot = nil
+        terminalIDs = [:]
+        hasTerminalIDSnapshot = false
         projectionModel?.disconnect(endpoint: endpoint)
     }
 
@@ -75,12 +85,16 @@ final class RaiMixedEndpointSession: ObservableObject {
         guard let next else { return }
         let merged = Self.withTerminalIDs(next, terminalIDs: terminalIDs) ?? next
         snapshot = merged
+        if hasTerminalIDSnapshot {
+            pool.retain(terminalIDs: Set(terminalIDs.values))
+        }
         guard let connectionID else { return }
         projectionModel?.receive(endpoint: endpoint, connectionID: connectionID, snapshot: merged)
     }
 
     private func mergeTerminalIDs(from raw: SessionSnapshot) {
         terminalIDs = Dictionary(uniqueKeysWithValues: raw.panes.map { ($0.paneID, $0.terminalID) })
+        hasTerminalIDSnapshot = true
         receive(snapshot)
     }
 

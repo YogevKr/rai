@@ -4,6 +4,7 @@ import SwiftUI
 /// Basic editor for the first mixed view slice.
 /// It keeps the existing Rai window and default Herdr session unchanged.
 struct RaiMixedWorkspaceView: View {
+    @ObservedObject var primaryModel: RaiModel
     @StateObject private var model = RaiMixedViewModel()
     @ObservedObject private var machines = MachineDirectory.shared
     @Environment(\.dismiss) private var dismiss
@@ -52,6 +53,15 @@ struct RaiMixedWorkspaceView: View {
             syncSessions()
         }
         .onChange(of: machines.state) { _, _ in syncSessions() }
+        .onChange(of: primaryModel.activeSocketPath) { _, _ in
+            for session in sessions.values { session.stop() }
+            sessions.removeAll()
+            syncSessions()
+        }
+        .onDisappear {
+            for session in sessions.values { session.stop() }
+            sessions.removeAll()
+        }
         .onChange(of: model.composition) { _, value in
             selectedTabID = selectedTabID.flatMap { value.tab(id: $0)?.id }
                 ?? value.tabs.first?.id
@@ -159,13 +169,18 @@ struct RaiMixedWorkspaceView: View {
     private func connect(_ entry: MachineEntry) {
         guard let connectionID = entry.connectionID,
               let socketPath = machines.resolve(entry.endpoint, connectionID: connectionID) else { return }
-        if let session = sessions[entry.endpoint], session.connectionID == connectionID { return }
+        let sharesPrimaryPool = socketPath == primaryModel.activeSocketPath
+        if let session = sessions[entry.endpoint],
+           session.connectionID == connectionID,
+           session.apiSocketPath == socketPath,
+           (sharesPrimaryPool == (session.pool === primaryModel.terminalPool)) { return }
         sessions[entry.endpoint]?.stop()
         model.disconnect(endpoint: entry.endpoint)
         let session = RaiMixedEndpointSession(
             endpoint: entry.endpoint,
             connectionID: connectionID,
             socketPath: socketPath,
+            sharedTerminalPool: sharesPrimaryPool ? primaryModel.terminalPool : nil,
             projectionModel: model
         )
         sessions[entry.endpoint] = session
