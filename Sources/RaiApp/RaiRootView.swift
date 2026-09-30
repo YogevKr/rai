@@ -16,15 +16,21 @@ struct RaiRootView: View {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
-                // No header — the panes fill the whole screen. The selected agent's
-                // details (status · space · cwd) live in the sidebar tab row.
-                PaneLayoutView(model: model)
-                    .padding(.top, Theme.contentTopInset)
-                    .background(Theme.base)
-                    .ignoresSafeArea(.container, edges: .top)
-                    // Never animate the detail's own layout — otherwise toggling the
-                    // sidebar makes its top briefly jump (and the terminals flicker).
-                    .transaction { $0.animation = nil }
+                if showingMixedView {
+                    // Rai View shares the primary terminal pool. Remove the visible
+                    // host before the mixed view attaches those terminal views.
+                    Theme.base.ignoresSafeArea()
+                } else {
+                    // No header — the panes fill the whole screen. The selected agent's
+                    // details (status · space · cwd) live in the sidebar tab row.
+                    PaneLayoutView(model: model)
+                        .padding(.top, Theme.contentTopInset)
+                        .background(Theme.base)
+                        .ignoresSafeArea(.container, edges: .top)
+                        // Never animate the detail's own layout — otherwise toggling the
+                        // sidebar makes its top briefly jump (and the terminals flicker).
+                        .transaction { $0.animation = nil }
+                }
             }
             // Collapse/expand the sidebar instantly.
             .animation(nil, value: columnVisibility)

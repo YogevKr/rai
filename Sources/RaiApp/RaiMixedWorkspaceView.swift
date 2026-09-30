@@ -47,6 +47,9 @@ struct RaiMixedWorkspaceView: View {
             }
         }
         .task {
+            // The primary view is hidden while this sheet is open. Reap its
+            // hosts before the shared pool attaches them to the mixed grid.
+            primaryModel.terminalPool.removeAll()
             _ = model.load()
             await machines.perform(.init(revision: machines.state.revision, operation: .refresh))
             selectedTabID = selectedTabID ?? model.composition.tabs.first?.id

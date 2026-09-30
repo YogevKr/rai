@@ -11,6 +11,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     @Published private(set) var snapshot: HerdrEndpointSnapshot?
 
     private var snapshotObservation: AnyCancellable?
+    private var errorObservation: AnyCancellable?
     private var terminalIDTask: Task<Void, Never>?
     private var terminalIDs: [String: String] = [:]
     private var hasTerminalIDSnapshot = false
@@ -38,6 +39,11 @@ final class RaiMixedEndpointSession: ObservableObject {
         snapshotObservation = model.$snapshot.sink { [weak self] snapshot in
             self?.receive(snapshot)
         }
+        errorObservation = model.$error.sink { [weak self] error in
+            guard error != nil, let self else { return }
+            self.snapshot = nil
+            self.projectionModel?.disconnect(endpoint: self.endpoint)
+        }
     }
 
     deinit {
@@ -53,6 +59,10 @@ final class RaiMixedEndpointSession: ObservableObject {
         terminalIDTask?.cancel()
         let client = metadataClient
         terminalIDTask = Task { [weak self] in
+            if let info = try? await client.serverInfo(),
+               let executable = HerdrClientArchive().executable(for: info.protocol) {
+                await MainActor.run { self?.pool.runtimeExecutable = executable.path }
+            }
             while !Task.isCancelled {
                 if let raw = try? await client.snapshot() {
                     await MainActor.run { self?.mergeTerminalIDs(from: raw) }

@@ -709,8 +709,9 @@ final class EndpointWindowModel: ObservableObject {
         send(paste ? .paste(text) : .text(text))
     }
 
-    func send(_ input: EndpointInput, paneID: String? = nil, bootID: String? = nil, projectionRevision: UInt64? = nil) {
-        guard acceptsInput, let endpoint, let snapshot, let pane = snapshot.focusedPaneID else { return }
+    func send(_ input: EndpointInput, paneID: String? = nil, bootID: String? = nil,
+              projectionRevision: UInt64? = nil, allowBusy: Bool = false) {
+        guard (allowBusy || acceptsInput), let endpoint, let snapshot, let pane = snapshot.focusedPaneID else { return }
         guard paneID == nil || paneID == pane, bootID == nil || bootID == snapshot.bootID else {
             error = HerdrEndpointError.staleIdentity.localizedDescription
             return

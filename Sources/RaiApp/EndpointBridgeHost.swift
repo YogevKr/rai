@@ -75,9 +75,12 @@ final class EndpointBridgeHost {
         case .close: stop()
         case .resize(let columns, let rows): try resize(columns: columns, rows: rows)
         case .input(let paneID, let input):
-            guard model.acceptsInput, model.surface?.popup == nil,
+            let decoded = try input.input()
+            let allowBusyWheel = acceptsBusyWheel(decoded, paneID: paneID)
+            guard (model.acceptsInput || allowBusyWheel), model.surface?.popup == nil,
                   let revision = request.projectionRevision else { throw HerdrEndpointError.busy }
-            model.send(try input.input(), paneID: paneID, bootID: request.bootID, projectionRevision: revision)
+            model.send(decoded, paneID: paneID, bootID: request.bootID, projectionRevision: revision,
+                       allowBusy: allowBusyWheel)
         case .popupInput(let terminalID, let input):
             guard model.acceptsInput, model.surface?.popup?.terminalID == terminalID,
                   let revision = request.projectionRevision else { throw HerdrEndpointError.staleIdentity }
@@ -113,6 +116,21 @@ final class EndpointBridgeHost {
                 model.perform(rpc.method, params: rpc.params)
             }
         }
+    }
+
+    private func acceptsBusyWheel(_ input: EndpointInput, paneID: String) -> Bool {
+        guard case .mouse(let mouse) = input,
+              mouse.kind == .scrollUp || mouse.kind == .scrollDown,
+              model.error == nil,
+              let snapshot = model.snapshot,
+              let surface = model.surface,
+              surface.popup == nil,
+              surface.bootID == snapshot.bootID,
+              surface.projectionRevision <= snapshot.revision,
+              let pane = surface.panes.first(where: { $0.paneID == paneID }),
+              pane.focused,
+              pane.alternateScreen else { return false }
+        return true
     }
 
     private func resize(columns: Int, rows: Int) throws {
