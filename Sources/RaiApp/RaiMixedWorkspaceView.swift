@@ -176,6 +176,7 @@ struct RaiMixedWorkspaceView: View {
         if let session = sessions[entry.endpoint],
            session.connectionID == connectionID,
            session.apiSocketPath == socketPath,
+           !session.hasError,
            (sharesPrimaryPool == (session.pool === primaryModel.terminalPool)) { return }
         sessions[entry.endpoint]?.stop()
         model.disconnect(endpoint: entry.endpoint)

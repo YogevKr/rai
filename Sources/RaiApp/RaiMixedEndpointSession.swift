@@ -53,6 +53,7 @@ final class RaiMixedEndpointSession: ObservableObject {
 
     var connectionID: String? { model.machineConnectionID }
     var apiSocketPath: String { model.apiSocketPath }
+    var hasError: Bool { model.error != nil }
 
     func start() {
         model.start()
