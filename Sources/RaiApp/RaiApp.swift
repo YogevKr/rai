@@ -6,10 +6,19 @@ private struct PrimaryRaiWindowFocusKey: FocusedValueKey {
     typealias Value = Bool
 }
 
+private struct MixedRaiWindowFocusKey: FocusedValueKey {
+    typealias Value = RaiMixedController
+}
+
 extension FocusedValues {
     var primaryRaiWindow: Bool? {
         get { self[PrimaryRaiWindowFocusKey.self] }
         set { self[PrimaryRaiWindowFocusKey.self] = newValue }
+    }
+
+    var mixedRaiWindow: RaiMixedController? {
+        get { self[MixedRaiWindowFocusKey.self] }
+        set { self[MixedRaiWindowFocusKey.self] = newValue }
     }
 }
 
@@ -37,11 +46,12 @@ struct RaiApp: App {
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.endpointWindow) private var endpointWindow
     @FocusedValue(\.primaryRaiWindow) private var primaryWindow
+    @FocusedValue(\.mixedRaiWindow) private var mixedWindow
 
     var body: some Scene {
-        WindowGroup {
-            RaiRootView(model: model)
-                .focusedSceneValue(\.primaryRaiWindow, true)
+            WindowGroup {
+                RaiRootView(model: model)
+                    .focusedSceneValue(\.primaryRaiWindow, true)
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
@@ -78,25 +88,51 @@ struct RaiApp: App {
                     .disabled(appUpdates.isPresented)
               } else {
               Group {
-                Button("New Tab") { model.newTab() }
+                Button("New Tab") {
+                    if let mixedWindow, mixedWindow.isMixedSelected {
+                        mixedWindow.newTab()
+                    } else {
+                        model.newTab()
+                    }
+                }
                     .keyboardShortcut("t", modifiers: .command)
                 Button("Reopen Closed Tab") { model.reopenClosedTab() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
-                    .disabled(!model.canReopenClosedTab)
+                    .disabled(mixedWindow?.isMixedSelected == true || !model.canReopenClosedTab)
                 Button("Close Tab") {
-                    guard primaryWindow == true, !appUpdates.isPresented else { return }
+                    guard primaryWindow == true,
+                          mixedWindow?.isMixedSelected != true,
+                          !appUpdates.isPresented else { return }
                     model.closeTab()
                 }
                     .keyboardShortcut(primaryWindow == true ? KeyboardShortcut("w", modifiers: .command) : nil)
-                    .disabled(primaryWindow != true || appUpdates.isPresented)
+                    .disabled(primaryWindow != true || mixedWindow?.isMixedSelected == true || appUpdates.isPresented)
                 Divider()
-                Button("Next Tab") { model.nextTab() }
+                Button("Next Tab") {
+                    if let mixedWindow, mixedWindow.isMixedSelected {
+                        mixedWindow.cycleTab(by: 1)
+                    } else {
+                        model.nextTab()
+                    }
+                }
                     .keyboardShortcut(.tab, modifiers: .control)
-                Button("Previous Tab") { model.prevTab() }
+                Button("Previous Tab") {
+                    if let mixedWindow, mixedWindow.isMixedSelected {
+                        mixedWindow.cycleTab(by: -1)
+                    } else {
+                        model.prevTab()
+                    }
+                }
                     .keyboardShortcut(.tab, modifiers: [.control, .shift])
                 Divider()
                 ForEach(1...9, id: \.self) { n in
-                    Button("Select Tab \(n)") { model.selectTab(index: n - 1) }
+                    Button("Select Tab \(n)") {
+                        if let mixedWindow, mixedWindow.isMixedSelected {
+                            mixedWindow.selectTab(index: n - 1)
+                        } else {
+                            model.selectTab(index: n - 1)
+                        }
+                    }
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
               }
@@ -155,6 +191,7 @@ struct RaiApp: App {
                 Button("Focus Down") { model.focusPane("down") }
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
               }
+              .disabled(mixedWindow?.isMixedSelected == true)
               }
             }
 
@@ -174,7 +211,7 @@ struct RaiApp: App {
                     )
                     .disabled(model.agentPanelEntries.count < n)
                 }
-                .disabled(endpointWindow != nil)
+                .disabled(endpointWindow != nil || mixedWindow?.isMixedSelected == true)
             }
 
             CommandMenu("Space") {
@@ -189,19 +226,21 @@ struct RaiApp: App {
                 Button("Previous Space") { model.prevWorkspace() }
                     .keyboardShortcut("[", modifiers: [.command, .shift])
               }
+              .disabled(mixedWindow?.isMixedSelected == true)
               }
             }
 
             CommandGroup(after: .toolbar) {
                 Button("Command Palette…") { model.toggleCommandPalette() }
                     .keyboardShortcut("k", modifiers: .command)
-                    .disabled(endpointWindow != nil)
+                    .disabled(endpointWindow != nil || mixedWindow?.isMixedSelected == true)
                 Divider()
                 Button("Refresh") {
                     if let endpointWindow { endpointWindow.reconnect() }
                     else { model.refreshNow() }
                 }
                     .keyboardShortcut("r", modifiers: .command)
+                    .disabled(mixedWindow?.isMixedSelected == true)
             }
 
             // Scrollback search: route the standard Find actions to whichever

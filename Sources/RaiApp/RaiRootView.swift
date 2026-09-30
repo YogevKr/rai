@@ -73,6 +73,7 @@ struct RaiRootView: View {
         .sheet(isPresented: $mixedController.sourcePickerPresented) {
             RaiMixedSourcePicker(controller: mixedController)
         }
+        .focusedSceneValue(\.mixedRaiWindow, mixedController)
     }
 }
 
