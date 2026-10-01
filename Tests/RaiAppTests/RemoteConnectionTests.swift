@@ -68,4 +68,16 @@ final class RemoteConnectionTests: XCTestCase {
             RemoteConnection.clientSocketPath(for: connection.localSocketPath)
         )
     }
+
+    func testLocalSwitchKeepsAnExistingParkedRemoteConnection() {
+        let parked = RemoteConnection(
+            target: "user@host",
+            sessionName: "review",
+            remoteSocketPath: "/home/user/.config/herdr/sessions/review/herdr.sock"
+        )
+        XCTAssertIdentical(
+            RaiModel.connectionToKeepDuringLocalSwitch(active: nil, parked: parked),
+            parked
+        )
+    }
 }

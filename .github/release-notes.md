@@ -1,9 +1,9 @@
-Rai 0.1.68 fixes alternate-screen scrolling on iPhone.
+Rai 0.1.69 keeps the SSH tunnel open when you switch to a local Herdr session.
 
-- Vertical swipes over a focused alternate-screen pane send wheel input while the bridge is busy.
-- The Mac bridge forwards these wheel events while it processes another request.
-- Update the Mac app and iPhone app to receive the complete fix.
-- Codex still starts and resumes with `--no-alt-screen` for native terminal scrollback.
+- The remote session list stays available while you use a local session.
+- Selecting the previous remote session reuses its SSH tunnel.
+- Disconnect Remote closes the tunnel and keeps your active local session connected.
+- Quitting Rai closes the tunnel.
 
 Update through **Rai → Check for Updates…**, download the DMG, or run:
 

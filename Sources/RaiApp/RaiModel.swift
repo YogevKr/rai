@@ -543,7 +543,7 @@ final class RaiModel: ObservableObject {
     @Published var worktreeAlert: WorktreeAlert?
     @Published private(set) var sessions: [HerdrSession] = []
     /// Sessions on the connected remote target, refreshed with `sessions`.
-    /// Empty whenever no remote herd is connected.
+    /// Empty whenever no remote tunnel is connected.
     @Published private(set) var remoteSessions: [HerdrSession] = []
     @Published private(set) var activeSocketPath: String
     @Published private(set) var currentSessionName: String
@@ -642,6 +642,7 @@ final class RaiModel: ObservableObject {
     private var connectionAttemptID = UUID()
     var activeRemoteContext: RemoteConnection.Context? { remoteConnection?.context }
     private var remoteConnection: RemoteConnection?
+    private var parkedRemoteConnection: RemoteConnection?
     private var launchedSessionServers: [String: Process] = [:]
     private var pendingPluginInstall: PendingHerdrPluginInstall?
     private let closeCommandRunner: CloseCommandRunner?
@@ -1399,20 +1400,25 @@ final class RaiModel: ObservableObject {
         guard checkHerdrInstallation() else { return }
         let attemptID = UUID()
         connectionAttemptID = attemptID
-        Task {
-            if session.isRunning {
-                guard attemptID == connectionAttemptID else { return }
-                await connect(
-                    toSocket: session.socketPath,
-                    sessionName: session.name,
-                    remote: nil
-                )
-                await reloadSessions()
-            } else {
+        let remoteToKeep = Self.connectionToKeepDuringLocalSwitch(
+            active: remoteConnection,
+            parked: parkedRemoteConnection
+        )
+        if session.isRunning {
+            connectAndReload(
+                toSocket: session.socketPath,
+                sessionName: session.name,
+                remote: nil,
+                preserveRemoteConnection: remoteToKeep,
+                attemptID: attemptID
+            )
+        } else {
+            Task {
                 await startSession(
                     named: session.name,
                     requireNew: false,
-                    attemptID: attemptID
+                    attemptID: attemptID,
+                    preserveRemoteConnection: remoteToKeep
                 )
             }
         }
@@ -1469,10 +1475,27 @@ final class RaiModel: ObservableObject {
         remoteTarget != nil && session.name == currentSessionName
     }
 
+    var remoteSessionMenuTarget: String? {
+        remoteTarget ?? parkedRemoteConnection?.target
+    }
+
+    static func connectionToKeepDuringLocalSwitch(
+        active: RemoteConnection?,
+        parked: RemoteConnection?
+    ) -> RemoteConnection? {
+        active ?? parked
+    }
+
     /// Switches to another session on the already-connected remote target,
     /// through the same discovery-and-tunnel path as the connect sheet.
     func switchRemoteSession(_ session: HerdrSession) {
-        guard let target = remoteTarget else { return }
+        guard let target = remoteSessionMenuTarget else { return }
+        if let parked = parkedRemoteConnection,
+           remoteTarget == nil,
+           parked.sessionName == session.name {
+            activateParkedRemote(parked)
+            return
+        }
         connectRemote(target: target, sessionName: session.name)
     }
 
@@ -1553,18 +1576,64 @@ final class RaiModel: ObservableObject {
     }
 
     func disconnectRemote() {
-        guard remoteConnection != nil else { return }
+        guard remoteConnection != nil || parkedRemoteConnection != nil else { return }
         connectionAttemptID = UUID()
+        if remoteConnection == nil, let parkedRemoteConnection {
+            parkedRemoteConnection.stop()
+            self.parkedRemoteConnection = nil
+            remoteSessions = []
+            return
+        }
         disconnectCurrentHerd(message: "Disconnected from \(currentSessionDisplayName).")
+    }
+
+    private func activateParkedRemote(_ remote: RemoteConnection) {
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
+        connectAndReload(
+            toSocket: remote.localSocketPath,
+            sessionName: remote.sessionName,
+            remote: remote,
+            preserveRemoteConnection: remote,
+            attemptID: attemptID
+        )
+    }
+
+    private func connectAndReload(
+        toSocket: String,
+        sessionName: String,
+        remote: RemoteConnection?,
+        preserveRemoteConnection: RemoteConnection?,
+        attemptID: UUID
+    ) {
+        Task {
+            guard attemptID == connectionAttemptID else { return }
+            await connect(
+                toSocket: toSocket,
+                sessionName: sessionName,
+                remote: remote,
+                preserveRemoteConnection: preserveRemoteConnection
+            )
+            await reloadSessions()
+        }
     }
 
     private func connect(
         toSocket rawSocketPath: String,
         sessionName: String,
-        remote: RemoteConnection?
+        remote: RemoteConnection?,
+        preserveRemoteConnection: RemoteConnection? = nil
     ) async {
         let socketPath = NSString(string: rawSocketPath).expandingTildeInPath
-        tearDownCurrentConnection(stopRemote: true)
+        let wasActiveRemote = remoteConnection?.id == preserveRemoteConnection?.id
+        tearDownCurrentConnection(stopRemote: preserveRemoteConnection == nil)
+        if let preserveRemoteConnection {
+            if wasActiveRemote {
+                parkedRemoteConnection = preserveRemoteConnection
+                remoteConnection = nil
+                remoteTarget = nil
+            }
+        }
         needsHerdrInstallation = false
 
         let generation = UUID()
@@ -1573,6 +1642,9 @@ final class RaiModel: ObservableObject {
         currentSessionName = sessionName
         remoteTarget = remote?.target
         remoteConnection = remote
+        if remote != nil, preserveRemoteConnection != nil {
+            parkedRemoteConnection = nil
+        }
         // Swap in this herd's own reopen stack. Records name workspaces and
         // cwds on one herd's host, so the previous herd's records must not
         // stay reachable here — and this is also what restores them across
@@ -1634,6 +1706,8 @@ final class RaiModel: ObservableObject {
             remoteConnection?.stop()
             remoteConnection = nil
             remoteTarget = nil
+            parkedRemoteConnection?.stop()
+            parkedRemoteConnection = nil
         }
         snapshot = nil
         serverInfo = nil
@@ -1691,12 +1765,12 @@ final class RaiModel: ObservableObject {
     /// failure keeps the previous list rather than blanking the menu; only
     /// disconnecting clears it.
     private func reloadRemoteSessions() async {
-        guard let target = remoteTarget else {
+        guard let target = remoteSessionMenuTarget else {
             remoteSessions = []
             return
         }
         if let fetched = try? await RemoteConnection.listSessions(target: target) {
-            guard target == remoteTarget else { return }
+            guard target == remoteSessionMenuTarget else { return }
             remoteSessions = fetched
         }
     }
@@ -1704,7 +1778,8 @@ final class RaiModel: ObservableObject {
     private func startSession(
         named name: String,
         requireNew: Bool,
-        attemptID: UUID
+        attemptID: UUID,
+        preserveRemoteConnection: RemoteConnection? = nil
     ) async {
         await reloadSessions()
         guard attemptID == connectionAttemptID else { return }
@@ -1722,7 +1797,8 @@ final class RaiModel: ObservableObject {
             await connect(
                 toSocket: existing.socketPath,
                 sessionName: existing.name,
-                remote: nil
+                remote: nil,
+                preserveRemoteConnection: preserveRemoteConnection
             )
             return
         }
@@ -1787,7 +1863,8 @@ final class RaiModel: ObservableObject {
                     await connect(
                         toSocket: session.socketPath,
                         sessionName: session.name,
-                        remote: nil
+                        remote: nil,
+                        preserveRemoteConnection: preserveRemoteConnection
                     )
                     return
                 }
@@ -1819,6 +1896,17 @@ final class RaiModel: ObservableObject {
                 kind: .error(
                     title: "Remote Herd Disconnected",
                     message: "\(label): \(message)"
+                )
+            )
+            return
+        }
+        if parkedRemoteConnection?.id == id {
+            parkedRemoteConnection = nil
+            remoteSessions = []
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Remote Herd Disconnected",
+                    message: message
                 )
             )
             return

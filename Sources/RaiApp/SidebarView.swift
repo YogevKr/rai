@@ -343,7 +343,7 @@ struct SidebarView: View {
 
     private var sessionMenu: some View {
         Menu {
-            if let target = model.remoteTarget {
+            if let target = model.remoteSessionMenuTarget {
                 Section("Remote Sessions — \(target)") {
                     ForEach(model.remoteSessions) { session in
                         Button {
@@ -404,7 +404,7 @@ struct SidebarView: View {
             } label: {
                 Label("Connect to Remote…", systemImage: "network")
             }
-            if model.remoteTarget != nil {
+            if model.remoteSessionMenuTarget != nil {
                 Button(role: .destructive) {
                     model.disconnectRemote()
                 } label: {
