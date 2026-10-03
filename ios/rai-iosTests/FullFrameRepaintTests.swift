@@ -129,6 +129,17 @@ final class FullFrameRepaintTests: XCTestCase {
         XCTAssertEqual(view.fullRepaints, 2, "A baseline without a shape request keeps the retained shape")
     }
 
+    func testNativeScrollInvalidatesTheViewport() {
+        let view = TrackingGridReadableTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 400, height: 240))
+        view.pinGridSize(cols: 20, rows: 30)
+        let before = view.repaintRequests
+
+        view.setContentOffset(CGPoint(x: 0, y: 16), animated: false)
+
+        XCTAssertGreaterThan(view.repaintRequests, before)
+    }
+
     func testCursorIntentParsesTheLastRequests() {
         let bytes = Data("\u{1B}[?25l\u{1B}[3 q\u{1B}[?2026h\u{1B}[?25h\u{1B}[0 q\u{1B}[?25;1h".utf8)
         let intent = GridReadableTerminalView.cursorIntent(in: bytes)
@@ -217,5 +228,14 @@ final class FullFrameRepaintTests: XCTestCase {
         connection.handle(.paneFrame(paneID: "pane", bytesBase64: bytes, full: false, seq: 2, cols: 80, rows: 4))
         XCTAssertEqual(kinds, [.preview, .full, .delta])
         connection.disconnect()
+    }
+}
+
+private final class TrackingGridReadableTerminalView: GridReadableTerminalView {
+    private(set) var repaintRequests = 0
+
+    override func setNeedsDisplay(_ rect: CGRect) {
+        repaintRequests += 1
+        super.setNeedsDisplay(rect)
     }
 }

@@ -461,6 +461,8 @@ final class BridgeConnection: ObservableObject {
     private var machineNotificationRequiresSelection = false
     let endpointView = EndpointPhoneModel()
     private var endpointViewRequested = false
+    private var endpointPaneID: String?
+    private var endpointPaneOwner: UUID?
     @Published private(set) var hostCapabilities: BridgeHostCapabilities?
     @Published var agentExplanation: AgentExplanation?
     @Published private(set) var herdrManagementRequest: HerdrManagementRequest?
@@ -1176,7 +1178,40 @@ final class BridgeConnection: ObservableObject {
         selectMachineAgent(agent)
     }
 
+    func openPaneEndpoint(_ paneID: String, owner: UUID) {
+        // Regular pane IDs belong to the host, even after visiting a remote machine.
+        if selectedMachine != nil || endpointView.retainsHostConnection {
+            endpointView.close()
+        }
+        selectedMachine = nil
+        pendingMachineAgent = nil
+        pendingMachineNotification = nil
+        machineNotificationRequiresSelection = false
+        endpointPaneID = paneID
+        endpointPaneOwner = owner
+        restoreEndpointView()
+        focusEndpointPane()
+    }
+
+    func closePaneEndpoint(owner: UUID) {
+        guard endpointPaneOwner == owner else { return }
+        closeEndpointView()
+    }
+
+    private func focusEndpointPane() {
+        guard let paneID = endpointPaneID, !endpointView.busy,
+              let snapshot = endpointView.state?.snapshot,
+              snapshot.focusedPaneID != paneID else { return }
+        endpointView.command(.focusPane(paneID))
+    }
+
     func openEndpointView() {
+        endpointPaneID = nil
+        endpointPaneOwner = nil
+        restoreEndpointView()
+    }
+
+    private func restoreEndpointView() {
         if endpointViewRequested, endpointView.identity != nil, endpointView.error == nil { return }
         endpointViewRequested = true
         guard status.isConnected, !machineNotificationRequiresSelection else { return }
@@ -1202,6 +1237,8 @@ final class BridgeConnection: ObservableObject {
     }
 
     func closeEndpointView() {
+        endpointPaneID = nil
+        endpointPaneOwner = nil
         endpointViewRequested = false
         endpointView.close()
     }
@@ -2037,7 +2074,7 @@ final class BridgeConnection: ObservableObject {
                 didReceiveHistoryPages?(historyPages)
             }
             replaceWithLiveSnapshot(snapshot)
-            if endpointViewRequested, endpointView.identity == nil { openEndpointView() }
+            if endpointViewRequested, endpointView.identity == nil { restoreEndpointView() }
         case let .sessions(list):
             sessions = list
             if let current = list.first(where: { $0.isCurrent }) {
@@ -2232,9 +2269,10 @@ final class BridgeConnection: ObservableObject {
                 endpointView.disconnect()
                 pendingMachineAgent = nil
             }
-            if endpointViewRequested, endpointView.identity == nil { openEndpointView() }
+            if endpointViewRequested, endpointView.identity == nil { restoreEndpointView() }
         case let .endpointState(state):
             endpointView.receive(state)
+            focusEndpointPane()
             if let target = pendingMachineAgent, !endpointView.busy, let snapshot = endpointView.state?.snapshot {
                 pendingMachineAgent = nil
                 if state.identity.machineEndpoint == target.endpoint,

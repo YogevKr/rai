@@ -359,6 +359,37 @@ final class EndpointPhoneModelTests: XCTestCase {
         model.disconnect()
     }
 
+    func testPaneAlternateScreenWheelInputIsSentWhileBridgeIsBusy() async throws {
+        let model = EndpointPhoneModel()
+        var requests: [EndpointBridgeRequest] = []
+        model.open(connectionID: "mac") { requests.append($0) }
+        let initial = try state(model)
+        let surface = try EndpointPhoneTestSurface.make(mouseReporting: false, alternateScreen: true)
+        model.receive(.init(identity: initial.identity, sequence: 1, snapshot: initial.snapshot,
+                            surface: surface, methods: ["pane.scroll"], busy: true, error: nil))
+        let terminal = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        terminal.pinGridSize(cols: 80, rows: 24)
+        terminal.scrollModel = model
+        terminal.scrollPaneID = "w1:p1"
+        terminal.receiveFrame(Data("\u{1B}[2J\u{1B}[Hscreen".utf8), full: true, grid: nil)
+        let gesture = PaneTerminalScrollGesture(terminal: terminal)
+        let pan = HistoryTestPan()
+        let cell = terminal.getOptimalFrameSize()
+        pan.movement = CGPoint(x: 0, y: cell.height / 24 * 5)
+        pan.point = CGPoint(x: cell.width / 2, y: cell.height / 24 * 5.5)
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan))
+        pan.phase = .began
+        gesture.scroll(pan)
+        for _ in 0..<20 { await Task.yield() }
+        let input = try XCTUnwrap(requests.compactMap { request -> EndpointMouse? in
+            guard case let .input(_, .mouse(mouse)) = request.operation else { return nil }
+            return mouse
+        }.last)
+        XCTAssertEqual(input.kind, .scrollUp)
+        XCTAssertEqual(input.lines, 5)
+        model.disconnect()
+    }
+
     func testPopupWheelInputIsIgnoredWhileBridgeIsBusy() async throws {
         let model = EndpointPhoneModel()
         var requests: [EndpointBridgeRequest] = []
