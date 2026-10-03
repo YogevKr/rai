@@ -219,7 +219,7 @@ struct RaiApp: App {
                 EndpointSpaceMenu(model: endpointWindow)
               } else {
               Group {
-                Button("New Space") { model.newWorkspace() }
+                Button("New Space") { model.requestNewWorkspace() }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Next Space") { model.nextWorkspace() }
                     .keyboardShortcut("]", modifiers: [.command, .shift])

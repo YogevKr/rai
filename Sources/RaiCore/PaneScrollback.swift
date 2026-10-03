@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// Splits a recent pane read from the visible rows in the same revision.
+/// Splits an unwrapped pane history read from the visible rows in the same revision.
 public enum PaneScrollback {
     public static func payload(recent: String, visible: String, viewportRows: Int) -> Data {
         // Herdr omits empty rows at the bottom of both reads. Dropping the

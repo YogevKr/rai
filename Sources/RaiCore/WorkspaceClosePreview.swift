@@ -74,6 +74,24 @@ public struct WorkspaceClosePreview: Identifiable, Codable, Equatable, Sendable 
               let key = worktree.repoKey, !key.isEmpty else { return [workspace] }
         return workspaces.filter { $0.worktree?.repoKey == key }
     }
+
+    /// Returns primary spaces whose tab close must review the whole group.
+    /// Build the groups once so the sidebar does not rescan every group for
+    /// every workspace row.
+    public static func closeGroupWorkspaceIDs(in workspaces: [Workspace]) -> Set<String> {
+        let groups = Dictionary(grouping: workspaces.compactMap { workspace -> (String, Workspace)? in
+            guard let key = workspace.worktree?.repoKey, !key.isEmpty else { return nil }
+            return (key, workspace)
+        }, by: \.0)
+        return groups.values.map { $0.map(\.1) }
+            .filter { $0.count > 1 }
+            .flatMap { group in
+                group.filter {
+                    $0.tabCount == 1 && $0.worktree?.isLinkedWorktree != true
+                }.map(\.workspaceID)
+            }
+            .reduce(into: Set<String>()) { $0.insert($1) }
+    }
 }
 
 

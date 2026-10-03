@@ -3,6 +3,11 @@ import Combine
 import RaiCore
 import SwiftTerm
 
+struct TerminalAttachCommand {
+    let executable: String
+    let arguments: [String]
+}
+
 /// Owns attached terminal views independently of SwiftUI's view lifecycle.
 ///
 /// A terminal can move between lightweight host views without losing scrollback.
@@ -20,6 +25,8 @@ final class TerminalPool {
     private var socketPath: String
     private let attachExecutable: String?
     private let requiresRuntimeExecutable: Bool
+    private let redrawOnAttach: Bool
+    private var attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     var runtimeExecutable: String? {
         didSet {
             guard attachExecutable == nil, let runtimeExecutable else { return }
@@ -51,12 +58,16 @@ final class TerminalPool {
         capacity: Int = TerminalPool.minimumCapacity,
         socketPath: String = HerdrClient.defaultSocketPath(),
         attachExecutable: String? = nil,
-        requiresRuntimeExecutable: Bool = false
+        requiresRuntimeExecutable: Bool = false,
+        redrawOnAttach: Bool = false,
+        attachCommandBuilder: ((String) -> TerminalAttachCommand?)? = nil
     ) {
         recency = LRUTracker(capacity: capacity)
         self.socketPath = socketPath
         self.attachExecutable = attachExecutable
         self.requiresRuntimeExecutable = requiresRuntimeExecutable
+        self.redrawOnAttach = redrawOnAttach
+        self.attachCommandBuilder = attachCommandBuilder
         // Re-theme + repaint every live terminal the instant the palette changes
         // (RunLoop.main delivery lands after the @Published value has updated).
         themeObserver = SettingsStore.shared.objectWillChange
@@ -107,8 +118,14 @@ final class TerminalPool {
         if let knownTerminalIDs, !knownTerminalIDs.contains(terminalID) {
             return nil
         }
-        guard let executable = attachExecutable ?? runtimeExecutable
-                ?? (requiresRuntimeExecutable ? nil : HerdrCLI.resolvedBinaryPath) else { return nil }
+        let executable: String?
+        if attachCommandBuilder != nil {
+            executable = "/usr/bin/ssh"
+        } else {
+            executable = attachExecutable ?? runtimeExecutable
+                ?? (requiresRuntimeExecutable ? nil : HerdrCLI.resolvedBinaryPath)
+        }
+        guard let executable else { return nil }
 
         let view = FocusAwareTerminalView(frame: .zero)
         view.font = TerminalPaneView.font
@@ -139,7 +156,9 @@ final class TerminalPool {
         let coordinator = TerminalProcessCoordinator(
             terminalID: terminalID,
             socketPath: socketPath,
-            executable: executable
+            executable: executable,
+            redrawOnAttach: redrawOnAttach,
+            attachCommandBuilder: attachCommandBuilder
         )
         view.processDelegate = coordinator
         entries[terminalID] = Entry(view: view, coordinator: coordinator)
@@ -204,7 +223,16 @@ final class TerminalPool {
     func switchSocket(to socketPath: String) {
         removeAll()
         runtimeExecutable = nil
+        attachCommandBuilder = nil
         self.socketPath = socketPath
+    }
+
+    /// Reuses the forwarded client socket for terminal streams.
+    /// This keeps every pane off the SSH session-channel limit.
+    func configureRemoteAttach() {
+        removeAll()
+        runtimeExecutable = nil
+        attachCommandBuilder = nil
     }
 
     func removeAll() {
@@ -252,17 +280,28 @@ private final class TerminalProcessCoordinator:
     private let terminalID: String
     private let socketPath: String
     var executable: String
+    private let redrawOnAttach: Bool
+    private let attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     private var state = State.suspended
     private var hasLaunched = false
     private var pendingLaunch: DispatchWorkItem?
     private var pendingSuspension: DispatchWorkItem?
+    private var pendingInitialRedraw: DispatchWorkItem?
     private var retries = 0
     private let maxRetries = 5
 
-    init(terminalID: String, socketPath: String, executable: String) {
+    init(
+        terminalID: String,
+        socketPath: String,
+        executable: String,
+        redrawOnAttach: Bool,
+        attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
+    ) {
         self.terminalID = terminalID
         self.socketPath = socketPath
         self.executable = executable
+        self.redrawOnAttach = redrawOnAttach
+        self.attachCommandBuilder = attachCommandBuilder
     }
 
     func attach(_ view: FocusAwareTerminalView) {
@@ -317,9 +356,15 @@ private final class TerminalProcessCoordinator:
         pendingLaunch = nil
     }
 
+    private func cancelPendingInitialRedraw() {
+        pendingInitialRedraw?.cancel()
+        pendingInitialRedraw = nil
+    }
+
     private func suspend() {
         guard state != .stopped else { return }
         cancelPendingLaunch()
+        cancelPendingInitialRedraw()
         pendingSuspension?.cancel()
         pendingSuspension = nil
         state = .suspended
@@ -331,6 +376,7 @@ private final class TerminalProcessCoordinator:
     func stop(_ view: FocusAwareTerminalView) {
         state = .stopped
         cancelPendingLaunch()
+        cancelPendingInitialRedraw()
         pendingSuspension?.cancel()
         pendingSuspension = nil
         view.terminate()
@@ -355,12 +401,44 @@ private final class TerminalProcessCoordinator:
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
         env["HERDR_SOCKET_PATH"] = socketPath
 
+        let command: TerminalAttachCommand
+        if let attachCommandBuilder {
+            guard let built = attachCommandBuilder(terminalID) else {
+                state = .exhausted
+                return
+            }
+            command = built
+        } else {
+            command = TerminalAttachCommand(
+                executable: executable,
+                arguments: ["terminal", "attach", terminalID, "--takeover"]
+            )
+        }
         view.startProcess(
-            executable: executable,
-            args: ["terminal", "attach", terminalID, "--takeover"],
+            executable: command.executable,
+            args: command.arguments,
             environment: env.map { "\($0.key)=\($0.value)" },
             rawInput: true
         )
+        scheduleInitialRedraw(for: view)
+    }
+
+    /// A mixed card can be much smaller than the server's current grid. Herdr
+    /// sends the old screen before the shell redraws at the new size, which
+    /// leaves a duplicate prompt in the card. Ask the shell to redraw once the
+    /// attach handshake has settled.
+    private func scheduleInitialRedraw(for view: FocusAwareTerminalView) {
+        guard redrawOnAttach else { return }
+        cancelPendingInitialRedraw()
+        let redraw = DispatchWorkItem { [weak self, weak view] in
+            guard let self, self.state == .attached,
+                  let view, view.process?.running == true else { return }
+            let formFeed: [UInt8] = [0x0c]
+            view.send(source: view, data: formFeed[...])
+            self.pendingInitialRedraw = nil
+        }
+        pendingInitialRedraw = redraw
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: redraw)
     }
 
     // Retry unexpected exits only while visible. Both suspension and eviction

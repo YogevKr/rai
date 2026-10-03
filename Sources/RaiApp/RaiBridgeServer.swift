@@ -259,10 +259,6 @@ final class RaiBridgeServer: ObservableObject {
         }
 
         guard listener == nil else { return }
-        Task {
-            let directory = MachineDirectory.shared
-            await directory.perform(.init(revision: directory.state.revision, operation: .refresh))
-        }
         if credentialStore.validPairingCode() == nil {
             _ = credentialStore.regeneratePairingCode()
         }
@@ -1007,11 +1003,13 @@ final class RaiBridgeServer: ObservableObject {
                 ), to: client)
                 return
             }
-            guard auditLogger.enqueue(
+            let auditEnqueued = auditLogger.enqueue(
                 deviceID: client.deviceID ?? "unknown",
                 deviceLabel: client.deviceLabel ?? "Unknown device",
                 event: auditEvent
-            ) else {
+            )
+            let auditWriteSucceeded = auditEnqueued ? await auditLogger.flush() : false
+            guard auditWriteSucceeded else {
                 statusMessage = "Bridge audit write failed. Write actions are blocked."
                 send(.error(
                     message: "Bridge audit write failed.",
@@ -1597,7 +1595,9 @@ final class RaiBridgeServer: ObservableObject {
             for _ in 0..<3 {
                 guard !Task.isCancelled,
                       let recent = try? await reader.readPane(
-                        paneID: paneID, source: "recent", lines: lines
+                        // Alternate-screen agents keep history in the app.
+                        // Herdr's `recent` source returns only their viewport.
+                        paneID: paneID, source: "recent-unwrapped", lines: lines
                       ), let visible = try? await reader.readPane(paneID: paneID),
                       model.client === herd else { return nil }
                 guard recent.revision == visible.revision else { continue }

@@ -33,27 +33,28 @@ Agents keep using Herdr. They do not need a Rai CLI to manage terminal resources
 
 Herdr remains the source of truth for process state, pane input, focus, layout, agent status, and lifecycle. Rai mirrors that state through its endpoint connections.
 
-Rai-only operations stay local. These operations include adding a source to a view, changing slot order, changing labels, and saving a composition.
+Rai reads the instance catalog at startup. It opens a remote transport only
+when a saved mixed space or a new space needs that instance.
+
+Rai-only operations stay local. These operations include adding a source to a view, changing labels, and saving a composition.
 
 When an agent or user changes a source resource, Rai sends the action to Herdr. The request includes the owning endpoint and the current server boot identity. Rai rejects the request after a reconnect or server replacement.
 
 An optional Rai API can expose saved view operations later. That API must edit presentation state only. It must not become a second command path for Herdr resources.
 
-The regular Rai window lists saved Rai spaces and tabs beside the existing Herdr spaces.
-Selecting a Rai tab renders its mixed panes in the regular detail area.
-An Add Herdr workspace picker imports source spaces without creating another work screen.
+The regular Rai window shows the primary Herdr spaces and tabs. It does not
+show remote spaces or a separate Rai composition navigator. When several
+Herdr instances are online, New Space asks which instance should receive the
+new space. When the selected instance is not primary, Rai opens its new active
+tab in the mixed detail view and keeps the primary sidebar visible.
 
-The UI can add a workspace as Rai tabs or add its panes to the selected Rai tab. It uses one endpoint connection and terminal pool per machine session.
+The mixed composition model remains separate from Herdr resource ownership.
+Selecting a remote source creates or updates its local composition entry. A
+mixed tab can contain panes from several endpoint sessions. Rai uses one
+endpoint connection and terminal pool per machine session.
 
-The UI renders a two-column first layout. Later work can add saved pane
-geometry without changing source ownership.
-
-The current follow-up adds a local Rai tab button and drag reorder for pane
-slots. Rai saves both changes in the existing composition file. The reorder
-changes only the Rai slot order. It never changes Herdr tab or pane ownership.
-
-Each Rai tab also saves a local column count from one to four. This changes
-only Rai presentation geometry and does not resize or rearrange Herdr panes.
+The UI renders panes in adaptive columns based on the window width. Rai does
+not save pane geometry or reorder state.
 
 The UI must keep these rules:
 

@@ -559,6 +559,7 @@ final class BridgeAuditLogger: @unchecked Sendable {
     private let maximumPendingWrites: Int
     private var healthy = true
     private var pendingWrites = 0
+    private var failureCount = 0
     private var failureHandler: (@Sendable (String) -> Void)?
 
     init(
@@ -592,15 +593,11 @@ final class BridgeAuditLogger: @unchecked Sendable {
     }
 
     var isHealthy: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return healthy
+        stateLock.withLock { healthy }
     }
 
     func setFailureHandler(_ handler: @escaping @Sendable (String) -> Void) {
-        stateLock.lock()
-        failureHandler = handler
-        stateLock.unlock()
+        stateLock.withLock { failureHandler = handler }
     }
 
     @discardableResult
@@ -609,7 +606,6 @@ final class BridgeAuditLogger: @unchecked Sendable {
         deviceLabel: String,
         event: BridgeAuditEvent
     ) -> Bool {
-        guard isHealthy else { return false }
         let entry = BridgeAuditEntry(
             ts: Self.timestamp(now()),
             deviceID: deviceID,
@@ -630,51 +626,50 @@ final class BridgeAuditLogger: @unchecked Sendable {
             return false
         }
 
-        stateLock.lock()
-        guard healthy, pendingWrites < maximumPendingWrites else {
-            stateLock.unlock()
+        guard stateLock.withLock({
+            guard pendingWrites < maximumPendingWrites else { return false }
+            pendingWrites += 1
+            return true
+        }) else {
             return false
         }
-        pendingWrites += 1
-        // Queue admission lets the current input continue without waiting for fsync.
-        // A failed write closes admission before later inputs can join the queue.
+        // The bridge waits for this queue before it runs the audited action.
+        // Keep admission bounded so a slow disk cannot grow memory without limit.
         queue.async { [self] in
             defer { completePendingWrite() }
             do {
                 try writeOperation(data)
+                stateLock.withLock { healthy = true }
             } catch {
                 recordFailure(error)
             }
         }
-        stateLock.unlock()
         return true
     }
 
     func flush() async -> Bool {
-        await withCheckedContinuation { continuation in
+        let failuresBeforeFlush = stateLock.withLock { failureCount }
+        return await withCheckedContinuation { continuation in
             queue.async { [self] in
-                continuation.resume(returning: isHealthy)
+                continuation.resume(returning: stateLock.withLock {
+                    healthy && failureCount == failuresBeforeFlush
+                })
             }
         }
     }
 
     private func recordFailure(_ error: Error) {
-        let handler: (@Sendable (String) -> Void)?
-        stateLock.lock()
-        if healthy {
+        let handler: (@Sendable (String) -> Void)? = stateLock.withLock {
+            failureCount &+= 1
+            guard healthy else { return nil }
             healthy = false
-            handler = failureHandler
-        } else {
-            handler = nil
+            return failureHandler
         }
-        stateLock.unlock()
         handler?(error.localizedDescription)
     }
 
     private func completePendingWrite() {
-        stateLock.lock()
-        pendingWrites -= 1
-        stateLock.unlock()
+        stateLock.withLock { pendingWrites -= 1 }
     }
 
     static var defaultURL: URL {

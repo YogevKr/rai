@@ -23,26 +23,76 @@ final class RemoteConnectionTests: XCTestCase {
         )
     }
 
-    func testTunnelForwardsBothSockets() {
+    func testForwardArgumentsUseTheSharedControlMaster() throws {
         let connection = RemoteConnection(
             target: "user@host",
             sessionName: "default",
             remoteSocketPath: "/home/user/.config/herdr/herdr.sock"
         )
-        let arguments = connection.tunnelArguments
-
-        var forwards: [String] = []
-        for (index, argument) in arguments.enumerated() where argument == "-L" {
-            forwards.append(arguments[index + 1])
-        }
-        XCTAssertEqual(
-            forwards,
-            [
-                "\(connection.localSocketPath):/home/user/.config/herdr/herdr.sock",
-                "\(connection.localClientSocketPath):/home/user/.config/herdr/herdr-client.sock",
-            ]
+        let rpc = try connection.forwardArguments(
+            localPath: connection.localSocketPath,
+            remotePath: connection.remoteSocketPath
         )
-        XCTAssertEqual(arguments.last, "user@host")
+        let client = try connection.forwardArguments(
+            localPath: connection.localClientSocketPath,
+            remotePath: connection.remoteClientSocketPath
+        )
+        XCTAssertEqual(rpc.last, "user@host")
+        XCTAssertEqual(client.last, "user@host")
+        XCTAssertTrue(rpc.contains("-O"))
+        XCTAssertTrue(rpc.contains("forward"))
+        XCTAssertTrue(rpc.contains("-C"))
+        XCTAssertTrue(rpc.contains("-S"))
+        XCTAssertTrue(rpc.contains("ControlMaster=auto"))
+        XCTAssertTrue(rpc.contains("ControlPersist=600"))
+        XCTAssertTrue(rpc.contains("IgnoreUnknown=ObscureKeystrokeTiming"))
+        XCTAssertTrue(rpc.contains("ObscureKeystrokeTiming=no"))
+        XCTAssertTrue(rpc.contains("ServerAliveInterval=15"))
+        XCTAssertTrue(rpc.contains("ServerAliveCountMax=3"))
+        XCTAssertTrue(rpc.contains("StreamLocalBindUnlink=yes"))
+        XCTAssertTrue(rpc.contains("\(connection.localSocketPath):\(connection.remoteSocketPath)"))
+        XCTAssertTrue(client.contains("\(connection.localClientSocketPath):\(connection.remoteClientSocketPath)"))
+    }
+
+    func testSSHControlOptionsArePrivateAndStablePerTarget() throws {
+        let first = try RemoteConnection.sshConfigurationArguments(target: "user@host")
+        let same = try RemoteConnection.sshConfigurationArguments(target: "user@host")
+        let other = try RemoteConnection.sshConfigurationArguments(target: "user@other-host")
+
+        func controlPath(_ arguments: [String]) -> String? {
+            guard let index = arguments.firstIndex(of: "-S"), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+
+        let firstPath = try XCTUnwrap(controlPath(first))
+        XCTAssertEqual(firstPath, controlPath(same))
+        XCTAssertNotEqual(firstPath, controlPath(other))
+        XCTAssertTrue(firstPath.hasPrefix("/tmp/rai-hssh-"))
+        XCTAssertLessThan(firstPath.utf8.count, 100)
+    }
+
+    func testForegroundArgumentsDoNotDelayInteractiveKeystrokes() throws {
+        let arguments = try RemoteConnection.foregroundArguments(
+            target: "user@host",
+            sessionName: "default",
+            arguments: ["pane", "run", "w1:p1", "printf ok"]
+        )
+
+        XCTAssertTrue(arguments.contains("ObscureKeystrokeTiming=no"))
+    }
+
+    func testForegroundAttachArgumentsBuildTheRemoteTerminalCommand() throws {
+        let arguments = try RemoteConnection.foregroundAttachArguments(
+            target: "user@host",
+            sessionName: "remote",
+            terminalID: "term_123"
+        )
+
+        XCTAssertEqual(
+            arguments.last,
+            "'herdr' '--session' 'remote' 'terminal' 'attach' 'term_123' '--takeover'"
+        )
+        XCTAssertTrue(arguments.contains("ObscureKeystrokeTiming=no"))
     }
 
     func testCapturedRemoteContextCreatesDistinctForwardedSocketPairs() {

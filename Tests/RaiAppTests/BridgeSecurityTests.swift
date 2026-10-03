@@ -405,7 +405,7 @@ final class BridgeAuditTests: XCTestCase {
         XCTAssertEqual(paneIDs, (0..<100).map { "pane-\($0)" })
     }
 
-    func testFailedFlushClosesAuditGate() async throws {
+    func testFailedFlushCanRecoverAuditGate() async throws {
         let writer = BlockingFailureAuditWriter()
         let logger = BridgeAuditLogger(
             fileURL: URL(fileURLWithPath: "/unused/bridge-audit.jsonl"),
@@ -418,13 +418,15 @@ final class BridgeAuditTests: XCTestCase {
         XCTAssertTrue(firstFlush)
         XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
         XCTAssertEqual(writer.failureStarted.wait(timeout: .now() + 1), .success)
-        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
         writer.releaseFailure.signal()
         let failedFlush = await logger.flush()
         XCTAssertFalse(failedFlush)
 
         XCTAssertFalse(logger.isHealthy)
-        XCTAssertFalse(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        XCTAssertTrue(logger.enqueue(deviceID: "device-1", deviceLabel: "Phone", event: event))
+        let recovered = await logger.flush()
+        XCTAssertTrue(recovered)
+        XCTAssertTrue(logger.isHealthy)
         XCTAssertEqual(writer.writeCount, 3)
     }
 

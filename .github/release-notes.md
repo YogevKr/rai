@@ -1,4 +1,10 @@
-Rai 0.1.66 improves pane focus, Codex scrolling, CI stability, and the README.
+Rai 0.1.70 adds mixed Rai spaces, remote instance support, and faster switching.
+
+- A Rai space can include spaces from several local or remote Herdr instances.
+- Rai keeps multiple spaces per instance and shows each space's instance.
+- Remote spaces use the existing Herdr management path and SSH transport.
+- Sidebar redraws and space switching avoid repeated remote workspace scans.
+- Terminal ownership and scroll tasks now stop cleanly during endpoint changes.
 
 - Rai follows a pane focus change made by another Herdr client.
 - Rai starts and resumes Codex with `--no-alt-screen`, preserving scrollback across messages on Mac and iPhone.

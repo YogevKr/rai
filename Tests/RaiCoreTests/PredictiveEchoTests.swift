@@ -82,7 +82,21 @@ final class PredictiveEchoTests: XCTestCase {
         XCTAssertEqual(engine.displayGlyphs(), ["z"])
     }
 
-    func testRemoteThresholdDoesNotDisplayAfterLocalDaemonTick() {
+    func testRemoteThresholdDoesNotDisplayOnAFastLink() {
+        engine = PredictiveEchoEngine(herdLocation: .remote)
+        type("a", cursorX: 0)
+        engine.reconcile(
+            cursor: (x: 1, y: 5),
+            terminalMode: .plain,
+            readCell: { column, _ in column == 0 ? "a" : nil },
+            now: start.addingTimeInterval(0.008)
+        )
+
+        type("b", cursorX: 1, at: start.addingTimeInterval(0.009))
+        XCTAssertEqual(engine.displayGlyphs(), [])
+    }
+
+    func testRemoteThresholdDisplaysAfterOneFrameOfEchoLatency() {
         engine = PredictiveEchoEngine(herdLocation: .remote)
         type("a", cursorX: 0)
         engine.reconcile(
@@ -93,7 +107,7 @@ final class PredictiveEchoTests: XCTestCase {
         )
 
         type("b", cursorX: 1, at: start.addingTimeInterval(0.021))
-        XCTAssertEqual(engine.displayGlyphs(), [])
+        XCTAssertEqual(engine.displayGlyphs(), ["b"])
     }
 
     func testNonEchoingPaneNeverDisplaysPrediction() {

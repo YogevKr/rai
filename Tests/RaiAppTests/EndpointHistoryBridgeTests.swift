@@ -21,11 +21,13 @@ final class EndpointHistoryBridgeTests: XCTestCase {
         let completed = expectation(description: "phone history completed")
         let identity = EndpointViewIdentity(connectionID: "isolated-host")
         var latest: EndpointBridgeState?
-        var announced = false, finished = false
+        var announced = false, finished = false, resized = false
+        let resizedState = expectation(description: "phone view resized")
         let host = EndpointBridgeHost(identity: identity, socketPath: api) { state, done in
             latest = state
             if state.surface != nil, !state.busy, !announced { announced = true; ready.fulfill() }
             if state.terminalResult != nil, !state.busy, !finished { finished = true; completed.fulfill() }
+            if state.sequence == 3, !resized { resized = true; resizedState.fulfill() }
             done()
         }
         defer {
@@ -57,7 +59,7 @@ final class EndpointHistoryBridgeTests: XCTestCase {
         XCTAssertEqual(calls.compactMap { ($0["params"] as? [String: Any])?["content_revision"] as? Int }, [4, 6, 6])
         XCTAssertEqual(calls.compactMap { $0["method"] as? String }, ["pane.copy_motion", "pane.copy_motion", "pane.selection.read"])
         host.handle(.init(identity: identity, sequence: 3, bootID: "boot", operation: .resize(columns: 79, rows: 24)))
-        for _ in 0..<20 { await Task.yield() }
+        await fulfillment(of: [resizedState], timeout: 5)
         XCTAssertEqual(latest?.sequence, 3)
         XCTAssertNil(latest?.error)
         XCTAssertNotNil(latest?.snapshot)

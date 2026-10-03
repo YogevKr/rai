@@ -17,6 +17,26 @@ final class MachineDirectoryTests: XCTestCase {
         XCTAssertEqual(calls, [["machine", "list", "--json"], ["session", "list", "--json"]])
     }
 
+    func testCatalogRefreshDoesNotOpenSavedRemoteInstances() async throws {
+        let machine = "{" +
+            "\"id\":\"0123456789abcdef0123456789abcdef\"," +
+            "\"label\":\"Cloud\"," +
+            "\"target\":\"ssh://worker.example\"," +
+            "\"session\":\"default\"," +
+            "\"enabled\":true," +
+            "\"selected\":false}"
+        let directory = MachineDirectory { arguments in
+            Data((arguments.first == "machine" ? "[\(machine)]" : "{\"sessions\":[]}").utf8)
+        }
+
+        try await directory.refreshCatalogOnly()
+
+        let entry = try XCTUnwrap(directory.state.entries.first)
+        XCTAssertEqual(entry.health, .disconnected)
+        XCTAssertNil(entry.connectionID)
+        XCTAssertEqual(directory.state.entries.count, 1)
+    }
+
     func testCatalogChangesInvalidateQueuedWritesAndDuplicateRequestsDoNotReplay() async {
         var calls: [[String]] = []
         let directory = MachineDirectory { arguments in

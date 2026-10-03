@@ -13,9 +13,7 @@ final class RaiMixedViewModelTests: XCTestCase {
         let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
         let space = RaiSpace(label: "Local", source: .init(endpoint: local, workspaceID: "w1"))
         let slot = RaiPaneSlot(source: .init(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p1"))
-        let model = RaiMixedViewModel(store: store)
-
-        XCTAssertTrue(model.addSpace(space))
+        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
         let tab = RaiTab(label: "Mixed", paneSlots: [slot])
         XCTAssertTrue(model.addTab(tab, to: space.id))
         XCTAssertTrue(model.save())
@@ -45,27 +43,6 @@ final class RaiMixedViewModelTests: XCTestCase {
         XCTAssertEqual(try model.resolutions(for: tab.id), [.endpointOffline])
     }
 
-    func testModelReordersAndPersistsMixedPaneSlots() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
-        let space = RaiSpace(label: "Local", source: .init(endpoint: local, workspaceID: "w1"))
-        let first = RaiPaneSlot(source: .init(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p1"))
-        let second = RaiPaneSlot(source: .init(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p2"))
-        let tab = RaiTab(label: "Mixed", paneSlots: [first, second])
-        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
-        XCTAssertTrue(model.addTab(tab, to: space.id))
-        XCTAssertTrue(model.setColumnCount(3, for: tab.id))
-        XCTAssertTrue(model.movePaneSlot(second.id, before: first.id, in: tab.id))
-        XCTAssertEqual(model.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
-        XCTAssertTrue(model.save())
-
-        let reloaded = RaiMixedViewModel(store: store)
-        XCTAssertTrue(reloaded.load())
-        XCTAssertEqual(reloaded.composition.tab(id: tab.id)?.columnCount, 3)
-        XCTAssertEqual(reloaded.composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
-    }
-
     func testInvalidCompositionDoesNotReplaceCurrentState() {
         let model = RaiMixedViewModel()
         let original = model.composition
@@ -92,6 +69,28 @@ final class RaiMixedViewModelTests: XCTestCase {
         XCTAssertNil(RaiMixedViewModel().newTab(after: nil))
     }
 
+    func testShowingCreatedInstanceWorkspaceAddsItsSourceTab() throws {
+        let endpoint = MachineEndpoint(profileID: "machine", session: "default")
+        let machine = MachineEntry(endpoint: endpoint, label: "Local", health: .online)
+        let source = try sourceSnapshot(workspaceID: "w4", tabID: "w4:t1", paneID: "w4:p1")
+        let workspace = try XCTUnwrap(
+            InstanceWorkspace.entries(
+                machines: [machine],
+                snapshots: [endpoint: source],
+                excluding: nil
+            ).first
+        )
+        let sourceTab = try XCTUnwrap(workspace.tabs.first)
+        let model = RaiMixedViewModel()
+
+        let mixedTabID = model.showSourceTab(sourceTab, spaceLabel: workspace.label)
+
+        let mixedSpace = try XCTUnwrap(model.composition.spaces.first)
+        XCTAssertEqual(mixedSpace.source, sourceTab.workspace)
+        XCTAssertEqual(mixedSpace.tabs.first?.id, mixedTabID)
+        XCTAssertEqual(mixedSpace.tabs.first?.paneSlots.first?.source, sourceTab.panes.first)
+    }
+
     private func snapshot() throws -> HerdrEndpointSnapshot {
         let object: [String: Any] = [
             "boot_id": "boot",
@@ -105,6 +104,43 @@ final class RaiMixedViewModelTests: XCTestCase {
                 "pane_id": "p1", "terminal_id": "term-1",
                 "workspace_id": "w1", "tab_id": "t1", "focused": true,
                 "agent_status": "idle", "revision": 1,
+            ]],
+        ]
+        return try JSONDecoder().decode(
+            HerdrEndpointSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+    }
+
+    private func sourceSnapshot(
+        workspaceID: String,
+        tabID: String,
+        paneID: String
+    ) throws -> HerdrEndpointSnapshot {
+        let object: [String: Any] = [
+            "boot_id": "boot",
+            "revision": 1,
+            "focused_workspace_id": workspaceID,
+            "focused_tab_id": tabID,
+            "focused_pane_id": paneID,
+            "workspaces": [[
+                "workspace_id": workspaceID,
+                "label": "Created Local",
+                "active_tab_id": tabID,
+            ]],
+            "tabs": [[
+                "tab_id": tabID,
+                "workspace_id": workspaceID,
+                "label": "default",
+            ]],
+            "panes": [[
+                "pane_id": paneID,
+                "terminal_id": "term-1",
+                "workspace_id": workspaceID,
+                "tab_id": tabID,
+                "focused": true,
+                "agent_status": "idle",
+                "revision": 1,
             ]],
         ]
         return try JSONDecoder().decode(

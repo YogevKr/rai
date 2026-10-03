@@ -73,11 +73,11 @@ public final class PredictiveEchoEngine {
         /// median/p90 values of 20.3/22.2, 20.1/25.1, and 4.4/22.3 ms.
         /// The combined range was 0.6–30.5 ms. An eight-millisecond threshold
         /// catches the periodic daemon tick through the recent-tail signal.
-        /// Remote links retain 60 ms to avoid prediction on fast connections.
+        /// Remote links use one display frame as the prediction threshold.
         public var displayLatencyThreshold: TimeInterval {
             switch self {
             case .local: 0.008
-            case .remote: 0.060
+            case .remote: 0.016
             }
         }
     }

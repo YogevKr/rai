@@ -165,6 +165,10 @@ struct NewSessionRequest: Identifiable {
     let id = UUID()
 }
 
+struct NewWorkspaceRequest: Identifiable {
+    let id = UUID()
+}
+
 struct RemoteHerdRequest: Identifiable {
     let id = UUID()
 }

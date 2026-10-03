@@ -16,8 +16,8 @@ final class MachineTransportTests: XCTestCase {
         defer { directory.stop() }
         await directory.perform(.init(revision: directory.state.revision, operation: .refresh))
         try await waitForMachines(directory)
-        let first = try XCTUnwrap(directory.state.entries.first { $0.label == "SSH Lab One" })
-        let second = try XCTUnwrap(directory.state.entries.first { $0.label == "SSH Lab Two" })
+        let first = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-1" })
+        let second = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-2" })
         let firstID = try XCTUnwrap(first.connectionID), secondID = try XCTUnwrap(second.connectionID)
         let firstPath = try XCTUnwrap(directory.resolve(first.endpoint, connectionID: firstID))
         let secondPath = try XCTUnwrap(directory.resolve(second.endpoint, connectionID: secondID))
@@ -73,6 +73,61 @@ final class MachineTransportTests: XCTestCase {
         try data.write(to: URL(fileURLWithPath: root).appendingPathComponent("machines-transport-state.json"), options: .atomic)
     }
 
+    func testNewWorkspaceRoutesToTheChosenMachine() async throws {
+        guard let root = ProcessInfo.processInfo.environment["RAI_MACHINE_E2E_ROOT"],
+              AppDataPaths.current.isolatedRoot?.resolvingSymlinksInPath().path
+                == URL(fileURLWithPath: root).resolvingSymlinksInPath().path else {
+            throw XCTSkip("Requires the owned SSH fixture and explicit RAI_MACHINE_E2E_ROOT.")
+        }
+        let directory = MachineDirectory()
+        defer { directory.stop() }
+        await directory.perform(.init(revision: directory.state.revision, operation: .refresh))
+        try await waitForMachines(directory)
+
+        let first = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-1" })
+        let second = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-2" })
+        let firstID = try XCTUnwrap(first.connectionID)
+        let firstPath = try XCTUnwrap(directory.resolve(first.endpoint, connectionID: firstID))
+        let secondID = try XCTUnwrap(second.connectionID)
+        let secondPath = try XCTUnwrap(directory.resolve(second.endpoint, connectionID: secondID))
+        let firstAPI = HerdrClient(socketPath: firstPath)
+        let secondAPI = HerdrClient(socketPath: secondPath)
+        defer { firstAPI.disconnect(); secondAPI.disconnect() }
+
+        let firstBefore = try await firstAPI.snapshot()
+        let secondBefore = try await secondAPI.snapshot()
+        try await directory.createWorkspace(on: first.endpoint, connectionID: firstID)
+
+        var firstAfter = firstBefore
+        for _ in 0..<100 {
+            firstAfter = try await firstAPI.snapshot()
+            if firstAfter.workspaces.count > firstBefore.workspaces.count { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(firstAfter.workspaces.count, firstBefore.workspaces.count + 1)
+        let secondAfter = try await secondAPI.snapshot()
+        XCTAssertEqual(secondAfter.workspaces, secondBefore.workspaces)
+
+        if let created = firstAfter.workspaces.last?.workspaceID {
+            try await firstAPI.closeWorkspace(created)
+        }
+
+        try await directory.createWorkspace(on: second.endpoint, connectionID: secondID)
+        var secondCreated = secondBefore
+        for _ in 0..<100 {
+            secondCreated = try await secondAPI.snapshot()
+            if secondCreated.workspaces.count > secondBefore.workspaces.count { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(secondCreated.workspaces.count, secondBefore.workspaces.count + 1)
+        let firstAfterSecondCreate = try await firstAPI.snapshot()
+        XCTAssertEqual(firstAfterSecondCreate.workspaces, firstBefore.workspaces)
+
+        if let created = secondCreated.workspaces.last?.workspaceID {
+            try await secondAPI.closeWorkspace(created)
+        }
+    }
+
     func testAgentLaunchUsesSelectedRemoteShellWithoutTouchingTheSecondMachine() async throws {
         guard let root = ProcessInfo.processInfo.environment["RAI_MACHINE_E2E_ROOT"],
               AppDataPaths.current.isolatedRoot?.resolvingSymlinksInPath().path
@@ -83,15 +138,15 @@ final class MachineTransportTests: XCTestCase {
         defer { directory.stop() }
         await directory.perform(.init(revision: directory.state.revision, operation: .refresh))
         try await waitForMachines(directory)
-        let first = try XCTUnwrap(directory.state.entries.first { $0.label == "SSH Lab One" })
-        let second = try XCTUnwrap(directory.state.entries.first { $0.label == "SSH Lab Two" })
+        let first = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-1" })
+        let second = try XCTUnwrap(directory.state.entries.first { $0.target == "rai-lab-2" })
         let firstID = try XCTUnwrap(first.connectionID)
         let path = try XCTUnwrap(directory.resolve(first.endpoint, connectionID: firstID))
         let secondPath = try XCTUnwrap(directory.resolve(second.endpoint, connectionID: try XCTUnwrap(second.connectionID)))
         let secondAPI = HerdrClient(socketPath: secondPath)
         defer { secondAPI.disconnect() }
         let before = try await secondAPI.snapshot()
-        let ssh = try RemoteConnection.sshConfigurationArguments(target: "rai-lab-one") + ["-o", "BatchMode=yes", "rai-lab-one"]
+        let ssh = try RemoteConnection.sshConfigurationArguments(target: "rai-lab-1") + ["-o", "BatchMode=yes", "rai-lab-1"]
         let split = try await MachineCommandRunner.capture(binary: "/usr/bin/ssh",
             arguments: ssh + ["herdr", "pane", "split", "w2:p1", "--direction", "right", "--no-focus"], timeout: 5)
         let splitReply = try JSONDecoder().decode(JSONValue.self, from: split.standardOutput)
@@ -137,7 +192,7 @@ final class MachineTransportTests: XCTestCase {
             throw XCTSkip("Requires the owned SSH fixture and explicit RAI_MACHINE_E2E_ROOT.")
         }
         _ = try XCTUnwrap(LabSSHConfiguration.load(root: URL(fileURLWithPath: root)))
-        let discovered = try await RemoteConnection.discoverSocket(target: "rai-lab-one", sessionName: "default")
+        let discovered = try await RemoteConnection.discoverSocket(target: "rai-lab-1", sessionName: "rai-remote-one")
         let main = RemoteConnection(target: discovered.target, sessionName: discovered.sessionName, remoteSocketPath: discovered.socketPath)
         defer { main.stop() }
         try await main.start()

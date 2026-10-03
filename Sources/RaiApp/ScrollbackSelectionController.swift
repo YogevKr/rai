@@ -28,10 +28,23 @@ final class ScrollbackSelectionController {
 
     weak var view: FocusAwareTerminalView?
     var supportsDirectScrolling = false
+    private var paneGeneration = UUID()
     var paneID: String? {
         didSet {
             guard paneID != oldValue else { return }
+            paneGeneration = UUID()
             viewportRestoreGeneration = UUID()
+            stopTimer()
+            wheelReconcileTask?.cancel()
+            wheelReconcileTask = nil
+            returnToLiveTask?.cancel()
+            returnToLiveTask = nil
+            stickySelectionTask?.cancel()
+            stickySelectionTask = nil
+            probeTask?.cancel()
+            probeTask = nil
+            tickTask?.cancel()
+            tickTask = nil
             cancelIndicatorScroll()
             viewportRestoreTask?.cancel()
             viewportRestoreTask = nil
@@ -39,7 +52,15 @@ final class ScrollbackSelectionController {
             editorTask = nil
             cancelCopyMode()
             stopScrollEventStream()
+            engaged = false
+            probing = false
+            probeFailed = false
+            tickBusy = false
+            edge = nil
+            model.reset()
+            clearSticky()
             lastScroll = nil
+            lastAppliedHighlight = nil
             if paneID != nil { startScrollEventStream() }
         }
     }
@@ -82,6 +103,9 @@ final class ScrollbackSelectionController {
     private var scrollEventTask: Task<Void, Never>?
     private(set) var indicatorScrollTask: Task<Void, Never>?
     private var returnToLiveTask: Task<Void, Never>?
+    private var stickySelectionTask: Task<Void, Never>?
+    private var probeTask: Task<Void, Never>?
+    private var tickTask: Task<Void, Never>?
     private var copyModeState: CopyModeState?
     private var copyModeStarting = false
     private var copyModeTask: Task<Void, Never>?
@@ -90,6 +114,20 @@ final class ScrollbackSelectionController {
     private var editorTask: Task<Void, Never>?
     private var viewportRestoreTask: Task<Void, Never>?
     private var viewportRestoreGeneration = UUID()
+
+    deinit {
+        timer?.invalidate()
+        wheelReconcileTask?.cancel()
+        scrollEventTask?.cancel()
+        indicatorScrollTask?.cancel()
+        returnToLiveTask?.cancel()
+        stickySelectionTask?.cancel()
+        probeTask?.cancel()
+        tickTask?.cancel()
+        copyModeTask?.cancel()
+        editorTask?.cancel()
+        viewportRestoreTask?.cancel()
+    }
 
     // MARK: gesture lifecycle
 
@@ -156,12 +194,15 @@ final class ScrollbackSelectionController {
     func captureStickySelection() {
         guard !engaged, let view, let range = view.getSelectionRange(),
               let paneID else { return }
+        let generation = paneGeneration
         stickyText = view.getSelection()
         stickyStart = range.start
         stickyEnd = range.end
-        Task { [weak self] in
+        stickySelectionTask = Task { [weak self] in
             guard let self else { return }
             guard let scroll = try? await self.paneScroll(paneID) else { return }
+            guard !Task.isCancelled, self.paneID == paneID,
+                  self.paneGeneration == generation else { return }
             // Anchor in absolute coordinates for offset-based tracking.
             var m = ScrollbackSelectionModel()
             m.begin(anchorVisibleRow: range.start.row, col: range.start.col, scroll: scroll)
@@ -180,6 +221,7 @@ final class ScrollbackSelectionController {
     private func startScrollEventStream() {
         guard scrollEventTask == nil, let paneID else { return }
         let client = self.client
+        let generation = paneGeneration
         scrollEventTask = Task { [weak self] in
             while !Task.isCancelled {
                 let stream = client.events(
@@ -190,7 +232,11 @@ final class ScrollbackSelectionController {
                         guard !Task.isCancelled else { return }
                         guard event.name == "pane.scroll_changed",
                               let scroll = event.scroll else { continue }
-                        await MainActor.run { self?.applyScroll(scroll) }
+                        await MainActor.run {
+                            guard let self, self.paneID == paneID,
+                                  self.paneGeneration == generation else { return }
+                            self.applyScroll(scroll)
+                        }
                     }
                 } catch {
                     // Fall through to the retry below; the debounced wheel
@@ -957,14 +1003,22 @@ final class ScrollbackSelectionController {
             return
         }
         guard returnToLiveTask == nil, let paneID else { return }
+        let generation = paneGeneration
         returnToLiveTask = Task { [weak self] in
-            defer { self?.returnToLiveTask = nil }
+            defer {
+                if let self, self.paneGeneration == generation {
+                    self.returnToLiveTask = nil
+                }
+            }
             var previous = Int.max
             var stalls = 0
             for _ in 0..<100 {
                 guard let self, !Task.isCancelled else { return }
+                guard self.paneID == paneID, self.paneGeneration == generation else { return }
                 guard let scroll = (try? await self.paneScroll(paneID)) ?? nil,
                       scroll.offsetFromBottom > 0 else { return }
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 let offset = scroll.offsetFromBottom
                 if offset >= previous {
                     stalls += 1
@@ -989,12 +1043,15 @@ final class ScrollbackSelectionController {
             probeFailed = true
             return
         }
+        let generation = paneGeneration
         probing = true
-        Task { [weak self] in
+        probeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let before = try await self.paneScroll(paneID),
-                      before.maxOffsetFromBottom > 0 || edge == .down else {
+                guard let before = try await self.paneScroll(paneID) else { return }
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
+                guard before.maxOffsetFromBottom > 0 || edge == .down else {
                     self.probing = false
                     self.probeFailed = true
                     return
@@ -1004,8 +1061,12 @@ final class ScrollbackSelectionController {
                 let page0 = try await self.client.readPane(
                     paneID: paneID, format: "ansi", stripANSI: true
                 )
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 self.inject(edge == .up ? Self.wheelUp : Self.wheelDown)
                 try await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 guard let after = try await self.paneScroll(paneID),
                       after.offsetFromBottom != before.offsetFromBottom else {
                     // The wheel went to the pane's app (mouse-mode, e.g.
@@ -1021,6 +1082,8 @@ final class ScrollbackSelectionController {
                 let page1 = try await self.client.readPane(
                     paneID: paneID, format: "ansi", stripANSI: true
                 )
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 m.ingest(pageText: page1.text, scroll: after)
                 m.extendHead(
                     visibleRow: edge == .up ? 0 : after.viewportRows - 1,
@@ -1062,21 +1125,30 @@ final class ScrollbackSelectionController {
 
     private func tick() {
         guard engaged, !tickBusy, let edge, let paneID else { return }
+        let generation = paneGeneration
         tickBusy = true
         // Farther past the edge = faster, like herdr's own selection drag.
         let steps = 1 + min(3, Int(distance / 40))
         for _ in 0..<steps {
             inject(edge == .up ? Self.wheelUp : Self.wheelDown)
         }
-        Task { [weak self] in
+        tickTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.tickBusy = false }
+            defer {
+                if self.paneGeneration == generation {
+                    self.tickBusy = false
+                }
+            }
             do {
                 try await Task.sleep(nanoseconds: 60_000_000)
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 guard let scroll = try await self.paneScroll(paneID) else { return }
                 let page = try await self.client.readPane(
                     paneID: paneID, format: "ansi", stripANSI: true
                 )
+                guard !Task.isCancelled, self.paneID == paneID,
+                      self.paneGeneration == generation else { return }
                 self.model.ingest(pageText: page.text, scroll: scroll)
                 self.model.extendHead(
                     visibleRow: edge == .up ? 0 : scroll.viewportRows - 1,

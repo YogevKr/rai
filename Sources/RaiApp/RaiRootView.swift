@@ -20,8 +20,23 @@ struct RaiRootView: View {
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView(
                     model: model,
-                    mixedController: mixedController,
-                    onPrimarySelection: mixedController.selectPrimary
+                    onPrimarySelection: mixedController.selectPrimary,
+                    remoteWorkspaces: mixedController.remoteWorkspaces,
+                    onWorkspaceCreated: { source in
+                        mixedController.openRemoteWorkspace(
+                            endpoint: source.endpoint,
+                            workspaceID: source.workspaceID
+                        )
+                    },
+                    selectedRemoteWorkspace: mixedController.selectedSourceWorkspace,
+                    selectedRemoteTabID: mixedController.selectedSourceTabID,
+                    onRemoteSelection: { source, tabID in
+                        mixedController.openRemoteWorkspace(
+                            endpoint: source.endpoint,
+                            workspaceID: source.workspaceID,
+                            tabID: tabID
+                        )
+                    }
                 )
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
@@ -69,9 +84,6 @@ struct RaiRootView: View {
         .onAppear { settings.updateSystemColorScheme(colorScheme) }
         .onChange(of: colorScheme) { _, value in
             settings.updateSystemColorScheme(value)
-        }
-        .sheet(isPresented: $mixedController.sourcePickerPresented) {
-            RaiMixedSourcePicker(controller: mixedController)
         }
         .focusedSceneValue(\.mixedRaiWindow, mixedController)
     }

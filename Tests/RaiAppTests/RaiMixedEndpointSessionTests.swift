@@ -74,4 +74,25 @@ final class RaiMixedEndpointSessionTests: XCTestCase {
         let archived = try await RaiMixedEndpointSession.attachExecutable(for: 22, localExecutable: nil, archive: archive)
         XCTAssertEqual(archived, retained.path)
     }
+
+    func testTerminalIDRefreshOnlyFollowsPaneSetChanges() throws {
+        let snapshot = try JSONDecoder().decode(HerdrEndpointSnapshot.self, from: Data(
+            #"{"boot_id":"boot","revision":2,"panes":[{"pane_id":"p1"}]}"#.utf8
+        ))
+        XCTAssertFalse(
+            RaiMixedEndpointSession.needsTerminalIDRefresh(
+                snapshot, terminalIDs: ["p1": "term-1"], hasSnapshot: true
+            )
+        )
+        XCTAssertTrue(
+            RaiMixedEndpointSession.needsTerminalIDRefresh(
+                snapshot, terminalIDs: ["p2": "term-2"], hasSnapshot: true
+            )
+        )
+        XCTAssertTrue(
+            RaiMixedEndpointSession.needsTerminalIDRefresh(
+                snapshot, terminalIDs: [:], hasSnapshot: false
+            )
+        )
+    }
 }

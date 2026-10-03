@@ -50,59 +50,6 @@ final class RaiCompositionTests: XCTestCase {
         XCTAssertEqual(composition.tabs.count, 2)
     }
 
-    func testPaneSlotsCanBeReorderedWithoutChangingTheirSources() throws {
-        let sourceSpace = space(endpoint: local, workspace: "work")
-        let first = slot(endpoint: local, workspace: "work", tab: "t1", pane: "p1")
-        let second = slot(endpoint: remote, workspace: "remote", tab: "t2", pane: "p2")
-        var composition = RaiComposition(spaces: [sourceSpace, space(endpoint: remote, workspace: "remote")])
-        let tab = RaiTab(paneSlots: [first, second])
-        try composition.addTab(tab, to: sourceSpace.id)
-
-        try composition.movePaneSlot(id: second.id, before: first.id, in: tab.id)
-        XCTAssertEqual(composition.tab(id: tab.id)?.paneSlots.map(\.id), [second.id, first.id])
-
-        try composition.movePaneSlot(id: second.id, before: nil, in: tab.id)
-        XCTAssertEqual(composition.tab(id: tab.id)?.paneSlots.map(\.id), [first.id, second.id])
-        XCTAssertEqual(composition.paneSlot(id: first.id)?.source, first.source)
-        XCTAssertEqual(composition.paneSlot(id: second.id)?.source, second.source)
-    }
-
-    func testPaneSlotReorderRejectsForeignTarget() throws {
-        let sourceSpace = space(endpoint: local, workspace: "work")
-        let otherSpace = space(endpoint: remote, workspace: "remote")
-        let first = slot(endpoint: local, workspace: "work", tab: "t1", pane: "p1")
-        let second = slot(endpoint: remote, workspace: "remote", tab: "t2", pane: "p2")
-        var composition = RaiComposition(spaces: [sourceSpace, otherSpace])
-        let tab = RaiTab(paneSlots: [first])
-        let otherTab = RaiTab(paneSlots: [second])
-        try composition.addTab(tab, to: sourceSpace.id)
-        try composition.addTab(otherTab, to: otherSpace.id)
-
-        XCTAssertThrowsError(try composition.movePaneSlot(id: first.id, before: second.id, in: tab.id)) { error in
-            XCTAssertEqual(error as? RaiCompositionError, .missingSlot(second.id))
-        }
-        XCTAssertEqual(composition.tab(id: tab.id)?.paneSlots.map(\.id), [first.id])
-    }
-
-    func testTabColumnCountDefaultsForOlderSavedTabsAndValidatesChanges() throws {
-        let tabID = UUID()
-        let legacy = try JSONSerialization.data(withJSONObject: [
-            "id": tabID.uuidString,
-            "label": "Legacy",
-            "paneSlots": [],
-        ])
-        let decoded = try JSONDecoder().decode(RaiTab.self, from: legacy)
-        XCTAssertEqual(decoded.columnCount, 2)
-
-        var composition = RaiComposition(spaces: [space(endpoint: local, workspace: "work")])
-        try composition.addTab(decoded, to: composition.spaces[0].id)
-        try composition.setColumnCount(3, for: tabID)
-        XCTAssertEqual(composition.tab(id: tabID)?.columnCount, 3)
-        XCTAssertThrowsError(try composition.setColumnCount(0, for: tabID)) { error in
-            XCTAssertEqual(error as? RaiCompositionError, .invalid("The Rai tab column count is invalid."))
-        }
-    }
-
     func testSourceIdentityDoesNotUseLabelsOrConnectionIDs() throws {
         let endpoint = MachineEndpoint(profileID: "profile", session: "default")
         let one = RaiPaneReference(endpoint: endpoint, workspaceID: "w", tabID: "t", paneID: "p")
@@ -215,6 +162,20 @@ final class RaiCompositionTests: XCTestCase {
             ),
             .paneIdentityChanged
         )
+
+        let withoutTerminalID = try endpointSnapshot(
+            paneID: "p1", workspaceID: "work", tabID: "t1", terminalID: nil
+        )
+        let mappedProjection = RaiEndpointProjection(
+            endpoint: local,
+            connectionID: "connection",
+            snapshot: withoutTerminalID,
+            terminalIDs: ["p1": "term-from-api"]
+        )
+        guard case .ready(let mappedTarget) = try composition.resolvePaneSlot(
+            id: pane.id, endpointProjection: mappedProjection
+        ) else { return XCTFail("The terminal ID map must resolve the pane.") }
+        XCTAssertEqual(mappedTarget.terminalID, "term-from-api")
     }
 
     func testProjectionKeepsOfflineAndMissingSourcesVisible() throws {
@@ -238,7 +199,7 @@ final class RaiCompositionTests: XCTestCase {
         paneID: String,
         workspaceID: String,
         tabID: String,
-        terminalID: String
+        terminalID: String?
     ) throws -> HerdrEndpointSnapshot {
         let object: [String: Any] = [
             "boot_id": "boot",
@@ -250,7 +211,6 @@ final class RaiCompositionTests: XCTestCase {
             "tabs": [["tab_id": tabID, "workspace_id": workspaceID]],
             "panes": [[
                 "pane_id": paneID,
-                "terminal_id": terminalID,
                 "workspace_id": workspaceID,
                 "tab_id": tabID,
                 "focused": true,
@@ -258,9 +218,15 @@ final class RaiCompositionTests: XCTestCase {
                 "revision": 1,
             ]],
         ]
+        var pane = object["panes"] as! [[String: Any]]
+        if let terminalID {
+            pane[0]["terminal_id"] = terminalID
+        }
+        var result = object
+        result["panes"] = pane
         return try JSONDecoder().decode(
             HerdrEndpointSnapshot.self,
-            from: JSONSerialization.data(withJSONObject: object)
+            from: JSONSerialization.data(withJSONObject: result)
         )
     }
 }

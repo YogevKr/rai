@@ -90,41 +90,13 @@ enum RepoScanner {
     ) async -> [DiscoveredRepo] {
         let script = RepoDiscoveryPlanner.scanScript(roots: roots, depth: depth)
         guard !script.isEmpty else { return [] }
-        guard let output = await runProcess(
-            executable: "/usr/bin/ssh",
-            arguments: [
-                // The tunnel already proved this target reachable, so refuse
-                // interactive prompts rather than hang the palette on one.
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=10",
-                target,
-                script,
-            ]
+        // Reuse the endpoint's control master. A fresh SSH process here adds a
+        // full handshake while the remote view is already connected.
+        guard let output = await RemoteConnection.remoteCommandOutput(
+            target: target,
+            arguments: [script]
         ) else { return [] }
         return RepoDiscoveryPlanner.parse(scanOutput: output)
     }
 
-    private static func runProcess(
-        executable: String,
-        arguments: [String]
-    ) async -> String? {
-        await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            process.standardInput = FileHandle.nullDevice
-            do {
-                try process.run()
-            } catch {
-                return nil
-            }
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return String(data: data, encoding: .utf8)
-        }.value
-    }
 }

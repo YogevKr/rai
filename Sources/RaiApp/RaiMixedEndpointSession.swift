@@ -14,6 +14,7 @@ final class RaiMixedEndpointSession: ObservableObject {
     private var snapshotObservation: AnyCancellable?
     private var errorObservation: AnyCancellable?
     private var terminalIDTask: Task<Void, Never>?
+    private var terminalIDRefreshTask: Task<Void, Never>?
     private var terminalIDs: [String: String] = [:]
     private var hasTerminalIDSnapshot = false
     private let metadataClient: HerdrClient
@@ -29,6 +30,7 @@ final class RaiMixedEndpointSession: ObservableObject {
         connectionID: String,
         socketPath: String,
         attachExecutable: String? = nil,
+        target: String? = nil,
         sharedTerminalPool: TerminalPool? = nil,
         projectionModel: RaiMixedViewModel? = nil
     ) {
@@ -46,8 +48,10 @@ final class RaiMixedEndpointSession: ObservableObject {
         pool = sharedTerminalPool ?? TerminalPool(
             socketPath: socketPath,
             attachExecutable: attachExecutable,
-            requiresRuntimeExecutable: true
+            requiresRuntimeExecutable: true,
+            redrawOnAttach: true
         )
+        pool.predictiveEchoHerdLocation = target == nil ? .local : .remote
         snapshot = model.snapshot
         snapshotObservation = model.$snapshot.sink { [weak self] snapshot in
             self?.receive(snapshot)
@@ -76,21 +80,19 @@ final class RaiMixedEndpointSession: ObservableObject {
         let socketPath = socketPath
         terminalIDTask = Task { [weak self] in
             do {
-                let info = try await client.serverInfo()
+                // The session snapshot contains both the client protocol and
+                // every pane's terminal ID. Reuse it for startup instead of
+                // paying for a separate ping and a second snapshot over SSH.
+                let initialSnapshot = try await client.snapshot()
                 let executable = try await Self.attachExecutable(
-                    for: info.protocol,
+                    for: initialSnapshot.protocol,
                     localExecutable: configuredAttachExecutable ?? HerdrCLI.resolvedBinaryPath,
                     socketPath: socketPath
                 )
                 try Task.checkCancellation()
                 self?.pool.runtimeExecutable = executable
                 self?.prepared = true
-                while !Task.isCancelled {
-                    let raw = try await client.snapshot()
-                    try Task.checkCancellation()
-                    self?.mergeTerminalIDs(from: raw)
-                    try await Task.sleep(for: .seconds(1))
-                }
+                self?.mergeTerminalIDs(from: initialSnapshot)
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 self.error = error.localizedDescription
@@ -104,6 +106,8 @@ final class RaiMixedEndpointSession: ObservableObject {
         prepared = false
         terminalIDTask?.cancel()
         terminalIDTask = nil
+        terminalIDRefreshTask?.cancel()
+        terminalIDRefreshTask = nil
         metadataClient.disconnect()
         model.stop()
         // Late SwiftUI updates cannot recreate clients after this session ends.
@@ -179,13 +183,57 @@ final class RaiMixedEndpointSession: ObservableObject {
 
     private func receive(_ next: HerdrEndpointSnapshot?) {
         guard !stopped, let next else { return }
-        let merged = Self.withTerminalIDs(next, terminalIDs: terminalIDs) ?? next
-        snapshot = merged
+        snapshot = next
         if hasTerminalIDSnapshot {
             pool.retain(terminalIDs: Set(terminalIDs.values))
         }
         guard prepared, let connectionID else { return }
-        projectionModel?.receive(endpoint: endpoint, connectionID: connectionID, snapshot: merged)
+        if Self.needsTerminalIDRefresh(next, terminalIDs: terminalIDs, hasSnapshot: hasTerminalIDSnapshot) {
+            refreshTerminalIDs()
+        }
+        projectionModel?.receive(
+            endpoint: endpoint,
+            connectionID: connectionID,
+            snapshot: next,
+            terminalIDs: terminalIDs
+        )
+    }
+
+    /// The endpoint stream already reports metadata revisions. Refresh terminal
+    /// IDs after a revision change instead of polling every endpoint each second.
+    private func refreshTerminalIDs() {
+        guard !stopped, prepared, terminalIDRefreshTask == nil else { return }
+        let client = metadataClient
+        terminalIDRefreshTask = Task { [weak self] in
+            do {
+                let raw = try await client.snapshot()
+                try Task.checkCancellation()
+                self?.mergeTerminalIDs(from: raw)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.error = error.localizedDescription
+                self.stop()
+            }
+            guard let self, !self.stopped else { return }
+            self.terminalIDRefreshTask = nil
+            if let snapshot = self.snapshot,
+               Self.needsTerminalIDRefresh(snapshot, terminalIDs: self.terminalIDs,
+                                            hasSnapshot: self.hasTerminalIDSnapshot) {
+                self.refreshTerminalIDs()
+            }
+        }
+    }
+
+    static func needsTerminalIDRefresh(
+        _ snapshot: HerdrEndpointSnapshot,
+        terminalIDs: [String: String],
+        hasSnapshot: Bool
+    ) -> Bool {
+        guard hasSnapshot else { return true }
+        let paneIDs = Set(snapshot.panes.compactMap {
+            $0.objectValue?["pane_id"]?.stringValue
+        })
+        return paneIDs != Set(terminalIDs.keys)
     }
 
     private func mergeTerminalIDs(from raw: SessionSnapshot) {
@@ -194,23 +242,4 @@ final class RaiMixedEndpointSession: ObservableObject {
         receive(snapshot)
     }
 
-    private static func withTerminalIDs(
-        _ snapshot: HerdrEndpointSnapshot,
-        terminalIDs: [String: String]
-    ) -> HerdrEndpointSnapshot? {
-        guard !terminalIDs.isEmpty,
-              let data = try? JSONEncoder().encode(snapshot),
-              var root = try? JSONDecoder().decode([String: JSONValue].self, from: data),
-              case .array(var panes)? = root["panes"] else { return nil }
-        for index in panes.indices {
-            guard case .object(var pane) = panes[index],
-                  let paneID = pane["pane_id"]?.stringValue,
-                  let terminalID = terminalIDs[paneID] else { continue }
-            pane["terminal_id"] = .string(terminalID)
-            panes[index] = .object(pane)
-        }
-        root["panes"] = .array(panes)
-        guard let merged = try? JSONEncoder().encode(root) else { return nil }
-        return try? JSONDecoder().decode(HerdrEndpointSnapshot.self, from: merged)
-    }
 }

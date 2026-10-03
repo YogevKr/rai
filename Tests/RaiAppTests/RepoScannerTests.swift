@@ -63,6 +63,65 @@ final class RepoScannerTests: XCTestCase {
         XCTAssertTrue(repos.isEmpty)
     }
 
+    @MainActor
+    func testRemoteScanCreatesTheSharedSSHMaster() async throws {
+        guard let labRoot = ProcessInfo.processInfo.environment["RAI_MACHINE_E2E_ROOT"],
+              AppDataPaths.current.isolatedRoot?.resolvingSymlinksInPath().path
+                == URL(fileURLWithPath: labRoot).resolvingSymlinksInPath().path else {
+            throw XCTSkip("Requires the owned disposable SSH fixture and RAI_MACHINE_E2E_ROOT.")
+        }
+        let target = "rai-lab-1"
+        let remoteRoot = "/tmp/rai-repo-scan-\(UUID().uuidString.lowercased())"
+        let configuration = try RemoteConnection.sshConfigurationArguments(target: target)
+
+        // The setup command uses ControlMaster=auto, so it does not leave a
+        // master behind. The scanner must create one through Rai's helper.
+        _ = try? await MachineCommandRunner.capture(
+            binary: "/usr/bin/ssh",
+            arguments: configuration + ["-O", "exit", target],
+            timeout: 5
+        )
+        let setup = try await MachineCommandRunner.capture(
+            binary: "/usr/bin/ssh",
+            arguments: configuration + [
+                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                target, "mkdir", "-p", "\(remoteRoot)/alpha/.git",
+            ],
+            timeout: 5
+        )
+        XCTAssertEqual(setup.status, 0, String(decoding: setup.standardError, as: UTF8.self))
+        addTeardownBlock {
+            _ = try? await MachineCommandRunner.capture(
+                binary: "/usr/bin/ssh",
+                arguments: configuration + [
+                    "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                    target, "rm", "-rf", remoteRoot,
+                ],
+                timeout: 5
+            )
+            _ = try? await MachineCommandRunner.capture(
+                binary: "/usr/bin/ssh",
+                arguments: configuration + ["-O", "exit", target],
+                timeout: 5
+            )
+        }
+
+        let repos = await RepoScanner.scan(
+            roots: [remoteRoot], depth: 1, remoteTarget: target
+        )
+        XCTAssertEqual(repos.map(\.name), ["alpha"])
+
+        let master = try await MachineCommandRunner.capture(
+            binary: "/usr/bin/ssh",
+            arguments: configuration + [
+                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                "-O", "check", target,
+            ],
+            timeout: 5
+        )
+        XCTAssertEqual(master.status, 0, "Remote scan must leave Rai's shared SSH master ready.")
+    }
+
     // MARK: - Fixtures
 
     private func makeDirectory(_ relative: String) throws {

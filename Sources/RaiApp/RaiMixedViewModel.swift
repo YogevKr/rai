@@ -56,38 +56,10 @@ final class RaiMixedViewModel: ObservableObject {
     }
 
     @discardableResult
-    func addSpace(_ space: RaiSpace) -> Bool {
-        do {
-            var next = composition
-            try next.addSpace(space)
-            composition = next
-            error = nil
-            return true
-        } catch {
-            self.error = error.localizedDescription
-            return false
-        }
-    }
-
-    @discardableResult
     func addTab(_ tab: RaiTab, to spaceID: UUID) -> Bool {
         do {
             var next = composition
             try next.addTab(tab, to: spaceID)
-            composition = next
-            error = nil
-            return true
-        } catch {
-            self.error = error.localizedDescription
-            return false
-        }
-    }
-
-    @discardableResult
-    func addPaneSlot(_ slot: RaiPaneSlot, to tabID: UUID) -> Bool {
-        do {
-            var next = composition
-            try next.addPaneSlot(slot, to: tabID)
             composition = next
             error = nil
             return true
@@ -106,39 +78,54 @@ final class RaiMixedViewModel: ObservableObject {
         return addTab(tab, to: space.id) ? tab.id : nil
     }
 
-    @discardableResult
-    func movePaneSlot(_ slotID: UUID, before targetID: UUID?, in tabID: UUID) -> Bool {
+    /// Live source tabs do not edit the saved mixed composition. Reuse slot IDs
+    /// across metadata revisions so SwiftUI keeps the same terminal clients.
+    func showSourceTab(_ tab: InstanceTab, spaceLabel: String) -> UUID? {
+        var nextComposition = composition
+        let spaceIndex = nextComposition.spaces.firstIndex { $0.source == tab.workspace }
+        let existingSpace = spaceIndex.map { nextComposition.spaces[$0] }
+        let previous = existingSpace?.tabs.first { existing in
+            existing.paneSlots.contains { $0.source.tabID == tab.id }
+        }
+        let slots = tab.panes.map { source in
+            previous?.paneSlots.first { $0.source == source } ?? RaiPaneSlot(source: source)
+        }
+        let nextTab = RaiTab(id: previous?.id ?? UUID(), label: tab.label, paneSlots: slots)
+        if let spaceIndex {
+            var space = nextComposition.spaces[spaceIndex]
+            space.label = spaceLabel
+            if let tabIndex = space.tabs.firstIndex(where: { $0.id == nextTab.id }) {
+                space.tabs[tabIndex] = nextTab
+            } else {
+                space.tabs.append(nextTab)
+            }
+            nextComposition.spaces[spaceIndex] = space
+        } else {
+            nextComposition.spaces.append(
+                RaiSpace(label: spaceLabel, source: tab.workspace, tabs: [nextTab])
+            )
+        }
         do {
-            var next = composition
-            try next.movePaneSlot(id: slotID, before: targetID, in: tabID)
-            composition = next
-            error = nil
-            return true
+            try nextComposition.validate()
         } catch {
             self.error = error.localizedDescription
-            return false
+            return nil
         }
+        composition = nextComposition
+        return nextTab.id
     }
 
-    @discardableResult
-    func setColumnCount(_ columnCount: Int, for tabID: UUID) -> Bool {
-        do {
-            var next = composition
-            try next.setColumnCount(columnCount, for: tabID)
-            composition = next
-            error = nil
-            return true
-        } catch {
-            self.error = error.localizedDescription
-            return false
-        }
-    }
-
-    func receive(endpoint: MachineEndpoint, connectionID: String, snapshot: HerdrEndpointSnapshot) {
+    func receive(
+        endpoint: MachineEndpoint,
+        connectionID: String,
+        snapshot: HerdrEndpointSnapshot,
+        terminalIDs: [String: String] = [:]
+    ) {
         endpoints[endpoint] = RaiEndpointProjection(
             endpoint: endpoint,
             connectionID: connectionID,
-            snapshot: snapshot
+            snapshot: snapshot,
+            terminalIDs: terminalIDs
         )
         error = nil
     }

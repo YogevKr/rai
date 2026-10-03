@@ -30,6 +30,26 @@ final class WorkspaceClosePreviewTests: XCTestCase {
         XCTAssertNoThrow(try child.validate(against: snapshot))
     }
 
+    func testSidebarCloseGroupIDsOnlyIncludeSingleTabPrimaries() throws {
+        let snapshot = snapshot()
+        XCTAssertEqual(
+            WorkspaceClosePreview.closeGroupWorkspaceIDs(in: snapshot.workspaces),
+            ["w1"]
+        )
+        let multiTab = Workspace(
+            workspaceID: "w5", number: 5, label: "w5", focused: false,
+            paneCount: 2, tabCount: 2, activeTabID: "w5:t1", agentStatus: .unknown,
+            worktree: WorkspaceWorktree(
+                repoKey: "repo-a", repoName: "same-name", repoRoot: "/tmp/repo-a",
+                checkoutPath: "/tmp/w5", isLinkedWorktree: false
+            )
+        )
+        XCTAssertEqual(
+            WorkspaceClosePreview.closeGroupWorkspaceIDs(in: snapshot.workspaces + [multiTab]),
+            ["w1"]
+        )
+    }
+
     func testOrdinaryClosureCannotImplicitlyCloseAGroupOnEitherVersion() throws {
         for version in [20, 22] {
             let snapshot = snapshot(protocolVersion: version)

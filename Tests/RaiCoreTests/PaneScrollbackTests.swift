@@ -23,6 +23,13 @@ final class PaneScrollbackTests: XCTestCase {
         XCTAssertEqual(payload("prompt\n", visible: "prompt\n", rows: 24), "")
     }
 
+    func testApplicationHistoryKeepsRowsBeforeTheVisibleViewport() {
+        XCTAssertEqual(
+            payload("older\nlast user message\ncurrent output", visible: "last user message\ncurrent output", rows: 2),
+            "older\n\u{1B}[0m"
+        )
+    }
+
     func testStylesAndInteriorBlankRowsRemainInHistory() {
         XCTAssertEqual(payload("\u{1B}[31ma\n\nb\nc", visible: "c", rows: 4), "\u{1B}[31ma\n\nb\n\u{1B}[0m")
     }

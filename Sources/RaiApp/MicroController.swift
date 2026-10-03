@@ -233,7 +233,7 @@ final class MicroController {
         case .reopenClosedTab:
             model.reopenClosedTab()
         case .newWorkspace:
-            model.newWorkspace()
+            model.requestNewWorkspace()
         case .collapseSpace:
             guard let workspaceID = model.selectedWorkspace?.workspaceID else { return }
             model.toggleWorkspaceCollapsed(workspaceID)

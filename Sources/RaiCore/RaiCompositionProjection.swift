@@ -27,11 +27,20 @@ public struct RaiEndpointProjection: Equatable, Sendable {
     public let endpoint: MachineEndpoint
     public let connectionID: String
     public let snapshot: HerdrEndpointSnapshot
+    /// Terminal identifiers come from the API snapshot. Endpoint snapshots
+    /// omit them, so the mixed view keeps the mapping beside the snapshot.
+    public let terminalIDs: [String: String]
 
-    public init(endpoint: MachineEndpoint, connectionID: String, snapshot: HerdrEndpointSnapshot) {
+    public init(
+        endpoint: MachineEndpoint,
+        connectionID: String,
+        snapshot: HerdrEndpointSnapshot,
+        terminalIDs: [String: String] = [:]
+    ) {
         self.endpoint = endpoint
         self.connectionID = connectionID
         self.snapshot = snapshot
+        self.terminalIDs = terminalIDs
     }
 }
 
@@ -54,7 +63,8 @@ extension RaiComposition {
         let object = pane.objectValue ?? [:]
         guard object["workspace_id"]?.stringValue == slot.source.workspaceID,
               object["tab_id"]?.stringValue == slot.source.tabID,
-              let terminalID = object["terminal_id"]?.stringValue,
+              let terminalID = object["terminal_id"]?.stringValue
+                ?? endpointProjection.terminalIDs[slot.source.paneID],
               !terminalID.isEmpty else {
             return .paneIdentityChanged
         }

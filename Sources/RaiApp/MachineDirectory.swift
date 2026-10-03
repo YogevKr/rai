@@ -7,6 +7,13 @@ import RaiCore
 final class MachineDirectory: ObservableObject {
     static let shared = MachineDirectory()
     @Published private(set) var state = MachineDirectoryState()
+    /// The latest source snapshot for every connected instance. The regular
+    /// Rai model keeps one active snapshot, so the directory owns the other
+    /// instance snapshots used by the flat sidebar list.
+    @Published private(set) var snapshots: [MachineEndpoint: HerdrEndpointSnapshot] = [:]
+    /// Cached remote spaces. Sidebar selection must not rebuild every remote
+    /// workspace and pane while the primary herd changes focus.
+    @Published private(set) var workspaces: [InstanceWorkspace] = []
     private var connections: [MachineEndpoint: HerdrEndpointConnection] = [:]
     private var tunnels: [MachineEndpoint: RemoteConnection] = [:]
     private var tasks: [MachineEndpoint: Task<Void, Never>] = [:]
@@ -26,6 +33,26 @@ final class MachineDirectory: ObservableObject {
         setupProcess?.cancel()
         setupProcess = nil
         for endpoint in Array(tasks.keys) { disconnect(endpoint) }
+        snapshots.removeAll()
+        workspaces.removeAll()
+    }
+
+    /// Drops endpoint transports before Rai changes its active Herdr socket.
+    /// Mixed panes own attach processes for these transports, so leaving the
+    /// directory entries alive would keep stale remote terminals running.
+    func resetForHerdChange() {
+        guard !stopped else { return }
+        setupProcess?.cancel()
+        setupProcess = nil
+        for endpoint in Set(tasks.keys).union(connections.keys).union(tunnels.keys) {
+            disconnect(endpoint)
+        }
+        state = MachineDirectoryState()
+        snapshots.removeAll()
+        workspaces.removeAll()
+        saved.removeAll()
+        paths.removeAll()
+        acceptedRequests.removeAll()
     }
 
     func resolve(_ endpoint: MachineEndpoint, connectionID: String) -> String? {
@@ -37,6 +64,44 @@ final class MachineDirectory: ObservableObject {
     func accepts(_ identity: EndpointViewIdentity) -> Bool {
         guard let endpoint = identity.machineEndpoint else { return false }
         return resolve(endpoint, connectionID: identity.connectionID) != nil
+    }
+
+    @discardableResult
+    func createWorkspace(on endpoint: MachineEndpoint, connectionID: String) async throws -> String {
+        let result = try await create(on: endpoint, connectionID: connectionID,
+                                      method: "workspace.create", params: ["focus": .bool(false)])
+        guard let id = result.objectValue?["workspace"]?.objectValue?["workspace_id"]?.stringValue else {
+            throw HerdrEndpointError.malformed
+        }
+        return id
+    }
+
+    func createTab(in workspace: RaiWorkspaceReference, connectionID: String) async throws -> String {
+        let result = try await create(on: workspace.endpoint, connectionID: connectionID,
+            method: "tab.create", params: ["workspace_id": .string(workspace.workspaceID), "focus": .bool(false)])
+        guard let id = result.objectValue?["tab"]?.objectValue?["tab_id"]?.stringValue else {
+            throw HerdrEndpointError.malformed
+        }
+        return id
+    }
+
+    private func create(on endpoint: MachineEndpoint, connectionID: String,
+                        method: String, params: [String: JSONValue]) async throws -> JSONValue {
+        guard let entry = state.entry(for: endpoint),
+              entry.health == .online,
+              entry.connectionID == connectionID,
+              let socketPath = paths[endpoint],
+              let bootID = snapshots[endpoint]?.bootID else {
+            throw HerdrEndpointError.staleIdentity
+        }
+        let pinned = HerdrPinnedRPC()
+        return try await pinned.request(
+            socketPath: socketPath,
+            endpointSocketPath: RemoteConnection.clientSocketPath(for: socketPath),
+            bootID: bootID,
+            method: method,
+            params: params,
+            validate: { _ in })
     }
 
     /// Only a current saved endpoint can produce a remote foreground CLI invocation.
@@ -125,6 +190,18 @@ final class MachineDirectory: ObservableObject {
     }
 
     func refresh() async throws {
+        try await refresh(connectEndpoints: true)
+    }
+
+    /// Refreshes the catalog without opening every saved remote instance.
+    ///
+    /// The regular Rai window uses this path. A remote transport starts when
+    /// a saved space needs it or the user creates a space on that instance.
+    func refreshCatalogOnly() async throws {
+        try await refresh(connectEndpoints: false)
+    }
+
+    private func refresh(connectEndpoints: Bool) async throws {
         let machines = try MachineCatalog.parse(await run(["machine", "list", "--json"]))
         let sessions = try SessionListParser.parse(String(decoding: await run(["session", "list", "--json"]), as: UTF8.self))
         guard !stopped else { throw CancellationError() }
@@ -152,7 +229,43 @@ final class MachineDirectory: ObservableObject {
             }
         }
         state.entries = entries; state.revision = UUID()
-        for entry in entries where entry.health != .disabled && tasks[entry.endpoint] == nil { connect(entry.endpoint) }
+        snapshots = snapshots.filter { retained.contains($0.key) }
+        rebuildWorkspaces()
+        if connectEndpoints {
+            for entry in entries where entry.health != .disabled && tasks[entry.endpoint] == nil {
+                connect(entry.endpoint)
+            }
+        }
+    }
+
+    /// Starts one saved instance and waits until its metadata stream is ready.
+    ///
+    /// This keeps the normal window fast while preserving an explicit path for
+    /// mixed Rai spaces and new spaces on a remote instance.
+    func ensureConnected(_ endpoint: MachineEndpoint) async throws {
+        guard let entry = state.entry(for: endpoint), entry.health != .disabled else {
+            throw MachineCatalogError.invalid("This instance is disabled.")
+        }
+        if entry.health == .online, entry.connectionID != nil, paths[endpoint] != nil {
+            return
+        }
+        if tasks[endpoint] == nil {
+            connect(endpoint)
+        }
+        for _ in 0..<300 {
+            try Task.checkCancellation()
+            guard let current = state.entry(for: endpoint) else {
+                throw HerdrEndpointError.staleIdentity
+            }
+            if current.health == .online, current.connectionID != nil, paths[endpoint] != nil {
+                return
+            }
+            if current.health == .disconnected, let error = current.error, !error.isEmpty {
+                throw MachineCatalogError.invalid(error)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw MachineCatalogError.invalid("The instance connection timed out.")
     }
 
     private func reconnect(_ endpoint: MachineEndpoint) {
@@ -171,8 +284,10 @@ final class MachineDirectory: ObservableObject {
         tasks.removeValue(forKey: endpoint)?.cancel()
         connections.removeValue(forKey: endpoint)?.disconnect()
         tunnels.removeValue(forKey: endpoint)?.stop()
+        snapshots.removeValue(forKey: endpoint)
         if endpoint.profileID != nil { paths.removeValue(forKey: endpoint) }
         update(endpoint) { $0.health = .disconnected; $0.connectionID = nil }
+        rebuildWorkspaces()
     }
 
     private func connect(_ endpoint: MachineEndpoint) {
@@ -232,6 +347,7 @@ final class MachineDirectory: ObservableObject {
 
     private func receive(_ snapshot: HerdrEndpointSnapshot, endpoint: MachineEndpoint, generation: String) {
         guard state.entry(for: endpoint)?.connectionID == generation else { return }
+        snapshots[endpoint] = snapshot
         let agents = snapshot.agents.compactMap { value -> MachineAgent? in
             guard let row = value.objectValue, let paneID = row["pane_id"]?.stringValue else { return nil }
             return MachineAgent(resource: .init(endpoint: endpoint, connectionID: generation, bootID: snapshot.bootID, paneID: paneID),
@@ -239,6 +355,7 @@ final class MachineDirectory: ObservableObject {
                 agent: row["agent"]?.stringValue ?? "", status: row["agent_status"]?.stringValue ?? "unknown")
         }
         update(endpoint) { $0.health = .online; $0.agents = agents; $0.error = nil }
+        rebuildWorkspaces()
         if let entry = state.entry(for: endpoint) {
             let changes = notificationTracker.receive(snapshot, entry: entry)
             if !changes.notices.isEmpty || !changes.retiredIDs.isEmpty { notificationHandler?(changes) }
@@ -248,5 +365,13 @@ final class MachineDirectory: ObservableObject {
     private func update(_ endpoint: MachineEndpoint, _ change: (inout MachineEntry) -> Void) {
         guard let index = state.entries.firstIndex(where: { $0.endpoint == endpoint }) else { return }
         change(&state.entries[index])
+    }
+
+    private func rebuildWorkspaces() {
+        workspaces = InstanceWorkspace.entries(
+            machines: state.entries,
+            snapshots: snapshots,
+            excluding: nil
+        )
     }
 }

@@ -1,24 +1,14 @@
 import RaiCore
 import SwiftUI
-import UniformTypeIdentifiers
-
-private enum RaiMixedPaneDrag {
-    static let type = UTType(exportedAs: "gr.krig.rai.mixed-pane")
-}
 
 /// Renders one Rai tab. Its slots may belong to different Herdr endpoints.
 struct RaiMixedTabView: View {
     @ObservedObject var model: RaiMixedViewModel
     let tabID: UUID
     let endpoints: [MachineEndpoint: RaiMixedEndpointSession]
-    @State private var draggedSlotID: UUID?
 
     private var slots: [RaiPaneSlot] {
         model.composition.tab(id: tabID)?.paneSlots ?? []
-    }
-
-    private var columnCount: Int {
-        model.composition.tab(id: tabID)?.columnCount ?? 2
     }
 
     var body: some View {
@@ -30,55 +20,20 @@ struct RaiMixedTabView: View {
             }
         }
         .background(Theme.base)
-        .toolbar {
-            if !slots.isEmpty {
-                ToolbarItem {
-                    Picker("Columns", selection: Binding(
-                        get: { columnCount },
-                        set: { value in
-                            guard model.setColumnCount(value, for: tabID) else { return }
-                            _ = model.save()
-                        }
-                    )) {
-                        ForEach(1...RaiCompositionLimits.maxColumnsPerTab, id: \.self) { value in
-                            Text("\(value)").tag(value)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .help("Columns in this Rai tab")
-                }
-            }
-        }
     }
 
     private var paneGrid: some View {
         let resolutions = (try? model.resolutions(for: tabID)) ?? []
         return ScrollView {
             LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 220)), count: columnCount),
+                columns: [GridItem(.adaptive(minimum: 220), spacing: 8)],
                 spacing: 8
             ) {
                 ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
                     RaiMixedPaneSlotView(
                         slot: slot,
                         resolution: resolutions.indices.contains(index) ? resolutions[index] : .paneIdentityChanged,
-                        endpoint: endpoints[slot.source.endpoint],
-                        isDragged: draggedSlotID == slot.id
-                    )
-                    .onDrag {
-                        draggedSlotID = slot.id
-                        let data = Data(slot.id.uuidString.utf8) as NSData
-                        return NSItemProvider(item: data, typeIdentifier: RaiMixedPaneDrag.type.identifier)
-                    }
-                    .onDrop(
-                        of: [RaiMixedPaneDrag.type],
-                        delegate: RaiMixedPaneDropDelegate(
-                            model: model,
-                            tabID: tabID,
-                            targetSlotID: slot.id,
-                            draggedSlotID: $draggedSlotID,
-                            onMove: { _ = model.save() }
-                        )
+                        endpoint: endpoints[slot.source.endpoint]
                     )
                 }
             }
@@ -91,7 +46,6 @@ private struct RaiMixedPaneSlotView: View {
     let slot: RaiPaneSlot
     let resolution: RaiPaneResolution
     let endpoint: RaiMixedEndpointSession?
-    let isDragged: Bool
 
     var body: some View {
         Group {
@@ -113,7 +67,6 @@ private struct RaiMixedPaneSlotView: View {
         .frame(minHeight: 220)
         .background(Theme.terminalBG)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPane, style: .continuous))
-        .opacity(isDragged ? 0.45 : 1)
     }
 
     private func terminal(target: RaiPaneRenderTarget, endpoint: RaiMixedEndpointSession) -> some View {
@@ -156,27 +109,5 @@ private struct RaiMixedPaneSlotView: View {
                 .foregroundStyle(Theme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct RaiMixedPaneDropDelegate: DropDelegate {
-    let model: RaiMixedViewModel
-    let tabID: UUID
-    let targetSlotID: UUID
-    @Binding var draggedSlotID: UUID?
-    let onMove: () -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard let draggedSlotID,
-              draggedSlotID != targetSlotID,
-              model.movePaneSlot(draggedSlotID, before: targetSlotID, in: tabID) else { return }
-        onMove()
-    }
-
-    func dropExited(info: DropInfo) {}
-
-    func performDrop(info: DropInfo) -> Bool {
-        draggedSlotID = nil
-        return true
     }
 }

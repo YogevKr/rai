@@ -9,8 +9,12 @@ extension UTType {
 
 struct SidebarView: View {
     @ObservedObject var model: RaiModel
-    @ObservedObject var mixedController: RaiMixedController
     let onPrimarySelection: () -> Void
+    let remoteWorkspaces: [InstanceWorkspace]
+    let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
+    let selectedRemoteWorkspace: RaiWorkspaceReference?
+    let selectedRemoteTabID: String?
+    let onRemoteSelection: (RaiWorkspaceReference, String?) -> Void
     @State private var broadcastPresented = false
 
     /// Whether the selected space sits in a git checkout. Gates the worktree
@@ -73,7 +77,12 @@ struct SidebarView: View {
             Divider().overlay(Theme.hairline)
             attentionFooter
         }
-        .modifier(SidebarPresentations(model: model))
+        .modifier(
+            SidebarPresentations(
+                model: model,
+                onWorkspaceCreated: onWorkspaceCreated
+            )
+        )
         .background {
             Color.clear.alert(item: $model.sessionAlert) { alert in
                 sessionAlert(alert)
@@ -109,7 +118,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var spacesList: some View {
-        if let snapshot = model.snapshot {
+        if model.snapshot != nil {
             ScrollView {
                 // This list is small enough for eager layout. On macOS 26,
                 // LazyVStack can enter a permanent placement loop when these
@@ -118,99 +127,119 @@ struct SidebarView: View {
                 // This intentionally removes pinned headers. Do not restore
                 // lazy pinning without a macOS 26 CPU regression test.
                 VStack(alignment: .leading, spacing: 2) {
-                    MixedSidebarSection(controller: mixedController)
-                    let entries = model.workspaceListEntries
-                    let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
-                        AttentionFilter.includes(
-                            status: tab.agentStatus,
-                            id: tab.tabID,
-                            selectedID: model.selectedTabID,
-                            onlyNeedsYou: model.onlyNeedsYou
-                        ) ? tab.workspaceID : nil
-                    })
-                    let expandedEntries = WorkspaceSidebar.entries(
-                        in: snapshot,
-                        gitStatuses: model.workspaceGitStatuses,
-                        collapsedSpaceKeys: [],
-                        visibleWorkspaceID: nil
-                    )
-                    let visibleGroupKeys = Set(expandedEntries.compactMap {
-                        visibleWorkspaceIDs.contains($0.workspace.workspaceID)
-                            ? $0.groupKey
-                            : nil
-                    })
-                    ForEach(entries) { entry in
-                        let workspace = entry.workspace
-                        let allTabs = tabs(in: snapshot, of: workspace)
-                            .filter { !model.closingTabIDs.contains($0.tabID) }
-                        // A collapsed space hides everything but its
-                        // attention-needing tabs (and the selected one) —
-                        // same predicate as the global "only needs you".
-                        let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
-                        let visibleTabs = allTabs.filter {
+                    if let snapshot = model.snapshot {
+                        let entries = model.workspaceListEntries
+                        let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
                             AttentionFilter.includes(
-                                status: $0.agentStatus,
-                                id: $0.tabID,
+                                status: tab.agentStatus,
+                                id: tab.tabID,
                                 selectedID: model.selectedTabID,
-                                onlyNeedsYou: model.onlyNeedsYou || collapsed
-                            )
-                        }
-                        let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
-                        // Every space renders the same way — header + tab
-                        // rows — whether it holds one tab or many.
-                        let groupHasVisibleTabs = entry.groupKey.map {
-                            visibleGroupKeys.contains($0)
-                        } ?? false
-                        if collapsed || !visibleTabs.isEmpty
-                            || (entry.isGroupParent && groupHasVisibleTabs) {
-                            Section {
-                                ForEach(visibleTabs) { tab in
-                                    AgentRow(
+                                onlyNeedsYou: model.onlyNeedsYou
+                            ) ? tab.workspaceID : nil
+                        })
+                        let expandedEntries = WorkspaceSidebar.entries(
+                            in: snapshot,
+                            gitStatuses: model.workspaceGitStatuses,
+                            collapsedSpaceKeys: [],
+                            visibleWorkspaceID: nil
+                        )
+                        let visibleGroupKeys = Set(expandedEntries.compactMap {
+                            visibleWorkspaceIDs.contains($0.workspace.workspaceID)
+                                ? $0.groupKey
+                                : nil
+                        })
+                        let closeGroupWorkspaceIDs = WorkspaceClosePreview.closeGroupWorkspaceIDs(
+                            in: snapshot.workspaces
+                        )
+                        ForEach(entries) { entry in
+                            let workspace = entry.workspace
+                            let allTabs = tabs(in: snapshot, of: workspace)
+                                .filter { !model.closingTabIDs.contains($0.tabID) }
+                            // A collapsed space hides everything but its
+                            // attention-needing tabs (and the selected one) —
+                            // same predicate as the global "only needs you".
+                            let collapsed = model.isWorkspaceCollapsed(workspace.workspaceID)
+                            let visibleTabs = allTabs.filter {
+                                AttentionFilter.includes(
+                                    status: $0.agentStatus,
+                                    id: $0.tabID,
+                                    selectedID: model.selectedTabID,
+                                    onlyNeedsYou: model.onlyNeedsYou || collapsed
+                                )
+                            }
+                            let focused = snapshot.focusedWorkspaceID == workspace.workspaceID
+                            // Every space renders the same way — header + tab
+                            // rows — whether it holds one tab or many.
+                            let groupHasVisibleTabs = entry.groupKey.map {
+                                visibleGroupKeys.contains($0)
+                            } ?? false
+                            if collapsed || !visibleTabs.isEmpty
+                                || (entry.isGroupParent && groupHasVisibleTabs) {
+                                Section {
+                                    ForEach(visibleTabs) { tab in
+                                        AgentRow(
+                                            model: model,
+                                            tab: tab,
+                                            label: snapshot.displayLabel(for: tab),
+                                            selected: model.selectedTabID == tab.tabID,
+                                            onSelect: {
+                                                onPrimarySelection()
+                                                model.select(tab: tab)
+                                            },
+                                            closesWorkspaceGroup: closeGroupWorkspaceIDs.contains(
+                                                tab.workspaceID
+                                            ),
+                                            onPaneDragHover: {
+                                                model.previewTabDuringPaneDrag(tab)
+                                            },
+                                            onBroadcast: { broadcastPresented = true },
+                                            gitStatus: model.gitStatus(forTab: tab),
+                                            indent: entry.indented ? 32 : 14
+                                        )
+                                    }
+                                } header: {
+                                    WorkspaceHeader(
                                         model: model,
-                                        tab: tab,
-                                        label: snapshot.displayLabel(for: tab),
-                                        selected: model.selectedTabID == tab.tabID,
-                                        onSelect: {
-                                            onPrimarySelection()
-                                            model.select(tab: tab)
+                                        workspace: workspace,
+                                        displayLabel: entry.displayLabel,
+                                        displayStatus: entry.displayStatus,
+                                        focusedInHerdr: focused,
+                                        onPrimarySelection: onPrimarySelection,
+                                        hasWorkspaceGroup: closeGroupWorkspaceIDs.contains(
+                                            workspace.workspaceID
+                                        ),
+                                        indented: entry.indented,
+                                        collapsed: collapsed,
+                                        hiddenCount: allTabs.count - visibleTabs.count,
+                                        groupKey: entry.isGroupParent ? entry.groupKey : nil,
+                                        groupCollapsed: entry.groupCollapsed,
+                                        onToggleCollapse: {
+                                            model.toggleWorkspaceCollapsed(workspace.workspaceID)
                                         },
-                                        onPaneDragHover: {
-                                            model.previewTabDuringPaneDrag(tab)
-                                        },
-                                        onBroadcast: { broadcastPresented = true },
-                                        gitStatus: model.gitStatus(forTab: tab),
-                                        indent: entry.indented ? 32 : 14
+                                        onToggleGroup: {
+                                            if let key = entry.groupKey {
+                                                model.toggleSpaceGroupCollapsed(key)
+                                            }
+                                        }
                                     )
                                 }
-                            } header: {
-                                WorkspaceHeader(
-                                    model: model,
-                                    workspace: workspace,
-                                    displayLabel: entry.displayLabel,
-                                    displayStatus: entry.displayStatus,
-                                    focusedInHerdr: focused,
-                                    onPrimarySelection: onPrimarySelection,
-                                    indented: entry.indented,
-                                    collapsed: collapsed,
-                                    hiddenCount: allTabs.count - visibleTabs.count,
-                                    groupKey: entry.isGroupParent ? entry.groupKey : nil,
-                                    groupCollapsed: entry.groupCollapsed,
-                                    onToggleCollapse: {
-                                        model.toggleWorkspaceCollapsed(workspace.workspaceID)
-                                    },
-                                    onToggleGroup: {
-                                        if let key = entry.groupKey {
-                                            model.toggleSpaceGroupCollapsed(key)
-                                        }
-                                    }
-                                )
+                                if !collapsed {
+                                    WorkspaceTabDropEnd(
+                                        workspaceID: workspace.workspaceID,
+                                        model: model
+                                    )
+                                }
                             }
-                            if !collapsed {
-                                WorkspaceTabDropEnd(
-                                    workspaceID: workspace.workspaceID,
-                                    model: model
-                                )
-                            }
+                        }
+                        ForEach(remoteWorkspaces.filter {
+                            $0.id.endpoint != model.currentMachineEntry?.endpoint
+                        }) { workspace in
+                            RemoteWorkspaceSection(
+                                workspace: workspace,
+                                selectedWorkspace: selectedRemoteWorkspace,
+                                selectedTabID: selectedRemoteTabID,
+                                onSelect: onRemoteSelection
+                            )
                         }
                     }
                 }
@@ -221,12 +250,87 @@ struct SidebarView: View {
             // Right-click on empty sidebar space: the create actions.
             .contextMenu {
                 Button("New Tab") { model.newTab() }
-                Button("New Space") { model.newWorkspace() }
+                Button("New Space") { model.requestNewWorkspace() }
             }
-        }
+    }
+}
+
+private struct RemoteWorkspaceSection: View {
+    let workspace: InstanceWorkspace
+    let selectedWorkspace: RaiWorkspaceReference?
+    let selectedTabID: String?
+    let onSelect: (RaiWorkspaceReference, String?) -> Void
+
+    private var selected: Bool {
+        selectedWorkspace == workspace.id && selectedTabID == nil
     }
 
-    // herdr's canonical tab order is the snapshot array order (tab.move reorders
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "network")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(workspace.label.uppercased())
+                            .font(.system(size: 10.5, weight: .bold))
+                            .tracking(1.1)
+                            .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(1)
+                        Text(workspace.instanceLabel)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Text("\(workspace.tabs.count)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .modifier(SidebarRowChrome(selected: selected, hovering: false))
+
+            ForEach(workspace.tabs) { tab in
+                Button {
+                    onSelect(tab.workspace, tab.id)
+                } label: {
+                    HStack(spacing: 8) {
+                        StatusDot(status: tab.status)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tab.label.isEmpty ? tab.id : tab.label)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Theme.textPrimary)
+                                .lineLimit(1)
+                            Text(workspace.instanceLabel)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Theme.textTertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        Text("\(tab.panes.count)")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .modifier(
+                    SidebarRowChrome(
+                        selected: selectedWorkspace == tab.workspace && selectedTabID == tab.id,
+                        hovering: false,
+                        indent: 14
+                    )
+                )
+            }
+        }
+        .padding(.bottom, 5)
+    }
+}
+
+// herdr's canonical tab order is the snapshot array order (tab.move reorders
     // the array, not the `number` field) — preserve it, don't re-sort by number.
     private func tabs(in snapshot: SessionSnapshot, of workspace: Workspace) -> [HerdrTab] {
         snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
@@ -236,6 +340,7 @@ struct SidebarView: View {
     /// layout above stays readable.
     private struct SidebarPresentations: ViewModifier {
         @ObservedObject var model: RaiModel
+        let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
 
         func body(content: Content) -> some View {
             // The broadcast sheet stays on the header — it is presented from
@@ -255,6 +360,12 @@ struct SidebarView: View {
                 }
                 .sheet(item: $model.newSessionRequest) { _ in
                     NewSessionSheet(model: model)
+                }
+                .sheet(item: $model.newWorkspaceRequest) { _ in
+                    NewWorkspaceInstanceSheet(
+                        model: model,
+                        onWorkspaceCreated: onWorkspaceCreated
+                    )
                 }
                 .sheet(item: $model.remoteHerdRequest) { _ in
                     RemoteHerdSheet(model: model)
@@ -283,7 +394,7 @@ struct SidebarView: View {
                     Label("New Tab", systemImage: "plus.rectangle")
                 }
                 Button {
-                    model.newWorkspace()
+                    model.requestNewWorkspace()
                 } label: {
                     Label("New Space", systemImage: "square.stack.3d.up")
                 }
@@ -822,6 +933,7 @@ private struct WorkspaceHeader: View {
     let displayStatus: AgentStatus
     let focusedInHerdr: Bool
     let onPrimarySelection: () -> Void
+    let hasWorkspaceGroup: Bool
     var indented = false
     var collapsed: Bool = false
     var hiddenCount: Int = 0
@@ -831,6 +943,15 @@ private struct WorkspaceHeader: View {
     var onToggleGroup: () -> Void = {}
 
     @State private var dropTargeted = false
+
+    private var instanceLabel: String {
+        model.currentMachineEntry?.label
+            ?? (model.remoteTarget == nil ? "This Mac" : model.currentSessionDisplayName)
+    }
+
+    private var instanceAddress: String {
+        model.currentMachineEntry?.addressLabel ?? model.currentSessionDisplayName
+    }
 
     private var showWorktreeFallback: Bool {
         guard let worktree = workspace.worktree else { return false }
@@ -904,6 +1025,17 @@ private struct WorkspaceHeader: View {
                         .foregroundStyle(Theme.textTertiary)
                 }
             }
+            HStack(spacing: 4) {
+                Image(systemName: model.remoteTarget == nil ? "externaldrive" : "network")
+                    .font(.system(size: 8, weight: .medium))
+                Text(instanceLabel)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(Theme.textTertiary)
+            .padding(.leading, groupKey == nil ? 43 : 58)
+            .padding(.trailing, 6)
+            .help(instanceAddress)
             if !indented, showWorktreeFallback {
                 // The branch lives on the tab rows now: tabs in one space can
                 // sit in different worktrees. The header keeps only the
@@ -953,7 +1085,7 @@ private struct WorkspaceHeader: View {
         )
         .contextMenu {
             Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
-            Button("New Space") { model.newWorkspace() }
+            Button("New Space") { model.requestNewWorkspace() }
             Divider()
             Button("Focus") {
                 onPrimarySelection()
@@ -963,8 +1095,7 @@ private struct WorkspaceHeader: View {
             Button("Close", role: .destructive) {
                 model.requestClose(workspace: workspace)
             }
-            if let snapshot = model.snapshot,
-               WorkspaceClosePreview.group(in: snapshot, workspaceID: workspace.workspaceID).count > 1 {
+            if hasWorkspaceGroup {
                 Button("Close Group…", role: .destructive) {
                     model.requestCloseGroup(workspace: workspace)
                 }
@@ -1009,6 +1140,7 @@ private struct AgentRow: View {
     let label: String
     let selected: Bool
     let onSelect: () -> Void
+    let closesWorkspaceGroup: Bool
     let onPaneDragHover: () -> Void
     let onBroadcast: () -> Void
     var gitStatus: WorkspaceGitStatus? = nil
@@ -1116,7 +1248,10 @@ private struct AgentRow: View {
                 if !others.isEmpty { Divider() }
                 Button("New Space") { model.moveTabToNewWorkspace(tab.tabID) }
             }
-            Button("Close", role: .destructive) { model.close(tab: tab) }
+            Button(
+                closesWorkspaceGroup ? "Close Group…" : "Close",
+                role: .destructive
+            ) { model.close(tab: tab) }
             let actions = model.pluginActions(for: .tab)
             if !actions.isEmpty {
                 Menu("Plugin Actions") {
@@ -1430,6 +1565,78 @@ private struct NewSessionSheet: View {
 
     private func create() {
         model.createSession(named: name)
+    }
+}
+
+private struct NewWorkspaceInstanceSheet: View {
+    @ObservedObject var model: RaiModel
+    @ObservedObject private var machines = MachineDirectory.shared
+    let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var entries: [MachineEntry] {
+        model.workspaceCreationEntries(from: machines.state.entries)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Choose Instance")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Choose where Rai should create the new space.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+
+            if entries.isEmpty {
+                Text("No Herdr instances are available.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(entries) { entry in
+                            Button {
+                                model.newWorkspace(on: entry, onCreated: onWorkspaceCreated)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.label)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(entry.addressLabel)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Theme.textTertiary)
+                                    }
+                                    Spacer()
+                                    Text(entry.health.rawValue.capitalized)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.sidebar)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(entry.health == .disabled)
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 440)
+        .background(Theme.raised)
     }
 }
 
@@ -1805,94 +2012,6 @@ private struct SidebarReorderDropDelegate: DropDelegate {
             )
         }
         return true
-    }
-}
-
-private struct MixedSidebarSection: View {
-    @ObservedObject var controller: RaiMixedController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 7) {
-                Text("RAI")
-                    .font(.system(size: 10.5, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(Theme.textSecondary)
-                Spacer()
-                Button {
-                    controller.newTab()
-                } label: {
-                    Image(systemName: "plus.rectangle")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .disabled(controller.spaces.isEmpty)
-                .help("New Rai tab")
-                Button {
-                    controller.openSourcePicker()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .help("Add Herdr workspace to Rai")
-            }
-            .padding(.horizontal, 11)
-            .padding(.top, 10)
-            .padding(.bottom, 3)
-
-            if controller.spaces.isEmpty {
-                Button {
-                    controller.openSourcePicker()
-                } label: {
-                    Label("Add Herdr workspace", systemImage: "rectangle.stack.badge.plus")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .modifier(SidebarRowChrome(selected: false, hovering: false))
-            } else {
-                ForEach(controller.spaces) { space in
-                    Text(space.label.uppercased())
-                        .font(.system(size: 9.5, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(Theme.textTertiary)
-                        .padding(.leading, 18)
-                        .padding(.top, 7)
-                    ForEach(space.tabs) { tab in
-                        Button {
-                            controller.selectTab(tab.id)
-                        } label: {
-                            HStack(spacing: 7) {
-                                Image(systemName: "rectangle.split.2x1")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Theme.textTertiary)
-                                Text(tab.label.isEmpty ? "Tab" : tab.label)
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                                Text("\(tab.paneSlots.count)")
-                                    .foregroundStyle(Theme.textTertiary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .modifier(SidebarRowChrome(
-                            selected: controller.selectedTabID == tab.id,
-                            hovering: false,
-                            indent: 10
-                        ))
-                    }
-                }
-            }
-        }
-        .padding(.bottom, 6)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-        }
     }
 }
 

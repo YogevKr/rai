@@ -55,7 +55,8 @@ enum MachineCommandRunner {
                 throw MachineCatalogError.invalid("The machine command timed out.")
             }
             var descriptors = captures.map { pollfd(fd: $0.eof ? -1 : $0.handle.fileDescriptor, events: Int16(POLLIN), revents: 0) }
-            _ = poll(&descriptors, nfds_t(descriptors.count), 50)
+            // Short commands should return without waiting on a long poll tick.
+            _ = poll(&descriptors, nfds_t(descriptors.count), 10)
             for capture in captures { capture.drain() }
             if captures.contains(where: \.overflow) {
                 terminate(process, target: terminationTarget)

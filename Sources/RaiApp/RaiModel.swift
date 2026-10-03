@@ -573,6 +573,7 @@ final class RaiModel: ObservableObject {
     /// no longer be remapped). Reset with the per-herd stack swap.
     private var recreatedWorkspaceIDs: [String: String] = [:]
     @Published var newSessionRequest: NewSessionRequest?
+    @Published var newWorkspaceRequest: NewWorkspaceRequest?
     @Published var remoteHerdRequest: RemoteHerdRequest?
     @Published var sessionAlert: SessionAlert?
     // Live split ratio while a divider is being dragged (split id → ratio),
@@ -667,7 +668,10 @@ final class RaiModel: ObservableObject {
         self.pluginBootReader = pluginBootReader
         activeSocketPath = client.socketPath
         currentSessionName = Self.inferredSessionName(for: client.socketPath)
-        terminalPool = TerminalPool(socketPath: client.socketPath)
+        terminalPool = TerminalPool(
+            socketPath: client.socketPath,
+            requiresRuntimeExecutable: true
+        )
         self.userDefaults = userDefaults
         self.userIdleSeconds = userIdleSeconds
         phoneReachableOverride = phoneReachable
@@ -1561,6 +1565,7 @@ final class RaiModel: ObservableObject {
         recreatedWorkspaceIDs = [:]
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
+        terminalPool.configureRemoteAttach()
         terminalPool.predictiveEchoHerdLocation = remote == nil ? .local : .remote
         connectionState = .connecting
 
@@ -1568,6 +1573,7 @@ final class RaiModel: ObservableObject {
         guard generation == connectionGeneration else { return }
         refreshRepoIndex()
         await reloadSessions()
+        try? await MachineDirectory.shared.refreshCatalogOnly()
     }
 
     private func disconnectCurrentHerd(message: String) {
@@ -1583,6 +1589,7 @@ final class RaiModel: ObservableObject {
 
     private func tearDownCurrentConnection(stopRemote: Bool) {
         connectionGeneration = UUID()
+        MachineDirectory.shared.resetForHerdChange()
         finishAllPendingDecisions()
         // Their closes can never land now, and a stale ID would hide a row of
         // the same name in the next herd.
@@ -2181,7 +2188,7 @@ final class RaiModel: ObservableObject {
     private func run(_ effect: PaletteCommand.Effect) {
         switch effect {
         case .newTab: newTab()
-        case .newSpace: newWorkspace()
+        case .newSpace: requestNewWorkspace()
         case .splitRight: splitRight()
         case .splitDown: splitDown()
         case .zoomPane: zoomPane()
@@ -2342,6 +2349,18 @@ final class RaiModel: ObservableObject {
         // the pre-close snapshot — and for a one-tab space that close is a
         // `workspace close`, so the repeat took a whole space with it.
         guard !closingTabIDs.contains(tab.tabID) else { return }
+        // Herdr rejects a primary workspace close while linked worktrees are
+        // still open. Use the reviewed group-close path instead of sending a
+        // command that fails silently from the tab menu.
+        if let snapshot,
+           let workspace = snapshot.workspaces.first(where: {
+               $0.workspaceID == tab.workspaceID
+           }),
+           workspace.tabCount == 1,
+           WorkspaceClosePreview.group(in: snapshot, workspaceID: workspace.workspaceID).count > 1 {
+            requestCloseGroup(workspace: workspace)
+            return
+        }
         guard let record = closedTabRecord(for: tab) else { return }
         guard let arguments = closeTabArguments(tabID: tab.tabID) else { return }
         let context = CloseConnectionContext(
@@ -2606,7 +2625,16 @@ final class RaiModel: ObservableObject {
     }
 
     func requestCloseGroup(workspace: Workspace) {
-        guard let snapshot, (serverInfo?.protocol ?? 0) >= 22 else { return }
+        guard let snapshot else { return }
+        guard (serverInfo?.protocol ?? snapshot.protocol) >= 22 else {
+            sessionAlert = SessionAlert(
+                kind: .error(
+                    title: "Close Group Requires Herdr 0.9",
+                    message: "Update Herdr before closing a primary space with linked worktrees."
+                )
+            )
+            return
+        }
         workspacePendingClose = WorkspaceClosePreview(snapshot: snapshot, workspaceID: workspace.workspaceID, closeGroup: true, connectionID: resourceGeneration.uuidString)
     }
 
@@ -3684,9 +3712,117 @@ final class RaiModel: ObservableObject {
         guard let tab = selectedTab else { return }
         close(tab: tab)
     }
+
+    func requestNewWorkspace() {
+        // The mixed controller loads the machine directory in the background.
+        // Keep the chooser visible while that first refresh is still pending.
+        if MachineDirectory.shared.state.entries.isEmpty {
+            newWorkspaceRequest = NewWorkspaceRequest()
+            Task {
+                let directory = MachineDirectory.shared
+                do {
+                    try await directory.refreshCatalogOnly()
+                } catch {
+                    self.sessionAlert = SessionAlert(kind: .error(
+                        title: "Couldn’t Read Instances",
+                        message: error.localizedDescription
+                    ))
+                }
+            }
+            return
+        }
+        let instances = workspaceCreationEntries
+        if instances.count > 1 {
+            newWorkspaceRequest = NewWorkspaceRequest()
+        } else {
+            newWorkspace()
+        }
+    }
+
     func newWorkspace() {
         runAction(["workspace", "create", "--focus"])
     }
+
+    func newWorkspace(
+        on entry: MachineEntry,
+        onCreated: ((RaiWorkspaceReference) -> Void)? = nil
+    ) {
+        if currentMachineEndpoint == entry.endpoint {
+            newWorkspace()
+            return
+        }
+
+        Task {
+            do {
+                let directory = MachineDirectory.shared
+                try await directory.ensureConnected(entry.endpoint)
+                guard let current = directory.state.entry(for: entry.endpoint),
+                      let connectionID = current.connectionID else {
+                    throw HerdrEndpointError.staleIdentity
+                }
+                let workspaceID = try await MachineDirectory.shared.createWorkspace(
+                    on: current.endpoint,
+                    connectionID: connectionID
+                )
+                onCreated?(RaiWorkspaceReference(
+                    endpoint: current.endpoint,
+                    workspaceID: workspaceID
+                ))
+            } catch {
+                sessionAlert = SessionAlert(kind: .error(
+                    title: "Couldn’t Create Space",
+                    message: error.localizedDescription
+                ))
+            }
+        }
+    }
+
+    private var currentMachineEndpoint: MachineEndpoint? {
+        if let remoteTarget {
+            return MachineDirectory.shared.state.entries.first {
+                $0.target == remoteTarget && $0.endpoint.session == currentSessionName
+            }?.endpoint ?? MachineEndpoint(
+                profileID: "adhoc:\(remoteTarget)",
+                session: currentSessionName
+            )
+        }
+        return MachineEndpoint(session: currentSessionName)
+    }
+
+    var currentMachineEntry: MachineEntry? {
+        guard let endpoint = currentMachineEndpoint else { return nil }
+        if let entry = MachineDirectory.shared.state.entry(for: endpoint) {
+            return entry
+        }
+        if let remoteTarget {
+            return MachineEntry(
+                endpoint: endpoint,
+                label: "Current Herd",
+                health: snapshot == nil ? .disconnected : .online,
+                target: remoteTarget
+            )
+        }
+        return MachineEntry(
+            endpoint: endpoint,
+            label: "This Mac · \(currentSessionName)",
+            health: snapshot == nil ? .disconnected : .online
+        )
+    }
+
+    var workspaceCreationEntries: [MachineEntry] {
+        workspaceCreationEntries(from: MachineDirectory.shared.state.entries)
+    }
+
+    func workspaceCreationEntries(from configuredEntries: [MachineEntry]) -> [MachineEntry] {
+        var entries = configuredEntries.filter { $0.health != .disabled }
+        if let current = currentMachineEntry,
+           current.health != .disabled,
+           !entries.contains(where: { $0.endpoint == current.endpoint }) {
+            entries.insert(current, at: 0)
+        }
+        return entries
+    }
+
     func splitRight() { splitPane("right") }
     func splitDown() { splitPane("down") }
     private func splitPane(_ direction: String) {
