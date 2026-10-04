@@ -184,7 +184,8 @@ struct SidebarView: View {
                                             model: model,
                                             tab: tab,
                                             label: snapshot.displayLabel(for: tab),
-                                            selected: model.selectedTabID == tab.tabID,
+                                            selected: selectedRemoteWorkspace == nil
+                                                && model.selectedTabID == tab.tabID,
                                             onSelect: {
                                                 onPrimarySelection()
                                                 model.select(tab: tab)

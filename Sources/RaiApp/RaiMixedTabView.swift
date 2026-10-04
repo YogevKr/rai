@@ -15,6 +15,8 @@ struct RaiMixedTabView: View {
         Group {
             if slots.isEmpty {
                 ContentUnavailableView("No panes in this Rai tab", systemImage: "rectangle.split.2x1")
+            } else if slots.count == 1, let slot = slots.first {
+                singlePane(slot)
             } else {
                 paneGrid
             }
@@ -23,26 +25,46 @@ struct RaiMixedTabView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func singlePane(_ slot: RaiPaneSlot) -> some View {
+        RaiMixedPaneSlotView(
+            slot: slot,
+            position: 1,
+            resolution: (try? model.resolutions(for: tabID))?.first ?? .paneIdentityChanged,
+            endpoint: endpoints[slot.source.endpoint]
+        )
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     private var paneGrid: some View {
         let resolutions = (try? model.resolutions(for: tabID)) ?? []
         return ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 220), spacing: 8)],
-                spacing: 8
-            ) {
-                ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
-                    RaiMixedPaneSlotView(
-                        slot: slot,
-                        position: index + 1,
-                        resolution: resolutions.indices.contains(index) ? resolutions[index] : .paneIdentityChanged,
-                        endpoint: endpoints[slot.source.endpoint]
-                    )
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(paneRows.enumerated()), id: \.offset) { rowIndex, row in
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(Array(row.enumerated()), id: \.element.id) { columnIndex, slot in
+                            let index = rowIndex * 2 + columnIndex
+                            RaiMixedPaneSlotView(
+                                slot: slot,
+                                position: index + 1,
+                                resolution: resolutions.indices.contains(index) ? resolutions[index] : .paneIdentityChanged,
+                                endpoint: endpoints[slot.source.endpoint]
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var paneRows: [[RaiPaneSlot]] {
+        stride(from: 0, to: slots.count, by: 2).map { start in
+            Array(slots[start..<min(start + 2, slots.count)])
+        }
     }
 }
 
@@ -74,6 +96,7 @@ private struct RaiMixedPaneSlotView: View {
                 unavailable("Pane identity changed")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(minHeight: 220)
         .background(Theme.terminalBG)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPane, style: .continuous))
