@@ -20,6 +20,7 @@ struct RaiMixedTabView: View {
             }
         }
         .background(Theme.base)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var paneGrid: some View {
@@ -37,8 +38,10 @@ struct RaiMixedTabView: View {
                     )
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

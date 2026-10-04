@@ -1,3 +1,8 @@
+Rai 0.1.72 fixes the mixed remote view layout.
+
+- Mixed remote panes now use the full detail area.
+- The view no longer leaves blank space beside the pane grid.
+
 Rai 0.1.71 removes the separate endpoint window and keeps machine setup in Rai.
 
 - File → New Window no longer opens a second endpoint view.
