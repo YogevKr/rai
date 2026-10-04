@@ -1,4 +1,10 @@
-Rai 0.1.70 adds mixed Rai spaces, remote instance support, and faster switching.
+Rai 0.1.71 removes the separate endpoint window and keeps machine setup in Rai.
+
+- File → New Window no longer opens a second endpoint view.
+- Machines… opens from the normal Rai session menu.
+- Machine setup and remote instance support remain available.
+
+Rai 0.1.70 added mixed Rai spaces, remote instance support, and faster switching.
 
 - A Rai space can include spaces from several local or remote Herdr instances.
 - Rai keeps multiple spaces per instance and shows each space's instance.

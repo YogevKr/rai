@@ -16,6 +16,7 @@ struct SidebarView: View {
     let selectedRemoteTabID: String?
     let onRemoteSelection: (RaiWorkspaceReference, String?) -> Void
     @State private var broadcastPresented = false
+    @State private var machinesPresented = false
 
     /// Whether the selected space sits in a git checkout. Gates the worktree
     /// actions, which need a repo but not herdr worktree provenance.
@@ -80,7 +81,8 @@ struct SidebarView: View {
         .modifier(
             SidebarPresentations(
                 model: model,
-                onWorkspaceCreated: onWorkspaceCreated
+                onWorkspaceCreated: onWorkspaceCreated,
+                machinesPresented: $machinesPresented
             )
         )
         .background {
@@ -341,6 +343,7 @@ private struct RemoteWorkspaceSection: View {
     private struct SidebarPresentations: ViewModifier {
         @ObservedObject var model: RaiModel
         let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
+        @Binding var machinesPresented: Bool
 
         func body(content: Content) -> some View {
             // The broadcast sheet stays on the header — it is presented from
@@ -369,6 +372,20 @@ private struct RemoteWorkspaceSection: View {
                 }
                 .sheet(item: $model.remoteHerdRequest) { _ in
                     RemoteHerdSheet(model: model)
+                }
+                .sheet(isPresented: $machinesPresented) {
+                    MachinePickerSheet(
+                        select: nil,
+                        openAgent: nil,
+                        perform: { operation in
+                            Task {
+                                let directory = MachineDirectory.shared
+                                await directory.perform(
+                                    .init(revision: directory.state.revision, operation: operation)
+                                )
+                            }
+                        }
+                    )
                 }
                 .alert(item: $model.workspacePendingClose) { request in
                     Alert(
@@ -529,6 +546,18 @@ private struct RemoteWorkspaceSection: View {
                 } label: {
                     Label("Disconnect Remote", systemImage: "xmark.circle")
                 }
+            }
+            Divider()
+            Button {
+                machinesPresented = true
+                Task {
+                    let directory = MachineDirectory.shared
+                    await directory.perform(
+                        .init(revision: directory.state.revision, operation: .refresh)
+                    )
+                }
+            } label: {
+                Label("Machines…", systemImage: "server.rack")
             }
             Divider()
             Button {

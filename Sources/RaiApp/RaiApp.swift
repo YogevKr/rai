@@ -43,8 +43,6 @@ struct RaiApp: App {
     @StateObject private var model = RaiApp.sharedModel
     @StateObject private var settings = SettingsStore.shared
     @StateObject private var appUpdates = AppUpdateController.shared
-    @Environment(\.openWindow) private var openWindow
-    @FocusedValue(\.endpointWindow) private var endpointWindow
     @FocusedValue(\.primaryRaiWindow) private var primaryWindow
     @FocusedValue(\.mixedRaiWindow) private var mixedWindow
 
@@ -62,18 +60,16 @@ struct RaiApp: App {
         .defaultSize(width: 1240, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Window") { openWindow(id: "independent") }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .disabled(model.serverInfo?.capabilities?.endpointProtocolGeneration != 1)
-            }
+            // The primary window owns the shared terminal pool. Do not expose
+            // the default command, which would create a competing owner.
+            CommandGroup(replacing: .newItem) {}
 
             // SwiftUI's default Close command lives in saveItem and otherwise
             // takes Command-W before the Tab menu can handle it.
             CommandGroup(replacing: .saveItem) {
                 Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
                     .keyboardShortcut("w", modifiers:
-                        primaryWindow == true || endpointWindow != nil ? [.command, .option] : .command)
+                        primaryWindow == true ? [.command, .option] : .command)
             }
 
             CommandGroup(after: .appInfo) {
@@ -83,10 +79,6 @@ struct RaiApp: App {
             }
 
             CommandMenu("Tab") {
-              if let endpointWindow {
-                EndpointTabMenu(model: endpointWindow)
-                    .disabled(appUpdates.isPresented)
-              } else {
               Group {
                 Button("New Tab") {
                     if let mixedWindow, mixedWindow.isMixedSelected {
@@ -136,14 +128,9 @@ struct RaiApp: App {
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
               }
-              }
             }
 
             CommandMenu("Pane") {
-              if let endpointWindow {
-                EndpointPaneMenu(model: endpointWindow)
-                    .disabled(appUpdates.isPresented)
-              } else {
               Group {
                 Button("Split Right") { model.splitRight() }
                     .keyboardShortcut("d", modifiers: .command)
@@ -192,7 +179,6 @@ struct RaiApp: App {
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
               }
               .disabled(mixedWindow?.isMixedSelected == true)
-              }
             }
 
             CommandMenu("Agent") {
@@ -211,13 +197,10 @@ struct RaiApp: App {
                     )
                     .disabled(model.agentPanelEntries.count < n)
                 }
-                .disabled(endpointWindow != nil || mixedWindow?.isMixedSelected == true)
+                .disabled(mixedWindow?.isMixedSelected == true)
             }
 
             CommandMenu("Space") {
-              if let endpointWindow {
-                EndpointSpaceMenu(model: endpointWindow)
-              } else {
               Group {
                 Button("New Space") { model.requestNewWorkspace() }
                     .keyboardShortcut("n", modifiers: .command)
@@ -227,17 +210,15 @@ struct RaiApp: App {
                     .keyboardShortcut("[", modifiers: [.command, .shift])
               }
               .disabled(mixedWindow?.isMixedSelected == true)
-              }
             }
 
             CommandGroup(after: .toolbar) {
                 Button("Command Palette…") { model.toggleCommandPalette() }
                     .keyboardShortcut("k", modifiers: .command)
-                    .disabled(endpointWindow != nil || mixedWindow?.isMixedSelected == true)
+                    .disabled(mixedWindow?.isMixedSelected == true)
                 Divider()
                 Button("Refresh") {
-                    if let endpointWindow { endpointWindow.reconnect() }
-                    else { model.refreshNow() }
+                    model.refreshNow()
                 }
                     .keyboardShortcut("r", modifiers: .command)
                     .disabled(mixedWindow?.isMixedSelected == true)
@@ -255,13 +236,6 @@ struct RaiApp: App {
                     .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
-
-        WindowGroup("Rai", id: "independent") {
-            // Independent views own their appearance preference.
-            EndpointWindow(socketPath: model.activeSocketPath, remoteContext: model.activeRemoteContext)
-        }
-        .defaultSize(width: 1240, height: 820)
-        .commandsRemoved()
 
         Settings {
             SettingsView(model: RaiApp.sharedModel)

@@ -2,10 +2,13 @@ import RaiCore
 import SwiftUI
 
 struct MachinePickerSheet: View {
-    let state: MachineDirectoryState
-    let select: (MachineEntry) -> Void
-    let openAgent: (MachineAgent) -> Void
+    private let injectedState: MachineDirectoryState?
+    let select: ((MachineEntry) -> Void)?
+    let openAgent: ((MachineAgent) -> Void)?
     let perform: (MachineOperation) -> Void
+#if os(macOS)
+    @ObservedObject private var machines = MachineDirectory.shared
+#endif
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var status = "All"
@@ -16,6 +19,26 @@ struct MachinePickerSheet: View {
     @State private var target = ""
     @State private var session = "default"
 
+    init(
+        state: MachineDirectoryState? = nil,
+        select: ((MachineEntry) -> Void)? = nil,
+        openAgent: ((MachineAgent) -> Void)? = nil,
+        perform: @escaping (MachineOperation) -> Void
+    ) {
+        injectedState = state
+        self.select = select
+        self.openAgent = openAgent
+        self.perform = perform
+    }
+
+    private var state: MachineDirectoryState {
+#if os(macOS)
+        machines.state
+#else
+        injectedState!
+#endif
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -25,12 +48,14 @@ struct MachinePickerSheet: View {
                     ForEach(state.entries) { entry in
                         VStack(alignment: .leading) {
                             HStack {
-                                Button { select(entry); dismiss() } label: {
-                                    VStack(alignment: .leading) {
-                                        Text(entry.label)
-                                        Text(entry.addressLabel).font(.caption).foregroundStyle(.secondary)
+                                if let select {
+                                    Button { select(entry); dismiss() } label: {
+                                        machineLabel(entry)
                                     }
-                                }.disabled(entry.health != .online || state.busy)
+                                    .disabled(entry.health != .online || state.busy)
+                                } else {
+                                    machineLabel(entry)
+                                }
                                 Spacer()
                                 Text(entry.health.rawValue.capitalized).font(.caption)
                                 machineMenu(entry)
@@ -40,20 +65,23 @@ struct MachinePickerSheet: View {
                         }
                     }
                 }
-                Section("Agents") {
-                    Picker("Status", selection: $status) {
-                        ForEach(["All", "working", "blocked", "idle", "done", "unknown"], id: \.self) { Text($0).tag($0) }
-                    }
-                    ForEach(state.entries) { entry in
-                        ForEach(entry.matchingAgents(query: query, status: status)) { agent in
-                            Button { openAgent(agent); dismiss() } label: {
-                                VStack(alignment: .leading) {
-                                    Text(agent.name)
-                                    Text("\(entry.label) · \(agent.agent) · \(agent.status)").font(.caption)
-                                    Text("\(entry.addressLabel) · \(agent.resource.paneID)").font(.caption).foregroundStyle(.secondary)
-                                    if entry.health != .online { Text("Disconnected — saved agent state").font(.caption) }
+                if let openAgent {
+                    Section("Agents") {
+                        Picker("Status", selection: $status) {
+                            ForEach(["All", "working", "blocked", "idle", "done", "unknown"], id: \.self) { Text($0).tag($0) }
+                        }
+                        ForEach(state.entries) { entry in
+                            ForEach(entry.matchingAgents(query: query, status: status)) { agent in
+                                Button { openAgent(agent); dismiss() } label: {
+                                    VStack(alignment: .leading) {
+                                        Text(agent.name)
+                                        Text("\(entry.label) · \(agent.agent) · \(agent.status)").font(.caption)
+                                        Text("\(entry.addressLabel) · \(agent.resource.paneID)").font(.caption).foregroundStyle(.secondary)
+                                        if entry.health != .online { Text("Disconnected — saved agent state").font(.caption) }
+                                    }
                                 }
-                            }.disabled(entry.health != .online || state.busy)
+                                .disabled(entry.health != .online || state.busy)
+                            }
                         }
                     }
                 }
@@ -83,6 +111,13 @@ struct MachinePickerSheet: View {
         #if os(macOS)
         .frame(minWidth: 560, minHeight: 460)
         #endif
+    }
+
+    private func machineLabel(_ entry: MachineEntry) -> some View {
+        VStack(alignment: .leading) {
+            Text(entry.label)
+            Text(entry.addressLabel).font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private func setupSection(_ setup: MachineSetupState) -> some View {
