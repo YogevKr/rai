@@ -154,6 +154,9 @@ jobs:
             hdiutil create -volname "rai ${VER}" -srcfolder dmgsrc -ov -format UDZO "Rai-${VER}-macos.dmg"
           }
           rm -rf dmgsrc
+          SIZE="$(stat -f%z "Rai-${VER}-macos.zip")"
+          SHA="$(shasum -a 256 "Rai-${VER}-macos.zip" | awk '{print $1}')"
+          printf '{"version":"%s","size":%s,"sha256":"%s","prerelease":false}\n' "$VER" "$SIZE" "$SHA" > "Rai-${VER}-macos.json"
           ls -lh Rai-*
 
       # The app inside already carries its ticket; the disk image needs its own
@@ -187,7 +190,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.v.outputs.tag }}" \
-            dist/Rai-*.dmg dist/Rai-*.zip \
+            dist/Rai-*.dmg dist/Rai-*.zip dist/Rai-*.json \
             --title "rai ${{ steps.v.outputs.version }}" \
             --notes-file .github/release-notes.md
 

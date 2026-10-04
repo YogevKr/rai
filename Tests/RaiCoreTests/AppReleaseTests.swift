@@ -34,6 +34,32 @@ final class AppReleaseTests: XCTestCase {
         }
     }
 
+    func testDecodeManifestBuildsTheOfficialArchiveURL() throws {
+        let digest = String(repeating: "b", count: 64)
+        let data = try JSONSerialization.data(withJSONObject: [
+            "version": "0.1.76", "size": 1234, "sha256": digest, "prerelease": false,
+        ])
+        let release = try XCTUnwrap(AppRelease.decodeManifest(data))
+        XCTAssertEqual(release.version.description, "0.1.76")
+        XCTAssertEqual(release.size, 1234)
+        XCTAssertEqual(release.sha256, digest)
+        XCTAssertEqual(
+            release.downloadURL.absoluteString,
+            "https://github.com/YogevKr/rai/releases/download/v0.1.76/Rai-0.1.76-macos.zip"
+        )
+    }
+
+    func testDecodeManifestRejectsInvalidDigestAndSize() throws {
+        for value in [
+            ["version": "0.1.76", "size": 0, "sha256": String(repeating: "b", count: 64), "prerelease": false],
+            ["version": "0.1.76", "size": 1234, "sha256": "bad", "prerelease": false],
+            ["version": "0.1.76", "size": 1234, "sha256": String(repeating: "b", count: 64), "prerelease": true],
+        ] as [[String: Any]] {
+            let data = try JSONSerialization.data(withJSONObject: value)
+            XCTAssertNil(try AppRelease.decodeManifest(data))
+        }
+    }
+
     func testOfferRequiresANewerVersionAndSkipOnlyAffectsAutomaticChecks() throws {
         let release = try XCTUnwrap(AppRelease.decode(fixture()))
         XCTAssertTrue(release.shouldOffer(currentVersion: "0.1.48", skippedVersion: nil, manual: false))

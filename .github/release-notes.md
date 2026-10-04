@@ -1,3 +1,9 @@
+Rai 0.1.77 keeps update checks working when GitHub API limits apply.
+
+- Rai reads the public release feed when the GitHub API is unavailable.
+- Release manifests keep archive size and SHA-256 checks.
+- Mixed Rai panes hide generated pane labels.
+
 Rai 0.1.73 adds safe closure for remote spaces and tabs.
 
 - Right-click a remote tab to close it from the Rai sidebar.

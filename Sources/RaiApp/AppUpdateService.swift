@@ -8,14 +8,44 @@ struct AppUpdateService: Sendable {
     var session: URLSession = .shared
 
     func latestRelease() async throws -> AppRelease {
-        var request = URLRequest(url: AppRelease.latestURL)
-        request.timeoutInterval = 20
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("Rai", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw AppUpdateError.downloadFailed }
-        guard let release = try AppRelease.decode(data) else { throw AppUpdateError.invalidRelease }
-        return release
+        do {
+            var request = URLRequest(url: AppRelease.latestURL)
+            request.timeoutInterval = 20
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("Rai", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw AppUpdateError.downloadFailed
+            }
+            if let release = try AppRelease.decode(data) { return release }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // GitHub limits unauthenticated API traffic. Use the public feed
+            // and a release manifest when the API is unavailable.
+        }
+        return try await latestReleaseFromFeed()
+    }
+
+    private func latestReleaseFromFeed() async throws -> AppRelease {
+        var feedRequest = URLRequest(url: AppRelease.latestFeedURL)
+        feedRequest.timeoutInterval = 20
+        feedRequest.setValue("Rai", forHTTPHeaderField: "User-Agent")
+        let (feedData, feedResponse) = try await session.data(for: feedRequest)
+        guard (feedResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw AppUpdateError.downloadFailed
+        }
+        for version in ReleaseFeedParser.versions(from: feedData) {
+            var manifestRequest = URLRequest(url: AppRelease.manifestURL(for: version))
+            manifestRequest.timeoutInterval = 20
+            manifestRequest.setValue("Rai", forHTTPHeaderField: "User-Agent")
+            guard let (manifestData, manifestResponse) = try? await session.data(for: manifestRequest),
+                  (manifestResponse as? HTTPURLResponse)?.statusCode == 200,
+                  let release = try? AppRelease.decodeManifest(manifestData),
+                  release.version == version else { continue }
+            return release
+        }
+        throw AppUpdateError.invalidRelease
     }
 
     func prepare(_ release: AppRelease) async throws -> AppUpdateInstallation {
@@ -125,5 +155,18 @@ struct AppUpdateService: Sendable {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw AppUpdateError.invalidArchive }
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+private enum ReleaseFeedParser {
+    static func versions(from data: Data) -> [AppReleaseVersion] {
+        guard let text = String(data: data, encoding: .utf8),
+              let regex = try? NSRegularExpression(pattern: #"/((?:v)\d+\.\d+\.\d+)</id>"#)
+        else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let versionRange = Range(match.range(at: 1), in: text) else { return nil }
+            return AppReleaseVersion(String(text[versionRange]))
+        }
     }
 }
