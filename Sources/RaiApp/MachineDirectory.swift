@@ -85,6 +85,22 @@ final class MachineDirectory: ObservableObject {
         return id
     }
 
+    func close(_ request: InstanceCloseRequest) async throws {
+        guard let socketPath = resolve(request.workspace.id.endpoint, connectionID: request.connectionID) else {
+            throw HerdrEndpointError.staleIdentity
+        }
+        let result = try await HerdrPinnedRPC().request(
+            socketPath: socketPath,
+            endpointSocketPath: RemoteConnection.clientSocketPath(for: socketPath),
+            bootID: request.workspace.bootID,
+            method: request.method,
+            params: request.params,
+            validate: { try request.validate($0) })
+        guard result.objectValue?["type"]?.stringValue == "ok" else {
+            throw HerdrEndpointError.malformed
+        }
+    }
+
     private func create(on endpoint: MachineEndpoint, connectionID: String,
                         method: String, params: [String: JSONValue]) async throws -> JSONValue {
         guard let entry = state.entry(for: endpoint),

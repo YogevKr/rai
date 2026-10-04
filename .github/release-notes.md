@@ -1,3 +1,10 @@
+Rai 0.1.73 adds safe closure for remote spaces and tabs.
+
+- Right-click a remote tab to close it from the Rai sidebar.
+- Right-click a remote space to review and close the whole space.
+- Rai validates the remote Herdr instance, workspace, tabs, and panes before closure.
+- A one-tab space always asks for confirmation before closure.
+
 Rai 0.1.72 fixes the mixed remote view layout.
 
 - Mixed remote panes now use the full detail area.

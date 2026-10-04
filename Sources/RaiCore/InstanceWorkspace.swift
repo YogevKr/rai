@@ -5,6 +5,8 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public let id: RaiWorkspaceReference
     public let label: String
     public let instanceLabel: String
+    public let connectionID: String?
+    public let bootID: String
     public let activeTabID: String?
     public let tabs: [InstanceTab]
 
@@ -23,6 +25,8 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
                     id: source,
                     label: label(object, fallback: workspaceID),
                     instanceLabel: machine.label,
+                    connectionID: machine.connectionID,
+                    bootID: snapshot.bootID,
                     activeTabID: object["active_tab_id"]?.stringValue,
                     tabs: snapshot.tabs.compactMap { InstanceTab(record: $0, workspace: source, snapshot: snapshot) }
                 )

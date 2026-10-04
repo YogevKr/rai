@@ -11,6 +11,8 @@ final class RaiMixedController: ObservableObject {
     @Published private(set) var sessions: [MachineEndpoint: RaiMixedEndpointSession] = [:]
     @Published private(set) var remoteWorkspaces: [InstanceWorkspace] = []
     @Published var selectedTabID: UUID?
+    @Published var pendingWorkspaceClose: InstanceCloseRequest?
+    @Published private(set) var closingWorkspaces: Set<RaiWorkspaceReference> = []
 
     @Published private(set) var selectedSourceWorkspace: RaiWorkspaceReference?
     @Published private(set) var selectedSourceTabID: String?
@@ -40,6 +42,7 @@ final class RaiMixedController: ObservableObject {
         workspaceObservation = self.machines.$workspaces.sink { [weak self] workspaces in
             guard let self, self.remoteWorkspaces != workspaces else { return }
             self.remoteWorkspaces = workspaces
+            Task { @MainActor [weak self] in self?.refreshSourceSelection() }
         }
     }
 
@@ -89,7 +92,13 @@ final class RaiMixedController: ObservableObject {
 
     private func refreshSourceSelection() {
         guard selectedSourceWorkspace != nil else { return }
-        guard let workspace = sourceWorkspace else { return }
+        guard let workspace = sourceWorkspace else {
+            if let source = selectedSourceWorkspace,
+               machines.state.entry(for: source.endpoint)?.health == .online {
+                selectPrimary()
+            }
+            return
+        }
         let tab: InstanceTab?
         if let selectedSourceTabID,
            let selected = workspace.tabs.first(where: { $0.id == selectedSourceTabID }) {
@@ -144,6 +153,50 @@ final class RaiMixedController: ObservableObject {
         primaryModel.selectedPaneID = nil
         _ = model.save()
         syncSessions()
+    }
+
+    var canCloseSelectedTab: Bool {
+        guard let workspace = sourceWorkspace, let tabID = selectedSourceTabID else { return false }
+        return workspace.connectionID != nil && workspace.tabs.contains { $0.id == tabID }
+            && !closingWorkspaces.contains(workspace.id)
+    }
+
+    func closeSelectedTab() {
+        guard canCloseSelectedTab, let workspace = sourceWorkspace, let tabID = selectedSourceTabID else { return }
+        requestClose(workspace, tabID: tabID)
+    }
+
+    func requestClose(_ workspace: InstanceWorkspace, tabID: String?) {
+        guard !closingWorkspaces.contains(workspace.id) else { return }
+        do {
+            // A one-tab space has no useful tab-level close action. Close the
+            // space with the same confirmation used by the workspace row.
+            let requestedTabID = workspace.tabs.count == 1 ? nil : tabID
+            let request = try InstanceCloseRequest(workspace: workspace, tabID: requestedTabID)
+            if requestedTabID == nil { pendingWorkspaceClose = request }
+            else { close(request) }
+        } catch { showCloseError(error) }
+    }
+
+    func confirmCloseWorkspace(_ request: InstanceCloseRequest) {
+        guard pendingWorkspaceClose?.id == request.id else { return }
+        pendingWorkspaceClose = nil
+        close(request)
+    }
+
+    private func close(_ request: InstanceCloseRequest) {
+        guard closingWorkspaces.insert(request.workspace.id).inserted else { return }
+        Task {
+            defer { closingWorkspaces.remove(request.workspace.id) }
+            do {
+                try await machines.close(request)
+            } catch { showCloseError(error) }
+        }
+    }
+
+    private func showCloseError(_ error: Error) {
+        primaryModel.sessionAlert = SessionAlert(
+            kind: .error(title: "Couldn’t Close Remote Item", message: error.localizedDescription))
     }
 
     func selectTab(index: Int) {

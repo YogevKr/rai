@@ -15,6 +15,7 @@ struct SidebarView: View {
     let selectedRemoteWorkspace: RaiWorkspaceReference?
     let selectedRemoteTabID: String?
     let onRemoteSelection: (RaiWorkspaceReference, String?) -> Void
+    let onRemoteClose: (InstanceWorkspace, String?) -> Void
     @State private var broadcastPresented = false
     @State private var machinesPresented = false
 
@@ -240,7 +241,8 @@ struct SidebarView: View {
                                 workspace: workspace,
                                 selectedWorkspace: selectedRemoteWorkspace,
                                 selectedTabID: selectedRemoteTabID,
-                                onSelect: onRemoteSelection
+                                onSelect: onRemoteSelection,
+                                onClose: onRemoteClose
                             )
                         }
                     }
@@ -262,6 +264,7 @@ private struct RemoteWorkspaceSection: View {
     let selectedWorkspace: RaiWorkspaceReference?
     let selectedTabID: String?
     let onSelect: (RaiWorkspaceReference, String?) -> Void
+    let onClose: (InstanceWorkspace, String?) -> Void
 
     private var selected: Bool {
         selectedWorkspace == workspace.id && selectedTabID == nil
@@ -295,6 +298,9 @@ private struct RemoteWorkspaceSection: View {
             }
             .buttonStyle(.plain)
             .modifier(SidebarRowChrome(selected: selected, hovering: false))
+            .contextMenu {
+                Button("Close Space…", role: .destructive) { onClose(workspace, nil) }
+            }
 
             ForEach(workspace.tabs) { tab in
                 Button {
@@ -326,6 +332,11 @@ private struct RemoteWorkspaceSection: View {
                         indent: 14
                     )
                 )
+                .contextMenu {
+                    Button(workspace.tabs.count == 1 ? "Close Space…" : "Close Tab", role: .destructive) {
+                        onClose(workspace, tab.id)
+                    }
+                }
             }
         }
         .padding(.bottom, 5)
