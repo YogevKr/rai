@@ -28,7 +28,6 @@ struct RaiMixedTabView: View {
     private func singlePane(_ slot: RaiPaneSlot) -> some View {
         RaiMixedPaneSlotView(
             slot: slot,
-            position: 1,
             resolution: (try? model.resolutions(for: tabID))?.first ?? .paneIdentityChanged,
             endpoint: endpoints[slot.source.endpoint]
         )
@@ -46,7 +45,6 @@ struct RaiMixedTabView: View {
                             let index = rowIndex * 2 + columnIndex
                             RaiMixedPaneSlotView(
                                 slot: slot,
-                                position: index + 1,
                                 resolution: resolutions.indices.contains(index) ? resolutions[index] : .paneIdentityChanged,
                                 endpoint: endpoints[slot.source.endpoint]
                             )
@@ -70,13 +68,12 @@ struct RaiMixedTabView: View {
 
 private struct RaiMixedPaneSlotView: View {
     let slot: RaiPaneSlot
-    let position: Int
     let resolution: RaiPaneResolution
     let endpoint: RaiMixedEndpointSession?
 
-    private var displayLabel: String {
+    private var displayLabel: String? {
         let label = slot.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return label.isEmpty ? "Pane \(position)" : label
+        return label.isEmpty ? nil : label
     }
 
     var body: some View {
@@ -105,9 +102,11 @@ private struct RaiMixedPaneSlotView: View {
     private func terminal(target: RaiPaneRenderTarget, endpoint: RaiMixedEndpointSession) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(displayLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
+                if let displayLabel {
+                    Text(displayLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                }
                 Spacer()
                 Text(target.source.endpoint.session)
                     .font(.system(size: 10))
@@ -137,9 +136,11 @@ private struct RaiMixedPaneSlotView: View {
             Text(message)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Theme.textSecondary)
-            Text(displayLabel)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(Theme.textTertiary)
+            if let displayLabel {
+                Text(displayLabel)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
