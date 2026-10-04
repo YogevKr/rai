@@ -33,6 +33,7 @@ struct RaiMixedTabView: View {
                 ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
                     RaiMixedPaneSlotView(
                         slot: slot,
+                        position: index + 1,
                         resolution: resolutions.indices.contains(index) ? resolutions[index] : .paneIdentityChanged,
                         endpoint: endpoints[slot.source.endpoint]
                     )
@@ -47,8 +48,14 @@ struct RaiMixedTabView: View {
 
 private struct RaiMixedPaneSlotView: View {
     let slot: RaiPaneSlot
+    let position: Int
     let resolution: RaiPaneResolution
     let endpoint: RaiMixedEndpointSession?
+
+    private var displayLabel: String {
+        let label = slot.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return label.isEmpty ? "Pane \(position)" : label
+    }
 
     var body: some View {
         Group {
@@ -75,7 +82,7 @@ private struct RaiMixedPaneSlotView: View {
     private func terminal(target: RaiPaneRenderTarget, endpoint: RaiMixedEndpointSession) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(slot.label ?? target.source.paneID)
+                Text(displayLabel)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
                 Spacer()
@@ -107,7 +114,7 @@ private struct RaiMixedPaneSlotView: View {
             Text(message)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Theme.textSecondary)
-            Text(slot.source.paneID)
+            Text(displayLabel)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Theme.textTertiary)
         }
