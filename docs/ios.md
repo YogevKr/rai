@@ -437,6 +437,10 @@ The terminal keeps its original rows.
 Rai starts and resumes Codex with `--no-alt-screen` so terminal scrolling can reach earlier messages.
 For an existing alternate-screen session, quit Codex and run `codex --no-alt-screen resume` to select the same conversation.
 
+Fullscreen Codex sessions also accept swipe input through the pane's wheel route.
+When the keyboard crops the Mac grid, Rai first reveals those rows through native scrolling.
+At the visible boundary, swipes continue scrolling the Codex conversation.
+
 Codex queued follow-up inputs show a native question bar.
 The bar shows the number of queued questions.
 Tap **Answer** to send Option-Arrow-Up.

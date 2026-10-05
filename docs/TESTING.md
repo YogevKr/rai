@@ -624,3 +624,39 @@ rai launches an agent one of two ways, and the lab exercises both:
   for the agent to appear and retype once if it didn't land — a fixed delay
   before a single blind attempt can guess wrong on a slow shell startup and
   silently drop the whole line.
+
+## iOS Codex touch scrolling
+
+Use an isolated Mac lab and a paired simulator. Keep the regular Herdr instance separate.
+Use Codex 0.160.0 with `-c tui.fullscreen_transcript=true`.
+The deprecated `features.transcript_v2` flag has no effect in this version.
+Start a fresh conversation in pane `w1:p1`. Request numbered lines 1–100, then 101–200 in a second response.
+Use the format `1. Line 1`. Duplicate numbers in earlier responses make the OCR checks ambiguous.
+
+Build the `rai-ios-scroll-e2e` scheme with an isolated bundle identifier:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build-for-testing \
+  -project ios/rai-ios.xcodeproj -scheme rai-ios-scroll-e2e \
+  -destination 'platform=iOS Simulator,id=<simulator-id>' \
+  -derivedDataPath /tmp/rai-ios-touch-e2e \
+  RAI_IOS_BUNDLE_IDENTIFIER=com.whetstone.rai.ios.lab.scroll \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl install \
+  <simulator-id> /tmp/rai-ios-touch-e2e/Build/Products/Debug-iphonesimulator/rai.app
+```
+
+Pair the installed app with the lab bridge. Open the fixture pane near line 200, with the keyboard hidden.
+Run the same `xcodebuild` command with `test-without-building` and a new `-resultBundlePath`.
+The test rejects regular app bundle identifiers and sets `RAI_OPEN_PANE=w1:p1` when launching the lab.
+
+The four tests check both swipe directions, full history, keyboard changes, and pane reopening.
+The history checks must reach line 5 or earlier and return to the starting line.
+The keyboard check also requires the keyboard to remain open during its first round trip.
+A pan can reveal a partial row without changing its first visible number.
+
+Opening the keyboard can crop rows from the pinned Mac grid.
+Rai must reveal those rows through native scrolling before sending further wheel input to Codex.
+The lower boundary follows the cursor, matching SwiftTerm, instead of requiring a separate pan into the footer after each frame.
+The unit regression also checks grids that fit the viewport. Accessibility paging retains its existing wheel route.
+These checks do not cover a physical iPhone or active terminal output.
