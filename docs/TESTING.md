@@ -372,6 +372,29 @@ All eight process IDs stayed unchanged, and output continued while seven views w
 The hidden views kept their buffers. Their clients exited without leaving child processes, and reconnected views received current output.
 These samples verify this workload. They do not predict CPU use in a live herd.
 
+## Surface validation and event limits
+
+Endpoint patches must advance the surface revision by one and retain the current boot and projection identity.
+Patches cannot change pane rectangles or update a surface with an active popup.
+Rai checks cell counts, hyperlink indexes, visible cursor bounds, and pane bounds before it changes the surface.
+Duplicate pane updates and invalid patches fail without changing the current surface.
+
+Both legacy event streams retain at most 256 entries per buffer.
+The subscription buffer includes its readiness message.
+Overflow closes the subscription and returns `HerdrClientError.eventBufferOverflow`.
+The app's event loop reconnects and obtains a fresh snapshot after this error.
+The scroll controller also refreshes its state after subscription readiness, even when no further scroll events arrive.
+Each recovery read owns its connection and has a five-second deadline. Removing the pane cancels the read and subscription.
+The timed snapshot API uses a dedicated I/O thread. Concurrent stalled panes cannot block the executor that runs recovery deadlines.
+Callers of `events()` must handle the error; that method does not reconnect itself.
+
+Run the regression tests:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --scratch-path .build-tests --filter 'EndpointSurfacePatchTests|HerdrEventTransportTests|ScrollbackEventRecoveryTests'
+```
+
 ## Typing latency benchmark
 
 The Mac terminal parses queued output in chunks of at most 16 KB.

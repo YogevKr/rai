@@ -4,6 +4,7 @@ public enum HerdrClientError: LocalizedError {
     case invalidEnvelope
     case remote(code: String, message: String)
     case invalidEvent
+    case eventBufferOverflow
     case disconnected
 
     public var errorDescription: String? {
@@ -14,6 +15,8 @@ public enum HerdrClientError: LocalizedError {
             return "\(code): \(message)"
         case .invalidEvent:
             return "Herdr returned an invalid event envelope"
+        case .eventBufferOverflow:
+            return "Herdr produced events faster than Rai could process them"
         case .disconnected:
             return "Disconnected from Herdr"
         }
@@ -113,6 +116,9 @@ private final class RPCSocketState: @unchecked Sendable {
 }
 
 public actor HerdrClient {
+    // Allow event bursts during a snapshot read without retaining an unlimited backlog.
+    static let maximumBufferedEvents = 256
+
     public static let defaultSubscriptions = [
         "layout.updated",
         "pane.created",
@@ -170,6 +176,51 @@ public actor HerdrClient {
             method: "session.snapshot", params: [:], retryOnTransportFailure: true
         )
         return result.snapshot
+    }
+
+    /// A cancellable snapshot on an owned I/O thread, without blocking the
+    /// cooperative executor or disconnecting the client's shared RPC socket.
+    public nonisolated func snapshot(timeout: Duration) async throws -> SessionSnapshot {
+        let state = EventWorkerState()
+        let path = socketPath
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: SessionSnapshot.self) { group in
+                group.addTask {
+                    try Task.checkCancellation()
+                    return try await withCheckedThrowingContinuation { continuation in
+                        let worker = Thread {
+                            do {
+                                let socket = try UnixSocket(path: path)
+                                defer { socket.close(); state.clear() }
+                                guard state.install(socket) else { throw CancellationError() }
+                                let request = RPCRequest(id: "snapshot", method: "session.snapshot", params: [:])
+                                try socket.writeLine(JSONEncoder().encode(request))
+                                let envelope = try JSONDecoder().decode(RPCEnvelope.self, from: socket.readLine())
+                                guard envelope.id == request.id else { throw HerdrClientError.invalidEnvelope }
+                                if let error = envelope.error {
+                                    throw HerdrClientError.remote(code: error.code, message: error.message)
+                                }
+                                guard let result = envelope.result else { throw HerdrClientError.invalidEnvelope }
+                                let snapshot = try JSONDecoder().decode(
+                                    SnapshotResult.self, from: JSONEncoder().encode(result)
+                                ).snapshot
+                                continuation.resume(returning: snapshot)
+                            } catch { continuation.resume(throwing: error) }
+                        }
+                        worker.name = "rai.herdr-snapshot"
+                        worker.start()
+                    }
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw URLError(.timedOut)
+                }
+                // Unblock the I/O worker before the group drains its children.
+                defer { state.stop(); group.cancelAll() }
+                guard let snapshot = try await group.next() else { throw CancellationError() }
+                return snapshot
+            }
+        } onCancel: { state.stop() }
     }
 
     public nonisolated func explainAgent(_ paneID: String, timeout: Duration = .seconds(10)) async throws -> String {
@@ -428,12 +479,19 @@ public actor HerdrClient {
         paneIDs: [String] = []
     ) -> AsyncThrowingStream<HerdrEvent, Error> {
         let subscription = subscribe(subscriptions: subscriptions, paneIDs: paneIDs)
-        return AsyncThrowingStream { continuation in
+        // Events carry ordered structure changes. Overflow reports an error instead of silently losing events.
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)) { continuation in
             let task = Task {
                 defer { subscription.close() }
                 do {
                     for try await message in subscription.messages {
-                        if case .event(let event) = message { continuation.yield(event) }
+                        guard case .event(let event) = message else { continue }
+                        switch continuation.yield(event) {
+                        case .enqueued: break
+                        case .dropped: throw HerdrClientError.eventBufferOverflow
+                        case .terminated: return
+                        @unknown default: throw HerdrClientError.eventBufferOverflow
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -480,7 +538,10 @@ public actor HerdrClient {
         // Capture an immutable copy — a mutable `var` can't be captured by the
         // detached (concurrently-executing) closure under strict concurrency.
         let subscriptionsPayload = wireSubscriptions
-        let (messages, continuation) = AsyncThrowingStream<HerdrEventMessage, Error>.makeStream()
+        // Events carry ordered structure changes. A full buffer must fail closed.
+        let (messages, continuation) = AsyncThrowingStream<HerdrEventMessage, Error>.makeStream(
+            bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)
+        )
         // A dedicated thread, NOT Task.detached: the read below blocks in
         // read(2) for the stream's whole life, and the cooperative pool is
         // capped at the core count. One stream per pane parked there
@@ -515,7 +576,12 @@ public actor HerdrClient {
                             throw HerdrClientError.invalidEnvelope
                         }
                         acknowledged = true
-                        continuation.yield(.ready)
+                        switch continuation.yield(.ready) {
+                        case .enqueued: break
+                        case .dropped: throw HerdrClientError.eventBufferOverflow
+                        case .terminated: return
+                        @unknown default: throw HerdrClientError.eventBufferOverflow
+                        }
                         continue
                     }
                     guard let rawEvent = envelope.event else {
@@ -539,7 +605,12 @@ public actor HerdrClient {
                     default:
                         throw HerdrClientError.invalidEvent
                     }
-                    continuation.yield(.event(event))
+                    switch continuation.yield(.event(event)) {
+                    case .enqueued: break
+                    case .dropped: throw HerdrClientError.eventBufferOverflow
+                    case .terminated: return
+                    @unknown default: throw HerdrClientError.eventBufferOverflow
+                    }
                 }
                 state.clear()
                 continuation.finish()

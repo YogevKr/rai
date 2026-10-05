@@ -1,3 +1,10 @@
+Rai 0.1.78 improves terminal recovery.
+
+- Rai rejects invalid terminal updates before they change the displayed surface.
+- Event buffers have fixed limits. Rai reconnects and reads current state after an overflow.
+- Scroll selection and the return-to-live indicator recover when scrolling stops during an overflow.
+- Metal rendering remains optional. The default renderer does not change.
+
 Rai 0.1.77 keeps update checks working when GitHub API limits apply.
 
 - Rai reads the public release feed when the GitHub API is unavailable.
