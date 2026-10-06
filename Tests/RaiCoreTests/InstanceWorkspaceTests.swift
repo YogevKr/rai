@@ -36,7 +36,75 @@ final class InstanceWorkspaceTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty)
     }
 
-    private func snapshot(label: String, paneID: String) throws -> HerdrEndpointSnapshot {
+    func testTabUsesLocalDisplayFallbacks() throws {
+        let endpoint = MachineEndpoint(profileID: "remote", session: "default")
+        let machine = MachineEntry(endpoint: endpoint, label: "Remote", health: .online)
+        let entries = InstanceWorkspace.entries(
+            machines: [machine],
+            snapshots: [endpoint: try snapshot(
+                label: "Space",
+                paneID: "w1:p1",
+                tabLabel: "1",
+                cwd: "/Users/yogev/projects/rai"
+            )],
+            excluding: nil
+        )
+
+        XCTAssertEqual(entries.first?.tabs.first?.label, "shell")
+        XCTAssertEqual(entries.first?.tabs.first?.context, "rai")
+    }
+
+    func testTabKeepsCustomLabelAndPrefersTitlesOverAgentNames() throws {
+        let endpoint = MachineEndpoint(profileID: "remote", session: "default")
+        let machine = MachineEntry(endpoint: endpoint, label: "Remote", health: .online)
+        for (label, expected) in [("Review", "Review"), ("1", "Fix tests"), ("", "Fix tests")] {
+            let entries = InstanceWorkspace.entries(
+                machines: [machine],
+                snapshots: [endpoint: try snapshot(
+                    label: "Space", paneID: "w1:p1", tabLabel: label,
+                    agent: "codex", extraPanes: [[
+                        "pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t1",
+                        "terminal_title_stripped": "◐ Fix tests",
+                    ]]
+                )],
+                excluding: nil
+            )
+            XCTAssertEqual(entries.first?.tabs.first?.label, expected)
+        }
+    }
+
+    func testTabDoesNotUseTitleFromAnotherWorkspace() throws {
+        let endpoint = MachineEndpoint(profileID: "remote", session: "default")
+        let machine = MachineEntry(endpoint: endpoint, label: "Remote", health: .online)
+        let entries = InstanceWorkspace.entries(
+            machines: [machine],
+            snapshots: [endpoint: try snapshot(
+                label: "Space", paneID: "w1:p1", tabLabel: "1",
+                extraPanes: [[
+                    "pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w1:t1",
+                    "terminal_title": "Other space",
+                ]]
+            )],
+            excluding: nil
+        )
+        XCTAssertEqual(entries.first?.tabs.first?.label, "shell")
+    }
+
+    private func snapshot(
+        label: String,
+        paneID: String,
+        tabLabel: String = "Shell",
+        cwd: String? = nil,
+        agent: String? = nil,
+        extraPanes: [[String: Any]] = []
+    ) throws -> HerdrEndpointSnapshot {
+        var pane: [String: Any] = [
+            "pane_id": paneID,
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+        ]
+        if let cwd { pane["cwd"] = cwd }
+        if let agent { pane["agent"] = agent }
         let value: [String: Any] = [
             "boot_id": "boot",
             "revision": 1,
@@ -48,14 +116,10 @@ final class InstanceWorkspaceTests: XCTestCase {
             "tabs": [[
                 "tab_id": "w1:t1",
                 "workspace_id": "w1",
-                "label": "Shell",
+                "label": tabLabel,
                 "agent_status": "idle",
             ]],
-            "panes": [[
-                "pane_id": paneID,
-                "workspace_id": "w1",
-                "tab_id": "w1:t1",
-            ]],
+            "panes": [pane] + extraPanes,
         ]
         return try JSONDecoder().decode(
             HerdrEndpointSnapshot.self,

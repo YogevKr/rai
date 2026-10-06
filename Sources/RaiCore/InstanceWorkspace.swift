@@ -45,6 +45,7 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
     public let id: String
     public let workspace: RaiWorkspaceReference
     public let label: String
+    public let context: String
     public let status: AgentStatus
     public let panes: [RaiPaneReference]
 
@@ -54,7 +55,14 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
               let tabID = object["tab_id"]?.stringValue else { return nil }
         id = tabID
         self.workspace = workspace
-        label = InstanceWorkspace.label(object, fallback: tabID)
+        label = Self.tabLabel(object, workspaceID: workspace.workspaceID, tabID: tabID, snapshot: snapshot)
+        let pane = snapshot.panes.first { value in
+            guard let pane = value.objectValue else { return false }
+            return pane["workspace_id"]?.stringValue == workspace.workspaceID
+                && pane["tab_id"]?.stringValue == tabID
+        }?.objectValue
+        let cwd = pane?["cwd"]?.stringValue ?? pane?["foreground_cwd"]?.stringValue ?? ""
+        context = cwd.isEmpty ? "" : URL(fileURLWithPath: cwd).lastPathComponent
         status = AgentStatus(rawValue: object["agent_status"]?.stringValue ?? "") ?? .unknown
         panes = snapshot.panes.compactMap { value in
             guard let pane = value.objectValue,
@@ -64,5 +72,28 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
             return RaiPaneReference(endpoint: workspace.endpoint, workspaceID: workspace.workspaceID,
                                     tabID: tabID, paneID: paneID)
         }
+    }
+
+    fileprivate static func tabLabel(
+        _ record: [String: JSONValue],
+        workspaceID: String,
+        tabID: String,
+        snapshot: HerdrEndpointSnapshot
+    ) -> String {
+        let raw = AgentTitleGlyphs.strip(record["label"]?.stringValue ?? "")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !raw.isEmpty && Int(raw) == nil { return raw }
+
+        let panes = snapshot.panes.compactMap(\.objectValue).filter {
+            $0["workspace_id"]?.stringValue == workspaceID && $0["tab_id"]?.stringValue == tabID
+        }
+        for key in ["terminal_title_stripped", "terminal_title", "agent"] {
+            for pane in panes {
+                let value = AgentTitleGlyphs.strip(pane[key]?.stringValue ?? "")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !value.isEmpty { return value }
+            }
+        }
+        return "shell"
     }
 }

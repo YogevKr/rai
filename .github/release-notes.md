@@ -1,3 +1,9 @@
+Rai 0.1.79 makes remote spaces match local spaces in the sidebar.
+
+- Remote spaces use the same collapse, status, tab, and close controls as local spaces.
+- Remote tabs show useful labels and working-directory context.
+- Rai keeps multiple spaces from each instance visible in one workspace.
+
 Rai 0.1.78 improves terminal recovery.
 
 - Rai rejects invalid terminal updates before they change the displayed surface.
