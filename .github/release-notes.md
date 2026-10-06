@@ -1,3 +1,16 @@
+Rai 0.1.79 makes remote spaces match local spaces in the sidebar.
+
+- Remote spaces use the same collapse, status, tab, and close controls as local spaces.
+- Remote tabs show useful labels and working-directory context.
+- Rai keeps multiple spaces from each instance visible in one workspace.
+
+Rai 0.1.78 improves terminal recovery.
+
+- Rai rejects invalid terminal updates before they change the displayed surface.
+- Event buffers have fixed limits. Rai reconnects and reads current state after an overflow.
+- Scroll selection and the return-to-live indicator recover when scrolling stops during an overflow.
+- Metal rendering remains optional. The default renderer does not change.
+
 Rai 0.1.77 keeps update checks working when GitHub API limits apply.
 
 - Rai reads the public release feed when the GitHub API is unavailable.

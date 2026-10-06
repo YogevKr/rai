@@ -224,18 +224,27 @@ final class ScrollbackSelectionController {
         let generation = paneGeneration
         scrollEventTask = Task { [weak self] in
             while !Task.isCancelled {
-                let stream = client.events(
+                let subscription = client.subscribe(
                     subscriptions: ["pane.scroll_changed"], paneIDs: [paneID]
                 )
                 do {
-                    for try await event in stream {
-                        guard !Task.isCancelled else { return }
-                        guard event.name == "pane.scroll_changed",
-                              let scroll = event.scroll else { continue }
-                        await MainActor.run {
-                            guard let self, self.paneID == paneID,
-                                  self.paneGeneration == generation else { return }
-                            self.applyScroll(scroll)
+                    defer { subscription.close() }
+                    for try await message in subscription.messages {
+                        guard !Task.isCancelled, self?.paneID == paneID,
+                              self?.paneGeneration == generation else { return }
+                        switch message {
+                        case .ready:
+                            // Herdr sends no initial scroll event. Refresh after
+                            // each connection so an overflow cannot leave stale state.
+                            let scroll = try await client.snapshot(timeout: .seconds(5)).panes
+                                .first { $0.paneID == paneID }?.scroll
+                            guard !Task.isCancelled, self?.paneID == paneID,
+                                  self?.paneGeneration == generation else { return }
+                            if let scroll { self?.applyScroll(scroll) }
+                        case .event(let event):
+                            guard event.name == "pane.scroll_changed",
+                                  let scroll = event.scroll else { continue }
+                            self?.applyScroll(scroll)
                         }
                     }
                 } catch {

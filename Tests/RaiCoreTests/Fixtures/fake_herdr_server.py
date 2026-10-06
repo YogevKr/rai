@@ -15,6 +15,8 @@ rename_protocol = int(mode.removeprefix("events_rename_")) if mode.startswith("e
 workspace_label = "initial"
 closed_protocol = int(mode.removeprefix("events_closed_")) if mode.startswith("events_closed_") else None
 workspace_closed = False
+scroll_subscriptions = 0
+scroll_snapshots = 0
 
 
 def pane(number):
@@ -32,7 +34,7 @@ class Handler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
     def events(self, request):
-        global subscription, workspace_label, workspace_closed
+        global subscription, workspace_label, workspace_closed, scroll_subscriptions
         types = {item["type"] for item in request["params"]["subscriptions"]}
         if rename_protocol is not None:
             unsupported = ((rename_protocol < 14 and "workspace.renamed" in types)
@@ -51,6 +53,33 @@ class Handler(socketserver.StreamRequestHandler):
             return
         if mode == "events_no_ack":
             self.rfile.read()
+            return
+        if mode == "events_scroll_snapshot_stall":
+            self.reply({"id": "sub", "result": {"type": "subscription_started"}})
+            self.rfile.read()
+            with record_lock, open(record_path + ".events-closed", "a") as record:
+                record.write("closed\n")
+            return
+        if mode == "events_scroll_overflow":
+            with state_lock:
+                scroll_subscriptions += 1
+                number = scroll_subscriptions
+            self.reply({"id": "sub", "result": {"type": "subscription_started"}})
+            if number == 1:
+                try:
+                    for _ in range(4096):
+                        self.reply({"event": "pane_scroll_changed", "data": {
+                            "pane_id": "w1:p1", "scroll": {"offset_from_bottom": 50,
+                            "max_offset_from_bottom": 100, "viewport_rows": 24}}})
+                    self.rfile.read()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                with open(record_path + ".events-closed", "w") as record:
+                    record.write("closed\n")
+            else:
+                # Scrolling stopped during reconnection. No initial scroll event
+                # is sent; only a snapshot can recover the final offset.
+                self.rfile.read()
             return
         if mode in ("events_burst", "events_paced_burst"):
             self.reply({"id": "sub", "result": {"type": "subscription_started"}})
@@ -96,6 +125,29 @@ class Handler(socketserver.StreamRequestHandler):
         self.rfile.read()
 
     def snapshot(self, request):
+        global scroll_snapshots
+        if mode == "events_scroll_snapshot_stall":
+            # An external watchdog also makes an executor-starvation regression
+            # fail instead of hanging the entire test process.
+            self.connection.settimeout(12)
+            try:
+                self.rfile.read()
+            except TimeoutError:
+                return
+            with record_lock, open(record_path + ".snapshot-closed", "a") as record:
+                record.write("closed\n")
+            return
+        if mode == "events_scroll_overflow":
+            with state_lock:
+                scroll_snapshots += 1
+                offset = 50 if scroll_snapshots == 1 else 0
+            current = pane(1)
+            current["scroll"] = {"offset_from_bottom": offset,
+                                 "max_offset_from_bottom": 100, "viewport_rows": 24}
+            self.reply({"id": request["id"], "result": {"type": "session_snapshot", "snapshot": {
+                "version": "0.9.0", "protocol": 22, "workspaces": [], "tabs": [],
+                "layouts": [], "panes": [current]}}})
+            return
         with state_lock:
             captured = list(panes)
             state = subscription
@@ -174,6 +226,7 @@ class Handler(socketserver.StreamRequestHandler):
 
 class Server(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+    request_queue_size = 128 if mode == "events_scroll_snapshot_stall" else 5
 
 
 with Server(socket_path, Handler) as server:

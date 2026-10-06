@@ -178,6 +178,51 @@ public actor HerdrClient {
         return result.snapshot
     }
 
+    /// A cancellable snapshot on an owned I/O thread, without blocking the
+    /// cooperative executor or disconnecting the client's shared RPC socket.
+    public nonisolated func snapshot(timeout: Duration) async throws -> SessionSnapshot {
+        let state = EventWorkerState()
+        let path = socketPath
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: SessionSnapshot.self) { group in
+                group.addTask {
+                    try Task.checkCancellation()
+                    return try await withCheckedThrowingContinuation { continuation in
+                        let worker = Thread {
+                            do {
+                                let socket = try UnixSocket(path: path)
+                                defer { socket.close(); state.clear() }
+                                guard state.install(socket) else { throw CancellationError() }
+                                let request = RPCRequest(id: "snapshot", method: "session.snapshot", params: [:])
+                                try socket.writeLine(JSONEncoder().encode(request))
+                                let envelope = try JSONDecoder().decode(RPCEnvelope.self, from: socket.readLine())
+                                guard envelope.id == request.id else { throw HerdrClientError.invalidEnvelope }
+                                if let error = envelope.error {
+                                    throw HerdrClientError.remote(code: error.code, message: error.message)
+                                }
+                                guard let result = envelope.result else { throw HerdrClientError.invalidEnvelope }
+                                let snapshot = try JSONDecoder().decode(
+                                    SnapshotResult.self, from: JSONEncoder().encode(result)
+                                ).snapshot
+                                continuation.resume(returning: snapshot)
+                            } catch { continuation.resume(throwing: error) }
+                        }
+                        worker.name = "rai.herdr-snapshot"
+                        worker.start()
+                    }
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw URLError(.timedOut)
+                }
+                // Unblock the I/O worker before the group drains its children.
+                defer { state.stop(); group.cancelAll() }
+                guard let snapshot = try await group.next() else { throw CancellationError() }
+                return snapshot
+            }
+        } onCancel: { state.stop() }
+    }
+
     public nonisolated func explainAgent(_ paneID: String, timeout: Duration = .seconds(10)) async throws -> String {
         let reader = HerdrClient(socketPath: socketPath)
         return try await withTaskCancellationHandler {
