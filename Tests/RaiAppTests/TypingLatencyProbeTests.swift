@@ -11,16 +11,20 @@ final class TypingLatencyProbeTests: XCTestCase {
             throw XCTSkip("Set RAI_TYPING_LATENCY_PROBE=1 to run the typing benchmark.")
         }
         _ = NSApplication.shared
+        let renderer = try TerminalRendererProbeConfiguration()
+        defer { renderer.restore() }
         for (name, padding, streaming) in [
             ("small-echo", 0, false),
             ("large-echo", 256, false),
             ("streaming", 256, true),
         ] {
-            try await measure(name: name, padding: padding, streaming: streaming)
+            try await measure(name: name, padding: padding, streaming: streaming, renderer: renderer)
         }
     }
 
-    private func measure(name: String, padding: Int, streaming: Bool) async throws {
+    private func measure(
+        name: String, padding: Int, streaming: Bool, renderer: TerminalRendererProbeConfiguration
+    ) async throws {
         let frame = NSRect(x: 0, y: 0, width: 960, height: 600)
         let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         let view = FocusAwareTerminalView(frame: frame)
@@ -29,11 +33,14 @@ final class TypingLatencyProbeTests: XCTestCase {
         view.terminalDelegate = display
         window.contentView = view
         window.makeFirstResponder(view)
+        if renderer.name != nil { window.orderFrontRegardless() }
+        renderer.verify(view)
         view.notifyUpdateChanges = true
         view.configurePredictiveEcho(for: nil)
         defer {
             display.onDisplay = nil
             view.terminate()
+            window.orderOut(nil)
             window.contentView = nil
         }
 
@@ -96,8 +103,8 @@ final class TypingLatencyProbeTests: XCTestCase {
         }
         samples.sort()
         print(String(
-            format: "rai-pty-display-update scenario=%@ n=%d median=%.3fms p90=%.3fms max=%.3fms",
-            name, samples.count, samples[samples.count / 2],
+            format: "rai-pty-display-update renderer=%@ scenario=%@ n=%d median=%.3fms p90=%.3fms max=%.3fms",
+            view.isUsingMetalRenderer ? "metal" : "cg", name, samples.count, samples[samples.count / 2],
             samples[Int(ceil(Double(samples.count) * 0.9)) - 1], samples.last!
         ))
     }

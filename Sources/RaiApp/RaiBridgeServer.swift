@@ -1196,12 +1196,8 @@ final class RaiBridgeServer: ObservableObject {
             pushPreferencesDidChange?(deviceID, device.pushPreferences)
             send(.pushPrefsState(device.pushPreferences), to: client)
         case let .selectPane(paneID):
-            guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
-                send(.error(
-                    message: "Unknown pane \(paneID).",
-                    code: .paneGone,
-                    detail: paneID
-                ), to: client)
+            if let error = Self.paneAvailabilityError(paneID: paneID, snapshot: model.snapshot) {
+                send(error, to: client)
                 return
             }
             model.select(paneID: paneID, focusInHerdr: true)
@@ -1341,19 +1337,13 @@ final class RaiBridgeServer: ObservableObject {
             )
             model.reevaluatePendingDecisions()
         case let .readScrollback(paneID, lines, rows, fullGrid, knownHash):
-            guard let pane = model.snapshot?.panes.first(where: { $0.paneID == paneID }) else {
-                send(.error(
-                    message: "Unknown pane \(paneID).",
-                    code: .paneGone,
-                    detail: paneID
-                ), to: client)
+            if let error = Self.paneAvailabilityError(paneID: paneID, snapshot: model.snapshot) {
+                send(error, to: client)
                 return
             }
-            // A full-grid client's frame stream repaints the pane's WHOLE
-            // grid (native size), so the seed must drop the pane's rows from
-            // the tail — not the client's screenful — or the seam duplicates
-            // the rows between viewport height and pane height.
-            let seamRows = fullGrid ? (pane.scroll?.viewportRows ?? rows) : rows
+            // A full-grid stream repaints every visible row. Do not cap the
+            // history seam with snapshot geometry that can predate a resize.
+            let seamRows = fullGrid ? nil : rows
             let clientID = ObjectIdentifier(client.connection)
             func reply(_ payload: Data?) {
                 guard clients[clientID] === client else { return }
@@ -1379,7 +1369,7 @@ final class RaiBridgeServer: ObservableObject {
                     let payload = await self.readScrollbackPayload(
                         paneID: paneID,
                         lines: min(max(lines, 1), 2_000),
-                        clientRows: min(max(seamRows, 0), 200)
+                        clientRows: seamRows.map { min(max($0, 0), 200) }
                     )
                     guard !Task.isCancelled,
                           self.observeStreams[clientID]?[paneID] === stream else { return }
@@ -1390,7 +1380,7 @@ final class RaiBridgeServer: ObservableObject {
                 reply(await readScrollbackPayload(
                     paneID: paneID,
                     lines: min(max(lines, 1), 2_000),
-                    clientRows: min(max(seamRows, 0), 200)
+                    clientRows: seamRows.map { min(max($0, 0), 200) }
                 ))
             }
         case let .history(
@@ -1577,14 +1567,12 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
-    /// Recent pane history from herdr, ANSI-formatted, with the client's
-    /// screenful dropped from the tail — the live frame stream repaints the
-    /// last `clientRows` lines, and keeping them would show that screen twice
-    /// at the seam between seeded history and the live grid.
-    private func readScrollbackPayload(
+    /// Recent pane history without the rows repainted by the live frame.
+    /// A nil clientRows uses the full visible read rather than saved geometry.
+    func readScrollbackPayload(
         paneID: String,
         lines: Int,
-        clientRows: Int
+        clientRows: Int?
     ) async -> Data? {
         let herd = model.client
         // HerdrClient serializes blocking RPC reads. Sharing model.client
@@ -1597,7 +1585,8 @@ final class RaiBridgeServer: ObservableObject {
                       let recent = try? await reader.readPane(
                         // Alternate-screen agents keep history in the app.
                         // Herdr's `recent` source returns only their viewport.
-                        paneID: paneID, source: "recent-unwrapped", lines: lines
+                        // RPC uses snake_case; the CLI uses recent-unwrapped.
+                        paneID: paneID, source: "recent_unwrapped", lines: lines
                       ), let visible = try? await reader.readPane(paneID: paneID),
                       model.client === herd else { return nil }
                 guard recent.revision == visible.revision else { continue }
@@ -1761,6 +1750,22 @@ final class RaiBridgeServer: ObservableObject {
         }
     }
 
+    static func paneAvailabilityError(paneID: String, snapshot: SessionSnapshot?) -> BridgeMessage? {
+        // Startup can accept the phone before Herdr supplies its first snapshot.
+        // Report a reconnectable host error, not a deleted pane action error.
+        guard let snapshot else {
+            return .error(
+                message: "Herdr is not connected.",
+                code: .herdMissing,
+                detail: "The Mac bridge has no active herdr snapshot."
+            )
+        }
+        guard snapshot.panes.contains(where: { $0.paneID == paneID }) else {
+            return .error(message: "Unknown pane \(paneID).", code: .paneGone, detail: paneID)
+        }
+        return nil
+    }
+
     private func startObserveStream(
         paneID: String,
         cols: Int,
@@ -1768,12 +1773,8 @@ final class RaiBridgeServer: ObservableObject {
         fullGrid: Bool,
         for client: BridgeClient
     ) {
-        guard model.snapshot?.panes.contains(where: { $0.paneID == paneID }) == true else {
-            send(.error(
-                message: "Unknown pane \(paneID).",
-                code: .paneGone,
-                detail: paneID
-            ), to: client)
+        if let error = Self.paneAvailabilityError(paneID: paneID, snapshot: model.snapshot) {
+            send(error, to: client)
             return
         }
 

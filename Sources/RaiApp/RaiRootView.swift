@@ -47,7 +47,6 @@ struct RaiRootView: View {
                         tabID: selectedTabID,
                         endpoints: mixedController.sessions
                     )
-                    .padding(.top, Theme.contentTopInset)
                     .background(Theme.base)
                     .ignoresSafeArea(.container, edges: .top)
                     .transaction { $0.animation = nil }
@@ -55,7 +54,6 @@ struct RaiRootView: View {
                     // No header — the panes fill the whole screen. The selected agent's
                     // details (status · space · cwd) live in the sidebar tab row.
                     PaneLayoutView(model: model)
-                        .padding(.top, Theme.contentTopInset)
                         .background(Theme.base)
                         .ignoresSafeArea(.container, edges: .top)
                         // Never animate the detail's own layout — otherwise toggling the

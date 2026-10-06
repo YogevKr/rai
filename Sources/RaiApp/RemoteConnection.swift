@@ -448,7 +448,9 @@ final class RemoteConnection {
         try foregroundArguments(
             target: target,
             sessionName: sessionName,
-            arguments: ["terminal", "attach", terminalID, "--takeover"]
+            // A remote Rai view must never displace a Herdr client that owns
+            // the terminal, because takeover resets that client's Codex UI.
+            arguments: ["terminal", "attach", terminalID]
         )
     }
 

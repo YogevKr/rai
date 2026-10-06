@@ -150,9 +150,16 @@ struct SelectableTerminalText: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var selection: NSRange?
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL,
-                      in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
-            TerminalLink.url(URL.absoluteString) != nil
+        func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
+                      defaultAction: UIAction) -> UIAction? {
+            guard case let .link(link) = textItem.content, TerminalLink.url(link.absoluteString) != nil else { return nil }
+            return defaultAction
+        }
+
+        func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
+                      defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+            guard case let .link(link) = textItem.content, TerminalLink.url(link.absoluteString) != nil else { return nil }
+            return UITextItem.MenuConfiguration(menu: defaultMenu)
         }
     }
 }

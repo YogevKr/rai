@@ -4,6 +4,7 @@ public enum HerdrClientError: LocalizedError {
     case invalidEnvelope
     case remote(code: String, message: String)
     case invalidEvent
+    case eventBufferOverflow
     case disconnected
 
     public var errorDescription: String? {
@@ -14,6 +15,8 @@ public enum HerdrClientError: LocalizedError {
             return "\(code): \(message)"
         case .invalidEvent:
             return "Herdr returned an invalid event envelope"
+        case .eventBufferOverflow:
+            return "Herdr produced events faster than Rai could process them"
         case .disconnected:
             return "Disconnected from Herdr"
         }
@@ -113,6 +116,9 @@ private final class RPCSocketState: @unchecked Sendable {
 }
 
 public actor HerdrClient {
+    // Allow event bursts during a snapshot read without retaining an unlimited backlog.
+    static let maximumBufferedEvents = 256
+
     public static let defaultSubscriptions = [
         "layout.updated",
         "pane.created",
@@ -428,12 +434,19 @@ public actor HerdrClient {
         paneIDs: [String] = []
     ) -> AsyncThrowingStream<HerdrEvent, Error> {
         let subscription = subscribe(subscriptions: subscriptions, paneIDs: paneIDs)
-        return AsyncThrowingStream { continuation in
+        // Events carry ordered structure changes. Overflow reports an error instead of silently losing events.
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)) { continuation in
             let task = Task {
                 defer { subscription.close() }
                 do {
                     for try await message in subscription.messages {
-                        if case .event(let event) = message { continuation.yield(event) }
+                        guard case .event(let event) = message else { continue }
+                        switch continuation.yield(event) {
+                        case .enqueued: break
+                        case .dropped: throw HerdrClientError.eventBufferOverflow
+                        case .terminated: return
+                        @unknown default: throw HerdrClientError.eventBufferOverflow
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -480,7 +493,10 @@ public actor HerdrClient {
         // Capture an immutable copy — a mutable `var` can't be captured by the
         // detached (concurrently-executing) closure under strict concurrency.
         let subscriptionsPayload = wireSubscriptions
-        let (messages, continuation) = AsyncThrowingStream<HerdrEventMessage, Error>.makeStream()
+        // Events carry ordered structure changes. A full buffer must fail closed.
+        let (messages, continuation) = AsyncThrowingStream<HerdrEventMessage, Error>.makeStream(
+            bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)
+        )
         // A dedicated thread, NOT Task.detached: the read below blocks in
         // read(2) for the stream's whole life, and the cooperative pool is
         // capped at the core count. One stream per pane parked there
@@ -515,7 +531,12 @@ public actor HerdrClient {
                             throw HerdrClientError.invalidEnvelope
                         }
                         acknowledged = true
-                        continuation.yield(.ready)
+                        switch continuation.yield(.ready) {
+                        case .enqueued: break
+                        case .dropped: throw HerdrClientError.eventBufferOverflow
+                        case .terminated: return
+                        @unknown default: throw HerdrClientError.eventBufferOverflow
+                        }
                         continue
                     }
                     guard let rawEvent = envelope.event else {
@@ -539,7 +560,12 @@ public actor HerdrClient {
                     default:
                         throw HerdrClientError.invalidEvent
                     }
-                    continuation.yield(.event(event))
+                    switch continuation.yield(.event(event)) {
+                    case .enqueued: break
+                    case .dropped: throw HerdrClientError.eventBufferOverflow
+                    case .terminated: return
+                    @unknown default: throw HerdrClientError.eventBufferOverflow
+                    }
                 }
                 state.clear()
                 continuation.finish()

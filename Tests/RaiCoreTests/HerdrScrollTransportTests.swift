@@ -489,4 +489,59 @@ final class HerdrEventTransportTests: XCTestCase {
             try await consumer.value
         }
     }
+
+    func testEventBurstFailsInsteadOfDroppingOrderedEvents() async throws {
+        try await withServer(mode: "events_burst") { client, record in
+            let subscription = client.subscribe()
+            defer { subscription.close() }
+            try await waitForOverflowClosure(record: record)
+            var iterator = subscription.messages.makeAsyncIterator()
+            guard case .ready = try await iterator.next() else {
+                return XCTFail("Missing subscription readiness")
+            }
+            // Readiness occupies one slot when the consumer has not started.
+            for index in 0..<(HerdrClient.maximumBufferedEvents - 1) {
+                guard case .event(let event) = try await iterator.next() else {
+                    return XCTFail("Missing buffered event")
+                }
+                XCTAssertEqual(event.data["index"], .number(Double(index)))
+            }
+            do {
+                _ = try await iterator.next()
+                XCTFail("An event burst must fail after the bounded buffer fills")
+            } catch let error as HerdrClientError {
+                guard case .eventBufferOverflow = error else {
+                    return XCTFail("Wrong error: \(error)")
+                }
+            }
+        }
+    }
+
+    func testConvenienceEventsStreamAlsoBoundsASlowConsumer() async throws {
+        try await withServer(mode: "events_paced_burst") { client, record in
+            let events = client.events()
+            try await waitForOverflowClosure(record: record)
+            var count = 0
+            do {
+                for try await event in events {
+                    XCTAssertEqual(event.data["index"], .number(Double(count)))
+                    count += 1
+                }
+                XCTFail("Expected an overflow error")
+            } catch HerdrClientError.eventBufferOverflow {
+                XCTAssertGreaterThan(count, 0)
+                XCTAssertLessThanOrEqual(count, HerdrClient.maximumBufferedEvents)
+            }
+        }
+    }
+
+    private func waitForOverflowClosure(record: URL) async throws {
+        let path = record.path + ".events-closed"
+        for _ in 0..<500 {
+            if FileManager.default.fileExists(atPath: path) { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Overflow did not close the event socket")
+        throw HerdrClientError.disconnected
+    }
 }

@@ -87,6 +87,8 @@ private struct RaiMixedPaneSlotView: View {
                 }
             case .endpointOffline:
                 unavailable(endpoint?.error ?? "Endpoint is offline")
+            case .resolving:
+                resolving
             case .paneMissing:
                 unavailable("Pane is no longer available")
             case .paneIdentityChanged:
@@ -141,6 +143,17 @@ private struct RaiMixedPaneSlotView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Theme.textTertiary)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var resolving: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Connecting…")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

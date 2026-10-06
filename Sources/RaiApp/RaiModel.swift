@@ -1565,7 +1565,11 @@ final class RaiModel: ObservableObject {
         recreatedWorkspaceIDs = [:]
         client = HerdrClient(socketPath: socketPath)
         terminalPool.switchSocket(to: socketPath)
-        terminalPool.configureRemoteAttach()
+        if remote == nil {
+            terminalPool.configureLocalAttach()
+        } else {
+            terminalPool.configureRemoteAttach()
+        }
         terminalPool.predictiveEchoHerdLocation = remote == nil ? .local : .remote
         connectionState = .connecting
 

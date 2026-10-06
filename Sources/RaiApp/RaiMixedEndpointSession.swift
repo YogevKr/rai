@@ -49,7 +49,10 @@ final class RaiMixedEndpointSession: ObservableObject {
             socketPath: socketPath,
             attachExecutable: attachExecutable,
             requiresRuntimeExecutable: true,
-            redrawOnAttach: true
+            // A remote Herdr client may already own a Codex terminal. A Rai
+            // view must not displace that client when it first renders.
+            redrawOnAttach: true,
+            takeoverOnAttach: target == nil
         )
         pool.predictiveEchoHerdLocation = target == nil ? .local : .remote
         snapshot = model.snapshot
@@ -233,7 +236,9 @@ final class RaiMixedEndpointSession: ObservableObject {
         let paneIDs = Set(snapshot.panes.compactMap {
             $0.objectValue?["pane_id"]?.stringValue
         })
-        return paneIDs != Set(terminalIDs.keys)
+        // The endpoint view can contain one tab while the API snapshot contains
+        // every tab. Refresh only when a visible pane lacks a terminal mapping.
+        return !paneIDs.isSubset(of: Set(terminalIDs.keys))
     }
 
     private func mergeTerminalIDs(from raw: SessionSnapshot) {

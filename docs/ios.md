@@ -76,9 +76,14 @@ Recovery cancels the banner. Pairing failures show the repair action immediately
 When the network disappears, retries pause. Network return or a Wi-Fi/cellular handoff starts a new connection immediately.
 A path that requires activation still permits connection attempts. Activating that path preserves the current connection attempt.
 Adding composed lines to the queue preserves an existing connection attempt and its retry delay.
+Pane reads during Mac startup report a temporary host error until Herdr supplies its first snapshot.
+The phone keeps a temporary connection state instead of reporting that the pane was deleted.
 Reconnect does not replay raw keys. Composed lines retain the existing queue and password-prompt checks.
 
 The Mac matches recent and visible reads by revision before separating history from the screen.
+The Mac requests unwrapped history with Herdr's `recent_unwrapped` RPC source.
+Herdr's CLI spells this value `recent-unwrapped`. The bridge must use the RPC spelling.
+Full-grid history removes all visible rows from the matching read, even when a saved pane height is outdated.
 Refresh reads use a separate connection and let subsequent phone input proceed during the read.
 It counts actual visible rows because herdr omits empty rows at the bottom.
 The phone applies history when it arrives and keeps the full native grid.

@@ -7,6 +7,11 @@ extension UTType {
     static let raiWorkspace = UTType(exportedAs: "gr.krig.rai.workspace")
 }
 
+private enum SidebarSpaceLayout {
+    static let rowSpacing: CGFloat = 2
+    static let trailingDropHeight: CGFloat = 18
+}
+
 struct SidebarView: View {
     @ObservedObject var model: RaiModel
     let onPrimarySelection: () -> Void
@@ -129,7 +134,7 @@ struct SidebarView: View {
                 // The loop keeps the main thread at 100% CPU and blocks input.
                 // This intentionally removes pinned headers. Do not restore
                 // lazy pinning without a macOS 26 CPU regression test.
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: SidebarSpaceLayout.rowSpacing) {
                     if let snapshot = model.snapshot {
                         let entries = model.workspaceListEntries
                         let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
@@ -266,81 +271,98 @@ private struct RemoteWorkspaceSection: View {
     let selectedTabID: String?
     let onSelect: (RaiWorkspaceReference, String?) -> Void
     let onClose: (InstanceWorkspace, String?) -> Void
+    @State private var collapsed = false
 
-    private var selected: Bool {
-        selectedWorkspace == workspace.id && selectedTabID == nil
+    private var activeStatus: AgentStatus {
+        workspace.tabs.first { $0.id == workspace.activeTabID }?.status
+            ?? workspace.tabs.first?.status
+            ?? .unknown
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Button {
-                onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "network")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(Theme.textTertiary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(workspace.label.uppercased())
-                            .font(.system(size: 10.5, weight: .bold))
-                            .tracking(1.1)
-                            .foregroundStyle(Theme.textSecondary)
-                            .lineLimit(1)
-                        Text(workspace.instanceLabel)
-                            .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(Theme.textTertiary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    Text("\(workspace.tabs.count)")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Theme.textTertiary)
-                }
+        VStack(alignment: .leading, spacing: SidebarSpaceLayout.rowSpacing) {
+            SidebarSpaceHeader(
+                status: activeStatus,
+                tabCount: workspace.tabs.count,
+                collapsed: collapsed,
+                hiddenCount: workspace.tabs.count,
+                instanceLabel: workspace.instanceLabel,
+                instanceAddress: workspace.instanceLabel,
+                remote: workspace.id.endpoint.profileID != nil,
+                onToggleCollapse: { collapsed.toggle() }
+            ) {
+                Text(workspace.label.uppercased())
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+            } details: {
+                EmptyView()
             }
-            .buttonStyle(.plain)
-            .modifier(SidebarRowChrome(selected: selected, hovering: false))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
+            }
             .contextMenu {
                 Button("Close Space…", role: .destructive) { onClose(workspace, nil) }
             }
 
-            ForEach(workspace.tabs) { tab in
-                Button {
-                    onSelect(tab.workspace, tab.id)
-                } label: {
-                    HStack(spacing: 8) {
-                        StatusDot(status: tab.status)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(tab.label.isEmpty ? tab.id : tab.label)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Theme.textPrimary)
-                                .lineLimit(1)
-                            Text(workspace.instanceLabel)
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(Theme.textTertiary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                        Text("\(tab.panes.count)")
-                            .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .modifier(
-                    SidebarRowChrome(
+            if !collapsed {
+                ForEach(workspace.tabs) { tab in
+                    RemoteTabRow(
+                        tab: tab,
+                        closesSpace: workspace.tabs.count == 1,
                         selected: selectedWorkspace == tab.workspace && selectedTabID == tab.id,
-                        hovering: false,
-                        indent: 14
+                        onSelect: { onSelect(tab.workspace, tab.id) },
+                        onClose: {
+                            onClose(workspace, workspace.tabs.count == 1 ? nil : tab.id)
+                        }
                     )
-                )
-                .contextMenu {
-                    Button(workspace.tabs.count == 1 ? "Close Space…" : "Close Tab", role: .destructive) {
-                        onClose(workspace, tab.id)
-                    }
                 }
+                // Match the trailing tab-drop area of a local space.
+                Color.clear
+                    .frame(height: SidebarSpaceLayout.trailingDropHeight)
+                    .accessibilityHidden(true)
             }
         }
-        .padding(.bottom, 5)
+    }
+
+}
+
+private struct RemoteTabRow: View {
+    let tab: InstanceTab
+    let closesSpace: Bool
+    let selected: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            SidebarRowLabel(
+                status: tab.status,
+                title: tab.label,
+                subtitle: tab.context,
+                selected: selected,
+                focusedInHerdr: false
+            ) {
+                if tab.panes.count > 1 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "rectangle.split.2x1")
+                        Text("\(tab.panes.count)")
+                    }
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: 14))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button(closesSpace ? "Close Space…" : "Close Tab", role: .destructive, action: onClose)
+        }
     }
 }
 
@@ -967,6 +989,98 @@ private struct WorktreeTag: View {
     }
 }
 
+/// One space header for the primary instance and every other instance.
+private struct SidebarSpaceHeader<Title: View, Details: View>: View {
+    let status: AgentStatus
+    let tabCount: Int
+    let collapsed: Bool
+    var hiddenCount = 0
+    var indented = false
+    var groupCollapsed: Bool?
+    let instanceLabel: String
+    let instanceAddress: String
+    let remote: Bool
+    let onToggleCollapse: () -> Void
+    var onToggleGroup: () -> Void = {}
+    @ViewBuilder var title: () -> Title
+    @ViewBuilder var details: () -> Details
+
+    private var collapseHelp: String {
+        if let groupCollapsed {
+            return groupCollapsed ? "Expand worktrees" : "Collapse worktrees"
+        }
+        return collapsed ? "Expand space" : "Collapse space"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Button(action: groupCollapsed == nil ? onToggleCollapse : onToggleGroup) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .rotationEffect(.degrees((groupCollapsed ?? collapsed) ? 0 : 90))
+                        .frame(width: 12, height: 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(collapseHelp)
+                .help(collapseHelp)
+                if groupCollapsed != nil {
+                    Button(action: onToggleCollapse) {
+                        Image(systemName: "square.stack")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(collapsed ? "Expand space tabs" : "Collapse space tabs")
+                } else {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                StatusDot(status: status, size: 6)
+                title()
+                Spacer(minLength: 4)
+                if collapsed, hiddenCount > 0 {
+                    Text("\(hiddenCount) hidden")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                } else {
+                    Text("\(tabCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            HStack(spacing: 4) {
+                Image(systemName: remote ? "network" : "externaldrive")
+                    .font(.system(size: 8, weight: .medium))
+                Text(instanceLabel).lineLimit(1)
+            }
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(Theme.textTertiary)
+            .padding(.leading, groupCollapsed == nil ? 43 : 58)
+            .padding(.trailing, 6)
+            .help(instanceAddress)
+            details()
+                .padding(.leading, groupCollapsed == nil ? 43 : 58)
+                .padding(.trailing, 6)
+        }
+        .padding(.horizontal, 10)
+        .padding(.leading, indented ? 18 : 0)
+        .padding(.top, indented ? 6 : 16)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            Theme.sidebar
+            Color.white.opacity(0.025)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+}
+
 private struct WorkspaceHeader: View {
     @ObservedObject var model: RaiModel
     let workspace: Workspace
@@ -1001,107 +1115,46 @@ private struct WorkspaceHeader: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 7) {
-                Button(action: groupKey == nil ? onToggleCollapse : onToggleGroup) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Theme.textTertiary)
-                        .rotationEffect(
-                            .degrees((groupKey == nil ? collapsed : groupCollapsed) ? 0 : 90)
-                        )
-                        .frame(width: 12, height: 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(
-                    groupKey == nil
-                        ? (collapsed ? "Expand space" : "Collapse space")
-                        : (groupCollapsed ? "Expand worktrees" : "Collapse worktrees")
+        SidebarSpaceHeader(
+            status: displayStatus,
+            tabCount: workspace.tabCount,
+            collapsed: collapsed,
+            hiddenCount: hiddenCount,
+            indented: indented,
+            groupCollapsed: groupKey == nil ? nil : groupCollapsed,
+            instanceLabel: instanceLabel,
+            instanceAddress: instanceAddress,
+            remote: model.remoteTarget != nil,
+            onToggleCollapse: onToggleCollapse,
+            onToggleGroup: onToggleGroup
+        ) {
+            if model.inlineRename == .workspace(workspace.workspaceID) {
+                InlineRenameField(
+                    initial: workspace.label,
+                    font: .system(size: 10, weight: .semibold),
+                    onCommit: { model.commitInlineRename(workspace: workspace, to: $0) },
+                    onCancel: { model.cancelInlineRename() }
                 )
-                if groupKey != nil {
-                    Button(action: onToggleCollapse) {
-                        Image(systemName: "square.stack")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(collapsed ? "Expand space tabs" : "Collapse space tabs")
-                } else {
-                    Image(systemName: "square.stack")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.textTertiary)
-                }
-                StatusDot(status: displayStatus, size: 6)
-                if model.inlineRename == .workspace(workspace.workspaceID) {
-                    InlineRenameField(
-                        initial: workspace.label,
-                        font: .system(size: 10, weight: .semibold),
-                        onCommit: { model.commitInlineRename(workspace: workspace, to: $0) },
-                        onCancel: { model.cancelInlineRename() }
+            } else {
+                Text(indented ? displayLabel : displayLabel.uppercased())
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(indented ? 0 : 1.1)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .simultaneousGesture(
+                        TapGesture(count: 2)
+                            .onEnded { model.beginInlineRename(workspace: workspace) }
                     )
-                } else {
-                    Text(indented ? displayLabel : displayLabel.uppercased())
-                        .font(.system(size: 10.5, weight: .bold))
-                        .tracking(indented ? 0 : 1.1)
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                        .simultaneousGesture(
-                            TapGesture(count: 2)
-                                .onEnded { model.beginInlineRename(workspace: workspace) }
-                        )
-                    if focusedInHerdr {
-                        Circle().fill(Theme.accent).frame(width: 4, height: 4)
-                            .help("Focused in Herdr")
-                    }
-                }
-                Spacer(minLength: 4)
-                if collapsed, hiddenCount > 0 {
-                    Text("\(hiddenCount) hidden")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(Theme.textTertiary)
-                } else {
-                    Text("\(workspace.tabCount)")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Theme.textTertiary)
+                if focusedInHerdr {
+                    Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                        .help("Focused in Herdr")
                 }
             }
-            HStack(spacing: 4) {
-                Image(systemName: model.remoteTarget == nil ? "externaldrive" : "network")
-                    .font(.system(size: 8, weight: .medium))
-                Text(instanceLabel)
-                    .lineLimit(1)
-            }
-            .font(.system(size: 9.5, weight: .medium))
-            .foregroundStyle(Theme.textTertiary)
-            .padding(.leading, groupKey == nil ? 43 : 58)
-            .padding(.trailing, 6)
-            .help(instanceAddress)
+        } details: {
             if !indented, showWorktreeFallback {
-                // The branch lives on the tab rows now: tabs in one space can
-                // sit in different worktrees. The header keeps only the
-                // checkout identity of a linked worktree or a renamed space.
-                // Herdr suppresses that on indented children, whose auto label
-                // is already the branch while a custom name stays custom.
                 WorktreeTag(status: nil, worktree: workspace.worktree)
-                    .padding(.leading, groupKey == nil ? 43 : 58)
-                    .padding(.trailing, 6)
                     .lineLimit(1)
             }
-        }
-        .padding(.horizontal, 10)
-        .padding(.leading, indented ? 18 : 0)
-        .padding(.top, indented ? 6 : 16)
-        .padding(.bottom, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // A faint band + bottom hairline so a space header reads as a group
-        // divider, clearly distinct from the flat tab rows beneath it.
-        .background {
-            Theme.sidebar
-            Color.white.opacity(0.025)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.hairline).frame(height: 1)
         }
         .modifier(SidebarDropIndicator(active: dropTargeted))
         .contentShape(Rectangle())
@@ -1807,7 +1860,7 @@ private struct WorkspaceTabDropEnd: View {
 
     var body: some View {
         Color.clear
-            .frame(maxWidth: .infinity, minHeight: 18)
+            .frame(maxWidth: .infinity, minHeight: SidebarSpaceLayout.trailingDropHeight)
             .background(targeted ? Theme.accent.opacity(0.12) : .clear)
             .contentShape(Rectangle())
             .onDrop(

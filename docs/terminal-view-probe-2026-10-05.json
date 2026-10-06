@@ -1,0 +1,378 @@
+{
+  "date": "2026-10-05",
+  "machine": "Apple M3 Pro",
+  "os": "macOS 26.6.2 (25G83)",
+  "compiler": "Apple Swift 6.2",
+  "configuration": "debug",
+  "swiftTermRevision": "97d70b0",
+  "view": "FocusAwareTerminalView",
+  "windowPoints": [
+    960,
+    600
+  ],
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+    "RAI_TYPING_LATENCY_PROBE": "1",
+    "RAI_TEST_TERMINAL_RENDERER": "renderer field in each run"
+  },
+  "samplesPerScenarioPerRun": 60,
+  "warmupKeysPerScenarioPerRun": 10,
+  "predictiveEcho": false,
+  "limitations": [
+    "Measures a synthetic key event through an owned PTY to the display-update callback.",
+    "Does not measure GPU completion or physical screen presentation.",
+    "Uses debug builds and one visible terminal view.",
+    "No live Herdr connection or endpoint view is involved.",
+    "The UI tool could not select XCTest for screen inspection.",
+    "The signed app lab could not build because no valid signing identity was available."
+  ],
+  "summary": [
+    {
+      "renderer": "cg",
+      "scenario": "large-echo",
+      "medianOfRunMediansMilliseconds": 82.987,
+      "runMedianRangeMilliseconds": [
+        82.119,
+        83.173
+      ],
+      "medianOfRunP90Milliseconds": 95.98
+    },
+    {
+      "renderer": "cg",
+      "scenario": "small-echo",
+      "medianOfRunMediansMilliseconds": 1.949,
+      "runMedianRangeMilliseconds": [
+        1.181,
+        3.727
+      ],
+      "medianOfRunP90Milliseconds": 14.653
+    },
+    {
+      "renderer": "cg",
+      "scenario": "streaming",
+      "medianOfRunMediansMilliseconds": 26.401,
+      "runMedianRangeMilliseconds": [
+        22.962,
+        31.48
+      ],
+      "medianOfRunP90Milliseconds": 50.234
+    },
+    {
+      "renderer": "metal",
+      "scenario": "large-echo",
+      "medianOfRunMediansMilliseconds": 82.272,
+      "runMedianRangeMilliseconds": [
+        82.053,
+        82.881
+      ],
+      "medianOfRunP90Milliseconds": 89.284
+    },
+    {
+      "renderer": "metal",
+      "scenario": "small-echo",
+      "medianOfRunMediansMilliseconds": 0.69,
+      "runMedianRangeMilliseconds": [
+        0.391,
+        1.072
+      ],
+      "medianOfRunP90Milliseconds": 3.978
+    },
+    {
+      "renderer": "metal",
+      "scenario": "streaming",
+      "medianOfRunMediansMilliseconds": 24.153,
+      "runMedianRangeMilliseconds": [
+        23.039,
+        27.884
+      ],
+      "medianOfRunP90Milliseconds": 33.882
+    }
+  ],
+  "runs": [
+    {
+      "renderer": "cg",
+      "repeat": 1,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests"
+      ],
+      "status": 0,
+      "output": "[1/1] Compiling plugin GenerateManual\n[2/2] Compiling plugin GenerateDoccReference\nBuilding for debugging...\n[2/13] Write sources\n[3/13] Write swift-version--58304C5D6DBC2206.txt\n[5/9] Compiling RaiApp TerminalPaneView.swift\n[6/9] Emitting module RaiApp\n[6/11] Write Objects.LinkFileList\n[7/11] Linking rai\n[8/11] Applying rai\n[10/12] Emitting module RaiAppTests\n[10/12] Write Objects.LinkFileList\n[11/12] Linking raiPackageTests\nBuild complete! (90.91s)\nTest Suite 'Selected tests' started at 2026-10-05 20:51:13.785.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:51:13.789.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:51:13.789.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (30.708 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:51:44.497.\n\t Executed 1 test, with 0 failures (0 unexpected) in 30.708 (30.708) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:51:44.497.\n\t Executed 1 test, with 0 failures (0 unexpected) in 30.708 (30.708) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:51:44.497.\n\t Executed 1 test, with 0 failures (0 unexpected) in 30.708 (30.712) seconds\nrai-pty-display-update renderer=cg scenario=small-echo n=60 median=3.727ms p90=34.812ms max=83.514ms\nrai-pty-display-update renderer=cg scenario=large-echo n=60 median=83.173ms p90=95.980ms max=139.788ms\nrai-pty-display-update renderer=cg scenario=streaming n=60 median=22.962ms p90=33.731ms max=85.486ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 3.727,
+          "p90Milliseconds": 34.812,
+          "maximumMilliseconds": 83.514
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 83.173,
+          "p90Milliseconds": 95.98,
+          "maximumMilliseconds": 139.788
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 22.962,
+          "p90Milliseconds": 33.731,
+          "maximumMilliseconds": 85.486
+        }
+      ]
+    },
+    {
+      "renderer": "metal",
+      "repeat": 1,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests",
+        "--skip-build"
+      ],
+      "status": 0,
+      "output": "[0/1] Planning build\nTest Suite 'Selected tests' started at 2026-10-05 20:51:52.811.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:51:52.815.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:51:52.816.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\n2026-10-05 20:51:53.067 xctest[80716:182298829] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:52:00.259 xctest[80716:182298829] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:52:12.333 xctest[80716:182298829] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (25.922 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:52:18.738.\n\t Executed 1 test, with 0 failures (0 unexpected) in 25.922 (25.922) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:52:18.738.\n\t Executed 1 test, with 0 failures (0 unexpected) in 25.922 (25.923) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:52:18.738.\n\t Executed 1 test, with 0 failures (0 unexpected) in 25.922 (25.928) seconds\nMetal FPS: 11.4 (rows rebuilt: 1/37)\nMetal FPS: 11.0 (rows rebuilt: 1/37)\nMetal FPS: 11.9 (rows rebuilt: 1/37)\nMetal FPS: 11.0 (rows rebuilt: 1/37)\nMetal FPS: 12.0 (rows rebuilt: 1/37)\nMetal FPS: 11.0 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=small-echo n=60 median=0.391ms p90=3.978ms max=22.094ms\nMetal FPS: 9.3 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 7.9 (rows rebuilt: 1/37)\nMetal FPS: 6.8 (rows rebuilt: 1/37)\nMetal FPS: 7.7 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 7.8 (rows rebuilt: 1/37)\nMetal FPS: 6.6 (rows rebuilt: 1/37)\nMetal FPS: 7.4 (rows rebuilt: 1/37)\nMetal FPS: 7.0 (rows rebuilt: 1/37)\nMetal FPS: 7.5 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=large-echo n=60 median=82.053ms p90=84.110ms max=129.905ms\nMetal FPS: 34.9 (rows rebuilt: 3/37)\nMetal FPS: 29.0 (rows rebuilt: 1/37)\nMetal FPS: 23.7 (rows rebuilt: 3/37)\nMetal FPS: 29.2 (rows rebuilt: 3/37)\nMetal FPS: 35.3 (rows rebuilt: 1/37)\nMetal FPS: 29.7 (rows rebuilt: 3/37)\nrai-pty-display-update renderer=metal scenario=streaming n=60 median=24.153ms p90=33.882ms max=112.609ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 0.391,
+          "p90Milliseconds": 3.978,
+          "maximumMilliseconds": 22.094
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 82.053,
+          "p90Milliseconds": 84.11,
+          "maximumMilliseconds": 129.905
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 24.153,
+          "p90Milliseconds": 33.882,
+          "maximumMilliseconds": 112.609
+        }
+      ]
+    },
+    {
+      "renderer": "metal",
+      "repeat": 2,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests",
+        "--skip-build"
+      ],
+      "status": 0,
+      "output": "Test Suite 'Selected tests' started at 2026-10-05 20:52:19.904.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:52:19.905.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:52:19.905.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\n2026-10-05 20:52:20.075 xctest[84050:182304989] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:52:27.181 xctest[84050:182304989] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:52:39.423 xctest[84050:182304989] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (27.033 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:52:46.938.\n\t Executed 1 test, with 0 failures (0 unexpected) in 27.033 (27.033) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:52:46.938.\n\t Executed 1 test, with 0 failures (0 unexpected) in 27.033 (27.033) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:52:46.938.\n\t Executed 1 test, with 0 failures (0 unexpected) in 27.033 (27.034) seconds\nMetal FPS: 13.7 (rows rebuilt: 1/37)\nMetal FPS: 10.9 (rows rebuilt: 1/37)\nMetal FPS: 11.9 (rows rebuilt: 1/37)\nMetal FPS: 11.0 (rows rebuilt: 1/37)\nMetal FPS: 12.0 (rows rebuilt: 1/37)\nMetal FPS: 10.9 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=small-echo n=60 median=0.690ms p90=2.501ms max=19.657ms\nMetal FPS: 9.2 (rows rebuilt: 1/37)\nMetal FPS: 6.5 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 6.8 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 7.6 (rows rebuilt: 1/37)\nMetal FPS: 6.9 (rows rebuilt: 1/37)\nMetal FPS: 7.8 (rows rebuilt: 1/37)\nMetal FPS: 6.5 (rows rebuilt: 1/37)\nMetal FPS: 8.0 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=large-echo n=60 median=82.272ms p90=89.284ms max=114.855ms\nMetal FPS: 28.2 (rows rebuilt: 3/37)\nMetal FPS: 27.6 (rows rebuilt: 1/37)\nMetal FPS: 24.2 (rows rebuilt: 3/37)\nMetal FPS: 25.6 (rows rebuilt: 1/37)\nMetal FPS: 29.2 (rows rebuilt: 3/37)\nMetal FPS: 23.9 (rows rebuilt: 3/37)\nMetal FPS: 26.5 (rows rebuilt: 3/37)\nrai-pty-display-update renderer=metal scenario=streaming n=60 median=27.884ms p90=56.337ms max=131.772ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 0.69,
+          "p90Milliseconds": 2.501,
+          "maximumMilliseconds": 19.657
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 82.272,
+          "p90Milliseconds": 89.284,
+          "maximumMilliseconds": 114.855
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 27.884,
+          "p90Milliseconds": 56.337,
+          "maximumMilliseconds": 131.772
+        }
+      ]
+    },
+    {
+      "renderer": "cg",
+      "repeat": 2,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests",
+        "--skip-build"
+      ],
+      "status": 0,
+      "output": "[0/1] Planning build\nTest Suite 'Selected tests' started at 2026-10-05 20:52:50.007.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:52:50.011.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:52:50.012.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (28.672 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:53:18.684.\n\t Executed 1 test, with 0 failures (0 unexpected) in 28.672 (28.673) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:53:18.684.\n\t Executed 1 test, with 0 failures (0 unexpected) in 28.672 (28.673) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:53:18.684.\n\t Executed 1 test, with 0 failures (0 unexpected) in 28.672 (28.678) seconds\nrai-pty-display-update renderer=cg scenario=small-echo n=60 median=1.949ms p90=14.653ms max=64.478ms\nrai-pty-display-update renderer=cg scenario=large-echo n=60 median=82.119ms p90=94.384ms max=115.398ms\nrai-pty-display-update renderer=cg scenario=streaming n=60 median=26.401ms p90=50.234ms max=82.039ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 1.949,
+          "p90Milliseconds": 14.653,
+          "maximumMilliseconds": 64.478
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 82.119,
+          "p90Milliseconds": 94.384,
+          "maximumMilliseconds": 115.398
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 26.401,
+          "p90Milliseconds": 50.234,
+          "maximumMilliseconds": 82.039
+        }
+      ]
+    },
+    {
+      "renderer": "cg",
+      "repeat": 3,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests",
+        "--skip-build"
+      ],
+      "status": 0,
+      "output": "Test Suite 'Selected tests' started at 2026-10-05 20:53:20.783.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:53:20.790.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:53:20.790.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (31.392 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:53:52.195.\n\t Executed 1 test, with 0 failures (0 unexpected) in 31.392 (31.405) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:53:52.201.\n\t Executed 1 test, with 0 failures (0 unexpected) in 31.392 (31.410) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:53:52.201.\n\t Executed 1 test, with 0 failures (0 unexpected) in 31.392 (31.418) seconds\nrai-pty-display-update renderer=cg scenario=small-echo n=60 median=1.181ms p90=7.899ms max=23.952ms\nrai-pty-display-update renderer=cg scenario=large-echo n=60 median=82.987ms p90=120.182ms max=300.798ms\nrai-pty-display-update renderer=cg scenario=streaming n=60 median=31.480ms p90=79.599ms max=133.650ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 1.181,
+          "p90Milliseconds": 7.899,
+          "maximumMilliseconds": 23.952
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 82.987,
+          "p90Milliseconds": 120.182,
+          "maximumMilliseconds": 300.798
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 31.48,
+          "p90Milliseconds": 79.599,
+          "maximumMilliseconds": 133.65
+        }
+      ]
+    },
+    {
+      "renderer": "metal",
+      "repeat": 3,
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--filter",
+        "TypingLatencyProbeTests",
+        "--skip-build"
+      ],
+      "status": 0,
+      "output": "[0/1] Planning build\nTest Suite 'Selected tests' started at 2026-10-05 20:53:56.316.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:53:56.318.\nTest Suite 'TypingLatencyProbeTests' started at 2026-10-05 20:53:56.318.\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' started.\n2026-10-05 20:53:56.570 xctest[94105:182338784] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:54:04.522 xctest[94105:182338784] rai: pane renderer = Metal, buffering = perFrameAggregated\n2026-10-05 20:54:17.160 xctest[94105:182338784] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TypingLatencyProbeTests testTypingThroughTheProductionPTYAndView]' passed (26.878 seconds).\nTest Suite 'TypingLatencyProbeTests' passed at 2026-10-05 20:54:23.196.\n\t Executed 1 test, with 0 failures (0 unexpected) in 26.878 (26.878) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:54:23.196.\n\t Executed 1 test, with 0 failures (0 unexpected) in 26.878 (26.878) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:54:23.196.\n\t Executed 1 test, with 0 failures (0 unexpected) in 26.878 (26.880) seconds\nMetal FPS: 11.0 (rows rebuilt: 1/37)\nMetal FPS: 10.0 (rows rebuilt: 1/37)\nMetal FPS: 11.9 (rows rebuilt: 1/37)\nMetal FPS: 9.5 (rows rebuilt: 1/37)\nMetal FPS: 10.6 (rows rebuilt: 1/37)\nMetal FPS: 10.9 (rows rebuilt: 1/37)\nMetal FPS: 9.7 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=small-echo n=60 median=1.072ms p90=19.267ms max=122.541ms\nMetal FPS: 8.2 (rows rebuilt: 1/37)\nMetal FPS: 6.6 (rows rebuilt: 1/37)\nMetal FPS: 7.4 (rows rebuilt: 1/37)\nMetal FPS: 7.0 (rows rebuilt: 1/37)\nMetal FPS: 6.8 (rows rebuilt: 1/37)\nMetal FPS: 7.4 (rows rebuilt: 1/37)\nMetal FPS: 6.0 (rows rebuilt: 1/37)\nMetal FPS: 7.2 (rows rebuilt: 1/37)\nMetal FPS: 5.8 (rows rebuilt: 1/37)\nMetal FPS: 6.8 (rows rebuilt: 1/37)\nMetal FPS: 6.8 (rows rebuilt: 1/37)\nrai-pty-display-update renderer=metal scenario=large-echo n=60 median=82.881ms p90=93.977ms max=129.143ms\nMetal FPS: 33.4 (rows rebuilt: 3/37)\nMetal FPS: 32.1 (rows rebuilt: 1/37)\nMetal FPS: 32.6 (rows rebuilt: 3/37)\nMetal FPS: 31.7 (rows rebuilt: 3/37)\nMetal FPS: 32.2 (rows rebuilt: 3/37)\nrai-pty-display-update renderer=metal scenario=streaming n=60 median=23.039ms p90=25.201ms max=35.869ms\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+      "measurements": [
+        {
+          "scenario": "small-echo",
+          "samples": 60,
+          "medianMilliseconds": 1.072,
+          "p90Milliseconds": 19.267,
+          "maximumMilliseconds": 122.541
+        },
+        {
+          "scenario": "large-echo",
+          "samples": 60,
+          "medianMilliseconds": 82.881,
+          "p90Milliseconds": 93.977,
+          "maximumMilliseconds": 129.143
+        },
+        {
+          "scenario": "streaming",
+          "samples": 60,
+          "medianMilliseconds": 23.039,
+          "p90Milliseconds": 25.201,
+          "maximumMilliseconds": 35.869
+        }
+      ]
+    }
+  ],
+  "interactionRuns": [
+    {
+      "renderer": "cg",
+      "environment": {
+        "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+        "RAI_TEST_TERMINAL_RENDERER": "cg"
+      },
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--skip-build",
+        "--filter",
+        "TerminalRendererProbeTests"
+      ],
+      "automatedChecksPassed": 4,
+      "manualPreviewSkipped": true,
+      "output": "[0/1] Planning build\nTest Suite 'Selected tests' started at 2026-10-05 20:55:32.152.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:55:32.153.\nTest Suite 'TerminalRendererProbeTests' started at 2026-10-05 20:55:32.153.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testCursorResizeAndWindowTransfer]' started.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testCursorResizeAndWindowTransfer]' passed (0.861 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testImagePasteAndKittyImageState]' started.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testImagePasteAndKittyImageState]' passed (0.235 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testInteractivePreview]' started.\n/Users/yogev/projects/rai/Tests/RaiAppTests/TerminalRendererProbeTests.swift:245: -[RaiAppTests.TerminalRendererProbeTests testInteractivePreview] : Test skipped - Set RAI_RENDERER_PREVIEW_SECONDS=1...600 for a visible, isolated preview.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testInteractivePreview]' skipped (0.004 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSearchBarStaysAboveRendererAndFindsText]' started.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSearchBarStaysAboveRendererAndFindsText]' passed (0.258 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSelectionSurvivesOutputAndLocalScrollback]' started.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSelectionSurvivesOutputAndLocalScrollback]' passed (0.420 seconds).\nTest Suite 'TerminalRendererProbeTests' passed at 2026-10-05 20:55:33.933.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.778 (1.780) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:55:33.933.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.778 (1.780) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:55:33.933.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.778 (1.781) seconds\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n"
+    },
+    {
+      "renderer": "metal",
+      "environment": {
+        "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+        "RAI_TEST_TERMINAL_RENDERER": "metal"
+      },
+      "command": [
+        "swift",
+        "test",
+        "--scratch-path",
+        ".build-tests",
+        "--skip-build",
+        "--filter",
+        "TerminalRendererProbeTests"
+      ],
+      "automatedChecksPassed": 4,
+      "manualPreviewSkipped": true,
+      "output": "[0/1] Planning build\nTest Suite 'Selected tests' started at 2026-10-05 20:55:36.324.\nTest Suite 'raiPackageTests.xctest' started at 2026-10-05 20:55:36.326.\nTest Suite 'TerminalRendererProbeTests' started at 2026-10-05 20:55:36.326.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testCursorResizeAndWindowTransfer]' started.\n2026-10-05 20:55:36.437 xctest[3994:182356867] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testCursorResizeAndWindowTransfer]' passed (0.849 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testImagePasteAndKittyImageState]' started.\n2026-10-05 20:55:37.210 xctest[3994:182356867] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testImagePasteAndKittyImageState]' passed (0.233 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testInteractivePreview]' started.\n/Users/yogev/projects/rai/Tests/RaiAppTests/TerminalRendererProbeTests.swift:245: -[RaiAppTests.TerminalRendererProbeTests testInteractivePreview] : Test skipped - Set RAI_RENDERER_PREVIEW_SECONDS=1...600 for a visible, isolated preview.\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testInteractivePreview]' skipped (0.007 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSearchBarStaysAboveRendererAndFindsText]' started.\n2026-10-05 20:55:37.450 xctest[3994:182356867] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSearchBarStaysAboveRendererAndFindsText]' passed (0.238 seconds).\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSelectionSurvivesOutputAndLocalScrollback]' started.\n2026-10-05 20:55:37.696 xctest[3994:182356867] rai: pane renderer = Metal, buffering = perFrameAggregated\nTest Case '-[RaiAppTests.TerminalRendererProbeTests testSelectionSurvivesOutputAndLocalScrollback]' passed (0.497 seconds).\nTest Suite 'TerminalRendererProbeTests' passed at 2026-10-05 20:55:38.151.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.824 (1.825) seconds\nTest Suite 'raiPackageTests.xctest' passed at 2026-10-05 20:55:38.151.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.824 (1.825) seconds\nTest Suite 'Selected tests' passed at 2026-10-05 20:55:38.151.\n\t Executed 5 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.824 (1.826) seconds\n\u25c7 Test run started.\n\u21b3 Testing Library Version: 1085\n\u21b3 Target Platform: arm64e-apple-macos14.0\n\u2714 Test run with 0 tests in 0 suites passed after 0.001 seconds.\n"
+    }
+  ],
+  "manualPreview": {
+    "renderer": "metal",
+    "secondsRequested": 180,
+    "processCompleted": true,
+    "screenInspected": false,
+    "reason": "The UI tool could not select the XCTest process."
+  },
+  "fullSuite": {
+    "command": [
+      "swift",
+      "test",
+      "--scratch-path",
+      ".build-tests"
+    ],
+    "tests": 1025,
+    "skipped": 14,
+    "failures": 0
+  }
+}

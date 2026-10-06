@@ -845,7 +845,7 @@ private struct StreamingTerminalView: UIViewRepresentable {
             coordinator.connection.removeConnectionGenerationHandler(id)
         }
         if let surface = coordinator.surface {
-            surface.terminal.resignFirstResponder()
+            _ = surface.terminal.resignFirstResponder()
             surface.terminal.terminalDelegate = nil
             surface.terminal.suspendHistoryRefresh()
             if let key = coordinator.cacheKey,

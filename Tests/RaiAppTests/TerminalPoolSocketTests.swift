@@ -21,4 +21,27 @@ final class TerminalPoolSocketTests: XCTestCase {
         XCTAssertEqual(view?.scrollbackSelection.client.socketPath, socket)
         pool.removeAll()
     }
+
+    func testRemoteAttachDoesNotRequestTakeover() {
+        XCTAssertEqual(
+            TerminalPool.attachArguments(terminalID: "term-1", takeover: false),
+            ["terminal", "attach", "term-1"]
+        )
+        XCTAssertEqual(
+            TerminalPool.attachArguments(terminalID: "term-1", takeover: true),
+            ["terminal", "attach", "term-1", "--takeover"]
+        )
+    }
+
+    func testRemotePoolConfigurationDisablesTakeoverUntilLocalIsRestored() {
+        let pool = TerminalPool(socketPath: "/nonexistent/rai-tests-herd.sock", attachExecutable: "/usr/bin/true")
+        XCTAssertTrue(pool.takeoverOnAttachForTesting)
+
+        pool.configureRemoteAttach()
+        XCTAssertFalse(pool.takeoverOnAttachForTesting)
+
+        pool.configureLocalAttach()
+        XCTAssertTrue(pool.takeoverOnAttachForTesting)
+        pool.removeAll()
+    }
 }

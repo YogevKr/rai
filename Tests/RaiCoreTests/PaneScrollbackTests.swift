@@ -3,6 +3,16 @@ import XCTest
 @testable import RaiCore
 
 final class PaneScrollbackTests: XCTestCase {
+    func testFullGridDropsAllVisibleRowsAfterPaneResize() {
+        let recent = (1...100).map(String.init).joined(separator: "\n")
+        let visible = (64...100).map(String.init).joined(separator: "\n")
+        let history = PaneScrollback.payload(recent: recent, visible: visible)
+        XCTAssertEqual(
+            String(decoding: history, as: UTF8.self),
+            (1...63).map(String.init).joined(separator: "\n") + "\n\u{1B}[0m"
+        )
+    }
+
     private func payload(_ recent: String, visible: String, rows: Int) -> String {
         String(decoding: PaneScrollback.payload(recent: recent, visible: visible, viewportRows: rows), as: UTF8.self)
     }

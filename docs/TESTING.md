@@ -139,6 +139,15 @@ Open **Settings → Herdr Server → Mac Privacy → Review Full Disk Access…*
 Verify that **Open System Settings** opens Privacy & Security → Full Disk Access, without changing any grant.
 Granting access remains a separate user action in macOS. Follow its quit-and-reopen request when testing a grant.
 
+## Sidebar spacing check
+
+Expanded local spaces include an 18-point target after their final tab for drag-and-drop.
+Remote spaces reserve the same height and use the same 2-point row spacing.
+Collapsed remote spaces omit that footer, as local spaces do.
+The October 5 isolated lab check compared two local spaces and two remote spaces with one tab each.
+All four header positions had equal vertical gaps after the change.
+The release configuration build passed. The installed release app was not changed.
+
 ## Codex Micro permissions
 
 Grant Input Monitoring separately to `Rai.app` and `Rai Dev.app` when using their keyboard integration.
@@ -209,6 +218,152 @@ Record app hashes and pane snapshots before removing temporary test panes.
 Full unit gates do not replace the isolated app scenarios in `herdr-0.9-e2e.md`.
 
 ## iOS connections and terminal retention
+
+### Codex touch scroll check
+
+The `rai-ios-scroll-e2e` scheme checks touch input in an authenticated Codex conversation.
+It uses XCUITest swipes and reads numbered lines from screenshots.
+The two-swipe test requires at least five lines of movement in each direction.
+The repeated-swipe test must reach line 5 or earlier, then return to its initial position.
+The test saves screenshots and line numbers in the result bundle.
+It skips bundles outside `com.whetstone.rai.ios.lab.*` before opening an app.
+
+Use an isolated Mac lab and a paired simulator. Keep the regular Herdr instance separate.
+Build and install the candidate before testing. The test activates the installed app and preserves its open conversation.
+
+```sh
+xcodegen generate --spec ios/project.yml
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build-for-testing \
+  -project ios/rai-ios.xcodeproj -scheme rai-ios-scroll-e2e \
+  -destination 'platform=iOS Simulator,id=<simulator-id>' \
+  -derivedDataPath /tmp/rai-ios-touch-e2e \
+  RAI_IOS_BUNDLE_IDENTIFIER=com.whetstone.rai.ios.lab.scroll \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl install \
+  <simulator-id> /tmp/rai-ios-touch-e2e/Build/Products/Debug-iphonesimulator/rai.app
+```
+
+Launch the installed lab app. Pair it with the isolated Mac bridge if required.
+Use the same Codex version and transcript mode as the reported failure.
+Codex 0.160.0 enables fullscreen history with `-c tui.fullscreen_transcript=true`.
+That version ignores the deprecated `features.transcript_v2` flag.
+Start a fresh conversation in its isolated Codex pane. Request `1. Line 1` through `100. Line 100`.
+Then request `101. Line 101` through `200. Line 200` for the keyboard and reopening tests.
+Do not reuse a conversation containing repeated fixture numbers. Those numbers make OCR movement checks ambiguous.
+Open that pane on the phone. Start near the end with the keyboard hidden.
+Then run:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test-without-building \
+  -project ios/rai-ios.xcodeproj -scheme rai-ios-scroll-e2e \
+  -destination 'platform=iOS Simulator,id=<simulator-id>' \
+  -derivedDataPath /tmp/rai-ios-touch-e2e \
+  -resultBundlePath /tmp/rai-ios-touch-result.xcresult \
+  RAI_IOS_BUNDLE_IDENTIFIER=com.whetstone.rai.ios.lab.scroll \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+```
+
+This check verifies the visible conversation with touch input.
+It does not verify a physical iPhone, active output, horizontal movement, or every alternate-screen application.
+
+The October 5, 2026 check passed on `rai-ios-test`, running iOS 26.0.
+The first visible lines moved from 68 to 51, then returned to 68.
+The installed app matched the candidate binary before the test.
+The original gesture delegate passed. The proposed delegate removal had no demonstrated benefit and was reverted.
+Evidence: `/tmp/rai-ios-touch-recovery.xcresult` and `/tmp/rai-ios-touch-recovery-attachments`.
+The related model, history, and cache suites passed all 44 tests.
+Evidence: `/tmp/rai-ios-scroll-related.xcresult`.
+
+Those earlier Codex checks used version 0.153.4. They do not validate the reported fullscreen mode.
+A later check used Codex 0.160.0 with `tui.fullscreen_transcript=true`.
+Repeated touch swipes moved through first visible lines `[72, 24, 3, 24, 72]`.
+Evidence: `/tmp/rai-ios-codex-0160-history-before.xcresult` and its exported attachments.
+This check covered one response. It did not establish a fix for the user's iPhone failure.
+
+The second-message check stopped during an XCTest idle wait so the user could test manually.
+It has no passing result: `/tmp/rai-ios-codex-0160-messages-before.log`.
+The user reported a simulator limit at line 124, then reported working scrolling after both lab apps restarted.
+The restart preserved the same binaries, Codex process, and conversation. No scrolling code changed.
+The cause remains unknown. Test keyboard changes and reconnection before treating the failure as resolved.
+
+The follow-up test adds keyboard-open, keyboard-hidden, and pane-reopening checks.
+Keep gesture starts inside the transcript. Codex can ignore wheel input over its composer or footer.
+The first attempt stopped when the simulator screenshot service timed out. Restarting only the test device restored screenshots.
+The next attempt began upward gestures over Codex's footer. Moving them into the transcript corrected that test error.
+An older response repeated lines 1–20 in the first fixture. Screenshots confirmed movement despite an unchanged OCR number.
+Use a fresh conversation to remove that ambiguity.
+The reopening check passed across two numbered responses: `[174, 147, 120, 101, 74, 47, 20, 1, 20, 47, 74, 101, 120, 147, 174]`.
+Evidence: `/tmp/rai-ios-keyboard-reopen-in-transcript.xcresult` and its exported attachments.
+
+The user's iPhone runs build 48, released from `b5128aa55f1394150d747a2ac94bf552bdfc3388`.
+[Release run 37131978366](https://github.com/YogevKr/rai/actions/runs/37131978366) set that build number and completed its upload.
+CI overrides the source build number. The simulator's build 38 label alone does not establish different scroll code.
+Both used the same pane gesture code and SwiftTerm revision `97d70b00211de945f7e83581b4f1c49c8ab9e0de` before this fix.
+
+The fresh two-response fixture reproduced a keyboard-open limit at line 8, which OCR reported as line 9.
+The Mac pane still contained line 1. The phone cropped the top of the pinned Mac grid to keep the cursor visible.
+Every swipe went to Codex, so the phone could not reveal those cropped rows after Codex reached its oldest message.
+Evidence: `/tmp/rai-ios-keyboard-crop-before.xcresult` and the matching isolated pane read.
+The gesture now yields to native scrolling while rows remain cropped in that direction.
+At the viewport boundary, wheel input continues through the existing Codex route.
+The lower boundary uses the cursor position, matching SwiftTerm's follow behavior.
+Using the geometric bottom would consume another native pan for the footer after every Codex frame.
+The UI test permits unchanged line numbers when a pan reveals only part of a row or the footer.
+It still requires reaching line 5 or earlier, returning to the starting line, and retaining the open keyboard.
+
+The October 6 check passed all four touch tests on the isolated iPhone 17 Pro simulator, running iOS 26.0.1.
+With the keyboard open, the first visible line moved from 189 to 1, then returned to 191.
+With the keyboard hidden, it moved from 173 to 1, then returned to 173.
+Pane reopening and repeated scrolling also passed.
+Evidence: `/tmp/rai-ios-codex-crop-full.xcresult` and `/tmp/rai-ios-codex-crop-full-attachments`.
+The full iOS unit suite passed all 421 tests, including cropped-grid gesture routing.
+Evidence: `/tmp/rai-ios-crop-unit-full.xcresult`.
+The candidate remains installed only in the isolated simulator. A physical iPhone check and TestFlight upload remain outstanding.
+These results establish the keyboard cropping fix. They do not explain the earlier restart-dependent limit or the Mac memory report.
+
+Release preparation copied only this iOS fix, its tests, and its documentation into an isolated worktree.
+The review identified an accessibility position risk and a stopped-app test launch issue.
+Accessibility paging retains its existing wheel route. The test now calls `launch()` when the app is stopped.
+The final review found no actionable defects.
+The release copy passed all 421 unit tests and all four touch tests after those corrections.
+Evidence: `/tmp/rai-ios-release49-unit-final.xcresult`, `/tmp/rai-ios-release49-touch-final.xcresult`, and `/tmp/rai-ios-release49-review-final.json`.
+Release commit: `0b2e6d885b90d8ce61bc099940cf9fb048f31a55` on `fix/ios-keyboard-scroll`.
+The TestFlight workflow for build 49 is [run 37378154729](https://github.com/YogevKr/rai/actions/runs/37378154729).
+That run passed all 421 iOS tests and uploaded build 49 successfully.
+[Status run 37379667401](https://github.com/YogevKr/rai/actions/runs/37379667401) confirmed Apple's `VALID` processing state.
+Internal distribution is `IN_BETA_TESTING`; external distribution is `READY_FOR_BETA_SUBMISSION`.
+Build 49 is available for internal testing. Physical iPhone validation remains outstanding.
+
+The same session exposed a separate Mac lab memory problem.
+The user's screenshot showed 23.16 GB for `Rai Lab e2e-8d996bccaf92`.
+That process exited before allocation diagnostics could run.
+A monitored five-minute restart stayed below 150 MiB resident memory, including the iPhone settings screen.
+This short run did not identify the cause. The monitor stopped the lab app after the run.
+The memory problem remains unresolved. No release followed this check.
+
+A later load check used allocation graphs and a 512 MiB physical-footprint limit.
+This measurement includes compressed memory. Resident memory alone cannot match Activity Monitor's total.
+The test exercised continuous colored output, a paused phone process, reconnection, and the visible pairing screen.
+The guarded run peaked near 401 MiB and ended near 173 MiB after 328 seconds.
+The allocation scan found 21,664 unreachable heap bytes. This finding does not explain the reported 23.16 GB.
+The temporary `memory-load` workspace and output script were removed. The lab app stopped after the test.
+The existing isolated Herdr sessions remained intact.
+Evidence: `/tmp/rai-memory-20261005/summary.json`, `footprint.jsonl`, and the allocation graphs in that directory.
+These tests did not reproduce the memory problem. The original process had run for about four hours.
+
+The user reported no manual interaction before the memory spike.
+A later idle trace ran for 747 seconds with Codex visible and the phone socket connected.
+After 90 seconds, physical footprint stayed between 137.27 and 140.05 MiB.
+Allocation captures came from the same process. Their difference did not establish a leak.
+Evidence: `/tmp/rai-memory-20261005/idle/summary.json` and `stable-heap-diff.txt` in that directory.
+A separate four-hour idle trace stopped after 680 seconds to test the corrected Codex version.
+Its interrupted result is `/tmp/rai-memory-20261005/long-idle/summary.json`.
+The next guarded scroll session ran for 2,484 seconds and ended near 149 MiB physical footprint.
+Evidence: `/tmp/rai-memory-20261005/transcript-v2/summary.json`.
+The manual test now uses `/tmp/rai-memory-20261005/fullscreen-user-test/summary.json`.
+Its guard stops only the isolated Mac app after four hours or at 512 MiB physical footprint.
+
+### Connection and retention tests
 
 Generate the iOS project, then run the tests on an isolated simulator:
 
@@ -372,6 +527,102 @@ All eight process IDs stayed unchanged, and output continued while seven views w
 The hidden views kept their buffers. Their clients exited without leaving child processes, and reconnected views received current output.
 These samples verify this workload. They do not predict CPU use in a live herd.
 
+## Surface validation and event limits
+
+Endpoint patches must advance the surface revision by one and retain the current boot and projection identity.
+Patches cannot change pane rectangles or update a surface with an active popup.
+Rai checks cell counts, hyperlink indexes, visible cursor bounds, and pane bounds before it changes the surface.
+Duplicate pane updates and invalid patches fail without changing the current surface.
+
+Both legacy event streams retain at most 256 entries per buffer.
+The subscription buffer includes its readiness message.
+Overflow closes the subscription and returns `HerdrClientError.eventBufferOverflow`.
+The app's event loop reconnects and obtains a fresh snapshot after this error.
+Callers of `events()` must handle the error; that method does not reconnect itself.
+
+Run the regression tests:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --scratch-path .build-tests --filter 'EndpointSurfacePatchTests|HerdrEventTransportTests'
+```
+
+## Equal-work renderer benchmark
+
+Use `--fixed-work` to compare SwiftTerm CoreGraphics and Metal with the same input workload.
+The timer runs at 60 Hz. Slow drawing can delay timer callbacks.
+This mode completes every warmup and measurement tick, even when elapsed time exceeds `--seconds`.
+The measurement includes a final 100 ms interval for pending AppKit updates.
+It does not wait for GPU completion or physical screen presentation.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift build -c release --scratch-path .build-tests --product rai-bench
+.build-tests/release/rai-bench --fixed-work --seconds 2 --warmup 0.5 --panes 4 --renderer cg
+.build-tests/release/rai-bench --fixed-work --seconds 2 --warmup 0.5 --panes 4 --renderer metal
+```
+
+Repeat with `--panes 9`. Run each case three times and alternate renderer order.
+Compare CPU seconds and elapsed time only when `fedBytes`, `ticks`, and `grids` match.
+Timed runs can feed unequal byte counts. Their CPU percentages cannot establish a renderer winner.
+
+Results from 2026-10-05 used an Apple M3 Pro, macOS 26.6.2, Swift 6.2, and a release build.
+Each case ran three times with 30 warmup ticks and 120 measurement ticks.
+The actual terminal size was 103 columns by 33 rows per pane.
+Four-pane runs fed 399,840 bytes. Nine-pane runs fed 399,600 bytes.
+
+| Panes | Renderer | Median CPU seconds | CPU range | Median elapsed seconds |
+| --- | --- | ---: | ---: | ---: |
+| 4 | CoreGraphics | 1.57 | 1.43–1.61 | 6.01 |
+| 4 | Metal | 1.19 | 1.13–1.22 | 4.93 |
+| 9 | CoreGraphics | 2.47 | 2.36–2.50 | 6.14 |
+| 9 | Metal | 1.74 | 1.67–1.88 | 5.05 |
+
+Metal used 24% less CPU at four panes and 30% less at nine panes for this workload.
+[Raw results](terminal-benchmark-2026-10-05.json) retain all commands, counters, and measurements.
+These runs compare SwiftTerm renderers. They do not measure Herdr GPUI or the new endpoint validation checks.
+They do not establish a speed improvement from the validation or event changes.
+The app retains its current renderer setting. Live Mac and iOS endpoint UI checks remain unverified for these changes.
+
+### Production terminal view checks
+
+The renderer probes create visible windows containing Rai's `FocusAwareTerminalView`.
+They never connect to Herdr or change installed app preferences.
+The renderer override uses a temporary defaults domain. Teardown restores that domain.
+Metal probes stage SwiftTerm's shader in the XCTest bundle and remove their copy afterward.
+SwiftTerm's shader lookup otherwise misses SwiftPM's resource location under XCTest.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  RAI_TEST_TERMINAL_RENDERER=cg \
+  swift test --scratch-path .build-tests --filter TerminalRendererProbeTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  RAI_TEST_TERMINAL_RENDERER=metal \
+  swift test --scratch-path .build-tests --filter TerminalRendererProbeTests
+```
+
+Both renderers passed four automated probes on 2026-10-05:
+
+| Probe | Checks |
+| --- | --- |
+| Selection | Output preserves selected text. Copy and local scrollback return the expected text. |
+| Search | Search finds text. The search bar stays above Metal and receives pointer events. |
+| Window changes | Cursor visibility, resize, hide, and window transfer preserve the expected renderer and terminal state. |
+| Images | Paste writes a PNG path. Kitty image data and placement reach the terminal state. |
+
+These assertions check terminal state and view structure. They do not inspect rendered screen pixels.
+They do not test Herdr scrollback selection, app menus, or `EndpointTerminalView`.
+The current Metal preference applies to attached terminal views. It does not enable Metal for endpoint views.
+
+For manual inspection, add `RAI_RENDERER_PREVIEW_SECONDS=180` and filter to `TerminalRendererProbeTests/testInteractivePreview`.
+The preview owns an echo process and closes after the requested interval.
+It provides text, colors, Unicode, an image, local scrollback, and a Find menu.
+The UI tool could not select the XCTest process during this run. Screen inspection remains unverified.
+
+The signed app lab build stopped because `rai-dev-signing` was unavailable.
+`security find-identity -v -p codesigning` returned `0 valid identities found`.
+Complete the signed lab checks before making Metal the default. Supply an existing stable identity through `RAI_SIGN_IDENTITY`.
+
 ## Typing latency benchmark
 
 The Mac terminal parses queued output in chunks of at most 16 KB.
@@ -405,6 +656,31 @@ The probe tests small echoes, 1 KB echoes, and typing during continuous output.
 It sends events directly to its own view. It never types into a Herdr pane.
 Each scenario records 60 samples after ten warmup keys. Predictive echo stays disabled.
 Timing stops at the display-update callback, before physical screen presentation.
+
+Set `RAI_TEST_TERMINAL_RENDERER=cg` or `metal` to compare the production view with an explicit renderer.
+This option shows the test window and asserts that the requested renderer activates.
+Without this option, the probe keeps its previous window and preference behavior.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  RAI_TYPING_LATENCY_PROBE=1 RAI_TEST_TERMINAL_RENDERER=metal \
+  swift test --scratch-path .build-tests --filter TypingLatencyProbeTests
+```
+
+On 2026-10-05, both renderers completed three runs on the same Mac used for the CPU benchmark.
+These runs used debug builds and one visible production terminal view. Renderer order alternated between pairs.
+The table shows the median of each renderer's three run medians.
+
+| Typing workload | CoreGraphics median, ms | Metal median, ms |
+| --- | ---: | ---: |
+| Short echo | 1.95 | 0.69 |
+| 1 KB echo | 82.99 | 82.27 |
+| Continuous output | 26.40 | 24.15 |
+
+Continuous-output run medians ranged from 22.96–31.48 ms for CoreGraphics and 23.04–27.88 ms for Metal.
+Metal reduced short-echo callback delay. The other workloads do not establish a typing improvement.
+These measurements do not establish a change in visible typing delay.
+[Raw production-view results](terminal-view-probe-2026-10-05.json) retain commands, test output, and measurements.
 
 On 2026-09-06, the streaming median fell from 108.1 ms to 17.3 ms after removing the read delay.
 The streaming p90 fell from 182.6 ms to 23.8 ms. These debug-build results describe this workload only.

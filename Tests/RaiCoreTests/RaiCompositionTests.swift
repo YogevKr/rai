@@ -176,6 +176,17 @@ final class RaiCompositionTests: XCTestCase {
             id: pane.id, endpointProjection: mappedProjection
         ) else { return XCTFail("The terminal ID map must resolve the pane.") }
         XCTAssertEqual(mappedTarget.terminalID, "term-from-api")
+
+        let pendingProjection = RaiEndpointProjection(
+            endpoint: local,
+            connectionID: "connection",
+            snapshot: withoutTerminalID,
+            terminalIDs: ["p1": ""]
+        )
+        XCTAssertEqual(
+            try composition.resolvePaneSlot(id: pane.id, endpointProjection: pendingProjection),
+            .resolving
+        )
     }
 
     func testProjectionKeepsOfflineAndMissingSourcesVisible() throws {

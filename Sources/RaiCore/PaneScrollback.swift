@@ -3,11 +3,14 @@ import Foundation
 
 /// Splits an unwrapped pane history read from the visible rows in the same revision.
 public enum PaneScrollback {
-    public static func payload(recent: String, visible: String, viewportRows: Int) -> Data {
+    public static func payload(recent: String, visible: String, viewportRows: Int? = nil) -> Data {
         // Herdr omits empty rows at the bottom of both reads. Dropping the
         // nominal grid height also drops history whenever the cursor leaves
         // blank rows below the last printed line.
-        let screenRows = min(max(0, viewportRows), lines(visible).count)
+        // A full-grid client has no viewport limit. Use the rows from this
+        // read rather than a pane height captured before a resize.
+        let visibleRows = lines(visible).count
+        let screenRows = min(max(0, viewportRows ?? visibleRows), visibleRows)
         let history = lines(recent).dropLast(screenRows)
         guard !history.isEmpty else { return Data() }
         return Data((history.joined(separator: "\n") + "\n\u{1B}[0m").utf8)

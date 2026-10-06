@@ -65,6 +65,27 @@ public struct EndpointGrid: Codable, Sendable, Equatable {
         cursor = try reader.optional { try EndpointCursor(reader: &$0) }
         hyperlinks = try reader.array { try $0.string() }
         _ = try reader.bytes() // Native rendering does not execute terminal graphics escape bytes.
+        try validate()
+    }
+
+    func validate() throws {
+        guard cells.count == Int(width) * Int(height) else { throw HerdrEndpointError.malformed }
+        try validate(cursor: cursor)
+        try validate(cells: cells)
+    }
+
+    func validate(cursor: EndpointCursor?) throws {
+        if let cursor, cursor.visible {
+            guard cursor.x < width, cursor.y < height else { throw HerdrEndpointError.malformed }
+        }
+    }
+
+    func validate(cells: [EndpointCell]) throws {
+        for cell in cells {
+            if let hyperlink = cell.hyperlink {
+                guard UInt64(hyperlink) < UInt64(hyperlinks.count) else { throw HerdrEndpointError.malformed }
+            }
+        }
     }
 }
 
@@ -190,6 +211,7 @@ public struct HerdrEndpointSurface: Codable, Sendable, Equatable {
                                popup: reader.optional { try EndpointPopup(reader: &$0) },
                                graphics: EndpointGraphicsScene(reader: &reader))
         guard reader.isAtEnd else { throw HerdrEndpointError.malformed }
+        try surface.validatePanes(surface.panes)
         return surface
     }
 
@@ -197,7 +219,8 @@ public struct HerdrEndpointSurface: Codable, Sendable, Equatable {
         var reader = EndpointBinaryReader(data: data)
         guard try reader.integer() == 19 else { throw HerdrEndpointError.malformed }
         let boot = try reader.string(), projection = try reader.integer(), base = try reader.integer(), next = try reader.integer()
-        guard boot == bootID, projection == projectionRevision, base == revision, next > revision else {
+        guard boot == bootID, projection == projectionRevision, base == revision,
+              revision < UInt64.max, next == revision + 1, popup == nil else {
             throw HerdrEndpointError.staleIdentity
         }
         let rows = try reader.array { reader -> (UInt16, UInt16, [EndpointCell]) in
@@ -209,9 +232,22 @@ public struct HerdrEndpointSurface: Codable, Sendable, Equatable {
         guard reader.isAtEnd else { throw HerdrEndpointError.malformed }
         for (x, y, cells) in rows {
             guard Int(x) + cells.count <= Int(grid.width), y < grid.height else { throw HerdrEndpointError.malformed }
+            try grid.validate(cells: cells)
         }
         let known = Set(panes.map(\.paneID))
-        guard updates.allSatisfy({ known.contains($0.paneID) }) else { throw HerdrEndpointError.staleIdentity }
+        guard updates.allSatisfy({ known.contains($0.paneID) }),
+              Set(updates.map(\.paneID)).count == updates.count else {
+            throw HerdrEndpointError.staleIdentity
+        }
+        try grid.validate()
+        try validatePanes(updates)
+        for pane in updates {
+            guard let existing = panes.first(where: { $0.paneID == pane.paneID }),
+                  existing.rect == pane.rect, existing.innerRect == pane.innerRect else {
+                throw HerdrEndpointError.malformed
+            }
+        }
+        try grid.validate(cursor: cursor)
         for (x, y, cells) in rows {
             let start = Int(y) * Int(grid.width) + Int(x)
             grid.cells.replaceSubrange(start..<(start + cells.count), with: cells)
@@ -219,5 +255,30 @@ public struct HerdrEndpointSurface: Codable, Sendable, Equatable {
         for pane in updates { if let index = panes.firstIndex(where: { $0.paneID == pane.paneID }) { panes[index] = pane } }
         grid.cursor = cursor
         revision = next
+    }
+
+    private func validatePanes(_ panes: [EndpointSurfacePane]) throws {
+        guard Set(panes.map(\.paneID)).count == panes.count else { throw HerdrEndpointError.malformed }
+        for pane in panes {
+            guard Self.contains(pane.rect, in: grid),
+                  Self.contains(pane.innerRect, in: grid),
+                  Self.contains(pane.innerRect, in: pane.rect) else {
+                throw HerdrEndpointError.malformed
+            }
+            if let scrollbarRect = pane.scrollbarRect {
+                guard Self.contains(scrollbarRect, in: grid) else { throw HerdrEndpointError.malformed }
+            }
+        }
+    }
+
+    private static func contains(_ rect: EndpointRect, in outer: EndpointRect) -> Bool {
+        Int(rect.x) >= Int(outer.x) && Int(rect.y) >= Int(outer.y)
+            && Int(rect.x) + Int(rect.width) <= Int(outer.x) + Int(outer.width)
+            && Int(rect.y) + Int(rect.height) <= Int(outer.y) + Int(outer.height)
+    }
+
+    private static func contains(_ rect: EndpointRect, in grid: EndpointGrid) -> Bool {
+        Int(rect.x) + Int(rect.width) <= Int(grid.width)
+            && Int(rect.y) + Int(rect.height) <= Int(grid.height)
     }
 }

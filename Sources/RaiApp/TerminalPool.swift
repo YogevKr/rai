@@ -26,6 +26,7 @@ final class TerminalPool {
     private let attachExecutable: String?
     private let requiresRuntimeExecutable: Bool
     private let redrawOnAttach: Bool
+    private var takeoverOnAttach: Bool
     private var attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     var runtimeExecutable: String? {
         didSet {
@@ -60,6 +61,7 @@ final class TerminalPool {
         attachExecutable: String? = nil,
         requiresRuntimeExecutable: Bool = false,
         redrawOnAttach: Bool = false,
+        takeoverOnAttach: Bool = true,
         attachCommandBuilder: ((String) -> TerminalAttachCommand?)? = nil
     ) {
         recency = LRUTracker(capacity: capacity)
@@ -67,6 +69,7 @@ final class TerminalPool {
         self.attachExecutable = attachExecutable
         self.requiresRuntimeExecutable = requiresRuntimeExecutable
         self.redrawOnAttach = redrawOnAttach
+        self.takeoverOnAttach = takeoverOnAttach
         self.attachCommandBuilder = attachCommandBuilder
         // Re-theme + repaint every live terminal the instant the palette changes
         // (RunLoop.main delivery lands after the @Published value has updated).
@@ -158,6 +161,7 @@ final class TerminalPool {
             socketPath: socketPath,
             executable: executable,
             redrawOnAttach: redrawOnAttach,
+            takeoverOnAttach: takeoverOnAttach,
             attachCommandBuilder: attachCommandBuilder
         )
         view.processDelegate = coordinator
@@ -233,12 +237,28 @@ final class TerminalPool {
         removeAll()
         runtimeExecutable = nil
         attachCommandBuilder = nil
+        takeoverOnAttach = false
     }
+
+    /// Local Rai owns its terminal display client, so it may request takeover.
+    /// Reset this after leaving a remote herd; the pool is shared by both paths.
+    func configureLocalAttach() {
+        removeAll()
+        runtimeExecutable = nil
+        attachCommandBuilder = nil
+        takeoverOnAttach = true
+    }
+
+    var takeoverOnAttachForTesting: Bool { takeoverOnAttach }
 
     func removeAll() {
         for terminalID in Array(entries.keys) {
             evict(terminalID)
         }
+    }
+
+    static func attachArguments(terminalID: String, takeover: Bool) -> [String] {
+        ["terminal", "attach", terminalID] + (takeover ? ["--takeover"] : [])
     }
 
     /// External input bypasses the pane's key monitor. Suppress prediction
@@ -281,6 +301,7 @@ private final class TerminalProcessCoordinator:
     private let socketPath: String
     var executable: String
     private let redrawOnAttach: Bool
+    private let takeoverOnAttach: Bool
     private let attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     private var state = State.suspended
     private var hasLaunched = false
@@ -295,12 +316,14 @@ private final class TerminalProcessCoordinator:
         socketPath: String,
         executable: String,
         redrawOnAttach: Bool,
+        takeoverOnAttach: Bool,
         attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     ) {
         self.terminalID = terminalID
         self.socketPath = socketPath
         self.executable = executable
         self.redrawOnAttach = redrawOnAttach
+        self.takeoverOnAttach = takeoverOnAttach
         self.attachCommandBuilder = attachCommandBuilder
     }
 
@@ -409,10 +432,10 @@ private final class TerminalProcessCoordinator:
             }
             command = built
         } else {
-            command = TerminalAttachCommand(
-                executable: executable,
-                arguments: ["terminal", "attach", terminalID, "--takeover"]
-            )
+            command = TerminalAttachCommand(executable: executable, arguments: TerminalPool.attachArguments(
+                terminalID: terminalID,
+                takeover: takeoverOnAttach
+            ))
         }
         view.startProcess(
             executable: command.executable,

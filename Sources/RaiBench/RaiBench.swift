@@ -17,11 +17,10 @@ import SwiftTerm
 ///
 /// Reports CPU seconds consumed over the measurement window. Lower is better.
 ///
-/// Known limitation: the feed timer runs on the main thread, the same thread
-/// the renderer draws on, so a slow enough renderer could in principle starve
-/// its own input and under-report its cost. Check `fed=` across the runs you
-/// are comparing — if it differs, the comparison is void. It has held equal
-/// (2.9MB at 1 and 9 panes, all three renderers) in every run so far.
+/// The feed timer shares the main thread with drawing. Time-based runs can
+/// feed fewer bytes when drawing takes longer. Use --fixed-work to complete
+/// the same number of warmup and measurement ticks for each renderer. Compare
+/// CPU seconds and elapsed time only when fedBytes, ticks, and grid sizes match.
 /// A warmup window is excluded so glyph-atlas population and the first window
 /// display do not land in the number.
 
@@ -43,6 +42,7 @@ struct Options {
     var metalPresentsWithTransaction = false
     var metalDisplaySync = true
     var latencyFastPath = true
+    var fixedWork = false
 
     static func parse(_ args: [String]) -> Options {
         var o = Options()
@@ -68,6 +68,7 @@ struct Options {
             case "--latency": o.latency = true
             case "--samples": o.latencySamples = Int(value() ?? "") ?? o.latencySamples
             case "--no-fast-path": o.latencyFastPath = false
+            case "--fixed-work": o.fixedWork = true
             case "--metal-presents-with-transaction": o.metalPresentsWithTransaction = true
             case "--metal-display-sync": o.metalDisplaySync = (value() ?? "on") != "off"
             case "--help", "-h":
@@ -79,6 +80,7 @@ struct Options {
                   --seconds S      measurement window (default 20)
                   --warmup S       excluded warmup before measuring (default 3)
                   --rate B         bytes/second fed across all panes (default 200000)
+                  --fixed-work     finish all scheduled feed ticks, even after --seconds
                   --corpus PATH    replay these bytes (default: synthetic TUI-like output)
                   --buffering B    aggregated | per-row (default aggregated,
                                    matching what the app enables)
@@ -497,9 +499,11 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
     private var feedTimer: Timer?
     private var bytesFed = 0
     private var measureStartCPU = 0.0
-    private var measureStartWall = Date()
+    private var measureStartWall = DispatchTime.now()
     private var measuring = false
     private var metalActive = false
+    private var warmupTicks = 0
+    private var measuredTicks = 0
 
     nonisolated init(options: Options, corpus: [UInt8]) {
         self.options = options
@@ -513,8 +517,12 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         // Warm up: populate the glyph atlas and get the first frames out before
         // the clock starts, so setup cost does not contaminate the delta.
         startFeeding()
-        Timer.scheduledTimer(withTimeInterval: options.warmup, repeats: false) { _ in
-            MainActor.assumeIsolated { self.beginMeasuring() }
+        if options.fixedWork {
+            if options.warmup == 0 { beginMeasuring() }
+        } else {
+            Timer.scheduledTimer(withTimeInterval: options.warmup, repeats: false) { _ in
+                MainActor.assumeIsolated { self.beginMeasuring() }
+            }
         }
     }
 
@@ -590,7 +598,20 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         let hz = 60.0
         let perTick = max(1, Int(Double(options.bytesPerSecond) / hz) / max(1, options.panes))
         feedTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / hz, repeats: true) { _ in
-            MainActor.assumeIsolated { self.feedTick(perTick) }
+            MainActor.assumeIsolated {
+                self.feedTick(perTick)
+                if self.measuring {
+                    self.measuredTicks += 1
+                    if self.options.fixedWork && self.measuredTicks >= Int(ceil(self.options.seconds * hz)) {
+                        self.feedTimer?.invalidate()
+                        // Let AppKit service the last invalidation before sampling CPU time.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.finish() }
+                    }
+                } else if self.options.fixedWork {
+                    self.warmupTicks += 1
+                    if self.warmupTicks >= Int(ceil(self.options.warmup * hz)) { self.beginMeasuring() }
+                }
+            }
         }
     }
 
@@ -627,15 +648,17 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
         measuring = true
         bytesFed = 0
         measureStartCPU = processCPUSeconds()
-        measureStartWall = Date()
-        Timer.scheduledTimer(withTimeInterval: options.seconds, repeats: false) { _ in
-            MainActor.assumeIsolated { self.finish() }
+        measureStartWall = .now()
+        if !options.fixedWork {
+            Timer.scheduledTimer(withTimeInterval: options.seconds, repeats: false) { _ in
+                MainActor.assumeIsolated { self.finish() }
+            }
         }
     }
 
     private func finish() {
         let cpu = processCPUSeconds() - measureStartCPU
-        let wall = Date().timeIntervalSince(measureStartWall)
+        let wall = Double(DispatchTime.now().uptimeNanoseconds - measureStartWall.uptimeNanoseconds) / 1_000_000_000
         feedTimer?.invalidate()
 
         let renderer = metalActive
@@ -646,6 +669,8 @@ final class BenchDelegate: NSObject, NSApplicationDelegate {
             format: "renderer=%@ panes=%d rate=%dB/s wall=%.2fs cpu=%.2fs cpu%%=%.1f fed=%.1fMB",
             renderer, options.panes, options.bytesPerSecond, wall, cpu,
             cpu / wall * 100, mb))
+        let grids = views.map { "\($0.getTerminal().cols)x\($0.getTerminal().rows)" }.joined(separator: ",")
+        print("workload mode=\(options.fixedWork ? "fixed" : "timed") ticks=\(measuredTicks) fedBytes=\(bytesFed) grids=\(grids)")
         NSApp.terminate(nil)
     }
 }

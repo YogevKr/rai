@@ -90,7 +90,7 @@ final class RemoteConnectionTests: XCTestCase {
 
         XCTAssertEqual(
             arguments.last,
-            "'herdr' '--session' 'remote' 'terminal' 'attach' 'term_123' '--takeover'"
+            "'herdr' '--session' 'remote' 'terminal' 'attach' 'term_123'"
         )
         XCTAssertTrue(arguments.contains("ObscureKeystrokeTiming=no"))
     }

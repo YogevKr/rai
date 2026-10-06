@@ -7,6 +7,9 @@ options:
 packages:
   Rai:
     path: ../
+settings:
+  base:
+    RAI_IOS_BUNDLE_IDENTIFIER: com.whetstone.rai.ios
 schemes:
   rai-ios:
     build:
@@ -16,6 +19,14 @@ schemes:
     test:
       targets:
         - rai-iosTests
+  rai-ios-scroll-e2e:
+    build:
+      targets:
+        rai-ios: all
+        rai-iosScrollUITests: [test]
+    test:
+      targets:
+        - rai-iosScrollUITests
 targets:
   rai-ios:
     type: application
@@ -44,7 +55,7 @@ targets:
         product: SwiftTerm
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.whetstone.rai.ios
+        PRODUCT_BUNDLE_IDENTIFIER: $(RAI_IOS_BUNDLE_IDENTIFIER)
         PRODUCT_NAME: rai
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -95,6 +106,19 @@ targets:
           - CFBundleURLName: com.whetstone.rai.pair
             CFBundleURLSchemes:
               - rai
+  rai-iosScrollUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: rai-iosScrollUITests
+    dependencies:
+      - target: rai-ios
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(RAI_IOS_BUNDLE_IDENTIFIER).scroll-tests
+        TEST_TARGET_NAME: rai-ios
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: YES
   rai-iosTests:
     type: bundle.unit-test
     platform: iOS

@@ -45,6 +45,24 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
         let velocity = pan.velocity(in: view)
         return abs(velocity.y) > abs(velocity.x)
             && view.getTerminal().buffer.yDisp >= view.liveGridStartRow
+            && !hasCroppedRows(up: velocity.y > 0)
+    }
+
+    /// A pinned Mac grid can exceed the phone viewport after the keyboard opens.
+    /// Let the native pan reveal those rows before scrolling the application.
+    private func hasCroppedRows(up: Bool) -> Bool {
+        guard let view else { return false }
+        let terminal = view.getTerminal()
+        let cellHeight = view.getOptimalFrameSize().height / CGFloat(terminal.rows)
+        let maximum = max(0, view.contentSize.height - view.bounds.height + view.adjustedContentInset.bottom)
+        // SwiftTerm follows the cursor, which can sit above a fixed TUI footer.
+        // Requiring the geometric bottom would consume a new pan after every frame.
+        let cursorBottom = CGFloat(view.liveGridStartRow + terminal.getCursorLocation().y + 1) * cellHeight
+        let bottom = min(maximum, max(0, cursorBottom - view.bounds.height + view.adjustedContentInset.bottom))
+        let top = min(bottom, CGFloat(view.liveGridStartRow) * cellHeight)
+        let tolerance: CGFloat = 1
+        return up ? view.contentOffset.y > top + tolerance
+            : view.contentOffset.y < bottom - tolerance
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -53,6 +71,8 @@ final class PaneTerminalScrollGesture: NSObject, UIGestureRecognizerDelegate {
     }
 
     func scrollPage(up: Bool) -> Bool {
+        // Keep the existing accessibility wheel route. SwiftTerm's programmatic
+        // paging does not establish a persistent native reading position.
         guard canSendWheel,
               let view,
               let model = view.scrollModel,

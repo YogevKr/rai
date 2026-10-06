@@ -1,0 +1,251 @@
+{
+  "date": "2026-10-05",
+  "machine": "Apple M3 Pro",
+  "os": "macOS 26.6.2 (25G83)",
+  "compiler": "Apple Swift 6.2",
+  "configuration": "release",
+  "swiftTermRevision": "97d70b0",
+  "limitation": "Measures SwiftTerm process CPU and feed completion; excludes GPU completion, physical presentation, Herdr GPUI, and endpoint validation.",
+  "runs": [
+    {
+      "panes": 4,
+      "repeat": 1,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=4 rate=200000B/s wall=6.33s cpu=1.43s cpu%=22.7 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 4,
+      "repeat": 1,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=4 rate=200000B/s wall=4.93s cpu=1.22s cpu%=24.7 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 4,
+      "repeat": 2,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=4 rate=200000B/s wall=4.59s cpu=1.13s cpu%=24.5 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 4,
+      "repeat": 2,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=4 rate=200000B/s wall=6.01s cpu=1.57s cpu%=26.1 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 4,
+      "repeat": 3,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=4 rate=200000B/s wall=5.93s cpu=1.61s cpu%=27.2 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 4,
+      "repeat": 3,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "4",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=4 rate=200000B/s wall=5.25s cpu=1.19s cpu%=22.7 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399840 grids=103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 1,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=9 rate=200000B/s wall=7.66s cpu=2.50s cpu%=32.6 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 1,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=9 rate=200000B/s wall=5.37s cpu=1.88s cpu%=35.0 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 2,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=9 rate=200000B/s wall=5.05s cpu=1.74s cpu%=34.4 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 2,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=9 rate=200000B/s wall=5.98s cpu=2.36s cpu%=39.4 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 3,
+      "renderer": "cg",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "cg"
+      ],
+      "status": 0,
+      "stdout": "renderer=coregraphics panes=9 rate=200000B/s wall=6.14s cpu=2.47s cpu%=40.3 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    },
+    {
+      "panes": 9,
+      "repeat": 3,
+      "renderer": "metal",
+      "command": [
+        ".build-tests/release/rai-bench",
+        "--fixed-work",
+        "--seconds",
+        "2",
+        "--warmup",
+        "0.5",
+        "--panes",
+        "9",
+        "--renderer",
+        "metal"
+      ],
+      "status": 0,
+      "stdout": "renderer=metal-aggregated panes=9 rate=200000B/s wall=4.50s cpu=1.67s cpu%=37.1 fed=0.4MB\nworkload mode=fixed ticks=120 fedBytes=399600 grids=103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33,103x33\n",
+      "stderr": ""
+    }
+  ]
+}

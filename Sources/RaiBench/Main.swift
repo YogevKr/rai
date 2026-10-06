@@ -10,6 +10,12 @@ enum RaiBenchMain {
     @MainActor
     static func main() {
         let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
+        guard options.panes > 0, options.cols > 0, options.rows > 0, options.bytesPerSecond > 0,
+              options.seconds.isFinite, options.seconds > 0, options.seconds < Double(Int.max) / 60,
+              options.warmup.isFinite, options.warmup >= 0, options.warmup < Double(Int.max) / 60 else {
+            FileHandle.standardError.write(Data("rai-bench: use positive dimensions, rate, and duration; warmup can be zero\n".utf8))
+            exit(1)
+        }
         let corpus: [UInt8]
         if let path = options.corpusPath {
             guard let data = FileManager.default.contents(atPath: path) else {
@@ -19,6 +25,10 @@ enum RaiBenchMain {
             corpus = [UInt8](data)
         } else {
             corpus = syntheticCorpus()
+        }
+        guard !corpus.isEmpty else {
+            FileHandle.standardError.write(Data("rai-bench: corpus must contain bytes\n".utf8))
+            exit(1)
         }
 
         let app = NSApplication.shared

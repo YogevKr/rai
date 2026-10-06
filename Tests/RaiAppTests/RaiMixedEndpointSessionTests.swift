@@ -84,6 +84,11 @@ final class RaiMixedEndpointSessionTests: XCTestCase {
                 snapshot, terminalIDs: ["p1": "term-1"], hasSnapshot: true
             )
         )
+        XCTAssertFalse(
+            RaiMixedEndpointSession.needsTerminalIDRefresh(
+                snapshot, terminalIDs: ["p1": "term-1", "p2": "term-2"], hasSnapshot: true
+            )
+        )
         XCTAssertTrue(
             RaiMixedEndpointSession.needsTerminalIDRefresh(
                 snapshot, terminalIDs: ["p2": "term-2"], hasSnapshot: true

@@ -18,6 +18,8 @@ public struct RaiPaneRenderTarget: Equatable, Sendable {
 
 public enum RaiPaneResolution: Equatable, Sendable {
     case ready(RaiPaneRenderTarget)
+    /// The pane identity matches, but the endpoint has not returned its terminal ID yet.
+    case resolving
     case endpointOffline
     case paneMissing
     case paneIdentityChanged
@@ -64,10 +66,10 @@ extension RaiComposition {
         guard object["workspace_id"]?.stringValue == slot.source.workspaceID,
               object["tab_id"]?.stringValue == slot.source.tabID,
               let terminalID = object["terminal_id"]?.stringValue
-                ?? endpointProjection.terminalIDs[slot.source.paneID],
-              !terminalID.isEmpty else {
+                ?? endpointProjection.terminalIDs[slot.source.paneID] else {
             return .paneIdentityChanged
         }
+        guard !terminalID.isEmpty else { return .resolving }
         return .ready(RaiPaneRenderTarget(
             slotID: slot.id,
             source: slot.source,

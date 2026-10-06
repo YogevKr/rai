@@ -390,6 +390,48 @@ final class EndpointPhoneModelTests: XCTestCase {
         model.disconnect()
     }
 
+    func testPaneWheelLetsNativePanRevealCroppedGridRows() async throws {
+        let model = EndpointPhoneModel()
+        defer { model.disconnect() }
+        model.open(connectionID: "mac") { _ in }
+        let initial = try state(model)
+        let surface = try EndpointPhoneTestSurface.make(alternateScreen: true)
+        model.receive(.init(identity: initial.identity, sequence: 1, snapshot: initial.snapshot,
+                            surface: surface, methods: ["pane.scroll"], busy: false, error: nil))
+        let terminal = GridReadableTerminalView(frame: CGRect(x: 0, y: 0, width: 400, height: 160))
+        terminal.scrollModel = model
+        terminal.scrollPaneID = "w1:p1"
+        terminal.receiveFrame(Data("\u{1B}[Hfirst line\u{1B}[37;1Hprompt".utf8), full: true,
+                              grid: PaneGridSize(cols: 80, rows: 40))
+        terminal.scrollToLive()
+        let gesture = PaneTerminalScrollGesture(terminal: terminal)
+        let pan = HistoryTestPan()
+        pan.movement = CGPoint(x: 0, y: 80)
+        XCTAssertGreaterThan(terminal.contentOffset.y, 0)
+        XCTAssertFalse(gesture.gestureRecognizerShouldBegin(pan), "Reveal cropped older rows before sending wheel input")
+        XCTAssertTrue(gesture.scrollPage(up: true), "Accessibility keeps its existing wheel route")
+        pan.movement.y = -80
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan), "Cursor follow mode must not pan into the footer on each frame")
+
+        terminal.contentOffset.y = 0
+        pan.movement.y = 80
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan), "At the grid top, the application owns older history")
+        pan.movement.y = -80
+        XCTAssertFalse(gesture.gestureRecognizerShouldBegin(pan), "Reveal cropped later rows when direction changes")
+        XCTAssertTrue(gesture.scrollPage(up: false))
+
+        terminal.contentOffset.y = terminal.contentSize.height - terminal.bounds.height
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan), "At the grid bottom, resume application scrolling")
+
+        terminal.receiveHistory(Data((0..<20).map { "history \($0)\n" }.joined().utf8))
+        terminal.receiveFrame(Data("\u{1B}[Hfirst line\u{1B}[4;1Hprompt".utf8), full: true,
+                              grid: PaneGridSize(cols: 80, rows: 4))
+        terminal.scrollToLive()
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan), "A grid that fits must not claim cropped rows")
+        pan.movement.y = 80
+        XCTAssertTrue(gesture.gestureRecognizerShouldBegin(pan))
+    }
+
     func testPopupWheelInputIsIgnoredWhileBridgeIsBusy() async throws {
         let model = EndpointPhoneModel()
         var requests: [EndpointBridgeRequest] = []

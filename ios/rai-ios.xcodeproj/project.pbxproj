@@ -11,6 +11,7 @@
 		0033FE7BBC02C7FAF5B7E0C7 /* EndpointTextToolsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B7917DF37FCB20D3516A9A2 /* EndpointTextToolsSheet.swift */; };
 		00CE6E2EE2327033229B3347 /* BridgeNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00149BF71D96FDC25738877 /* BridgeNetwork.swift */; };
 		021070B57E9A9A5D41FBD175 /* BridgeErrorPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AA4182BA7DB61B818CDB3B6 /* BridgeErrorPolicyTests.swift */; };
+		049166A9EC56D93A3823911E /* CodexScrollUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9953EF43F0C03637340384 /* CodexScrollUITests.swift */; };
 		050E99B73C87B11874938879 /* TranscriptHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C90FF96CA4523AF5AB8C7B /* TranscriptHistoryView.swift */; };
 		05AD621F149C70D175777D4A /* NotificationRetractionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9854E7270D22DE93E5BCAA57 /* NotificationRetractionHandler.swift */; };
 		0723307AA14594D2EBBC1726 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D076077933E7F528040D0BE /* Assets.xcassets */; };
@@ -105,6 +106,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		845164097BE61FACB5F8E496 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 425D45EB082872CE41357666 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9D4B90CFDA1D3CD398C07820;
+			remoteInfo = "rai-ios";
+		};
 		BA6D782B9464583CEE7AA71C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 425D45EB082872CE41357666 /* Project object */;
@@ -121,11 +129,11 @@
 		07EE4971D714DE42ED791C17 /* EndpointPhoneModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointPhoneModelTests.swift; sourceTree = "<group>"; };
 		0A589B71DC60D518B4366C9C /* EndpointNotificationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointNotificationViews.swift; sourceTree = "<group>"; };
 		0AA4182BA7DB61B818CDB3B6 /* BridgeErrorPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeErrorPolicyTests.swift; sourceTree = "<group>"; };
-		15DC147882B3114F77BDB024 /* HERDR-09 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "HERDR-09"; path = ..; sourceTree = SOURCE_ROOT; };
 		15E73922F805AA0CF6DD2298 /* ConnectionBannerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionBannerState.swift; sourceTree = "<group>"; };
 		1AE4F8AFA18F06215370ED78 /* EndpointGraphicsPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointGraphicsPolicyTests.swift; sourceTree = "<group>"; };
 		1E493D3D9C2B984D05614104 /* BridgeSocketIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeSocketIntegrationTests.swift; sourceTree = "<group>"; };
 		1E5CF123F2436CA375BB87AA /* EndpointRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointRecoveryTests.swift; sourceTree = "<group>"; };
+		1E9953EF43F0C03637340384 /* CodexScrollUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexScrollUITests.swift; sourceTree = "<group>"; };
 		1ECFE5AD26AEB0A38AAA9FEF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
 		20DDF9EC0479307635535CEA /* EndpointImagesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointImagesSheet.swift; sourceTree = "<group>"; };
 		21DAD2B232838CA8F164F2F9 /* EndpointTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointTextTests.swift; sourceTree = "<group>"; };
@@ -149,6 +157,7 @@
 		3D076077933E7F528040D0BE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3FAE12994A8BF6F421738221 /* NotificationRetractionHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRetractionHandlerTests.swift; sourceTree = "<group>"; };
 		4097264E361AE9B012CF01EF /* EndpointPluginSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointPluginSheet.swift; sourceTree = "<group>"; };
+		43BC9BA5EBA6CEE3206D349E /* rai-iosScrollUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosScrollUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		44452FA0314FE3B37ABB162C /* EndpointAppearanceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointAppearanceMenu.swift; sourceTree = "<group>"; };
 		468DAF43628EA92AA6A1AB17 /* EndpointThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointThemeTests.swift; sourceTree = "<group>"; };
 		47DEEE571103BB99DD8E6099 /* EndpointPluginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointPluginTests.swift; sourceTree = "<group>"; };
@@ -189,6 +198,7 @@
 		A2BC7B6E3945F35568FA29F6 /* EndpointLayoutBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointLayoutBridgeTests.swift; sourceTree = "<group>"; };
 		A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "rai-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A4A57CA9F0381EAA8D7141CB /* TerminalLinkInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLinkInteractionTests.swift; sourceTree = "<group>"; };
+		A94AED5CC385FC1F5FD41FE9 /* rai */ = {isa = PBXFileReference; lastKnownFileType = folder; name = rai; path = ..; sourceTree = SOURCE_ROOT; };
 		AB4DAB49B989CB1A487A3C14 /* EndpointThemePaletteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointThemePaletteTests.swift; sourceTree = "<group>"; };
 		B2B96BC1E306322BEC78084B /* EndpointWorktreeBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointWorktreeBridgeTests.swift; sourceTree = "<group>"; };
 		B433551C34BCD33DCCB8DAE8 /* PermissionDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDecisionTests.swift; sourceTree = "<group>"; };
@@ -254,9 +264,17 @@
 		2DA318A8F4154999D3174BCB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				15DC147882B3114F77BDB024 /* HERDR-09 */,
+				A94AED5CC385FC1F5FD41FE9 /* rai */,
 			);
 			name = Packages;
+			sourceTree = "<group>";
+		};
+		40330EE516032F3DF5528E3A /* rai-iosScrollUITests */ = {
+			isa = PBXGroup;
+			children = (
+				1E9953EF43F0C03637340384 /* CodexScrollUITests.swift */,
+			);
+			path = "rai-iosScrollUITests";
 			sourceTree = "<group>";
 		};
 		406BFB6A465E9DFF31408AFF /* RaiCoreTests */ = {
@@ -327,6 +345,7 @@
 			isa = PBXGroup;
 			children = (
 				C0A260D874FB82D82728AC5A /* rai-ios.app */,
+				43BC9BA5EBA6CEE3206D349E /* rai-iosScrollUITests.xctest */,
 				A2C47ABE3AC5B9368972C8BB /* rai-iosTests.xctest */,
 			);
 			name = Products;
@@ -372,6 +391,7 @@
 			children = (
 				2DA318A8F4154999D3174BCB /* Packages */,
 				ADFD2E77B89CB97E42410815 /* rai-ios */,
+				40330EE516032F3DF5528E3A /* rai-iosScrollUITests */,
 				6B6A202ACF1B463B34798192 /* rai-iosTests */,
 				072B811BC67A26E3A9A64586 /* RaiApp */,
 				C24129E6C3EC507232988839 /* RaiAppTests */,
@@ -433,6 +453,24 @@
 			productReference = C0A260D874FB82D82728AC5A /* rai-ios.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A89C8EE586C426868AC02418 /* rai-iosScrollUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FB1541D7CC94E1E743D23591 /* Build configuration list for PBXNativeTarget "rai-iosScrollUITests" */;
+			buildPhases = (
+				8E07A9AC1EE3ACD66B212032 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FF808A41394F7F660F95C920 /* PBXTargetDependency */,
+			);
+			name = "rai-iosScrollUITests";
+			packageProductDependencies = (
+			);
+			productName = "rai-iosScrollUITests";
+			productReference = 43BC9BA5EBA6CEE3206D349E /* rai-iosScrollUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -445,6 +483,9 @@
 					9D4B90CFDA1D3CD398C07820 = {
 						DevelopmentTeam = T2XB37WVYD;
 						ProvisioningStyle = Automatic;
+					};
+					A89C8EE586C426868AC02418 = {
+						TestTargetID = 9D4B90CFDA1D3CD398C07820;
 					};
 				};
 			};
@@ -466,6 +507,7 @@
 			projectRoot = "";
 			targets = (
 				9D4B90CFDA1D3CD398C07820 /* rai-ios */,
+				A89C8EE586C426868AC02418 /* rai-iosScrollUITests */,
 				2F51AF5CB4547AFABFBB92FC /* rai-iosTests */,
 			);
 		};
@@ -542,6 +584,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		8E07A9AC1EE3ACD66B212032 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				049166A9EC56D93A3823911E /* CodexScrollUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DA30D004E1870956380C78AF /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -597,6 +647,11 @@
 			target = 9D4B90CFDA1D3CD398C07820 /* rai-ios */;
 			targetProxy = BA6D782B9464583CEE7AA71C /* PBXContainerItemProxy */;
 		};
+		FF808A41394F7F660F95C920 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9D4B90CFDA1D3CD398C07820 /* rai-ios */;
+			targetProxy = 845164097BE61FACB5F8E496 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -619,6 +674,24 @@
 			};
 			name = Debug;
 		};
+		6C53871F11ADFB000BDD9ADD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(RAI_IOS_BUNDLE_IDENTIFIER).scroll-tests";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "rai-ios";
+			};
+			name = Release;
+		};
 		9134C728E51C08EBA04D5AAE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -638,6 +711,24 @@
 			};
 			name = Release;
 		};
+		A5B32815254C0A824426D135 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(RAI_IOS_BUNDLE_IDENTIFIER).scroll-tests";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "rai-ios";
+			};
+			name = Debug;
+		};
 		E2009C6F92CB8DAAA9844B56 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -652,7 +743,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(RAI_IOS_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = rai;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -716,6 +807,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				RAI_IOS_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -737,7 +829,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(RAI_IOS_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = rai;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -794,6 +886,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				RAI_IOS_BUNDLE_IDENTIFIER = com.whetstone.rai.ios;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -827,6 +920,15 @@
 			buildConfigurations = (
 				E48FD821CDBAE40C0BB93D3A /* Debug */,
 				F85232920B1906F75DA89D2B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FB1541D7CC94E1E743D23591 /* Build configuration list for PBXNativeTarget "rai-iosScrollUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A5B32815254C0A824426D135 /* Debug */,
+				6C53871F11ADFB000BDD9ADD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

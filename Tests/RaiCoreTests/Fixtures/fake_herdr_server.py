@@ -4,6 +4,7 @@ import json
 import socketserver
 import sys
 import threading
+import time
 
 socket_path, mode, record_path = sys.argv[1:]
 record_lock = threading.Lock()
@@ -50,6 +51,19 @@ class Handler(socketserver.StreamRequestHandler):
             return
         if mode == "events_no_ack":
             self.rfile.read()
+            return
+        if mode in ("events_burst", "events_paced_burst"):
+            self.reply({"id": "sub", "result": {"type": "subscription_started"}})
+            try:
+                for index in range(1024):
+                    self.reply({"event": "pane_updated", "data": {"index": index}})
+                    if mode == "events_paced_burst":
+                        time.sleep(0.002)
+                self.rfile.read()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            with open(record_path + ".events-closed", "w") as record:
+                record.write("closed\n")
             return
         state = {"snapshot_started": threading.Event(), "event_sent": threading.Event()}
         with state_lock:

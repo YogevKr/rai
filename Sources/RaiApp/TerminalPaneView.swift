@@ -1367,15 +1367,12 @@ final class FocusAwareTerminalView: TerminalProcessView {
     /// a texture atlas and redraws cells as GPU quads, rebuilding vertex data
     /// only for dirty rows.
     ///
-    /// **Off by default, deliberately.** `rai-bench` measures the win as ~11%
-    /// of process CPU at 9 rendered panes but nothing distinguishable from
-    /// noise at one — and rai renders one tab at a time, so a herd of
-    /// single-pane tabs never reaches the pane count where this pays. Turning
-    /// it on also lights up interaction paths that are not verified against
-    /// this renderer: the selection repaint `ScrollbackSelectionController`
-    /// drives, the ⌘F find bar's z-order against the inserted MTKView, caret
-    /// ownership (`hostOwnsCaret`), and image paste. Enable it when you work in
-    /// splits, or once those paths are covered.
+    /// **Off by default.** The equal-work benchmark on 2026-10-05 measured
+    /// 24% less CPU at four panes and 30% less at nine panes. See docs/TESTING.md.
+    /// Production-view probes cover local selection, search-bar ordering,
+    /// cursor ownership, image paste, resizing, and window transfer. They do
+    /// not verify screen pixels or Herdr-backed selection. Complete the signed
+    /// app interaction checks before promoting Metal to the default.
     ///
     /// SwiftTerm requires a window first: the renderer binds a CAMetalLayer to
     /// the window's CAContext.
@@ -1385,15 +1382,13 @@ final class FocusAwareTerminalView: TerminalProcessView {
     ///     — GPU rendering.
     ///   `defaults write gr.krig.rai terminalMetalBuffering -string per-row`
     ///     — cache vertex data per row instead of rebuilding every frame.
-    ///     Measurably slower here; the knob exists to re-check that.
+    ///     Use this option for separate buffering comparisons.
     private func enableMetalRendererIfNeeded() {
         guard window != nil, !isUsingMetalRenderer, metalEnableFailures < 2 else { return }
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.metalRendererKey) as? Bool ?? false else { return }
-        // Aggregated by default: rai-bench measures it cheaper than per-row
-        // caching at every pane count (13% at 1 pane, 21% at 9). Agent panes
-        // scroll constantly, so most rows are dirty every frame and the
-        // per-row vertex cache mostly pays bookkeeping for nothing.
+        // Keep aggregated buffering as the Metal default. The equal-work
+        // CoreGraphics comparison uses this mode; it does not compare modes.
         if defaults.string(forKey: Self.metalBufferingKey) != "per-row" {
             metalBufferingMode = .perFrameAggregated
         }

@@ -355,8 +355,8 @@ final class IOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationC
                     expectedConnectionID: expectedHost
                 )
             } else if let pairing = PairingStore().load() {
-                let connection = await MainActor.run { BridgeConnection() }
-                await connection.updateDecisionAvailability(
+                let connection = BridgeConnection()
+                connection.updateDecisionAvailability(
                     notificationAuthorized: true,
                     isForeground: false
                 )
