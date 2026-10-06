@@ -17,6 +17,8 @@ final class MachineDirectory: ObservableObject {
     private var connections: [MachineEndpoint: HerdrEndpointConnection] = [:]
     private var tunnels: [MachineEndpoint: RemoteConnection] = [:]
     private var tasks: [MachineEndpoint: Task<Void, Never>] = [:]
+    private var titleMonitors: [MachineEndpoint: MachineTitleMonitor] = [:]
+    private var titleSnapshots: [MachineEndpoint: SessionSnapshot] = [:]
     private var paths: [MachineEndpoint: String] = [:]
     private var saved: [SavedMachine] = []
     private var setupProcess: MachineSetupProcess?
@@ -296,6 +298,8 @@ final class MachineDirectory: ObservableObject {
     }
 
     private func disconnect(_ endpoint: MachineEndpoint) {
+        titleMonitors.removeValue(forKey: endpoint)?.stop()
+        titleSnapshots.removeValue(forKey: endpoint)
         retireNotifications(endpoint)
         tasks.removeValue(forKey: endpoint)?.cancel()
         connections.removeValue(forKey: endpoint)?.disconnect()
@@ -326,6 +330,8 @@ final class MachineDirectory: ObservableObject {
                 throw MachineCatalogError.invalid("The machine disconnected.")
             } catch {
                 guard !Task.isCancelled, state.entry(for: endpoint)?.connectionID == generation else { return }
+                titleMonitors.removeValue(forKey: endpoint)?.stop()
+                titleSnapshots.removeValue(forKey: endpoint)
                 connections.removeValue(forKey: endpoint)?.disconnect()
                 tunnels.removeValue(forKey: endpoint)?.stop()
                 tasks.removeValue(forKey: endpoint)
@@ -364,6 +370,21 @@ final class MachineDirectory: ObservableObject {
     private func receive(_ snapshot: HerdrEndpointSnapshot, endpoint: MachineEndpoint, generation: String) {
         guard state.entry(for: endpoint)?.connectionID == generation else { return }
         snapshots[endpoint] = snapshot
+        if let path = paths[endpoint], path != HerdrClient.defaultSocketPath(),
+           titleMonitors[endpoint]?.bootID != snapshot.bootID {
+            titleMonitors.removeValue(forKey: endpoint)?.stop()
+            titleSnapshots.removeValue(forKey: endpoint)
+            let bootID = snapshot.bootID
+            let monitor = MachineTitleMonitor(socketPath: path, bootID: bootID) { [weak self] titles in
+                guard let self, self.state.entry(for: endpoint)?.connectionID == generation,
+                      self.snapshots[endpoint]?.bootID == bootID else { return }
+                guard self.titleSnapshots[endpoint] != titles else { return }
+                self.titleSnapshots[endpoint] = titles
+                self.rebuildWorkspaces()
+            }
+            titleMonitors[endpoint] = monitor
+            monitor.start()
+        }
         let agents = snapshot.agents.compactMap { value -> MachineAgent? in
             guard let row = value.objectValue, let paneID = row["pane_id"]?.stringValue else { return nil }
             return MachineAgent(resource: .init(endpoint: endpoint, connectionID: generation, bootID: snapshot.bootID, paneID: paneID),
@@ -387,7 +408,8 @@ final class MachineDirectory: ObservableObject {
         workspaces = InstanceWorkspace.entries(
             machines: state.entries,
             snapshots: snapshots,
-            excluding: nil
+            excluding: nil,
+            titleSnapshots: titleSnapshots
         )
     }
 }

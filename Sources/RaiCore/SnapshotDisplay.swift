@@ -9,8 +9,7 @@ public extension SessionSnapshot {
         }
 
         let tabPanes = panes.filter { $0.tabID == tab.tabID }
-        if let title = tabPanes.compactMap(\.terminalTitleStripped)
-            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+        if let title = tabPanes.compactMap(\.displayTerminalTitle).first {
             return title
         }
         if let agent = tabPanes.compactMap(\.agent)
@@ -22,9 +21,7 @@ public extension SessionSnapshot {
 
     /// Pane-first naming for notifications and pane chrome.
     func displayName(for pane: Pane) -> String {
-        if let title = pane.terminalTitleStripped?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty {
+        if let title = pane.displayTerminalTitle {
             return title
         }
         if let agent = pane.agent?.trimmingCharacters(in: .whitespacesAndNewlines),

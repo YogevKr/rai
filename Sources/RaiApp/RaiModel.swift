@@ -1173,9 +1173,7 @@ final class RaiModel: ObservableObject {
     }
 
     func displayTitle(for pane: Pane) -> String {
-        if let title = pane.terminalTitleStripped?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty {
+        if let title = pane.displayTerminalTitle {
             return title
         }
         if let agent = pane.agent?.trimmingCharacters(in: .whitespacesAndNewlines),

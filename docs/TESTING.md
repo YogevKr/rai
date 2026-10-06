@@ -106,6 +106,30 @@ Keep UI evidence for both platforms. Unit tests alone do not complete this scena
 
 Run regression tests with `swift test --filter HerdrInstallationTests` using the Xcode developer directory.
 
+## Local and remote tab titles
+
+Run the title checks with the Xcode developer directory:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter 'MachineTitleMonitorTests|SnapshotDisplayTests|InstanceWorkspaceTests|HerdrModelsTests'
+```
+
+Use two isolated Herdr servers and an owned loopback SSH fixture for UI checks.
+Keep a local tab selected while the remote pane emits a new OSC terminal title.
+The remote sidebar label must update without tab selection, terminal takeover, or pane creation.
+Repeat with the remote tab selected.
+Send a Codex session UUID as the title on both instances. Both labels must show `codex`.
+Send useful titles next. Both labels must show the new text.
+Rename each tab through Herdr while its terminal stays idle. The sidebar must show each custom name.
+Send another terminal title. The custom name must remain unchanged.
+Reconnect the remote machine and repeat the inactive-tab update.
+
+The title monitor reads metadata after events and combines event bursts into one read.
+It retries failed reads at most twice and stops when idle.
+Tests check cancellation, retry limits, endpoint identity, pane membership, and custom names.
+These checks use terminal fixtures. They do not test an authenticated Codex conversation or the iOS interface.
+
 ## Agent startup prompts
 
 ```sh

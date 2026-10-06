@@ -143,6 +143,9 @@ public actor HerdrClient {
         if let protocolVersion, protocolVersion >= 1 { subscriptions.append("workspace.closed") }
         if let protocolVersion, protocolVersion >= 14 { subscriptions.append("workspace.renamed") }
         if let protocolVersion, protocolVersion >= 19 { subscriptions.append("workspace.reordered") }
+        // Tab renames need their own event; idle panes need not emit output.
+        // Subscribe after a protocol 22 snapshot confirms current server support.
+        if let protocolVersion, protocolVersion >= 22 { subscriptions.append("tab.renamed") }
         return subscriptions
     }
 

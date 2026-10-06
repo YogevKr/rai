@@ -276,6 +276,15 @@ final class HerdrModelsTests: XCTestCase {
         )
     }
 
+    func testCurrentProtocolObservesTabRenamesWithoutOutput() {
+        for version in [22, 23] {
+            XCTAssertTrue(HerdrClient.subscriptions(forProtocol: version).contains("tab.renamed"))
+        }
+        for version in [nil, 0, 21] as [Int?] {
+            XCTAssertFalse(HerdrClient.subscriptions(forProtocol: version).contains("tab.renamed"))
+        }
+    }
+
     func testSubscriptionsAddWorkspaceRenamedOnProtocol14WithoutReordered() {
         for version in [14, 16, 17, 18] {
             XCTAssertEqual(HerdrClient.subscriptions(forProtocol: version),

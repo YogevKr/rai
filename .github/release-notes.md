@@ -1,3 +1,12 @@
+Rai 0.1.83 fixes local and remote tab titles.
+
+- Codex tabs show `codex` when their only title is a session UUID.
+- Useful terminal titles replace that fallback when available.
+- Custom tab names remain unchanged.
+- Remote titles update while another instance stays selected.
+- Local tab names update after a rename, without waiting for terminal output.
+- This release includes the command palette arrow fix from 0.1.82.
+
 Rai 0.1.82 fixes command palette arrow navigation.
 
 - Up and down arrows select palette rows on keyboards that send function-key characters.

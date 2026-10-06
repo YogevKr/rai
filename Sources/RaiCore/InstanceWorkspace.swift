@@ -13,7 +13,8 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public static func entries(
         machines: [MachineEntry],
         snapshots: [MachineEndpoint: HerdrEndpointSnapshot],
-        excluding primary: MachineEndpoint?
+        excluding primary: MachineEndpoint?,
+        titleSnapshots: [MachineEndpoint: SessionSnapshot] = [:]
     ) -> [InstanceWorkspace] {
         machines.filter { $0.endpoint != primary && $0.health != .disabled }.flatMap { machine in
             guard let snapshot = snapshots[machine.endpoint] else { return [InstanceWorkspace]() }
@@ -28,7 +29,10 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
                     connectionID: machine.connectionID,
                     bootID: snapshot.bootID,
                     activeTabID: object["active_tab_id"]?.stringValue,
-                    tabs: snapshot.tabs.compactMap { InstanceTab(record: $0, workspace: source, snapshot: snapshot) }
+                    tabs: snapshot.tabs.compactMap {
+                        InstanceTab(record: $0, workspace: source, snapshot: snapshot,
+                                    titleSnapshot: titleSnapshots[machine.endpoint])
+                    }
                 )
             }
         }
@@ -49,13 +53,13 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
     public let status: AgentStatus
     public let panes: [RaiPaneReference]
 
-    fileprivate init?(record: JSONValue, workspace: RaiWorkspaceReference, snapshot: HerdrEndpointSnapshot) {
+    fileprivate init?(record: JSONValue, workspace: RaiWorkspaceReference, snapshot: HerdrEndpointSnapshot,
+                      titleSnapshot: SessionSnapshot?) {
         guard let object = record.objectValue,
               object["workspace_id"]?.stringValue == workspace.workspaceID,
               let tabID = object["tab_id"]?.stringValue else { return nil }
         id = tabID
         self.workspace = workspace
-        label = Self.tabLabel(object, workspaceID: workspace.workspaceID, tabID: tabID, snapshot: snapshot)
         let pane = snapshot.panes.first { value in
             guard let pane = value.objectValue else { return false }
             return pane["workspace_id"]?.stringValue == workspace.workspaceID
@@ -72,6 +76,17 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
             return RaiPaneReference(endpoint: workspace.endpoint, workspaceID: workspace.workspaceID,
                                     tabID: tabID, paneID: paneID)
         }
+        // The inactive endpoint can defer title-only projections. Read-only API
+        // metadata supplies current labels, but never changes the endpoint's
+        // resource set, focus, revision, or render identity.
+        if let titleSnapshot,
+           let tab = titleSnapshot.tabs.first(where: { $0.tabID == tabID && $0.workspaceID == workspace.workspaceID }),
+           Set(titleSnapshot.panes.filter { $0.tabID == tabID && $0.workspaceID == workspace.workspaceID }.map(\.paneID))
+            == Set(panes.map(\.paneID)) {
+            label = titleSnapshot.displayLabel(for: tab)
+        } else {
+            label = Self.tabLabel(object, workspaceID: workspace.workspaceID, tabID: tabID, snapshot: snapshot)
+        }
     }
 
     fileprivate static func tabLabel(
@@ -87,11 +102,27 @@ public struct InstanceTab: Identifiable, Equatable, Sendable {
         let panes = snapshot.panes.compactMap(\.objectValue).filter {
             $0["workspace_id"]?.stringValue == workspaceID && $0["tab_id"]?.stringValue == tabID
         }
-        for key in ["terminal_title_stripped", "terminal_title", "agent"] {
-            for pane in panes {
-                let value = AgentTitleGlyphs.strip(pane[key]?.stringValue ?? "")?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !value.isEmpty { return value }
+        // Native endpoint panes contain identity and cwd. Titles and agent
+        // names live in the separate agent projection. Match all identities
+        // so an old or unrelated record cannot supply this tab's title.
+        let paneIDs = Set(panes.compactMap { $0["pane_id"]?.stringValue })
+        let agents = snapshot.agents.compactMap(\.objectValue).filter {
+            $0["workspace_id"]?.stringValue == workspaceID
+                && $0["tab_id"]?.stringValue == tabID
+                && $0["pane_id"]?.stringValue.map(paneIDs.contains) == true
+        }
+        let records = agents + panes
+        for key in ["terminal_title_stripped", "terminal_title"] {
+            for record in records {
+                if let title = TerminalDisplayTitle.text(record[key]?.stringValue, agent: record["agent"]?.stringValue) {
+                    return title
+                }
+            }
+        }
+        for record in records {
+            let agent = record["agent"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !agent.isEmpty {
+                return agent
             }
         }
         return "shell"

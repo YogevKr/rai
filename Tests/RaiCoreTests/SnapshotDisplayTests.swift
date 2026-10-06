@@ -129,4 +129,28 @@ final class SnapshotDisplayTests: XCTestCase {
         XCTAssertFalse(tab("t1", workspaceID: "ws-1", label: "42").hasUsefulLabel)
         XCTAssertTrue(tab("t1", workspaceID: "ws-1", label: "Review PR").hasUsefulLabel)
     }
+
+    func testCodexSessionIDFallsBackToAgentUntilATitleArrives() {
+        let tab = tab("t1", workspaceID: "ws-1", label: "1")
+        for (title, expected) in [
+            ("⠇ 01a11315-8fc2-7dc2-9bda-8708743222dd", "codex"),
+            ("◐ Review remote titles", "Review remote titles"),
+        ] {
+            let pane = pane("p1", tabID: "t1", workspaceID: "ws-1", agent: "codex", title: title)
+            let snapshot = snapshot(tabs: [tab], panes: [pane])
+            XCTAssertEqual(snapshot.displayLabel(for: tab), expected)
+            XCTAssertEqual(snapshot.displayName(for: pane), expected)
+        }
+    }
+
+    func testUUIDInAnExplicitTabLabelOrShellTitleIsPreserved() {
+        let id = "01a11315-8fc2-7dc2-9bda-8708743222dd"
+        let named = tab("t1", workspaceID: "ws-1", label: id)
+        let codex = pane("p1", tabID: "t1", workspaceID: "ws-1", agent: "codex", title: id)
+        XCTAssertEqual(snapshot(tabs: [named], panes: [codex]).displayLabel(for: named), id)
+
+        let unnamed = tab("t1", workspaceID: "ws-1", label: "1")
+        let shell = pane("p1", tabID: "t1", workspaceID: "ws-1", title: id)
+        XCTAssertEqual(snapshot(tabs: [unnamed], panes: [shell]).displayLabel(for: unnamed), id)
+    }
 }
