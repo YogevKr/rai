@@ -126,27 +126,27 @@ struct CommandPaletteView: View {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event -> NSEvent? in
             MainActor.assumeIsolated {
-                switch event.keyCode {
-                case 126: model.paletteMove(-1); return nil          // ↑
-                case 125: model.paletteMove(1); return nil           // ↓
-                case 36, 76:                                         // return / enter
+                switch PaletteKeyRouting.action(
+                    keyCode: event.keyCode,
+                    characters: event.characters,
+                    modifiers: event.modifierFlags
+                ) {
+                case .move(let delta):
+                    model.paletteMove(delta)
+                    return nil
+                case .activate:
                     model.paletteActivate(modifiers: PaletteModifiers(event.modifierFlags))
                     return nil
-                case 53: model.closeCommandPalette(); return nil     // esc
-                case 51:                                             // delete / backspace
+                case .close:
+                    model.closeCommandPalette()
+                    return nil
+                case .delete:
                     if !model.paletteQuery.isEmpty { model.paletteQuery.removeLast() }
                     return nil
-                default:
-                    // Route printable typing straight into the query. The local
-                    // monitor always fires, so a character can never be dropped by a
-                    // focus race or fall through to the terminal. Modified keys
-                    // (⌘V paste, ⌘A, …) pass through to the focused field.
-                    let mods = event.modifierFlags.intersection([.command, .control, .option])
-                    if mods.isEmpty, let chars = event.characters, !chars.isEmpty,
-                       chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
-                        model.paletteQuery += chars
-                        return nil
-                    }
+                case .type(let characters):
+                    model.paletteQuery += characters
+                    return nil
+                case .passThrough:
                     return event
                 }
             }

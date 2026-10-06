@@ -1,8 +1,35 @@
+import AppKit
 import XCTest
 @testable import RaiApp
 @testable import RaiCore
 
 final class PaletteActionDecisionTests: XCTestCase {
+    func testFunctionKeyArrowCharactersNavigateInsteadOfBecomingQueryText() {
+        XCTAssertEqual(
+            PaletteKeyRouting.action(keyCode: 0, characters: "\u{F700}", modifiers: []),
+            .move(-1)
+        )
+        XCTAssertEqual(
+            PaletteKeyRouting.action(keyCode: 0, characters: "\u{F701}", modifiers: []),
+            .move(1)
+        )
+        XCTAssertEqual(
+            PaletteKeyRouting.action(keyCode: 0, characters: "\u{F700}", modifiers: [.command]),
+            .passThrough
+        )
+    }
+
+    func testFunctionKeyScalarsCannotEnterThePaletteQuery() {
+        XCTAssertEqual(
+            PaletteKeyRouting.action(keyCode: 0, characters: "\u{F702}", modifiers: []),
+            .passThrough
+        )
+        XCTAssertEqual(
+            PaletteKeyRouting.action(keyCode: 0, characters: "x", modifiers: []),
+            .type("x")
+        )
+    }
+
     // MARK: - Modifier mapping
 
     func testPlainReturnOpens() {

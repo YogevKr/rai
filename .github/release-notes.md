@@ -1,3 +1,8 @@
+Rai 0.1.82 fixes command palette arrow navigation.
+
+- Up and down arrows select palette rows on keyboards that send function-key characters.
+- Arrow characters no longer enter the search query as replacement boxes.
+
 Rai 0.1.81 keeps remote spaces view-only from Rai.
 
 - Mixed remote panes no longer show a second terminal header.
