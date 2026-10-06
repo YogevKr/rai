@@ -1,3 +1,9 @@
+Rai 0.1.80 keeps remote Herdr Codex sessions running when Rai connects.
+
+- Remote Rai terminal views never request terminal takeover.
+- Rai keeps takeover for local terminal views.
+- Remote and local attachment paths restore the correct mode when switching instances.
+
 Rai 0.1.79 makes remote spaces match local spaces in the sidebar.
 
 - Remote spaces use the same collapse, status, tab, and close controls as local spaces.
