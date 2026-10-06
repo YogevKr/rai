@@ -304,7 +304,7 @@ private struct RemoteWorkspaceSection: View {
                 onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
             }
             .contextMenu {
-                Button("Close Space…", role: .destructive) { onClose(workspace, nil) }
+                Button("Remove from Rai view") { onClose(workspace, nil) }
             }
 
             if !collapsed {
@@ -361,7 +361,7 @@ private struct RemoteTabRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .contextMenu {
-            Button(closesSpace ? "Close Space…" : "Close Tab", role: .destructive, action: onClose)
+            Button(closesSpace ? "Remove from Rai view" : "Remove tab from Rai view", action: onClose)
         }
     }
 }

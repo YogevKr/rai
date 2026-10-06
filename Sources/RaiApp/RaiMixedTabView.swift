@@ -102,33 +102,16 @@ private struct RaiMixedPaneSlotView: View {
     }
 
     private func terminal(target: RaiPaneRenderTarget, endpoint: RaiMixedEndpointSession) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                if let displayLabel {
-                    Text(displayLabel)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                }
-                Spacer()
-                Text(target.source.endpoint.session)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            Divider().overlay(Theme.hairline)
-            TerminalPaneView(
-                terminalID: target.terminalID,
-                paneID: target.source.paneID,
-                paneCWD: endpoint.pane(paneID: target.source.paneID)?.objectValue?["foreground_cwd"]?.stringValue
-                    ?? endpoint.pane(paneID: target.source.paneID)?.objectValue?["cwd"]?.stringValue,
-                supportsDirectScrolling: false,
-                isFocused: endpoint.snapshot?.focusedPaneID == target.source.paneID,
-                pool: endpoint.pool,
-                onPlainClick: { endpoint.focus(paneID: target.source.paneID) }
-            )
-            .padding(8)
-        }
+        TerminalPaneView(
+            terminalID: target.terminalID,
+            paneID: target.source.paneID,
+            paneCWD: endpoint.pane(paneID: target.source.paneID)?.objectValue?["foreground_cwd"]?.stringValue
+                ?? endpoint.pane(paneID: target.source.paneID)?.objectValue?["cwd"]?.stringValue,
+            supportsDirectScrolling: false,
+            isFocused: endpoint.snapshot?.focusedPaneID == target.source.paneID,
+            pool: endpoint.pool,
+            onPlainClick: { endpoint.focus(paneID: target.source.paneID) }
+        )
     }
 
     private func unavailable(_ message: String) -> some View {

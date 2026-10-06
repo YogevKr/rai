@@ -91,6 +91,55 @@ final class RaiMixedViewModelTests: XCTestCase {
         XCTAssertEqual(mixedSpace.tabs.first?.paneSlots.first?.source, sourceTab.panes.first)
     }
 
+    func testRemovingSourceTabKeepsHerdrSourceOutOfRaiComposition() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
+        let reference = RaiWorkspaceReference(endpoint: local, workspaceID: "w1")
+        let first = RaiPaneReference(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let second = RaiPaneReference(endpoint: local, workspaceID: "w1", tabID: "t2", paneID: "p2")
+        let space = RaiSpace(
+            source: reference,
+            tabs: [
+                RaiTab(label: "One", paneSlots: [RaiPaneSlot(source: first)]),
+                RaiTab(label: "Two", paneSlots: [RaiPaneSlot(source: second)]),
+            ]
+        )
+        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
+
+        XCTAssertTrue(model.removeSourceTab(reference, tabID: "t1"))
+        XCTAssertEqual(model.composition.spaces.count, 1)
+        XCTAssertEqual(model.composition.spaces[0].tabs.map(\.label), ["Two"])
+    }
+
+    func testRemovingLastSourceTabRemovesOnlyTheRaiSpace() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
+        let reference = RaiWorkspaceReference(endpoint: local, workspaceID: "w1")
+        let source = RaiPaneReference(endpoint: local, workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let space = RaiSpace(source: reference, tabs: [RaiTab(paneSlots: [RaiPaneSlot(source: source)])])
+        let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
+
+        XCTAssertTrue(model.removeSourceTab(reference, tabID: "t1"))
+        XCTAssertTrue(model.composition.spaces.isEmpty)
+    }
+
+    func testRemovingSourceWorkspaceDoesNotAffectAnotherRaiSpace() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
+        let first = RaiWorkspaceReference(endpoint: local, workspaceID: "w1")
+        let second = RaiWorkspaceReference(endpoint: local, workspaceID: "w2")
+        let model = RaiMixedViewModel(
+            composition: RaiComposition(spaces: [RaiSpace(source: first), RaiSpace(source: second)]),
+            store: store
+        )
+
+        XCTAssertTrue(model.removeSourceWorkspace(first))
+        XCTAssertEqual(model.composition.spaces.map(\.source), [second])
+    }
+
     private func snapshot() throws -> HerdrEndpointSnapshot {
         let object: [String: Any] = [
             "boot_id": "boot",

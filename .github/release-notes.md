@@ -1,3 +1,9 @@
+Rai 0.1.81 keeps remote spaces view-only from Rai.
+
+- Mixed remote panes no longer show a second terminal header.
+- Removing a remote space or tab removes it from Rai only.
+- Herdr keeps the remote workspace, tab, and running processes alive.
+
 Rai 0.1.80 keeps remote Herdr Codex sessions running when Rai connects.
 
 - Remote Rai terminal views never request terminal takeover.

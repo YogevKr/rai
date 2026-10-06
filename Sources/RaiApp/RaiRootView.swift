@@ -78,16 +78,6 @@ struct RaiRootView: View {
             BroadcastSheet(model: model)
         }
         .background(WindowConfigurator())
-        .alert(item: $mixedController.pendingWorkspaceClose) { request in
-            Alert(
-                title: Text("Close Remote Space?"),
-                message: Text("This stops all processes in \(request.workspace.label) on \(request.workspace.instanceLabel)."),
-                primaryButton: .destructive(Text("Close Space")) {
-                    mixedController.confirmCloseWorkspace(request)
-                },
-                secondaryButton: .cancel()
-            )
-        }
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
         .task { mixedController.start() }
         .onAppear { settings.updateSystemColorScheme(colorScheme) }

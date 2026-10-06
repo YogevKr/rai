@@ -134,6 +134,37 @@ final class RaiMixedViewModel: ObservableObject {
         endpoints.removeValue(forKey: endpoint)
     }
 
+    /// Removes a remote workspace from Rai while leaving Herdr's workspace and
+    /// every process in it running on the source instance.
+    @discardableResult
+    func removeSourceWorkspace(_ reference: RaiWorkspaceReference) -> Bool {
+        var next = composition
+        let oldCount = next.spaces.count
+        next.spaces.removeAll { $0.source == reference }
+        guard next.spaces.count != oldCount else { return false }
+        guard replace(next) else { return false }
+        return save()
+    }
+
+    /// Removes one remote tab from Rai while leaving its Herdr tab running.
+    @discardableResult
+    func removeSourceTab(_ reference: RaiWorkspaceReference, tabID: String) -> Bool {
+        var next = composition
+        guard let spaceIndex = next.spaces.firstIndex(where: { $0.source == reference }) else {
+            return false
+        }
+        let oldTabs = next.spaces[spaceIndex].tabs
+        next.spaces[spaceIndex].tabs.removeAll { tab in
+            tab.paneSlots.contains { $0.source.tabID == tabID }
+        }
+        guard next.spaces[spaceIndex].tabs.count != oldTabs.count else { return false }
+        if next.spaces[spaceIndex].tabs.isEmpty {
+            next.spaces.remove(at: spaceIndex)
+        }
+        guard replace(next) else { return false }
+        return save()
+    }
+
     func resolutions(for tabID: UUID) throws -> [RaiPaneResolution] {
         try composition.resolveTab(id: tabID, endpoints: endpoints)
     }
