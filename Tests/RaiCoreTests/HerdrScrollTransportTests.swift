@@ -40,6 +40,27 @@ private extension XCTestCase {
     }
 }
 
+final class HerdrWorkspaceCreationTransportTests: XCTestCase {
+    func testCreationUsesOnlyAPIAndNeverReplaysAnUncertainWrite() async throws {
+        for mode in ["success", "drop_reply", "missing_workspace_id"] {
+            try await withServer(mode: mode) { client, record in
+                do {
+                    let id = try await client.createWorkspace()
+                    XCTAssertEqual(mode, "success")
+                    XCTAssertEqual(id, "w1")
+                } catch {
+                    XCTAssertNotEqual(mode, "success")
+                }
+                let requests = try String(contentsOf: record).split(separator: "\n")
+                    .map { try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+                XCTAssertEqual(requests.count, 1)
+                XCTAssertEqual(requests.first?.objectValue?["method"], .string("workspace.create"))
+                XCTAssertEqual(requests.first?.objectValue?["params"], .object(["focus": .bool(false)]))
+            }
+        }
+    }
+}
+
 final class HerdrScrollTransportTests: XCTestCase {
     func testGraphicsPolicyDeadlineAndCancellationCloseTheOwnedReader() async throws {
         try await withServer(mode: "graphics_stall") { client, record in

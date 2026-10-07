@@ -223,7 +223,13 @@ final class RaiMixedController: ObservableObject {
         closingWorkspaces.insert(workspace.id)
         return Task {
             defer { closingWorkspaces.remove(workspace.id) }
+            var suspendedModel: EndpointWindowModel?
             do {
+                if request.tabID == nil,
+                   machines.snapshots[request.workspace.id.endpoint]?.workspaces.count == 1 {
+                    suspendedModel = sessions[request.workspace.id.endpoint]?.model
+                    try await suspendedModel?.setSurfaceActive(false)
+                }
                 try await closeSource(request)
                 let tabsToHide = request.tabID == nil
                     ? request.workspace.tabs.map(\.id)
@@ -241,6 +247,16 @@ final class RaiMixedController: ObservableObject {
                     refreshSourceSelection()
                 }
             } catch {
+                if let suspendedModel {
+                    // A lost close reply can mean the workspace is already gone.
+                    // Read without an endpoint verifier before restoring a surface.
+                    let client = HerdrClient(socketPath: suspendedModel.apiSocketPath)
+                    defer { client.disconnect() }
+                    if let snapshot = try? await client.snapshot(timeout: .seconds(3)),
+                       snapshot.workspaces.contains(where: { $0.workspaceID == request.workspace.id.workspaceID }) {
+                        try? await suspendedModel.setSurfaceActive(true)
+                    }
+                }
                 primaryModel.sessionAlert = SessionAlert(kind: .error(
                     title: "Couldn’t Close Tab", message: error.localizedDescription))
             }

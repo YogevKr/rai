@@ -1,3 +1,11 @@
+Rai 0.1.91 fixes extra shells on empty remote instances.
+
+- New Space creates the requested space before connecting its display.
+- One request creates one space, including the first request on an empty Herdr instance.
+- Closing Rai's last remote space deactivates its display before source closure.
+- Pending title reads cannot create a replacement shell after that closure.
+- Creation requests never repeat after a lost reply.
+
 Rai 0.1.90 keeps remote closure usable during reconnects.
 
 - A successful remote close disappears from Rai before the next metadata snapshot arrives.

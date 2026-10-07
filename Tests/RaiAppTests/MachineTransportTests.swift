@@ -5,6 +5,78 @@ import XCTest
 
 @MainActor
 final class MachineTransportTests: XCTestCase {
+    func testEmptySSHInstanceCreatesExactlyOneSpacePerRequest() async throws {
+        guard let root = ProcessInfo.processInfo.environment["RAI_MACHINE_E2E_ROOT"],
+              let target = ProcessInfo.processInfo.environment["RAI_EMPTY_MACHINE_E2E_TARGET"],
+              AppDataPaths.current.isolatedRoot?.resolvingSymlinksInPath().path
+                == URL(fileURLWithPath: root).resolvingSymlinksInPath().path else {
+            throw XCTSkip("Requires an owned empty SSH fixture and RAI_EMPTY_MACHINE_E2E_TARGET.")
+        }
+        let fixture = try XCTUnwrap(LabSSHConfiguration.load(root: URL(fileURLWithPath: root)))
+        try fixture.validate(target: target)
+        let directory = MachineDirectory()
+        defer { directory.stop() }
+        try await directory.refreshCatalogOnly()
+        let entry = try XCTUnwrap(directory.state.entries.first { $0.target == target })
+        let remote = try await RemoteConnection.discoverSocket(target: target, sessionName: entry.endpoint.session)
+        let tunnel = RemoteConnection(target: target, sessionName: remote.sessionName, remoteSocketPath: remote.socketPath)
+        try await tunnel.start()
+        defer { tunnel.stop() }
+        let api = HerdrClient(socketPath: tunnel.localSocketPath)
+        defer { api.disconnect() }
+        let before = try await api.snapshot()
+        guard before.workspaces.isEmpty else {
+            XCTFail("The dedicated creation fixture must start empty.")
+            return
+        }
+
+        let first = try await directory.createWorkspace(on: entry.endpoint)
+        // Match the app ordering: create first, then connect the display.
+        try await directory.ensureConnected(entry.endpoint)
+        let afterFirst = try await api.snapshot()
+        XCTAssertEqual(afterFirst.workspaces.map(\.workspaceID), [first])
+        XCTAssertEqual(afterFirst.tabs.count, 1)
+        XCTAssertEqual(afterFirst.panes.count, 1)
+
+        let second = try await directory.createWorkspace(on: entry.endpoint)
+        try await directory.ensureConnected(entry.endpoint)
+        let afterSecond = try await api.snapshot()
+        XCTAssertEqual(afterSecond.workspaces.map(\.workspaceID), [first, second])
+        XCTAssertEqual(afterSecond.tabs.count, 2)
+        XCTAssertEqual(afterSecond.panes.count, 2)
+        XCTAssertEqual(afterSecond.panes.first?.terminalID, afterFirst.panes.first?.terminalID)
+
+        let model = EndpointWindowModel(socketPath: tunnel.localSocketPath)
+        defer { model.stop() }
+        model.start()
+        for _ in 0..<100 where model.busy || model.snapshot == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(model.error)
+        try await api.closeWorkspace(second)
+        for _ in 0..<100 where directory.workspaces.count != 1 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let last = try XCTUnwrap(directory.workspaces.first)
+        try await model.setSurfaceActive(false)
+        try await directory.close(InstanceCloseRequest(workspace: last, tabID: nil))
+        // Allow queued title refreshes and server maintenance to run.
+        try await Task.sleep(for: .seconds(5))
+        let afterClose = try await api.snapshot()
+        XCTAssertTrue(afterClose.workspaces.isEmpty)
+        model.stop()
+
+        let third = try await directory.createWorkspace(on: entry.endpoint)
+        try await directory.ensureConnected(entry.endpoint)
+        let afterRecreate = try await api.snapshot()
+        XCTAssertEqual(afterRecreate.workspaces.map(\.workspaceID), [third])
+        XCTAssertEqual(afterRecreate.tabs.count, 1)
+        directory.stop()
+        try await api.closeWorkspace(third)
+        try JSONEncoder().encode(afterSecond).write(
+            to: URL(fileURLWithPath: root).appendingPathComponent("workspace-creation-check.json"))
+    }
+
     func testIsolatedSSHConnectionsKeepDuplicateResourcesSeparateAndRejectOldConnections() async throws {
         guard let root = ProcessInfo.processInfo.environment["RAI_MACHINE_E2E_ROOT"],
               AppDataPaths.current.isolatedRoot?.resolvingSymlinksInPath().path
@@ -96,7 +168,7 @@ final class MachineTransportTests: XCTestCase {
 
         let firstBefore = try await firstAPI.snapshot()
         let secondBefore = try await secondAPI.snapshot()
-        try await directory.createWorkspace(on: first.endpoint, connectionID: firstID)
+        try await directory.createWorkspace(on: first.endpoint)
 
         var firstAfter = firstBefore
         for _ in 0..<100 {
@@ -112,7 +184,7 @@ final class MachineTransportTests: XCTestCase {
             try await firstAPI.closeWorkspace(created)
         }
 
-        try await directory.createWorkspace(on: second.endpoint, connectionID: secondID)
+        try await directory.createWorkspace(on: second.endpoint)
         var secondCreated = secondBefore
         for _ in 0..<100 {
             secondCreated = try await secondAPI.snapshot()

@@ -3778,27 +3778,22 @@ final class RaiModel: ObservableObject {
         }
 
         Task {
+            var createdWorkspaceID: String?
             do {
                 let directory = MachineDirectory.shared
+                let workspaceID = try await directory.createWorkspace(on: entry.endpoint)
+                createdWorkspaceID = workspaceID
                 try await directory.ensureConnected(entry.endpoint)
-                guard let current = directory.state.entry(for: entry.endpoint),
-                      let connectionID = current.connectionID else {
-                    throw HerdrEndpointError.staleIdentity
-                }
-                let workspaceID = try await MachineDirectory.shared.createWorkspace(
-                    on: current.endpoint,
-                    connectionID: connectionID
-                )
                 // Keep the endpoint guarded until its metadata stream shows
                 // the new space. The create RPC can finish before that update.
-                await waitForCreatedWorkspace(workspaceID, on: current.endpoint, directory: directory)
+                await waitForCreatedWorkspace(workspaceID, on: entry.endpoint, directory: directory)
                 onCreated?(RaiWorkspaceReference(
-                    endpoint: current.endpoint,
+                    endpoint: entry.endpoint,
                     workspaceID: workspaceID
                 ))
             } catch {
                 sessionAlert = SessionAlert(kind: .error(
-                    title: "Couldn’t Create Space",
+                    title: createdWorkspaceID == nil ? "Couldn’t Create Space" : "Space Created, Connection Failed",
                     message: error.localizedDescription
                 ))
             }

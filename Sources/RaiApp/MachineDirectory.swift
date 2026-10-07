@@ -26,6 +26,7 @@ final class MachineDirectory: ObservableObject {
     private var notificationTracker = MachineNotificationTracker()
     var notificationHandler: ((MachineNotificationChanges) -> Void)?
     private var acceptedRequests: Set<UUID> = []
+    private var creatingWorkspaces: Set<MachineEndpoint> = []
     private let run: ([String]) async throws -> Data
 
     init(run: @escaping ([String]) async throws -> Data = MachineCommandRunner.run) { self.run = run }
@@ -34,7 +35,7 @@ final class MachineDirectory: ObservableObject {
         stopped = true
         setupProcess?.cancel()
         setupProcess = nil
-        for endpoint in Array(tasks.keys) { disconnect(endpoint) }
+        for endpoint in Set(tasks.keys).union(tunnels.keys) { disconnect(endpoint) }
         snapshots.removeAll()
         workspaces.removeAll()
     }
@@ -69,13 +70,24 @@ final class MachineDirectory: ObservableObject {
     }
 
     @discardableResult
-    func createWorkspace(on endpoint: MachineEndpoint, connectionID: String) async throws -> String {
-        let result = try await create(on: endpoint, connectionID: connectionID,
-                                      method: "workspace.create", params: ["focus": .bool(false)])
-        guard let id = result.objectValue?["workspace"]?.objectValue?["workspace_id"]?.stringValue else {
-            throw HerdrEndpointError.malformed
+    func createWorkspace(on endpoint: MachineEndpoint) async throws -> String {
+        guard !stopped, let entry = state.entry(for: endpoint), entry.health != .disabled else {
+            throw HerdrEndpointError.staleIdentity
         }
-        return id
+        guard creatingWorkspaces.insert(endpoint).inserted else { throw HerdrEndpointError.busy }
+        defer { creatingWorkspaces.remove(endpoint) }
+        // Herdr 0.9 seeds an empty server when an endpoint connects, including
+        // inactive metadata endpoints. Create through the API first so that
+        // the later display connection cannot add a second workspace.
+        let path = try await socketPath(for: endpoint)
+        try Task.checkCancellation()
+        guard !stopped, let current = state.entry(for: endpoint), current.target == entry.target,
+              current.health != .disabled else {
+            throw HerdrEndpointError.staleIdentity
+        }
+        let client = HerdrClient(socketPath: path)
+        defer { client.disconnect() }
+        return try await client.createWorkspace()
     }
 
     func createTab(in workspace: RaiWorkspaceReference, connectionID: String) async throws -> String {
@@ -90,6 +102,17 @@ final class MachineDirectory: ObservableObject {
     func close(_ request: InstanceCloseRequest) async throws {
         guard let socketPath = resolve(request.workspace.id.endpoint, connectionID: request.connectionID) else {
             throw HerdrEndpointError.staleIdentity
+        }
+        let endpoint = request.workspace.id.endpoint
+        if request.tabID == nil, snapshots[endpoint]?.workspaces.count == 1 {
+            // A queued title read opens an endpoint verifier. Stop it before
+            // closure so it cannot seed the newly empty instance.
+            titleMonitors.removeValue(forKey: endpoint)?.stop()
+        }
+        defer {
+            if let snapshot = snapshots[endpoint], !snapshot.workspaces.isEmpty {
+                receive(snapshot, endpoint: endpoint, generation: request.connectionID)
+            }
         }
         let result = try await HerdrPinnedRPC().request(
             socketPath: socketPath,
@@ -231,7 +254,7 @@ final class MachineDirectory: ObservableObject {
         }
         entries += machines.map { MachineEntry(endpoint: $0.endpoint, label: $0.label, health: $0.enabled ? .disconnected : .disabled, target: $0.target) }
         let retained = Set(entries.filter { $0.health != .disabled }.map(\.endpoint))
-        for endpoint in Array(tasks.keys) where !retained.contains(endpoint) { disconnect(endpoint) }
+        for endpoint in Set(tasks.keys).union(tunnels.keys) where !retained.contains(endpoint) { disconnect(endpoint) }
         for machine in machines {
             if let previous = saved.first(where: { $0.id == machine.id }), previous.target != machine.target || previous.session != machine.session {
                 disconnect(previous.endpoint)
@@ -311,7 +334,7 @@ final class MachineDirectory: ObservableObject {
     }
 
     private func connect(_ endpoint: MachineEndpoint) {
-        guard !stopped else { return }
+        guard !stopped, !creatingWorkspaces.contains(endpoint) else { return }
         let generation = UUID().uuidString
         update(endpoint) { $0.connectionID = generation; $0.health = .connecting; $0.error = nil }
         tasks[endpoint] = Task { [weak self] in
@@ -356,6 +379,9 @@ final class MachineDirectory: ObservableObject {
         guard let machine = saved.first(where: { $0.id == profileID && $0.endpoint == endpoint && $0.enabled }) else {
             throw HerdrEndpointError.staleIdentity
         }
+        if let tunnel = tunnels[endpoint], tunnel.isRunning {
+            return tunnel.localSocketPath
+        }
         // Discovery never invokes `machine add`, installation, or server launch.
         let remote = try await RemoteConnection.discoverSocket(target: machine.target, sessionName: machine.session)
         try Task.checkCancellation()
@@ -370,7 +396,11 @@ final class MachineDirectory: ObservableObject {
     private func receive(_ snapshot: HerdrEndpointSnapshot, endpoint: MachineEndpoint, generation: String) {
         guard state.entry(for: endpoint)?.connectionID == generation else { return }
         snapshots[endpoint] = snapshot
-        if let path = paths[endpoint], path != HerdrClient.defaultSocketPath(),
+        if snapshot.workspaces.isEmpty {
+            titleMonitors.removeValue(forKey: endpoint)?.stop()
+            titleSnapshots.removeValue(forKey: endpoint)
+        }
+        if !snapshot.workspaces.isEmpty, let path = paths[endpoint], path != HerdrClient.defaultSocketPath(),
            titleMonitors[endpoint]?.bootID != snapshot.bootID {
             titleMonitors.removeValue(forKey: endpoint)?.stop()
             titleSnapshots.removeValue(forKey: endpoint)

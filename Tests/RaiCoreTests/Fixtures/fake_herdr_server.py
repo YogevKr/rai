@@ -219,6 +219,9 @@ class Handler(socketserver.StreamRequestHandler):
                 "code": "invalid_request", "message": "Unknown method pane.scroll"}}
         elif request["method"] == "agent.prompt":
             response = {"id": request["id"], "result": {"type": "agent_prompted", "agent": {"pane_id": request["params"]["target"]}}}
+        elif request["method"] == "workspace.create":
+            workspace = {} if mode == "missing_workspace_id" else {"workspace_id": "w1"}
+            response = {"id": request["id"], "result": {"type": "workspace_created", "workspace": workspace}}
         else:
             response = {"id": request["id"], "result": {"type": "pane_scrolled"}}
         self.wfile.write(json.dumps(response).encode() + b"\n")

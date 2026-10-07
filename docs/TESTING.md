@@ -106,6 +106,45 @@ Keep UI evidence for both platforms. Unit tests alone do not complete this scena
 
 Run regression tests with `swift test --filter HerdrInstallationTests` using the Xcode developer directory.
 
+## Creating spaces on an empty instance
+
+Use an owned SSH fixture with no workspaces, tabs, or panes.
+Read its API snapshot before opening any endpoint connection.
+Click New Space in Rai and select that instance once.
+The API and sidebar must each show one space with one shell tab.
+Repeat the action. Both must show two spaces, with one tab in each space.
+The first terminal ID must stay unchanged.
+Repeat after closing every space and reconnecting.
+
+Herdr 0.9 creates a default workspace when an endpoint connects to an empty server.
+This also applies to inactive metadata endpoints.
+Rai must send `workspace.create` through the API before connecting the display.
+Creation must not retry after an uncertain response.
+Existing-resource mutations retain their boot identity validation.
+
+Run `HerdrWorkspaceCreationTransportTests` for success, lost replies, and malformed replies.
+Run `MachineTransportTests.testEmptySSHInstanceCreatesExactlyOneSpacePerRequest` with these variables:
+
+- `RAI_DATA_ROOT` and `RAI_MACHINE_E2E_ROOT`: the owned lab root.
+- `RAI_EMPTY_MACHINE_E2E_TARGET`: an allowed alias for a dedicated empty instance.
+- The complete environment from that lab's `lab.json`.
+
+The test creates two spaces through SSH and activates a display surface.
+It closes both spaces, checks that the instance stays empty, then creates and closes one more space.
+It refuses a populated fixture.
+
+Before closing the final remote space, Rai deactivates its display surface and cancels pending title reads.
+Herdr otherwise creates a replacement workspace for an active surface or a new metadata connection.
+If closure fails, Rai activates the display surface again only after confirming that the source space still exists.
+
+The October 7, 2026 isolated SSH check passed with Herdr 0.9.3 and the 0.1.91 candidate.
+The app created one space per request and preserved the first terminal during the second request.
+Command-W closed both source spaces. The final closure left zero workspaces, tabs, and panes after five seconds.
+A subsequent New Space request created one space and one shell.
+Evidence resides under `/private/tmp/rai09-6eef_bvl`, including `final-ui-first.json`, `final-ui-closed.json`, and `final-ui-recreate.json`.
+The full Mac suite passed 1,064 tests, with 15 skipped and no failures.
+The live SSH regression passed separately. The bundle isolation suite passed 16 tests.
+
 ## Closing remote tabs
 
 Use an isolated Herdr server through an owned SSH fixture.

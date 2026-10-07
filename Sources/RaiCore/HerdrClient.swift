@@ -314,6 +314,15 @@ public actor HerdrClient {
                  maximumResponseBytes: HerdrEndpointWire.maximumFrameBytes)
     }
 
+    /// Create without attaching an endpoint, which can seed an empty server.
+    /// No existing resource identity is reused. An uncertain write never retries.
+    public func createWorkspace() throws -> String {
+        let result: JSONValue = try call(method: "workspace.create", params: ["focus": .bool(false)])
+        guard let id = result.objectValue?["workspace"]?.objectValue?["workspace_id"]?.stringValue,
+              !id.isEmpty else { throw HerdrClientError.invalidEnvelope }
+        return id
+    }
+
     public func closeWorkspace(_ workspaceID: String, closeGroup: Bool = false) async throws {
         let _: JSONValue = try call(method: "workspace.close", params: [
             "workspace_id": .string(workspaceID), "close_group": .bool(closeGroup)

@@ -305,6 +305,14 @@ final class EndpointWindowModel: ObservableObject {
         perform("pane.focus", params: ["pane_id": .string(paneID)])
     }
 
+    /// Herdr keeps a default workspace while a shell surface is active.
+    /// Wait for deactivation before closing this instance's final workspace.
+    func setSurfaceActive(_ active: Bool) async throws {
+        guard !busy, let endpoint, let snapshot else { throw HerdrEndpointError.busy }
+        _ = try await endpoint.request(method: "client_shell.surface.set",
+            params: ["active": .bool(active)], expectedBootID: snapshot.bootID)
+    }
+
     func invoke(_ invocation: EndpointCommandInvocation) -> Bool {
         guard !busy, error == nil, methods.contains("command.invoke"), let snapshot,
               (try? invocation.validate(in: snapshot)) != nil else { return false }
