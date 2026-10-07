@@ -1,4 +1,4 @@
-Rai 0.1.87 removes duplicate remote spaces.
+Rai 0.1.88 removes duplicate remote spaces.
 
 - Rai shows one row when a direct remote connection and its saved machine mirror describe the same space.
 - Multiple spaces remain visible for one remote instance.
