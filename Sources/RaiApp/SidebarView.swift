@@ -32,6 +32,21 @@ struct SidebarView: View {
         return model.worktreeContext(for: workspace) != nil
     }
 
+    /// The primary remote connection and its saved machine mirror can report
+    /// the same source space. Keep one row per target, session, and workspace.
+    private var visibleRemoteWorkspaces: [InstanceWorkspace] {
+        var seen = Set<String>()
+        return remoteWorkspaces
+            .filter { !$0.belongs(to: model.currentMachineEntry) }
+            .filter { workspace in
+                let owner = workspace.instanceTarget
+                    ?? workspace.id.endpoint.profileID
+                    ?? workspace.instanceLabel
+                let key = "\(owner)\u{1f}\(workspace.id.endpoint.session)\u{1f}\(workspace.id.workspaceID)"
+                return seen.insert(key).inserted
+            }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -241,9 +256,7 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                        ForEach(remoteWorkspaces.filter {
-                            $0.id.endpoint != model.currentMachineEntry?.endpoint
-                        }) { workspace in
+                        ForEach(visibleRemoteWorkspaces) { workspace in
                             RemoteWorkspaceSection(
                                 workspace: workspace,
                                 selectedWorkspace: selectedRemoteWorkspace,

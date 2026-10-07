@@ -36,6 +36,59 @@ final class InstanceWorkspaceTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty)
     }
 
+    func testAdHocRemoteConnectionMatchesSavedWorkspaceByTarget() throws {
+        let saved = MachineEndpoint(profileID: "saved", session: "default")
+        let workspace = try XCTUnwrap(
+            InstanceWorkspace.entries(
+                machines: [MachineEntry(
+                    endpoint: saved,
+                    label: "sawmills-cloud",
+                    health: .online,
+                    target: "sawmills-cloud"
+                )],
+                snapshots: [saved: try snapshot(label: "Remote", paneID: "w1:p1")],
+                excluding: nil
+            ).first
+        )
+        let adHoc = MachineEntry(
+            endpoint: MachineEndpoint(profileID: "adhoc:sawmills-cloud", session: "default"),
+            label: "Current Herd",
+            health: .online,
+            target: "sawmills-cloud"
+        )
+
+        XCTAssertTrue(workspace.belongs(to: adHoc))
+    }
+
+    func testWorkspaceDoesNotMatchDifferentRemoteTargetOrSession() throws {
+        let saved = MachineEndpoint(profileID: "saved", session: "default")
+        let workspace = try XCTUnwrap(
+            InstanceWorkspace.entries(
+                machines: [MachineEntry(
+                    endpoint: saved,
+                    label: "sawmills-cloud",
+                    health: .online,
+                    target: "sawmills-cloud"
+                )],
+                snapshots: [saved: try snapshot(label: "Remote", paneID: "w1:p1")],
+                excluding: nil
+            ).first
+        )
+
+        XCTAssertFalse(workspace.belongs(to: MachineEntry(
+            endpoint: MachineEndpoint(profileID: "other", session: "default"),
+            label: "Other",
+            health: .online,
+            target: "other-host"
+        )))
+        XCTAssertFalse(workspace.belongs(to: MachineEntry(
+            endpoint: MachineEndpoint(profileID: "other", session: "review"),
+            label: "sawmills-cloud",
+            health: .online,
+            target: "sawmills-cloud"
+        )))
+    }
+
     func testTabUsesLocalDisplayFallbacks() throws {
         let endpoint = MachineEndpoint(profileID: "remote", session: "default")
         let machine = MachineEntry(endpoint: endpoint, label: "Remote", health: .online)

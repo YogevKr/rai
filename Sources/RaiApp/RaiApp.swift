@@ -92,16 +92,15 @@ struct RaiApp: App {
                     .keyboardShortcut("t", modifiers: [.command, .shift])
                     .disabled(mixedWindow?.isMixedSelected == true || !model.canReopenClosedTab)
                 Button("Close Tab") {
-                    guard primaryWindow == true,
-                          !appUpdates.isPresented else { return }
-                    if let mixedWindow, mixedWindow.isMixedSelected {
+                    guard !appUpdates.isPresented else { return }
+                    if let mixedWindow, mixedWindow.canCloseSelectedTab {
                         mixedWindow.closeSelectedTab()
-                    } else {
+                    } else if primaryWindow == true {
                         model.closeTab()
                     }
                 }
-                    .keyboardShortcut(primaryWindow == true ? KeyboardShortcut("w", modifiers: .command) : nil)
-                    .disabled(primaryWindow != true || appUpdates.isPresented
+                    .keyboardShortcut("w", modifiers: .command)
+                    .disabled(appUpdates.isPresented
                         || (mixedWindow?.isMixedSelected == true && mixedWindow?.canCloseSelectedTab != true))
                 Divider()
                 Button("Next Tab") {

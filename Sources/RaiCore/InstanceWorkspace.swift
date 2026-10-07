@@ -5,6 +5,9 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public let id: RaiWorkspaceReference
     public let label: String
     public let instanceLabel: String
+    /// The saved machine target lets the sidebar identify an ad-hoc remote
+    /// connection that points at the same instance.
+    public let instanceTarget: String?
     public let connectionID: String?
     public let bootID: String
     public let activeTabID: String?
@@ -16,7 +19,7 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
         let visible = tabs.filter { !hidden.contains($0.id) }
         guard !visible.isEmpty || tabs.isEmpty else { return nil }
         return InstanceWorkspace(id: id, label: label, instanceLabel: instanceLabel,
-            connectionID: connectionID, bootID: bootID,
+            instanceTarget: instanceTarget, connectionID: connectionID, bootID: bootID,
             activeTabID: visible.first { $0.id == activeTabID }?.id ?? visible.first?.id,
             tabs: visible)
     }
@@ -37,6 +40,7 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
                     id: source,
                     label: label(object, fallback: workspaceID),
                     instanceLabel: machine.label,
+                    instanceTarget: machine.target,
                     connectionID: machine.connectionID,
                     bootID: snapshot.bootID,
                     activeTabID: object["active_tab_id"]?.stringValue,
@@ -47,6 +51,17 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
                 )
             }
         }
+    }
+
+    /// Returns true when this source workspace belongs to the active machine.
+    /// A direct remote connection uses an ad-hoc endpoint, so endpoint equality
+    /// alone cannot identify the same saved machine.
+    public func belongs(to machine: MachineEntry?) -> Bool {
+        guard let machine else { return false }
+        if id.endpoint == machine.endpoint { return true }
+        return instanceTarget != nil
+            && instanceTarget == machine.target
+            && id.endpoint.session == machine.endpoint.session
     }
 
     fileprivate static func label(_ record: [String: JSONValue], fallback: String) -> String {
