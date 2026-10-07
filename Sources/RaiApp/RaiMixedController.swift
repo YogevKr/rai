@@ -15,6 +15,8 @@ final class RaiMixedController: ObservableObject {
     @Published private(set) var selectedSourceWorkspace: RaiWorkspaceReference?
     @Published private(set) var selectedSourceTabID: String?
     private let machines: MachineDirectory
+    private let closeSource: (InstanceCloseRequest) async throws -> Void
+    @Published private(set) var closingWorkspaces: Set<RaiWorkspaceReference> = []
     private var pendingSourceTabID: String?
     private var snapshotObservation: AnyCancellable?
     private var workspaceObservation: AnyCancellable?
@@ -23,8 +25,11 @@ final class RaiMixedController: ObservableObject {
     private var pendingConnections: Set<MachineEndpoint> = []
     private var started = false
 
-    init(primaryModel: RaiModel, model: RaiMixedViewModel? = nil, machines: MachineDirectory? = nil) {
-        self.machines = machines ?? .shared
+    init(primaryModel: RaiModel, model: RaiMixedViewModel? = nil, machines: MachineDirectory? = nil,
+         closeSource: ((InstanceCloseRequest) async throws -> Void)? = nil) {
+        let directory = machines ?? .shared
+        self.machines = directory
+        self.closeSource = closeSource ?? { try await directory.close($0) }
         self.primaryModel = primaryModel
         self.model = model ?? RaiMixedViewModel()
         compositionObservation = self.model.$composition.sink { [weak self] composition in
@@ -161,15 +166,42 @@ final class RaiMixedController: ObservableObject {
 
     var canCloseSelectedTab: Bool {
         guard let workspace = sourceWorkspace, let tabID = selectedSourceTabID else { return false }
-        return workspace.tabs.contains { $0.id == tabID }
+        return !closingWorkspaces.contains(workspace.id) && workspace.tabs.contains { $0.id == tabID }
     }
 
     func closeSelectedTab() {
         guard canCloseSelectedTab, let workspace = sourceWorkspace, let tabID = selectedSourceTabID else { return }
-        requestClose(workspace, tabID: tabID)
+        closeSourceTab(in: workspace, tabID: tabID)
     }
 
-    func requestClose(_ workspace: InstanceWorkspace, tabID: String?) {
+    /// Close exactly the selected source tab. Hidden siblings can still exist
+    /// when the sidebar shows only one tab, so never infer workspace closure.
+    @discardableResult
+    func closeSourceTab(in workspace: InstanceWorkspace, tabID: String) -> Task<Void, Never>? {
+        guard !closingWorkspaces.contains(workspace.id) else { return nil }
+        let request: InstanceCloseRequest
+        do {
+            request = try InstanceCloseRequest(workspace: workspace, tabID: tabID)
+        } catch {
+            primaryModel.sessionAlert = SessionAlert(kind: .error(
+                title: "Couldn’t Close Tab", message: error.localizedDescription))
+            return nil
+        }
+        closingWorkspaces.insert(workspace.id)
+        return Task {
+            defer { closingWorkspaces.remove(workspace.id) }
+            do {
+                try await closeSource(request)
+                // Source metadata removes the row and selects a surviving tab.
+                // Do not record a local dismissal or change a newer selection.
+            } catch {
+                primaryModel.sessionAlert = SessionAlert(kind: .error(
+                    title: "Couldn’t Close Tab", message: error.localizedDescription))
+            }
+        }
+    }
+
+    func removeFromRai(_ workspace: InstanceWorkspace, tabID: String?) {
         guard model.removeSourceTabs(from: workspace, tabID: tabID) else {
             if let error = model.error {
                 primaryModel.sessionAlert = SessionAlert(kind: .error(title: "Couldn’t Close Tab", message: error))

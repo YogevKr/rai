@@ -37,7 +37,7 @@ struct RaiRootView: View {
                             tabID: tabID
                         )
                     },
-                    onRemoteClose: mixedController.requestClose
+                    onRemoteClose: mixedController.removeFromRai
                 )
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {

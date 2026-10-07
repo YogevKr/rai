@@ -109,19 +109,25 @@ Run regression tests with `swift test --filter HerdrInstallationTests` using the
 ## Closing remote tabs
 
 Use an isolated Herdr server through an owned SSH fixture.
-Start a process in its only tab and record the process ID and terminal ID.
-Select that remote tab in Rai and press Command-W.
-The tab and empty space must disappear from Rai. The source tab and process must remain on Herdr.
-Refresh machine metadata and restart Rai. The closed tab must stay hidden.
-Create another tab in the same Herdr space. The new tab must appear in Rai.
-With two visible tabs, close one and verify that the other remains visible.
-Also close an unselected tab through its context menu before opening it.
+Start a process in a remote tab and record its process ID and terminal ID.
+Keep another remote tab and a local tab open.
+Select the process tab in Rai and press Command-W.
+The tab must disappear from Rai and Herdr. Its process must stop.
+The other remote tab and local tab must remain unchanged.
+Close the actual last tab. Its source space must also disappear.
+
+Use Remove from Rai view to hide a tab while its source process continues.
+Refresh machine metadata and restart Rai. The removed tab must stay hidden.
+With a hidden sibling and one visible tab, press Command-W on the visible tab.
+Only that source tab must close. The hidden sibling must remain on Herdr.
+Also remove an unselected tab through its context menu before opening it.
 
 Dismissals belong to a machine, workspace, tab, and server boot ID.
 They survive Rai reconnects and restarts. A different Herdr server boot can expose the source tabs again.
 Save failures leave the tab visible and show an error.
+Source closure failures also leave the tab visible and permit a retry.
 
-Run `RaiMixedViewModelTests`, `RaiCompositionTests`, and `InstanceWorkspaceTests` for these regression checks.
+Run `RaiMixedCloseTests`, `InstanceCloseRequestTests`, and `RaiMixedViewModelTests` for these regression checks.
 
 ## Local and remote tab titles
 

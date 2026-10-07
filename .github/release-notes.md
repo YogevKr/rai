@@ -1,9 +1,10 @@
-Rai 0.1.84 fixes closing remote tabs.
+Rai 0.1.85 closes remote tabs at their source.
 
-- Command-W removes the selected remote tab from the Rai sidebar.
-- The last visible tab also removes its empty space from Rai.
-- Closed tabs stay hidden after metadata refreshes and Rai restarts.
-- Herdr keeps the source tabs and their processes running.
+- Command-W and Tab → Close Tab close the selected tab in its Herdr instance.
+- Closing the source tab stops its processes. Other tabs remain open.
+- Closing the actual last tab also closes its source space.
+- Remove from Rai view keeps the source tab and its processes running.
+- Failed source closure keeps the tab visible and shows an error.
 
 Rai 0.1.83 fixes local and remote tab titles.
 
