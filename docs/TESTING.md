@@ -113,6 +113,7 @@ Start a process in a remote tab and record its process ID and terminal ID.
 Keep another remote tab and a local tab open.
 Select the process tab in Rai and press Command-W.
 The tab must disappear from Rai and Herdr. Its process must stop.
+Right-click a remote tab and choose Close Tab. It must close in Herdr too.
 The other remote tab and local tab must remain unchanged.
 Close the actual last tab. Its source space must also disappear.
 

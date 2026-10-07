@@ -20,7 +20,8 @@ struct SidebarView: View {
     let selectedRemoteWorkspace: RaiWorkspaceReference?
     let selectedRemoteTabID: String?
     let onRemoteSelection: (RaiWorkspaceReference, String?) -> Void
-    let onRemoteClose: (InstanceWorkspace, String?) -> Void
+    let onRemoteClose: (InstanceWorkspace, String) -> Void
+    let onRemoteRemove: (InstanceWorkspace, String?) -> Void
     @State private var broadcastPresented = false
     @State private var machinesPresented = false
 
@@ -248,7 +249,8 @@ struct SidebarView: View {
                                 selectedWorkspace: selectedRemoteWorkspace,
                                 selectedTabID: selectedRemoteTabID,
                                 onSelect: onRemoteSelection,
-                                onClose: onRemoteClose
+                                onClose: onRemoteClose,
+                                onRemove: onRemoteRemove
                             )
                         }
                     }
@@ -270,7 +272,8 @@ private struct RemoteWorkspaceSection: View {
     let selectedWorkspace: RaiWorkspaceReference?
     let selectedTabID: String?
     let onSelect: (RaiWorkspaceReference, String?) -> Void
-    let onClose: (InstanceWorkspace, String?) -> Void
+    let onClose: (InstanceWorkspace, String) -> Void
+    let onRemove: (InstanceWorkspace, String?) -> Void
     @State private var collapsed = false
 
     private var activeStatus: AgentStatus {
@@ -304,7 +307,10 @@ private struct RemoteWorkspaceSection: View {
                 onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
             }
             .contextMenu {
-                Button("Remove from Rai view") { onClose(workspace, nil) }
+                if let tabID = workspace.activeTabID ?? workspace.tabs.first?.id {
+                    Button("Close Active Tab", role: .destructive) { onClose(workspace, tabID) }
+                }
+                Button("Remove from Rai view") { onRemove(workspace, nil) }
             }
 
             if !collapsed {
@@ -315,7 +321,10 @@ private struct RemoteWorkspaceSection: View {
                         selected: selectedWorkspace == tab.workspace && selectedTabID == tab.id,
                         onSelect: { onSelect(tab.workspace, tab.id) },
                         onClose: {
-                            onClose(workspace, workspace.tabs.count == 1 ? nil : tab.id)
+                            onClose(workspace, tab.id)
+                        },
+                        onRemove: {
+                            onRemove(workspace, tab.id)
                         }
                     )
                 }
@@ -335,6 +344,7 @@ private struct RemoteTabRow: View {
     let selected: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onRemove: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -361,7 +371,8 @@ private struct RemoteTabRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .contextMenu {
-            Button(closesSpace ? "Remove from Rai view" : "Remove tab from Rai view", action: onClose)
+            Button("Close Tab", role: .destructive, action: onClose)
+            Button(closesSpace ? "Remove from Rai view" : "Remove tab from Rai view", action: onRemove)
         }
     }
 }

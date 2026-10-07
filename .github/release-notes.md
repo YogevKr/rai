@@ -1,3 +1,8 @@
+Rai 0.1.86 adds source closure to remote tab menus.
+
+- Right-click a remote tab and choose Close Tab to close it in Herdr.
+- Remove from Rai view remains available when the source must keep running.
+
 Rai 0.1.85 closes remote tabs at their source.
 
 - Command-W and Tab → Close Tab close the selected tab in its Herdr instance.

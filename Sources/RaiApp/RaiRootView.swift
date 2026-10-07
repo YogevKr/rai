@@ -37,7 +37,10 @@ struct RaiRootView: View {
                             tabID: tabID
                         )
                     },
-                    onRemoteClose: mixedController.removeFromRai
+                    onRemoteClose: { workspace, tabID in
+                        mixedController.closeSourceTab(in: workspace, tabID: tabID)
+                    },
+                    onRemoteRemove: mixedController.removeFromRai
                 )
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
