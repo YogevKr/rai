@@ -16,8 +16,9 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     /// The stable instance identity used when a saved machine and a direct
     /// remote connection describe the same Herdr endpoint.
     public var sourceIdentity: String? {
-        if let instanceTarget {
-            return Self.normalizedTarget(instanceTarget)
+        if let instanceTarget,
+           let identity = Self.normalizedTarget(instanceTarget) {
+            return identity
         }
         guard let profileID = id.endpoint.profileID,
               profileID.hasPrefix("adhoc:") else { return nil }
