@@ -201,9 +201,16 @@ final class RaiMixedController: ObservableObject {
                 $0.sidebarIdentity == workspace.sidebarIdentity
                     && $0.tabs.contains { $0.id == tabID }
             } ?? workspace
-            // Herdr rejects tab.close for a workspace's last tab. Close the
-            // workspace in that case, while preserving hidden source tabs.
-            let closesWorkspace = current.tabs.count == 1
+            // Herdr rejects tab.close for a workspace's last tab. A sidebar
+            // row can omit tabs dismissed from Rai, so keep using tab.close
+            // when Rai knows that a hidden sibling still exists. Otherwise
+            // workspace.close would fail validation against Herdr's full row.
+            let hasHiddenSibling = model.composition.dismissedTabs.contains {
+                $0.workspace == current.id && $0.bootID == current.bootID && $0.tabID != tabID
+            } || closedSourceTabs.contains {
+                $0.workspace == current.id && $0.bootID == current.bootID && $0.tabID != tabID
+            }
+            let closesWorkspace = current.tabs.count == 1 && !hasHiddenSibling
             request = try InstanceCloseRequest(
                 workspace: current,
                 tabID: closesWorkspace ? nil : tabID
