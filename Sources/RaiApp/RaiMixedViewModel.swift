@@ -134,35 +134,35 @@ final class RaiMixedViewModel: ObservableObject {
         endpoints.removeValue(forKey: endpoint)
     }
 
-    /// Removes a remote workspace from Rai while leaving Herdr's workspace and
-    /// every process in it running on the source instance.
+    /// Save dismissal before publishing it. Live directory snapshots must not
+    /// restore closed tabs, including tabs that Rai has never rendered.
     @discardableResult
-    func removeSourceWorkspace(_ reference: RaiWorkspaceReference) -> Bool {
+    func removeSourceTabs(from workspace: InstanceWorkspace, tabID: String? = nil) -> Bool {
+        let tabIDs = Set(workspace.tabs.filter { tabID == nil || $0.id == tabID }.map(\.id))
+        guard !tabIDs.isEmpty else { return false }
         var next = composition
-        let oldCount = next.spaces.count
-        next.spaces.removeAll { $0.source == reference }
-        guard next.spaces.count != oldCount else { return false }
-        guard replace(next) else { return false }
-        return save()
-    }
-
-    /// Removes one remote tab from Rai while leaving its Herdr tab running.
-    @discardableResult
-    func removeSourceTab(_ reference: RaiWorkspaceReference, tabID: String) -> Bool {
-        var next = composition
-        guard let spaceIndex = next.spaces.firstIndex(where: { $0.source == reference }) else {
+        next.dismissedTabs.removeAll {
+            $0.workspace.endpoint == workspace.id.endpoint && $0.bootID != workspace.bootID
+        }
+        for id in tabIDs.sorted() {
+            let dismissed = RaiDismissedTab(workspace: workspace.id, bootID: workspace.bootID, tabID: id)
+            if !next.dismissedTabs.contains(dismissed) { next.dismissedTabs.append(dismissed) }
+        }
+        if let index = next.spaces.firstIndex(where: { $0.source == workspace.id }) {
+            next.spaces[index].tabs.removeAll { tab in
+                tab.paneSlots.contains { $0.source.workspace == workspace.id && tabIDs.contains($0.source.tabID) }
+            }
+            if next.spaces[index].tabs.isEmpty { next.spaces.remove(at: index) }
+        }
+        do {
+            try store.save(next)
+            composition = next
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
             return false
         }
-        let oldTabs = next.spaces[spaceIndex].tabs
-        next.spaces[spaceIndex].tabs.removeAll { tab in
-            tab.paneSlots.contains { $0.source.tabID == tabID }
-        }
-        guard next.spaces[spaceIndex].tabs.count != oldTabs.count else { return false }
-        if next.spaces[spaceIndex].tabs.isEmpty {
-            next.spaces.remove(at: spaceIndex)
-        }
-        guard replace(next) else { return false }
-        return save()
     }
 
     func resolutions(for tabID: UUID) throws -> [RaiPaneResolution] {

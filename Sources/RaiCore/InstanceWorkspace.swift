@@ -10,6 +10,17 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public let activeTabID: String?
     public let tabs: [InstanceTab]
 
+    /// A dismissed tab stays on Herdr. Filter only this server incarnation.
+    public func excludingDismissedTabs(_ dismissed: [RaiDismissedTab]) -> InstanceWorkspace? {
+        let hidden = Set(dismissed.filter { $0.workspace == id && $0.bootID == bootID }.map(\.tabID))
+        let visible = tabs.filter { !hidden.contains($0.id) }
+        guard !visible.isEmpty || tabs.isEmpty else { return nil }
+        return InstanceWorkspace(id: id, label: label, instanceLabel: instanceLabel,
+            connectionID: connectionID, bootID: bootID,
+            activeTabID: visible.first { $0.id == activeTabID }?.id ?? visible.first?.id,
+            tabs: visible)
+    }
+
     public static func entries(
         machines: [MachineEntry],
         snapshots: [MachineEndpoint: HerdrEndpointSnapshot],

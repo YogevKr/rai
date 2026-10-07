@@ -107,7 +107,7 @@ final class RaiMixedViewModelTests: XCTestCase {
         )
         let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
 
-        XCTAssertTrue(model.removeSourceTab(reference, tabID: "t1"))
+        XCTAssertTrue(model.removeSourceTabs(from: try workspace(tabIDs: ["t1", "t2"]), tabID: "t1"))
         XCTAssertEqual(model.composition.spaces.count, 1)
         XCTAssertEqual(model.composition.spaces[0].tabs.map(\.label), ["Two"])
     }
@@ -121,7 +121,7 @@ final class RaiMixedViewModelTests: XCTestCase {
         let space = RaiSpace(source: reference, tabs: [RaiTab(paneSlots: [RaiPaneSlot(source: source)])])
         let model = RaiMixedViewModel(composition: RaiComposition(spaces: [space]), store: store)
 
-        XCTAssertTrue(model.removeSourceTab(reference, tabID: "t1"))
+        XCTAssertTrue(model.removeSourceTabs(from: try workspace(tabIDs: ["t1"]), tabID: "t1"))
         XCTAssertTrue(model.composition.spaces.isEmpty)
     }
 
@@ -136,8 +136,62 @@ final class RaiMixedViewModelTests: XCTestCase {
             store: store
         )
 
-        XCTAssertTrue(model.removeSourceWorkspace(first))
+        XCTAssertTrue(model.removeSourceTabs(from: try workspace(tabIDs: ["t1"])))
         XCTAssertEqual(model.composition.spaces.map(\.source), [second])
+    }
+
+    func testClosedTabStaysHiddenAfterSnapshotRefreshAndRaiRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RaiCompositionStore(fileURL: root.appendingPathComponent("mixed-view.json"))
+        let source = try workspace(tabIDs: ["t1", "t2"])
+        let model = RaiMixedViewModel(store: store)
+        // The sidebar can close a tab before its first render creates a composition slot.
+        XCTAssertTrue(model.removeSourceTabs(from: source, tabID: "t1"))
+        XCTAssertEqual(source.excludingDismissedTabs(model.composition.dismissedTabs)?.tabs.map(\.id), ["t2"])
+        XCTAssertEqual(source.tabs.map(\.id), ["t1", "t2"], "Herdr metadata stays unchanged")
+
+        let reloaded = RaiMixedViewModel(store: store)
+        XCTAssertTrue(reloaded.load())
+        XCTAssertEqual(source.excludingDismissedTabs(reloaded.composition.dismissedTabs)?.activeTabID, "t2")
+        XCTAssertTrue(reloaded.removeSourceTabs(from: source, tabID: "t2"))
+        XCTAssertNil(source.excludingDismissedTabs(reloaded.composition.dismissedTabs))
+    }
+
+    func testDismissalDoesNotHideNewTabsOtherInstancesOrRestartedServers() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = RaiMixedViewModel(store: .init(fileURL: root.appendingPathComponent("mixed-view.json")))
+        XCTAssertTrue(model.removeSourceTabs(from: try workspace(tabIDs: ["t1"])))
+        let dismissed = model.composition.dismissedTabs
+        XCTAssertEqual(try workspace(tabIDs: ["t1", "t2"]).excludingDismissedTabs(dismissed)?.tabs.map(\.id), ["t2"])
+        XCTAssertEqual(try workspace(tabIDs: ["t1"], bootID: "new-boot").excludingDismissedTabs(dismissed)?.tabs.count, 1)
+        XCTAssertEqual(try workspace(tabIDs: ["t1"], endpoint: .init(profileID: "remote", session: "default"))
+            .excludingDismissedTabs(dismissed)?.tabs.count, 1)
+    }
+
+    func testFailedDismissalSaveKeepsTabVisible() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data().write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = RaiMixedViewModel(store: .init(fileURL: root.appendingPathComponent("cannot-write.json")))
+        let source = try workspace(tabIDs: ["t1"])
+        XCTAssertFalse(model.removeSourceTabs(from: source))
+        XCTAssertNotNil(model.error)
+        XCTAssertNotNil(source.excludingDismissedTabs(model.composition.dismissedTabs))
+    }
+
+    private func workspace(tabIDs: [String], bootID: String = "boot", endpoint: MachineEndpoint? = nil) throws -> InstanceWorkspace {
+        let endpoint = endpoint ?? local
+        let object: [String: Any] = [
+            "boot_id": bootID, "revision": 1,
+            "workspaces": [["workspace_id": "w1", "label": "Remote", "active_tab_id": tabIDs.first ?? ""]],
+            "tabs": tabIDs.map { ["workspace_id": "w1", "tab_id": $0, "label": $0] },
+            "panes": tabIDs.enumerated().map { ["workspace_id": "w1", "tab_id": $0.element, "pane_id": "p\($0.offset + 1)"] },
+        ]
+        let snapshot = try JSONDecoder().decode(HerdrEndpointSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        return try XCTUnwrap(InstanceWorkspace.entries(machines: [.init(endpoint: endpoint, label: "Test", health: .online)],
+            snapshots: [endpoint: snapshot], excluding: nil).first)
     }
 
     private func snapshot() throws -> HerdrEndpointSnapshot {

@@ -27,8 +27,9 @@ final class RaiMixedController: ObservableObject {
         self.machines = machines ?? .shared
         self.primaryModel = primaryModel
         self.model = model ?? RaiMixedViewModel()
-        compositionObservation = self.model.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
+        compositionObservation = self.model.$composition.sink { [weak self] composition in
+            guard let self else { return }
+            self.updateRemoteWorkspaces(self.machines.workspaces, composition: composition)
         }
         machineObservation = self.machines.$state.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.syncSessions() }
@@ -38,8 +39,8 @@ final class RaiMixedController: ObservableObject {
             Task { @MainActor [weak self] in self?.refreshSourceSelection() }
         }
         workspaceObservation = self.machines.$workspaces.sink { [weak self] workspaces in
-            guard let self, self.remoteWorkspaces != workspaces else { return }
-            self.remoteWorkspaces = workspaces
+            guard let self else { return }
+            self.updateRemoteWorkspaces(workspaces, composition: self.model.composition)
             Task { @MainActor [weak self] in self?.refreshSourceSelection() }
         }
     }
@@ -85,7 +86,12 @@ final class RaiMixedController: ObservableObject {
     }
 
     private var sourceWorkspace: InstanceWorkspace? {
-        machines.workspaces.first { $0.id == selectedSourceWorkspace }
+        remoteWorkspaces.first { $0.id == selectedSourceWorkspace }
+    }
+
+    private func updateRemoteWorkspaces(_ workspaces: [InstanceWorkspace], composition: RaiComposition) {
+        let visible = workspaces.compactMap { $0.excludingDismissedTabs(composition.dismissedTabs) }
+        if remoteWorkspaces != visible { remoteWorkspaces = visible }
     }
 
     private func refreshSourceSelection() {
@@ -164,19 +170,15 @@ final class RaiMixedController: ObservableObject {
     }
 
     func requestClose(_ workspace: InstanceWorkspace, tabID: String?) {
-        let removed: Bool
-        if let tabID, workspace.tabs.count > 1 {
-            removed = model.removeSourceTab(workspace.id, tabID: tabID)
-            if removed, selectedSourceWorkspace == workspace.id, selectedSourceTabID == tabID {
-                selectPrimary()
+        guard model.removeSourceTabs(from: workspace, tabID: tabID) else {
+            if let error = model.error {
+                primaryModel.sessionAlert = SessionAlert(kind: .error(title: "Couldn’t Close Tab", message: error))
             }
-        } else {
-            removed = model.removeSourceWorkspace(workspace.id)
-            if removed, selectedSourceWorkspace == workspace.id {
-                selectPrimary()
-            }
+            return
         }
-        guard removed else { return }
+        if selectedSourceWorkspace == workspace.id, tabID == nil || selectedSourceTabID == tabID {
+            selectPrimary()
+        }
         syncSessions()
     }
 

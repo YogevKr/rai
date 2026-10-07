@@ -106,6 +106,23 @@ Keep UI evidence for both platforms. Unit tests alone do not complete this scena
 
 Run regression tests with `swift test --filter HerdrInstallationTests` using the Xcode developer directory.
 
+## Closing remote tabs
+
+Use an isolated Herdr server through an owned SSH fixture.
+Start a process in its only tab and record the process ID and terminal ID.
+Select that remote tab in Rai and press Command-W.
+The tab and empty space must disappear from Rai. The source tab and process must remain on Herdr.
+Refresh machine metadata and restart Rai. The closed tab must stay hidden.
+Create another tab in the same Herdr space. The new tab must appear in Rai.
+With two visible tabs, close one and verify that the other remains visible.
+Also close an unselected tab through its context menu before opening it.
+
+Dismissals belong to a machine, workspace, tab, and server boot ID.
+They survive Rai reconnects and restarts. A different Herdr server boot can expose the source tabs again.
+Save failures leave the tab visible and show an error.
+
+Run `RaiMixedViewModelTests`, `RaiCompositionTests`, and `InstanceWorkspaceTests` for these regression checks.
+
 ## Local and remote tab titles
 
 Run the title checks with the Xcode developer directory:

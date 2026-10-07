@@ -94,6 +94,16 @@ final class RaiCompositionTests: XCTestCase {
         XCTAssertEqual(decoded.paneSlot(id: id)?.source.paneID, "p1")
     }
 
+    func testDismissalsPersistAndOldCompositionFilesStillLoad() throws {
+        var composition = RaiComposition()
+        let oldData = try JSONEncoder().encode(composition)
+        XCTAssertTrue(try JSONDecoder().decode(RaiComposition.self, from: oldData).dismissedTabs.isEmpty)
+        composition.dismissedTabs = [RaiDismissedTab(
+            workspace: .init(endpoint: remote, workspaceID: "w1"), bootID: "boot", tabID: "t1")]
+        let data = try JSONEncoder().encode(composition)
+        XCTAssertEqual(try JSONDecoder().decode(RaiComposition.self, from: data).dismissedTabs, composition.dismissedTabs)
+    }
+
     func testStoreCreatesDirectoryAndLoadsComposition() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -1,3 +1,10 @@
+Rai 0.1.84 fixes closing remote tabs.
+
+- Command-W removes the selected remote tab from the Rai sidebar.
+- The last visible tab also removes its empty space from Rai.
+- Closed tabs stay hidden after metadata refreshes and Rai restarts.
+- Herdr keeps the source tabs and their processes running.
+
 Rai 0.1.83 fixes local and remote tab titles.
 
 - Codex tabs show `codex` when their only title is a session UUID.

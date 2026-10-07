@@ -8,6 +8,7 @@ public enum RaiCompositionLimits {
     public static let maxPaneSlots = 512
     public static let maxTextBytes = 256
     public static let maxEncodedBytes = 1_048_576
+    public static let maxDismissedTabs = 4096
 }
 
 public enum RaiCompositionError: LocalizedError, Equatable, Sendable {
@@ -200,6 +201,19 @@ public struct RaiSpace: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+/// A tab removed from Rai, scoped to one Herdr server incarnation.
+public struct RaiDismissedTab: Codable, Hashable, Sendable {
+    public let workspace: RaiWorkspaceReference
+    public let bootID: String
+    public let tabID: String
+
+    public init(workspace: RaiWorkspaceReference, bootID: String, tabID: String) {
+        self.workspace = workspace
+        self.bootID = bootID
+        self.tabID = tabID
+    }
+}
+
 /// Rai-owned presentation state. Herdr remains the owner of every source pane.
 public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
     public static let schemaVersion = 1
@@ -207,6 +221,7 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var label: String
     public var spaces: [RaiSpace]
+    public var dismissedTabs: [RaiDismissedTab] = []
 
     public init(id: UUID = UUID(), label: String = "Default", spaces: [RaiSpace] = []) {
         self.id = id
@@ -215,7 +230,7 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, label, spaces
+        case schemaVersion, id, label, spaces, dismissedTabs
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +242,7 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         label = try container.decode(String.self, forKey: .label)
         spaces = try container.decode([RaiSpace].self, forKey: .spaces)
+        dismissedTabs = try container.decodeIfPresent([RaiDismissedTab].self, forKey: .dismissedTabs) ?? []
         try validate()
     }
 
@@ -237,6 +253,7 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
         try container.encode(id, forKey: .id)
         try container.encode(label, forKey: .label)
         try container.encode(spaces, forKey: .spaces)
+        if !dismissedTabs.isEmpty { try container.encode(dismissedTabs, forKey: .dismissedTabs) }
     }
 
     public var tabs: [RaiTab] {
@@ -261,6 +278,14 @@ public struct RaiComposition: Codable, Identifiable, Equatable, Sendable {
 
     public func validate() throws {
         try RaiCompositionValidation.label(label, name: "view label")
+        guard dismissedTabs.count <= RaiCompositionLimits.maxDismissedTabs else {
+            throw RaiCompositionError.limitExceeded("dismissed tab")
+        }
+        for tab in dismissedTabs {
+            try tab.workspace.validate()
+            try RaiCompositionValidation.text(tab.bootID, name: "server boot identifier")
+            try RaiCompositionValidation.text(tab.tabID, name: "tab identifier")
+        }
         guard spaces.count <= RaiCompositionLimits.maxSpaces else {
             throw RaiCompositionError.limitExceeded("space")
         }
