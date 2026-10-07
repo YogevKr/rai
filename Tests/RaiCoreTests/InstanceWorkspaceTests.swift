@@ -60,6 +60,38 @@ final class InstanceWorkspaceTests: XCTestCase {
         XCTAssertTrue(workspace.belongs(to: adHoc))
     }
 
+    func testAdHocAndSavedWorkspaceUseOneSidebarIdentity() throws {
+        let saved = MachineEndpoint(profileID: "saved", session: "default")
+        let adHoc = MachineEndpoint(profileID: "adhoc:sawmills-cloud", session: "default")
+        let savedMachine = MachineEntry(
+            endpoint: saved,
+            label: "sawmills-cloud",
+            health: .online,
+            target: "sawmills-cloud"
+        )
+        let directMachine = MachineEntry(
+            endpoint: adHoc,
+            label: "Current Herd",
+            health: .online
+        )
+        let savedWorkspace = try XCTUnwrap(InstanceWorkspace.entries(
+            machines: [savedMachine],
+            snapshots: [saved: try snapshot(label: "Remote", paneID: "w1:p1")],
+            excluding: nil
+        ).first)
+        let directWorkspace = try XCTUnwrap(InstanceWorkspace.entries(
+            machines: [directMachine],
+            snapshots: [adHoc: try snapshot(label: "Remote", paneID: "w1:p1")],
+            excluding: nil
+        ).first)
+
+        XCTAssertEqual(savedWorkspace.sourceIdentity, "sawmills-cloud")
+        XCTAssertEqual(directWorkspace.sourceIdentity, "sawmills-cloud")
+        XCTAssertEqual(savedWorkspace.sidebarIdentity, directWorkspace.sidebarIdentity)
+        XCTAssertTrue(savedWorkspace.belongs(to: directMachine))
+        XCTAssertTrue(directWorkspace.belongs(to: savedMachine))
+    }
+
     func testWorkspaceDoesNotMatchDifferentRemoteTargetOrSession() throws {
         let saved = MachineEndpoint(profileID: "saved", session: "default")
         let workspace = try XCTUnwrap(

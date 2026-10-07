@@ -576,6 +576,12 @@ final class RaiModel: ObservableObject {
     @Published var newWorkspaceRequest: NewWorkspaceRequest?
     @Published var remoteHerdRequest: RemoteHerdRequest?
     @Published var sessionAlert: SessionAlert?
+    /// A double click must not create two spaces before the first snapshot
+    /// reaches the sidebar. The token resets when that request finishes.
+    private var workspaceCreationAttempt: UUID?
+    /// Each saved remote endpoint has its own guard, so two different machines
+    /// can still receive concurrent space creation requests.
+    private var remoteWorkspaceCreationEndpoints: Set<MachineEndpoint> = []
     // Live split ratio while a divider is being dragged (split id → ratio),
     // for smooth local feedback; cleared once herdr's snapshot reflects the commit.
     @Published var dragRatios: [String: Double] = [:]
@@ -3742,7 +3748,20 @@ final class RaiModel: ObservableObject {
     }
 
     func newWorkspace() {
-        runAction(["workspace", "create", "--focus"])
+        guard workspaceCreationAttempt == nil else { return }
+        let attempt = UUID()
+        workspaceCreationAttempt = attempt
+        let generation = connectionGeneration
+        Task {
+            defer {
+                if workspaceCreationAttempt == attempt {
+                    workspaceCreationAttempt = nil
+                }
+            }
+            _ = await runHerdr(["workspace", "create", "--focus"])
+            guard generation == connectionGeneration else { return }
+            await refreshSnapshot(keepSelection: false)
+        }
     }
 
     func newWorkspace(
@@ -3754,7 +3773,12 @@ final class RaiModel: ObservableObject {
             return
         }
 
+        guard remoteWorkspaceCreationEndpoints.insert(entry.endpoint).inserted else {
+            return
+        }
+
         Task {
+            defer { remoteWorkspaceCreationEndpoints.remove(entry.endpoint) }
             do {
                 let directory = MachineDirectory.shared
                 try await directory.ensureConnected(entry.endpoint)

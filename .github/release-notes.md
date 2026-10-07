@@ -1,3 +1,9 @@
+Rai 0.1.89 prevents duplicate space creation.
+
+- Repeated New Space clicks create one space per request.
+- Direct and saved remote connections use one sidebar identity.
+- Multiple real spaces on one instance remain visible.
+
 Rai 0.1.88 removes duplicate remote spaces.
 
 - Rai shows one row when a direct remote connection and its saved machine mirror describe the same space.

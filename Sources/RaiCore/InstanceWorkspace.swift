@@ -13,6 +13,25 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public let activeTabID: String?
     public let tabs: [InstanceTab]
 
+    /// The stable instance identity used when a saved machine and a direct
+    /// remote connection describe the same Herdr endpoint.
+    public var sourceIdentity: String? {
+        if let instanceTarget {
+            return Self.normalizedTarget(instanceTarget)
+        }
+        guard let profileID = id.endpoint.profileID,
+              profileID.hasPrefix("adhoc:") else { return nil }
+        return Self.normalizedTarget(String(profileID.dropFirst("adhoc:".count)))
+    }
+
+    /// The sidebar identity includes the session and source workspace.
+    public var sidebarIdentity: String {
+        let owner = sourceIdentity
+            ?? id.endpoint.profileID
+            ?? instanceLabel
+        return "\(owner)\u{1f}\(id.endpoint.session)\u{1f}\(id.workspaceID)"
+    }
+
     /// A dismissed tab stays on Herdr. Filter only this server incarnation.
     public func excludingDismissedTabs(_ dismissed: [RaiDismissedTab]) -> InstanceWorkspace? {
         let hidden = Set(dismissed.filter { $0.workspace == id && $0.bootID == bootID }.map(\.tabID))
@@ -59,9 +78,23 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     public func belongs(to machine: MachineEntry?) -> Bool {
         guard let machine else { return false }
         if id.endpoint == machine.endpoint { return true }
-        return instanceTarget != nil
-            && instanceTarget == machine.target
-            && id.endpoint.session == machine.endpoint.session
+        guard id.endpoint.session == machine.endpoint.session,
+              let sourceIdentity,
+              let machineIdentity = machine.target.flatMap(Self.normalizedTarget)
+                ?? machine.endpoint.profileID.flatMap(Self.adHocTarget) else {
+            return false
+        }
+        return sourceIdentity == machineIdentity
+    }
+
+    private static func adHocTarget(_ profileID: String) -> String? {
+        guard profileID.hasPrefix("adhoc:") else { return nil }
+        return normalizedTarget(String(profileID.dropFirst("adhoc:".count)))
+    }
+
+    private static func normalizedTarget(_ value: String) -> String? {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     fileprivate static func label(_ record: [String: JSONValue], fallback: String) -> String {

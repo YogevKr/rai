@@ -39,11 +39,7 @@ struct SidebarView: View {
         return remoteWorkspaces
             .filter { !$0.belongs(to: model.currentMachineEntry) }
             .filter { workspace in
-                let owner = workspace.instanceTarget
-                    ?? workspace.id.endpoint.profileID
-                    ?? workspace.instanceLabel
-                let key = "\(owner)\u{1f}\(workspace.id.endpoint.session)\u{1f}\(workspace.id.workspaceID)"
-                return seen.insert(key).inserted
+                seen.insert(workspace.sidebarIdentity).inserted
             }
     }
 
