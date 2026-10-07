@@ -105,7 +105,9 @@ final class RaiMixedController: ObservableObject {
         })
         closedSourceTabs = closedSourceTabs.intersection(liveTabs)
         let dismissed = composition.dismissedTabs + Array(closedSourceTabs)
-        let visible = workspaces.compactMap { $0.excludingDismissedTabs(dismissed) }
+        let visible = InstanceWorkspace.deduplicated(
+            workspaces.compactMap { $0.excludingDismissedTabs(dismissed) }
+        )
         if remoteWorkspaces != visible { remoteWorkspaces = visible }
     }
 
@@ -193,10 +195,19 @@ final class RaiMixedController: ObservableObject {
         do {
             // A reconnect can replace the displayed connection between the
             // context-menu click and this task. Capture the newest identity.
-            let current = remoteWorkspaces.first {
+            let current = machines.workspaces.first {
                 $0.id == workspace.id && $0.tabs.contains { $0.id == tabID }
+            } ?? remoteWorkspaces.first {
+                $0.sidebarIdentity == workspace.sidebarIdentity
+                    && $0.tabs.contains { $0.id == tabID }
             } ?? workspace
-            request = try InstanceCloseRequest(workspace: current, tabID: tabID)
+            // Herdr rejects tab.close for a workspace's last tab. Close the
+            // workspace in that case, while preserving hidden source tabs.
+            let closesWorkspace = current.tabs.count == 1
+            request = try InstanceCloseRequest(
+                workspace: current,
+                tabID: closesWorkspace ? nil : tabID
+            )
         } catch {
             primaryModel.sessionAlert = SessionAlert(kind: .error(
                 title: "Couldn’t Close Tab", message: error.localizedDescription))
@@ -207,11 +218,16 @@ final class RaiMixedController: ObservableObject {
             defer { closingWorkspaces.remove(workspace.id) }
             do {
                 try await closeSource(request)
-                closedSourceTabs.insert(RaiDismissedTab(
-                    workspace: request.workspace.id,
-                    bootID: request.workspace.bootID,
-                    tabID: tabID
-                ))
+                let tabsToHide = request.tabID == nil
+                    ? request.workspace.tabs.map(\.id)
+                    : [tabID]
+                closedSourceTabs.formUnion(tabsToHide.map {
+                    RaiDismissedTab(
+                        workspace: request.workspace.id,
+                        bootID: request.workspace.bootID,
+                        tabID: $0
+                    )
+                })
                 updateRemoteWorkspaces(machines.workspaces, composition: model.composition)
                 if selectedSourceWorkspace == request.workspace.id,
                    selectedSourceTabID == tabID {

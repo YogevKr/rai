@@ -3,6 +3,9 @@ Rai 0.1.90 keeps remote closure usable during reconnects.
 - A successful remote close disappears from Rai before the next metadata snapshot arrives.
 - Rai captures the newest remote connection identity before closing a tab.
 - SSH URI and plain target forms use one remote sidebar identity.
+- Duplicate source rows use one canonical connection, so close actions reach the live instance.
+- Closing the last remote tab closes its source workspace because Herdr rejects last-tab closure.
+- Remote New Space stays guarded until the new space appears in endpoint metadata.
 
 Rai 0.1.89 prevents duplicate space creation.
 

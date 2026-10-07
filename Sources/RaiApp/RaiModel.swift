@@ -3778,7 +3778,6 @@ final class RaiModel: ObservableObject {
         }
 
         Task {
-            defer { remoteWorkspaceCreationEndpoints.remove(entry.endpoint) }
             do {
                 let directory = MachineDirectory.shared
                 try await directory.ensureConnected(entry.endpoint)
@@ -3790,6 +3789,9 @@ final class RaiModel: ObservableObject {
                     on: current.endpoint,
                     connectionID: connectionID
                 )
+                // Keep the endpoint guarded until its metadata stream shows
+                // the new space. The create RPC can finish before that update.
+                await waitForCreatedWorkspace(workspaceID, on: current.endpoint, directory: directory)
                 onCreated?(RaiWorkspaceReference(
                     endpoint: current.endpoint,
                     workspaceID: workspaceID
@@ -3800,6 +3802,22 @@ final class RaiModel: ObservableObject {
                     message: error.localizedDescription
                 ))
             }
+            remoteWorkspaceCreationEndpoints.remove(entry.endpoint)
+        }
+    }
+
+    private func waitForCreatedWorkspace(
+        _ workspaceID: String,
+        on endpoint: MachineEndpoint,
+        directory: MachineDirectory
+    ) async {
+        for _ in 0..<50 {
+            if directory.workspaces.contains(where: {
+                $0.id.endpoint == endpoint && $0.id.workspaceID == workspaceID
+            }) {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 

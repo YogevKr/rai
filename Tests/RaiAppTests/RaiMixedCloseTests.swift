@@ -52,6 +52,38 @@ final class RaiMixedCloseTests: XCTestCase {
         XCTAssertNil(primary.sessionAlert)
     }
 
+    func testCloseLastSourceTabClosesWorkspace() async throws {
+        let (primary, model, workspace, snapshot) = try fixture()
+        let oneTabSnapshot = try JSONDecoder().decode(HerdrEndpointSnapshot.self, from: Data("""
+        {"boot_id":"boot","revision":1,
+         "workspaces":[{"workspace_id":"w1","label":"Cloud","active_tab_id":"t1"}],
+         "tabs":[{"workspace_id":"w1","tab_id":"t1"}],
+         "panes":[{"workspace_id":"w1","tab_id":"t1","pane_id":"p1"}]}
+        """.utf8))
+        let oneTabWorkspace = try XCTUnwrap(InstanceWorkspace.entries(
+            machines: [MachineEntry(
+                endpoint: workspace.id.endpoint,
+                label: workspace.instanceLabel,
+                connectionID: workspace.connectionID,
+                health: .online,
+                target: workspace.instanceTarget
+            )],
+            snapshots: [workspace.id.endpoint: oneTabSnapshot],
+            excluding: nil
+        ).first)
+        var requests: [InstanceCloseRequest] = []
+        let controller = RaiMixedController(primaryModel: primary, model: model, machines: MachineDirectory(),
+            closeSource: { requests.append($0) })
+        let task = try XCTUnwrap(controller.closeSourceTab(in: oneTabWorkspace, tabID: "t1"))
+        await task.value
+
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.method, "workspace.close")
+        XCTAssertEqual(request.params["workspace_id"], .string("w1"))
+        XCTAssertNoThrow(try request.validate(oneTabSnapshot))
+        XCTAssertEqual(snapshot.bootID, oneTabSnapshot.bootID)
+    }
+
     func testDuplicateCloseWaitsForCapturedRequestAndDoesNotChangeNewSelection() async throws {
         let (primary, model, workspace, _) = try fixture()
         var requests: [InstanceCloseRequest] = []

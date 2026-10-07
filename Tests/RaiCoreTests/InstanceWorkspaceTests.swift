@@ -119,6 +119,32 @@ final class InstanceWorkspaceTests: XCTestCase {
         )))
     }
 
+    func testDeduplicatedKeepsOneWorkspaceForSavedAndAdHocTarget() throws {
+        let saved = MachineEndpoint(profileID: "saved", session: "default")
+        let adHoc = MachineEndpoint(profileID: "adhoc:sawmills-cloud", session: "default")
+        let savedWorkspace = try XCTUnwrap(InstanceWorkspace.entries(
+            machines: [MachineEntry(
+                endpoint: saved, label: "sawmills-cloud", health: .online,
+                target: "sawmills-cloud"
+            )],
+            snapshots: [saved: try snapshot(label: "Remote", paneID: "w1:p1")],
+            excluding: nil
+        ).first)
+        let adHocWorkspace = try XCTUnwrap(InstanceWorkspace.entries(
+            machines: [MachineEntry(
+                endpoint: adHoc, label: "Current Herd", health: .online,
+                target: "ssh://sawmills-cloud"
+            )],
+            snapshots: [adHoc: try snapshot(label: "Remote", paneID: "w1:p1")],
+            excluding: nil
+        ).first)
+
+        let result = InstanceWorkspace.deduplicated([savedWorkspace, adHocWorkspace])
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result.first?.sidebarIdentity, savedWorkspace.sidebarIdentity)
+    }
+
     func testWorkspaceDoesNotMatchDifferentRemoteTargetOrSession() throws {
         let saved = MachineEndpoint(profileID: "saved", session: "default")
         let workspace = try XCTUnwrap(

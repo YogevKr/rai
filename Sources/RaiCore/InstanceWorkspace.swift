@@ -33,6 +33,27 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
         return "\(owner)\u{1f}\(id.endpoint.session)\u{1f}\(id.workspaceID)"
     }
 
+    /// Keeps one source row when the same SSH target is present as both a
+    /// saved machine and an ad-hoc connection.
+    public static func deduplicated(_ workspaces: [InstanceWorkspace]) -> [InstanceWorkspace] {
+        var result: [InstanceWorkspace] = []
+        var indexes: [String: Int] = [:]
+        for workspace in workspaces {
+            let key = workspace.sidebarIdentity
+            guard let index = indexes[key] else {
+                indexes[key] = result.count
+                result.append(workspace)
+                continue
+            }
+            // Prefer the copy with a current connection identity. A stale
+            // catalog row cannot close or render the source reliably.
+            if result[index].connectionID == nil, workspace.connectionID != nil {
+                result[index] = workspace
+            }
+        }
+        return result
+    }
+
     /// A dismissed tab stays on Herdr. Filter only this server incarnation.
     public func excludingDismissedTabs(_ dismissed: [RaiDismissedTab]) -> InstanceWorkspace? {
         let hidden = Set(dismissed.filter { $0.workspace == id && $0.bootID == bootID }.map(\.tabID))

@@ -35,12 +35,9 @@ struct SidebarView: View {
     /// The primary remote connection and its saved machine mirror can report
     /// the same source space. Keep one row per target, session, and workspace.
     private var visibleRemoteWorkspaces: [InstanceWorkspace] {
-        var seen = Set<String>()
-        return remoteWorkspaces
-            .filter { !$0.belongs(to: model.currentMachineEntry) }
-            .filter { workspace in
-                seen.insert(workspace.sidebarIdentity).inserted
-            }
+        InstanceWorkspace.deduplicated(
+            remoteWorkspaces.filter { !$0.belongs(to: model.currentMachineEntry) }
+        )
     }
 
     var body: some View {
