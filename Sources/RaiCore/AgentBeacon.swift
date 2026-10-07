@@ -429,7 +429,22 @@ public struct AgentBeacon: Codable, Equatable, Sendable {
 }
 
 public enum AgentNotificationBody {
-    public static func compose(status: AgentStatus, beacon: AgentBeacon?) -> String {
+    public static func compose(
+        status: AgentStatus,
+        beacon: AgentBeacon?,
+        programStatus: ProgramStatusInfo? = nil
+    ) -> String {
+        let programMessage = programStatus?.records
+            .first(where: { $0.id.isEmpty })
+            .flatMap { $0.message ?? $0.title }
+        if let programMessage, !programMessage.isEmpty {
+            let isCompletion = programStatus?.records.first(where: { $0.id.isEmpty })?.state == .done
+                || status == .done
+            return PushTextRedactor.standard(
+                programMessage,
+                isCompletion: isCompletion
+            )
+        }
         let body = switch status {
         case .blocked:
             beacon?.pendingSummary ?? "Needs you"

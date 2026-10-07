@@ -1,3 +1,9 @@
+Rai 0.1.87 adds structured program status from Herdr.
+
+- Rai reads idle, working, blocked, done, and error records from Herdr.
+- Notifications use program messages and titles when they exist.
+- Unknown future status values remain readable as `unknown`.
+
 Rai 0.1.86 adds source closure to remote tab menus.
 
 - Right-click a remote tab and choose Close Tab to close it in Herdr.

@@ -453,7 +453,8 @@ extension AppDelegate: RaiSnapshotObserver {
         let beacon = model.beacon(forPane: pane.paneID)
         let body = AgentNotificationBody.compose(
             status: transition.newStatus,
-            beacon: beacon
+            beacon: beacon,
+            programStatus: pane.programStatus
         )
         let allowsRemoteActions = transition.newStatus == .blocked
             && beacon == nil
@@ -589,7 +590,11 @@ extension AppDelegate: RaiSnapshotObserver {
               let pane = snapshot.panes.first(where: { $0.paneID == paneID }),
               notifiedPaneStatuses[paneID] == pane.agentStatus,
               pane.agentStatus != .done || beacon.completionSummary != nil else { return }
-        let body = AgentNotificationBody.compose(status: pane.agentStatus, beacon: beacon)
+        let body = AgentNotificationBody.compose(
+            status: pane.agentStatus,
+            beacon: beacon,
+            programStatus: pane.programStatus
+        )
         guard notificationBodies[paneID] != body else { return }
 
         notificationBodies[paneID] = body

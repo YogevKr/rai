@@ -8,6 +8,51 @@ public enum AgentStatus: String, Codable, Sendable, CaseIterable {
     case unknown
 }
 
+public enum ProgramStatusState: String, Codable, Sendable, Equatable {
+    case idle
+    case working
+    case done
+    case blocked
+    case error
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .unknown
+    }
+}
+
+public enum ProgramStatusKind: String, Codable, Sendable, Equatable {
+    case permission
+    case question
+    case auth
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .unknown
+    }
+}
+
+public struct ProgramStatusRecord: Codable, Sendable, Equatable {
+    public let id: String
+    public let state: ProgramStatusState
+    public let kind: ProgramStatusKind?
+    public let progress: Int?
+    public let app: String?
+    public let title: String?
+    public let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, state, kind, progress, app, title
+        case message = "message"
+    }
+}
+
+public struct ProgramStatusInfo: Codable, Sendable, Equatable {
+    public let records: [ProgramStatusRecord]
+}
+
 public struct Workspace: Codable, Identifiable, Sendable, Equatable {
     public let workspaceID: String
     public let number: Int
@@ -336,6 +381,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
     public let terminalTitle: String?
     public let terminalTitleStripped: String?
     public let agentStatus: AgentStatus
+    public var programStatus: ProgramStatusInfo? = nil
     public let revision: UInt64
     public let scroll: PaneScroll?
     /// Claude Code hook data added by Rai before a snapshot crosses the bridge.
@@ -355,6 +401,7 @@ public struct Pane: Codable, Identifiable, Sendable, Equatable {
         case terminalTitle = "terminal_title"
         case terminalTitleStripped = "terminal_title_stripped"
         case agentStatus = "agent_status"
+        case programStatus = "program_status"
     }
 }
 
@@ -385,6 +432,7 @@ extension Pane {
             )
         )
         agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+        programStatus = try container.decodeIfPresent(ProgramStatusInfo.self, forKey: .programStatus)
         revision = try container.decode(UInt64.self, forKey: .revision)
         scroll = try container.decodeIfPresent(PaneScroll.self, forKey: .scroll)
         beacon = try container.decodeIfPresent(AgentBeacon.self, forKey: .beacon)
@@ -400,6 +448,7 @@ public struct HerdrAgent: Codable, Identifiable, Sendable, Equatable {
     public let terminalTitleStripped: String?
     public let displayAgent: String?
     public let agentStatus: AgentStatus
+    public var programStatus: ProgramStatusInfo? = nil
     public let agentSession: AgentSession?
     public let workspaceID: String
     public let tabID: String
@@ -418,6 +467,7 @@ public struct HerdrAgent: Codable, Identifiable, Sendable, Equatable {
         case terminalTitleStripped = "terminal_title_stripped"
         case displayAgent = "display_agent"
         case agentStatus = "agent_status"
+        case programStatus = "program_status"
         case agentSession = "agent_session"
         case workspaceID = "workspace_id"
         case tabID = "tab_id"
@@ -446,6 +496,7 @@ extension HerdrAgent {
             String.self, forKey: .displayAgent
         )
         agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+        programStatus = try container.decodeIfPresent(ProgramStatusInfo.self, forKey: .programStatus)
         agentSession = try container.decodeIfPresent(
             AgentSession.self, forKey: .agentSession
         )
