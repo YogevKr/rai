@@ -17,6 +17,9 @@ final class RaiMixedController: ObservableObject {
     private let machines: MachineDirectory
     private let closeSource: (InstanceCloseRequest) async throws -> Void
     @Published private(set) var closingWorkspaces: Set<RaiWorkspaceReference> = []
+    /// A successful close can reach Herdr before its endpoint stream publishes
+    /// the next snapshot. Hide that tab until the stream catches up.
+    private var closedSourceTabs: Set<RaiDismissedTab> = []
     private var pendingSourceTabID: String?
     private var snapshotObservation: AnyCancellable?
     private var workspaceObservation: AnyCancellable?
@@ -95,7 +98,14 @@ final class RaiMixedController: ObservableObject {
     }
 
     private func updateRemoteWorkspaces(_ workspaces: [InstanceWorkspace], composition: RaiComposition) {
-        let visible = workspaces.compactMap { $0.excludingDismissedTabs(composition.dismissedTabs) }
+        let liveTabs = Set(workspaces.flatMap { workspace in
+            workspace.tabs.map { tab in
+                RaiDismissedTab(workspace: workspace.id, bootID: workspace.bootID, tabID: tab.id)
+            }
+        })
+        closedSourceTabs = closedSourceTabs.intersection(liveTabs)
+        let dismissed = composition.dismissedTabs + Array(closedSourceTabs)
+        let visible = workspaces.compactMap { $0.excludingDismissedTabs(dismissed) }
         if remoteWorkspaces != visible { remoteWorkspaces = visible }
     }
 
@@ -181,7 +191,12 @@ final class RaiMixedController: ObservableObject {
         guard !closingWorkspaces.contains(workspace.id) else { return nil }
         let request: InstanceCloseRequest
         do {
-            request = try InstanceCloseRequest(workspace: workspace, tabID: tabID)
+            // A reconnect can replace the displayed connection between the
+            // context-menu click and this task. Capture the newest identity.
+            let current = remoteWorkspaces.first {
+                $0.id == workspace.id && $0.tabs.contains { $0.id == tabID }
+            } ?? workspace
+            request = try InstanceCloseRequest(workspace: current, tabID: tabID)
         } catch {
             primaryModel.sessionAlert = SessionAlert(kind: .error(
                 title: "Couldn’t Close Tab", message: error.localizedDescription))
@@ -192,8 +207,16 @@ final class RaiMixedController: ObservableObject {
             defer { closingWorkspaces.remove(workspace.id) }
             do {
                 try await closeSource(request)
-                // Source metadata removes the row and selects a surviving tab.
-                // Do not record a local dismissal or change a newer selection.
+                closedSourceTabs.insert(RaiDismissedTab(
+                    workspace: request.workspace.id,
+                    bootID: request.workspace.bootID,
+                    tabID: tabID
+                ))
+                updateRemoteWorkspaces(machines.workspaces, composition: model.composition)
+                if selectedSourceWorkspace == request.workspace.id,
+                   selectedSourceTabID == tabID {
+                    refreshSourceSelection()
+                }
             } catch {
                 primaryModel.sessionAlert = SessionAlert(kind: .error(
                     title: "Couldn’t Close Tab", message: error.localizedDescription))

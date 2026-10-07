@@ -1,3 +1,9 @@
+Rai 0.1.90 keeps remote closure usable during reconnects.
+
+- A successful remote close disappears from Rai before the next metadata snapshot arrives.
+- Rai captures the newest remote connection identity before closing a tab.
+- SSH URI and plain target forms use one remote sidebar identity.
+
 Rai 0.1.89 prevents duplicate space creation.
 
 - Repeated New Space clicks create one space per request.

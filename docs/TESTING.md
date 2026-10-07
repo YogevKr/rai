@@ -128,6 +128,9 @@ They survive Rai reconnects and restarts. A different Herdr server boot can expo
 Save failures leave the tab visible and show an error.
 Source closure failures also leave the tab visible and permit a retry.
 
+After a successful remote close, Rai hides the tab before the endpoint snapshot arrives.
+The tab must stay hidden during that metadata delay and must not reappear after refresh.
+
 Run `RaiMixedCloseTests`, `InstanceCloseRequestTests`, and `RaiMixedViewModelTests` for these regression checks.
 
 ## Local and remote tab titles

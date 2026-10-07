@@ -94,7 +94,13 @@ public struct InstanceWorkspace: Identifiable, Equatable, Sendable {
     }
 
     private static func normalizedTarget(_ value: String) -> String? {
-        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("ssh://") {
+            value.removeFirst(6)
+        }
+        while value.hasPrefix("//") {
+            value.removeFirst(2)
+        }
         return value.isEmpty ? nil : value
     }
 
