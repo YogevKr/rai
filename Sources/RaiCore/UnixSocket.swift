@@ -158,13 +158,18 @@ final class UnixSocket: @unchecked Sendable {
     func readLine(maximumBytes: Int? = nil) throws -> Data {
         let fd = try duplicateDescriptor()
         defer { Darwin.close(fd) }
+        // Appending can change Data indices. Retain a byte count, then derive
+        // the current index so each byte is searched once within this line.
+        var searchedBytes = 0
         while true {
-            if let newline = readBuffer.firstIndex(of: 0x0A) {
+            let searchStart = readBuffer.index(readBuffer.startIndex, offsetBy: searchedBytes)
+            if let newline = readBuffer[searchStart...].firstIndex(of: 0x0A) {
                 let line = readBuffer.prefix(upTo: newline)
                 if let maximumBytes, line.count > maximumBytes { throw UnixSocketError.lineTooLong(maximumBytes) }
                 readBuffer.removeSubrange(...newline)
                 return Data(line)
             }
+            searchedBytes = readBuffer.count
             var capacity = 16_384
             if let maximumBytes {
                 guard readBuffer.count <= maximumBytes else { throw UnixSocketError.lineTooLong(maximumBytes) }
