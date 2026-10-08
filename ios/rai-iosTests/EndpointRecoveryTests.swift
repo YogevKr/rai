@@ -132,6 +132,42 @@ final class EndpointRecoveryTests: XCTestCase {
         XCTAssertEqual(connection.endpointView.state?.pluginResult, completed.pluginResult)
     }
 
+    func testPaneScrollViewRestoresFocusAfterReconnectAndRejectsAnOldOwner() async throws {
+        var requests: [EndpointBridgeRequest] = []
+        let connection = BridgeConnection(messageSender: { message in
+            if case let .endpointRequest(request) = message { requests.append(request) }
+        })
+        defer { connection.disconnect() }
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "lab")
+        connection.handle(try snapshot("original"))
+        let oldOwner = UUID(), owner = UUID()
+        connection.openPaneEndpoint("w1:p2", owner: oldOwner)
+        connection.openPaneEndpoint("w1:p2", owner: owner)
+        connection.closePaneEndpoint(owner: oldOwner)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(requests.count, 1)
+        let first = try XCTUnwrap(requests.first)
+        let state = try JSONDecoder().decode(HerdrEndpointSnapshot.self, from: Data(
+            #"{"boot_id":"boot","revision":1,"focused_pane_id":"w1:p1"}"#.utf8))
+        connection.handle(.endpointState(.init(identity: first.identity, sequence: 1,
+            snapshot: state, surface: nil, methods: ["pane.focus"], busy: false, error: nil)))
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(requests.last?.operation, .command(.focusPane("w1:p2")))
+        connection.scheduleReconnect(after: URLError(.networkConnectionLost))
+        connection.finishAuthentication(protocolVersion: bridgeProtocolVersion, sessionName: "lab")
+        connection.handle(try snapshot("replacement"))
+        for _ in 0..<20 { await Task.yield() }
+        let reopened = try XCTUnwrap(requests.last)
+        XCTAssertEqual(reopened.identity.connectionID, "replacement")
+        connection.handle(.endpointState(.init(identity: reopened.identity, sequence: 1,
+            snapshot: state, surface: nil, methods: ["pane.focus"], busy: false, error: nil)))
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(requests.last?.operation, .command(.focusPane("w1:p2")))
+        connection.closePaneEndpoint(owner: owner)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(requests.last?.operation, .close)
+    }
+
     func testUnsupportedHostNeverReceivesAnOpenRequest() async throws {
         let connection = BridgeConnection(messageSender: { message in
             if case .endpointRequest = message { XCTFail("Unsupported host received endpoint input") }

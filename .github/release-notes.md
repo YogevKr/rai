@@ -1,3 +1,11 @@
+Rai 0.1.96 improves remote sessions and Codex scrolling.
+
+- Mixed Rai spaces can use local and remote Herdr endpoints in one view.
+- Remote tab titles and close actions stay linked to their source instance.
+- Endpoint health and host theme reports use the Herdr endpoint protocol.
+- Codex starts with inline scrollback support on Mac and iPhone.
+- iPhone Codex question controls keep prompts actionable during remote work.
+
 Rai 0.1.87 adds structured program status from Herdr.
 
 - Rai reads idle, working, blocked, done, and error records from Herdr.

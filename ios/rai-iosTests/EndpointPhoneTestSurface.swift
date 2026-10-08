@@ -3,9 +3,10 @@ import RaiCore
 
 enum EndpointPhoneTestSurface {
     static func make(paneID: String = "w1:p1", mouseReporting: Bool = false,
-                     popupMouseReporting: Bool = false, alternateScreen: Bool = false) throws -> HerdrEndpointSurface {
-        let width = popupMouseReporting ? 5 : 1
-        let height = popupMouseReporting ? 5 : 1
+                     popupMouseReporting: Bool = false, alternateScreen: Bool = false,
+                     columns: Int = 1, rows: Int = 1) throws -> HerdrEndpointSurface {
+        let width = popupMouseReporting ? 5 : columns
+        let height = popupMouseReporting ? 5 : rows
         let rect: [String: Any] = ["x": 0, "y": 0, "width": width, "height": height]
         let cell: [String: Any] = ["symbol": " ", "foreground": 0, "background": 0, "modifiers": 0, "skip": false]
         let popup: [String: Any]? = popupMouseReporting ? [
