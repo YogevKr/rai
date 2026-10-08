@@ -16,6 +16,7 @@ extension FocusedValues {
 @main
 struct RaiApp: App {
     init() {
+        RaiInstanceGuard.enforce()
         do {
             try LabLaunch.validate(
                 bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
