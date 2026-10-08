@@ -23,6 +23,9 @@ public enum HerdrEndpointError: LocalizedError, Equatable {
 /// Generation-one tags are frozen independently of Herdr's private protocol version.
 enum HerdrEndpointWire {
     static let maximumFrameBytes = 2 * 1024 * 1024
+    static let healthCapability = "health_check"
+    static let healthPing = "endpoint.health.ping.v1"
+    static let healthPong = "endpoint.health.pong.v1"
 
     enum Message: Equatable {
         case control(kind: String, data: String)
@@ -81,7 +84,7 @@ enum HerdrEndpointWire {
         case 18:
             message = .response(bootID: try reader.string(), requestID: try reader.string(),
                                 final: try reader.boolean(), data: try reader.bytes())
-        case 3: return .shutdown
+        case 3: message = .shutdown
         default: return .other(tag: tag, payload: data)
         }
         guard reader.isAtEnd else { throw HerdrEndpointError.malformed }
