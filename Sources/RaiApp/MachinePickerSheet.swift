@@ -114,7 +114,7 @@ struct MachinePickerSheet: View {
         List {
             if let error = state.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             if let setup = state.setup { setupSection(setup) }
-            Section("Machines") {
+            Section {
                 if matchingMachines.isEmpty { Text("No matching machines").foregroundStyle(.secondary) }
                 ForEach(matchingMachines) { entry in
                     VStack(alignment: .leading, spacing: 6) {
@@ -140,6 +140,12 @@ struct MachinePickerSheet: View {
                     }
                     .padding(.vertical, 6)
                 }
+            } header: {
+#if os(macOS)
+                if openAgent != nil { Text("Machines") }
+#else
+                Text("Machines")
+#endif
             }
             if let openAgent {
                 Section("Agents") {

@@ -637,6 +637,10 @@ The updater's two-minute wait expired before Rai exited.
 The installer retains the previous app and reports errors instead of deleting the backup.
 `scripts/bundle.sh` includes and signs the helper before signing the outer app.
 
+Release metadata and archive hashes come from the [GitHub Releases API](https://docs.github.com/en/rest/releases/releases).
+Signature checks use Apple's [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services).
+Current release archives contain no symbolic links. The installer rejects archives with symbolic links before extraction.
+
 ### Machines dialog layout
 
 The Mac dialog keeps search above the list and Refresh, Add Machine, and Done below it.
@@ -650,10 +654,13 @@ Check the shared view with an iOS simulator build before release.
 The October 8 hotfix passed 1,078 Mac tests, with 17 skips and no failures.
 The iOS simulator build passed for both supported simulator architectures.
 Logs: `/private/tmp/rai-update-layout-full.log` and `/private/tmp/rai-update-ios-build.log`.
+The isolated Mac check passed search, empty results, selection, menus, field validation, Refresh, Cancel, and Done.
+Normal Quit exited the fixed lab app. The lab server retained the same pane and terminal identifiers.
+Evidence: `/private/tmp/rai09-abbpf77s/hotfix-quit-result.json` and its before/after source snapshots.
 
-Release metadata and archive hashes come from the [GitHub Releases API](https://docs.github.com/en/rest/releases/releases).
-Signature checks use Apple's [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services).
-Current release archives contain no symbolic links. The installer rejects archives with symbolic links before extraction.
+The [sidebar performance check](sidebar-tab-switch-performance.md) records the local and remote path regression tests.
+Its repeated-render fixture reduced median CPU work by 73 percent with the same result checksum.
+This measures sidebar computation, not complete tab-switch latency.
 
 ## Cached terminal streams
 
