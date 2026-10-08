@@ -661,6 +661,8 @@ Evidence: `/private/tmp/rai09-abbpf77s/hotfix-quit-result.json` and its before/a
 The [sidebar performance check](sidebar-tab-switch-performance.md) records the local and remote path regression tests.
 Its repeated-render fixture reduced median CPU work by 73 percent with the same result checksum.
 This measures sidebar computation, not complete tab-switch latency.
+The socket line check covers fragmented, coalesced, bounded, buffered, and closed responses.
+The 2 MiB unterminated response passed in 0.133 seconds after incremental scanning.
 
 ## Cached terminal streams
 
