@@ -799,6 +799,124 @@ final class PromptDetectionTests: XCTestCase {
         )
     }
 
+    func testCodexQuestionDetectorReadsOptionsAndDescriptions() throws {
+        let grid = """
+        Question 1/1 (1 unanswered)
+        How much detail do you prefer in my responses?
+
+        › 1. Brief (Recommended)  Give the result and essential facts.
+          2. Detailed             Give the result with supporting explanations.
+          3. None of the above    Optionally, add details in notes (tab).
+        tab to add notes | enter to submit answer | esc to interrupt
+        """
+
+        let question = try XCTUnwrap(CodexQuestionDetector.detect(in: grid))
+        XCTAssertEqual(question.index, 1)
+        XCTAssertEqual(question.total, 1)
+        XCTAssertEqual(question.unanswered, 1)
+        XCTAssertEqual(question.question, "How much detail do you prefer in my responses?")
+        XCTAssertEqual(question.options.map(\.digit), [1, 2, 3])
+        XCTAssertEqual(question.options.map(\.label), [
+            "Brief (Recommended)", "Detailed", "None of the above",
+        ])
+        XCTAssertEqual(question.options.map(\.description), [
+            "Give the result and essential facts.",
+            "Give the result with supporting explanations.",
+            "Optionally, add details in notes (tab).",
+        ])
+        XCTAssertTrue(question.options[0].isSelected)
+        XCTAssertFalse(question.options[1].isSelected)
+    }
+
+    func testCodexQuestionDetectorAcceptsCountdownAndWrappedFooter() throws {
+        let grid = """
+        Question 1/2 (2 unanswered) · auto-resolves in 1m 00s
+        Choose an option.
+
+          1. Brief  Give the result.
+        › 2. Detailed  Give supporting explanations.
+
+        tab to add notes | enter to submit answer
+        ←/→ to navigate questions | esc to interrupt
+        """
+
+        let question = try XCTUnwrap(CodexQuestionDetector.detect(in: grid))
+        XCTAssertEqual(question.index, 1)
+        XCTAssertEqual(question.total, 2)
+        XCTAssertEqual(question.options.map(\.digit), [1, 2])
+        XCTAssertTrue(question.options[1].isSelected)
+    }
+
+    func testCodexQuestionDetectorLeavesNotesEditorInTheComposer() {
+        let grid = """
+        Question 1/1 (1 unanswered)
+        Choose an option.
+
+        › 1. Brief  Give the result.
+          2. Detailed  Give supporting explanations.
+
+        › Add notes
+
+        tab or esc to clear notes | enter to submit answer
+        """
+
+        XCTAssertNil(CodexQuestionDetector.detect(in: grid))
+    }
+
+    func testCodexQuestionDetectorIgnoresQuotedQuestionAboveComposer() throws {
+        let question = """
+        Question 1/1 (1 unanswered)
+        Choose an option.
+
+        › 1. Brief  Give the result.
+          2. Detailed  Give supporting explanations.
+
+        tab to add notes | enter to submit answer | esc to interrupt
+        """
+
+        XCTAssertNotNil(CodexQuestionDetector.detect(in: question))
+        XCTAssertNil(
+            CodexQuestionDetector.detect(
+                in: question + "\n› Explain this source file\nCodex status: working"
+            )
+        )
+    }
+
+    @MainActor
+    func testCodexQuestionAnswerSendsTheSelectedDigitOnce() throws {
+        let grid = """
+        Question 1/1 (1 unanswered)
+        Choose a mode?
+
+        › 1. Fast  Use less detail.
+          2. Safe  Explain each step.
+        tab to add notes | enter to submit answer | esc to interrupt
+        """
+        var liveGrid = grid
+        let controller = TerminalPromptController()
+        controller.readGrid = { liveGrid }
+        controller.refresh()
+        let question = try XCTUnwrap(controller.codexQuestion)
+        var sent: [[UInt8]] = []
+
+        controller.answerCodexQuestion(
+            renderedQuestion: question,
+            option: question.options[1],
+            through: { sent.append($0) }
+        )
+
+        XCTAssertEqual(sent, [[0x32]])
+        XCTAssertNil(controller.codexQuestion)
+
+        controller.refresh()
+        XCTAssertNil(controller.codexQuestion)
+
+        liveGrid = grid.replacingOccurrences(of: "Question 1/1", with: "Question 2/2")
+            .replacingOccurrences(of: "Choose a mode?", with: "Choose a second mode?")
+        controller.refresh()
+        XCTAssertNotNil(controller.codexQuestion)
+    }
+
     @MainActor
     func testTimedOutCheckboxRetryDoesNotToggleAnAppliedChoiceAgain() throws {
         var clock: TimeInterval = 0

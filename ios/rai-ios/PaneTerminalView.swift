@@ -92,8 +92,25 @@ struct PaneTerminalView: View {
                 let currentPane = connection.snapshot?.panes.first {
                     $0.paneID == pane.paneID
                 }
-                if let queued = promptController.codexQueuedFollowUp,
+                if let question = promptController.codexQuestion,
                         CodexPromptGate.allows(agent: pane.agent) {
+                    CodexQuestionBar(
+                        question: question,
+                        answer: { option in
+                            promptController.answerCodexQuestion(
+                                renderedQuestion: question,
+                                option: option,
+                                through: { bytes in
+                                    connection.sendInput(bytes, to: pane.paneID)
+                                }
+                            )
+                        },
+                        dismiss: {
+                            promptController.dismissCodexQuestion(renderedQuestion: question)
+                        }
+                    )
+                } else if let queued = promptController.codexQueuedFollowUp,
+                          CodexPromptGate.allows(agent: pane.agent) {
                     CodexQueuedFollowUpBar(
                         questionCount: queued.questionCount,
                         answer: { connection.sendInput(CodexPromptKeys.answerQueuedFollowUp, to: pane.paneID) }
@@ -1486,6 +1503,10 @@ enum AgentPromptGate {
 
 enum CodexPromptKeys {
     static let answerQueuedFollowUp: [UInt8] = [0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x41]
+
+    static func answerQuestion(_ digit: Int) -> [UInt8] {
+        Array(String(digit).utf8)
+    }
 }
 
 enum FallbackDecisionBarGate {
@@ -1518,6 +1539,7 @@ final class TerminalPromptController: ObservableObject {
     }
 
     @Published private(set) var prompt: PromptModel?
+    @Published private(set) var codexQuestion: CodexQuestion?
     @Published private(set) var codexQueuedFollowUp: CodexQueuedFollowUp?
     @Published private(set) var isBusy = false
     @Published private(set) var focusComposerRequest = 0
@@ -1538,6 +1560,7 @@ final class TerminalPromptController: ObservableObject {
     private var focusComposerAfterCompletion = false
     private var activeToggleSentFrameRevision: UInt64?
     private var unconfirmedToggle: UnconfirmedToggle?
+    private var dismissedCodexQuestionIdentity: String?
 
     func refresh(frameArrived: Bool = false) {
         if frameArrived {
@@ -1546,6 +1569,7 @@ final class TerminalPromptController: ObservableObject {
         }
         guard !awaitsConnectionFrame else {
             prompt = nil
+            codexQuestion = nil
             codexQueuedFollowUp = nil
             cancelChoreography()
             unconfirmedToggle = nil
@@ -1554,12 +1578,21 @@ final class TerminalPromptController: ObservableObject {
         guard allowsPrompts, let grid = readGrid?() else {
             observedDialogSignature = nil
             prompt = nil
+            codexQuestion = nil
             codexQueuedFollowUp = nil
+            dismissedCodexQuestionIdentity = nil
             cancelChoreography()
             unconfirmedToggle = nil
             return
         }
         codexQueuedFollowUp = CodexQueuedFollowUpDetector.detect(in: grid)
+        let detectedCodexQuestion = CodexQuestionDetector.detect(in: grid)
+        if detectedCodexQuestion?.dialogIdentity != dismissedCodexQuestionIdentity {
+            dismissedCodexQuestionIdentity = nil
+        }
+        codexQuestion = detectedCodexQuestion?.dialogIdentity == dismissedCodexQuestionIdentity
+            ? nil
+            : detectedCodexQuestion
         let detected = trackedPrompt(in: grid)
         if choreography != nil {
             drive(with: detected)
@@ -1580,7 +1613,9 @@ final class TerminalPromptController: ObservableObject {
         observedDialogSignature = nil
         dismissedIdentity = nil
         prompt = nil
+        codexQuestion = nil
         codexQueuedFollowUp = nil
+        dismissedCodexQuestionIdentity = nil
         cancelChoreography()
         unconfirmedToggle = nil
     }
@@ -1590,7 +1625,9 @@ final class TerminalPromptController: ObservableObject {
         observedDialogSignature = nil
         dismissedIdentity = nil
         prompt = nil
+        codexQuestion = nil
         codexQueuedFollowUp = nil
+        dismissedCodexQuestionIdentity = nil
         cancelChoreography()
         unconfirmedToggle = nil
     }
@@ -1611,6 +1648,34 @@ final class TerminalPromptController: ObservableObject {
         prompt = nil
         cancelChoreography()
         unconfirmedToggle = nil
+    }
+
+    func answerCodexQuestion(
+        renderedQuestion: CodexQuestion,
+        option: CodexQuestionOption,
+        through send: ([UInt8]) -> Void
+    ) {
+        guard codexQuestion == renderedQuestion,
+              let grid = readGrid?(),
+              let current = CodexQuestionDetector.detect(in: grid),
+              current == renderedQuestion,
+              renderedQuestion.options.contains(option)
+        else {
+            refresh()
+            return
+        }
+        dismissedCodexQuestionIdentity = renderedQuestion.dialogIdentity
+        codexQuestion = nil
+        send(CodexPromptKeys.answerQuestion(option.digit))
+    }
+
+    func dismissCodexQuestion(renderedQuestion: CodexQuestion) {
+        guard codexQuestion == renderedQuestion else {
+            refresh()
+            return
+        }
+        dismissedCodexQuestionIdentity = renderedQuestion.dialogIdentity
+        codexQuestion = nil
     }
 
     /// Keep the original numbered permission path as one guarded digit key.
@@ -2188,6 +2253,82 @@ private struct PromptBar: View {
         case .current: "circle.inset.filled"
         case .pending: "circle"
         }
+    }
+}
+
+private struct CodexQuestionBar: View {
+    let question: CodexQuestion
+    let answer: (CodexQuestionOption) -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Question \(question.index)/\(question.total)")
+                    .font(.caption.weight(.semibold))
+                if question.unanswered > 0 {
+                    Text("\(question.unanswered) unanswered")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Dismiss Codex question")
+            }
+            if let text = question.question {
+                Text(text)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(question.options) { option in
+                        Button { answer(option) } label: {
+                            HStack(alignment: .top, spacing: 9) {
+                                Text("\(option.digit)")
+                                    .font(.caption.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .font(.subheadline.weight(.medium))
+                                        .multilineTextAlignment(.leading)
+                                    if let description = option.description {
+                                        Text(description)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                }
+                                Spacer(minLength: 4)
+                                if option.isSelected {
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(9)
+                            .background(
+                                option.isSelected
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color.secondary.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 9)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Option \(option.digit): \(option.label)")
+                    }
+                }
+            }
+            .frame(maxHeight: 190)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .accessibilityElement(children: .contain)
     }
 }
 

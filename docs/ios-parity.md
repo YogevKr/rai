@@ -27,6 +27,7 @@ Audited 2026-09-03 against `main` (bridge protocol v6).
 | Rename / close tab & pane | context menus | context menus + confirm | ✅ parity |
 | Focus pane in herdr | click | `selectPane` on open | ✅ parity |
 | Claude prompt controls | native terminal | permission, trust, plan, and AskUserQuestion blocks | ✅ phone support |
+| Codex question controls | request_user_input overlay | question options and guarded digit answers | ✅ phone support |
 | Notifications on blocked/done | native macOS + dock badge | APNs bursts, per-device controls, groups, actions, and retraction | ✅ parity (physical delivery not verified) |
 | Permission decisions | local Claude dialog | data decision, deadline, key fallback | ✅ parity (physical push action not verified) |
 | Session name visibility | title bar / switcher | connection menu ("Session: …") | ✅ display-only |
@@ -212,7 +213,7 @@ An iOS drift test requires one phone policy for every shared code.
 - Next sends Tab. Previous appears on every later question and sends Left.
 - Enter only confirms an option or Submit.
 - Checkbox retries wait for a newer grid frame and confirm the wanted state.
-- Controls require a Claude agent in the pane snapshot. A retained beacon cannot override Codex or shell.
+- Claude controls require a Claude agent in the pane snapshot. Codex question controls require a Codex agent and a live question grid. A retained beacon cannot override either agent or shell.
 - Real one-question captures cover single-select and multi-select arrow-only footers.
 - A one-question single-select wizard can use one header chip without Submit arrows.
 - Quoted dialogs above a live composer do not create controls.
