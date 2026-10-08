@@ -213,9 +213,13 @@ public actor WorkspaceGitStatusCache {
         for checkoutPaths: [String],
         now: Date = Date()
     ) -> [String: WorkspaceGitStatus] {
-        let paths = Array(
-            Set(checkoutPaths.map(WorkspaceGit.normalizedCheckoutPath))
-        ).sorted()
+        // Only this background actor resolves local filesystem paths. Keep
+        // aliases for the exact source strings so sidebar rendering never
+        // needs to stat a checkout (or a remote path on this Mac).
+        let aliases = Dictionary(uniqueKeysWithValues: Set(checkoutPaths).map {
+            ($0, WorkspaceGit.normalizedCheckoutPath($0))
+        })
+        let paths = Array(Set(aliases.values)).sorted()
         entries = entries.filter { paths.contains($0.key) }
 
         for path in paths {
@@ -227,11 +231,15 @@ public actor WorkspaceGitStatusCache {
             entries[path] = Entry(status: reader(path), refreshedAt: now)
         }
 
-        return paths.reduce(into: [:]) { result, path in
+        var result = paths.reduce(into: [String: WorkspaceGitStatus]()) { result, path in
             if let status = entries[path]?.status {
                 result[path] = status
             }
         }
+        for (source, canonical) in aliases {
+            if let status = entries[canonical]?.status { result[source] = status }
+        }
+        return result
     }
 }
 
@@ -258,6 +266,9 @@ public enum WorkspaceSidebar {
         return paths.filter { seen.insert($0).inserted }
     }
 
+    /// Return the source path unchanged. Background Git results include these
+    /// keys; resolving a source path here performs filesystem work per render
+    /// and can interpret a remote path using unrelated local files.
     /// A tab reports the shell directory of its focused pane, else its first
     /// pane. The shell's own cwd wins over the foreground process directory:
     /// an agent's helper processes (MCP servers) often run from another
@@ -270,7 +281,7 @@ public enum WorkspaceSidebar {
         guard let pane = panes.first(where: \.focused) ?? panes.first else { return nil }
         let path = pane.cwd.isEmpty ? (pane.foregroundCWD ?? "") : pane.cwd
         guard !path.isEmpty else { return nil }
-        return WorkspaceGit.normalizedCheckoutPath(path)
+        return path
     }
 
     public static func gitStatus(
@@ -287,7 +298,7 @@ public enum WorkspaceSidebar {
         in snapshot: SessionSnapshot
     ) -> String? {
         if let path = workspace.worktree?.checkoutPath, !path.isEmpty {
-            return WorkspaceGit.normalizedCheckoutPath(path)
+            return path
         }
 
         let panes = snapshot.panes.filter { $0.workspaceID == workspace.workspaceID }
@@ -298,7 +309,7 @@ public enum WorkspaceSidebar {
             ?? panes.first
         let path = pane?.foregroundCWD ?? pane?.cwd
         guard let path, !path.isEmpty else { return nil }
-        return WorkspaceGit.normalizedCheckoutPath(path)
+        return path
     }
 
     public static func entries(
@@ -441,7 +452,7 @@ public enum WorkspaceSidebar {
     ) -> WorkspaceListEntry {
         let status = gitStatus(for: workspace, in: snapshot, gitStatuses: gitStatuses)
         let checkoutName = workspace.worktree.map {
-            URL(fileURLWithPath: $0.checkoutPath).lastPathComponent
+            ($0.checkoutPath as NSString).lastPathComponent
         }
         // The snapshot omits Herdr's custom-name flag. Its automatic worktree
         // label is the checkout directory name, which is the available signal.

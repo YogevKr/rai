@@ -834,7 +834,7 @@ private struct WorktreeTag: View {
 
     private func worktreeIdentity(_ worktree: WorkspaceWorktree) -> String {
         guard worktree.isLinkedWorktree else { return worktree.repoName }
-        let checkoutName = URL(fileURLWithPath: worktree.checkoutPath).lastPathComponent
+        let checkoutName = (worktree.checkoutPath as NSString).lastPathComponent
         return checkoutName.isEmpty ? worktree.repoName : checkoutName
     }
 }
@@ -1077,7 +1077,7 @@ private struct AgentRow: View {
         guard let cwd = model.snapshot?.panes.first(where: { $0.tabID == tab.tabID })?.cwd else {
             return ""
         }
-        return URL(fileURLWithPath: cwd).lastPathComponent
+        return (cwd as NSString).lastPathComponent
     }
 
     var body: some View {

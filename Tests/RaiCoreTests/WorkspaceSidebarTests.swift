@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import RaiCore
@@ -91,6 +92,138 @@ final class WorkspaceSidebarTests: XCTestCase {
 
         _ = await cache.statuses(for: ["/repo-a", "/repo-b"], now: start.addingTimeInterval(30))
         XCTAssertEqual(calls.values, ["/repo-a", "/repo-b", "/repo-a", "/repo-b"])
+    }
+
+    func testBackgroundCachePreservesSymlinkAliasesForStatusAndGrouping() async throws {
+        let directory = temporaryDirectory(named: "sidebar-alias")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let checkout = directory.appendingPathComponent("checkout")
+        let alias = directory.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: checkout)
+        let canonical = WorkspaceGit.normalizedCheckoutPath(checkout.path)
+        let calls = LockedCalls()
+        let cache = WorkspaceGitStatusCache(refreshInterval: 30) { path in
+            calls.append(path)
+            return WorkspaceGitStatus(checkoutPath: path, branch: "main", isDetached: false,
+                aheadBehind: nil, repoKey: "fixture-repo")
+        }
+        let sourceTab = tab("t-alias", workspaceID: "w-alias")
+        let primary = workspace("w-main", label: "checkout", path: canonical, linked: false)
+        let linked = workspace("w-alias", label: "alias", path: alias.path, linked: true)
+        let snapshot = snapshot(workspaces: [linked, primary], tabs: [sourceTab], panes: [
+            pane("p-alias", workspaceID: linked.workspaceID, tabID: sourceTab.tabID, cwd: alias.path),
+        ])
+        let statuses = await cache.statuses(for: WorkspaceSidebar.checkoutPaths(in: snapshot))
+        XCTAssertEqual(calls.values, [canonical], "Read one canonical checkout for both source paths")
+        XCTAssertEqual(statuses[alias.path], statuses[canonical])
+        XCTAssertEqual(WorkspaceSidebar.checkoutPath(for: linked, in: snapshot), alias.path)
+        for _ in 0..<100 {
+            XCTAssertEqual(WorkspaceSidebar.gitStatus(for: sourceTab, in: snapshot, gitStatuses: statuses)?.branch, "main")
+            XCTAssertEqual(WorkspaceSidebar.gitStatus(for: linked, in: snapshot, gitStatuses: statuses)?.branch, "main")
+            let entries = WorkspaceSidebar.entries(in: snapshot, gitStatuses: statuses,
+                collapsedSpaceKeys: [], visibleWorkspaceID: nil)
+            XCTAssertEqual(entries.map(\.workspace.workspaceID), ["w-main", "w-alias"])
+            XCTAssertEqual(entries.map(\.indented), [false, true])
+        }
+        XCTAssertEqual(calls.values, [canonical], "Rendering must not restart background Git reads")
+    }
+
+    func testCacheRechecksSymlinkTargetsAndDropsOldAliases() async throws {
+        let directory = temporaryDirectory(named: "sidebar-retarget")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first")
+        let second = directory.appendingPathComponent("second")
+        let alias = directory.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first)
+        let cache = WorkspaceGitStatusCache(refreshInterval: 30) { path in
+            WorkspaceGitStatus(checkoutPath: path, branch: "main", isDetached: false,
+                aheadBehind: nil, repoKey: path)
+        }
+        let start = Date(timeIntervalSince1970: 100)
+        let initial = await cache.statuses(for: [alias.path], now: start)
+        XCTAssertEqual(initial[alias.path]?.checkoutPath, WorkspaceGit.normalizedCheckoutPath(first.path))
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: second)
+        let next = await cache.statuses(for: [alias.path], now: start.addingTimeInterval(1))
+        XCTAssertEqual(next[alias.path]?.checkoutPath, WorkspaceGit.normalizedCheckoutPath(second.path))
+        XCTAssertNil(next[WorkspaceGit.normalizedCheckoutPath(first.path)])
+        let empty = await cache.statuses(for: [], now: start.addingTimeInterval(2))
+        XCTAssertTrue(empty.isEmpty)
+    }
+
+    func testRemoteSourcePathsRemainIndependentOfLocalSymlinksAndHome() throws {
+        let directory = temporaryDirectory(named: "sidebar-remote")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let local = directory.appendingPathComponent("local")
+        let source = directory.appendingPathComponent("remote-path")
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: source, withDestinationURL: local)
+        for path in [source.path, "/missing-\(UUID().uuidString)/repo", "~/remote/repo", "/tmp/remote/../repo"] {
+            let space = workspace("w-remote", label: "remote", path: path, linked: false)
+            let sourceTab = tab("t-remote", workspaceID: space.workspaceID)
+            let snapshot = snapshot(workspaces: [space], tabs: [sourceTab], panes: [
+                pane("p-remote", workspaceID: space.workspaceID, tabID: sourceTab.tabID, cwd: path),
+            ])
+            let status = WorkspaceGitStatus(checkoutPath: path, branch: "remote", isDetached: false,
+                aheadBehind: nil, repoKey: "remote-repo")
+            XCTAssertEqual(WorkspaceSidebar.checkoutPath(for: space, in: snapshot), path)
+            XCTAssertEqual(WorkspaceSidebar.checkoutPath(for: sourceTab, in: snapshot), path)
+            XCTAssertEqual(WorkspaceSidebar.checkoutPaths(in: snapshot), [path])
+            XCTAssertEqual(WorkspaceSidebar.gitStatus(for: space, in: snapshot, gitStatuses: [path: status]), status)
+            XCTAssertEqual(WorkspaceSidebar.gitStatus(for: sourceTab, in: snapshot, gitStatuses: [path: status]), status)
+        }
+    }
+
+    func testRepeatedSidebarRenderingPerformanceProbe() throws {
+        guard ProcessInfo.processInfo.environment["RAI_SIDEBAR_PERFORMANCE_PROBE"] == "1" else {
+            throw XCTSkip("Set RAI_SIDEBAR_PERFORMANCE_PROBE=1 to measure sidebar rendering helpers.")
+        }
+        let path = (#filePath as NSString).deletingLastPathComponent
+        let workspaces = (0..<40).map {
+            workspace("w\($0)", label: "space \($0)", path: path, linked: $0 > 0)
+        }
+        let tabs = (0..<80).map { tab("t\($0)", workspaceID: "w\($0 / 2)") }
+        let panes = (0..<80).map {
+            pane("p\($0)", workspaceID: "w\($0 / 2)", tabID: "t\($0)", cwd: path)
+        }
+        let snapshot = snapshot(workspaces: workspaces, tabs: tabs, panes: panes)
+        let canonical = WorkspaceGit.normalizedCheckoutPath(path)
+        let status = WorkspaceGitStatus(checkoutPath: canonical, branch: "main", isDetached: false,
+            aheadBehind: nil, repoKey: "fixture")
+        var statuses = [canonical: status]
+        statuses[path] = status
+        func redraw() -> Int {
+            var checksum = WorkspaceSidebar.entries(in: snapshot, gitStatuses: statuses,
+                collapsedSpaceKeys: [], visibleWorkspaceID: "w0").count
+            checksum += WorkspaceSidebar.entries(in: snapshot, gitStatuses: statuses,
+                collapsedSpaceKeys: [], visibleWorkspaceID: nil).count
+            for tab in tabs {
+                checksum += WorkspaceSidebar.gitStatus(for: tab, in: snapshot, gitStatuses: statuses)?.branch?.count ?? 0
+            }
+            for workspace in workspaces {
+                checksum += WorkspaceSidebar.gitStatus(for: workspace, in: snapshot, gitStatuses: statuses)?.branch?.count ?? 0
+            }
+            return checksum
+        }
+        func cpuSeconds() -> Double {
+            var usage = rusage()
+            getrusage(RUSAGE_SELF, &usage)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        for _ in 0..<5 { _ = redraw() }
+        let start = Date()
+        let cpu = cpuSeconds()
+        var checksum = 0
+        for _ in 0..<100 { checksum += redraw() }
+        let elapsedCPU = cpuSeconds() - cpu
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(checksum, 56_000)
+        print(String(format: "sidebar-redraw spaces=40 tabs=80 redraws=100 checksum=%d cpu=%.6fs wall=%.6fs",
+            checksum, elapsedCPU, elapsed))
     }
 
     func testGroupsPrimaryAndLinkedWorktreesAtFirstMemberPosition() {
