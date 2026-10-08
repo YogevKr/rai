@@ -115,6 +115,30 @@ struct CodexQueuedFollowUp: Equatable {
     let questionCount: Int
 }
 
+struct CodexQuestionOption: Equatable, Identifiable {
+    let digit: Int
+    let label: String
+    let description: String?
+    let isSelected: Bool
+
+    var id: Int { digit }
+}
+
+struct CodexQuestion: Equatable {
+    let index: Int
+    let total: Int
+    let unanswered: Int
+    let question: String?
+    let options: [CodexQuestionOption]
+    /// Exact visible question region. It guards a tap against a newer prompt.
+    let signature: String
+
+    /// Stable while Codex moves the selection marker or advances the prompt.
+    var dialogIdentity: String {
+        "\(index)/\(total):\(question ?? ""):\(options.map { "\($0.digit):\($0.label)" }.joined(separator: "|"))"
+    }
+}
+
 enum CodexQueuedFollowUpDetector {
     static func detect(in gridText: String) -> CodexQueuedFollowUp? {
         let lines = gridText.components(separatedBy: .newlines)
@@ -133,6 +157,138 @@ enum CodexQueuedFollowUpDetector {
             return CodexQueuedFollowUp(questionCount: count)
         }
         return nil
+    }
+}
+
+enum CodexQuestionDetector {
+    private static let headerExpression = try! NSRegularExpression(
+        pattern: #"^\s*Question\s+(\d+)\s*/\s*(\d+)(?:\s*\((\d+)\s+unanswered\))?(?:\s+·.*)?\s*$"#,
+        options: [.caseInsensitive]
+    )
+    private static let optionExpression = try! NSRegularExpression(
+        pattern: #"^\s*([›❯>])?\s*([1-9][0-9]*)[\.\)]\s+(.+?)\s*$"#
+    )
+
+    static func detect(in gridText: String) -> CodexQuestion? {
+        let lines = gridText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        guard let headerIndex = lines.lastIndex(where: { headerMatch(for: $0) != nil }),
+              let header = headerMatch(for: lines[headerIndex]),
+              let firstOptionIndex = lines[(headerIndex + 1)..<lines.endIndex]
+                .firstIndex(where: { parseOption($0) != nil })
+        else { return nil }
+
+        let optionLines = lines[firstOptionIndex..<lines.endIndex]
+        var parsed: [CodexQuestionOption] = []
+        var lastOptionIndex = firstOptionIndex
+        for (offset, line) in optionLines.enumerated() {
+            if let option = parseOption(line) {
+                parsed.append(option)
+                lastOptionIndex = firstOptionIndex + offset
+                continue
+            }
+            guard !parsed.isEmpty else { continue }
+            let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty
+                || value.localizedCaseInsensitiveContains("to submit")
+                || value.localizedCaseInsensitiveContains("to interrupt") {
+                break
+            }
+            let current = parsed.removeLast()
+            let description = [current.description, value]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            parsed.append(
+                CodexQuestionOption(
+                    digit: current.digit,
+                    label: current.label,
+                    description: description.isEmpty ? nil : description,
+                    isSelected: current.isSelected
+                )
+            )
+            lastOptionIndex = firstOptionIndex + offset
+        }
+        guard parsed.count >= 1,
+              let footerIndex = lines.lastIndex(where: {
+                  $0.localizedCaseInsensitiveContains("to interrupt")
+              }),
+              lastOptionIndex < footerIndex,
+              lines[(footerIndex + 1)..<lines.endIndex]
+                  .allSatisfy({ $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        else { return nil }
+
+        let footerStart = lines[(lastOptionIndex + 1)...footerIndex]
+            .firstIndex(where: { $0.localizedCaseInsensitiveContains("to submit") })
+        guard let footerStart else { return nil }
+        let footer = lines[footerStart...footerIndex]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: " ")
+        guard footer.localizedCaseInsensitiveContains("to submit"),
+              footer.localizedCaseInsensitiveContains("to interrupt"),
+              !footer.localizedCaseInsensitiveContains("to clear notes"),
+              !lines[(lastOptionIndex + 1)..<footerStart]
+                  .contains(where: { $0.localizedCaseInsensitiveContains("add notes") })
+        else { return nil }
+
+        let question = lines[(headerIndex + 1)..<firstOptionIndex]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let regionEnd = min(lines.count, lastOptionIndex + 2)
+        let region = Array(lines[headerIndex..<regionEnd])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: "\n")
+        return CodexQuestion(
+            index: header.index,
+            total: header.total,
+            unanswered: header.unanswered,
+            question: question.isEmpty ? nil : question,
+            options: parsed,
+            signature: region
+        )
+    }
+
+    private struct Header {
+        let index: Int
+        let total: Int
+        let unanswered: Int
+    }
+
+    private static func headerMatch(for line: String) -> Header? {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = headerExpression.firstMatch(in: line, range: range),
+              let indexRange = Range(match.range(at: 1), in: line),
+              let totalRange = Range(match.range(at: 2), in: line),
+              let index = Int(line[indexRange]),
+              let total = Int(line[totalRange]),
+              index > 0, total >= index
+        else { return nil }
+        let unanswered = Range(match.range(at: 3), in: line)
+            .flatMap { Int(line[$0]) } ?? 0
+        return Header(index: index, total: total, unanswered: unanswered)
+    }
+
+    private static func parseOption(_ line: String) -> CodexQuestionOption? {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = optionExpression.firstMatch(in: line, range: range),
+              let digitRange = Range(match.range(at: 2), in: line),
+              let contentRange = Range(match.range(at: 3), in: line),
+              let digit = Int(line[digitRange]),
+              digit > 0
+        else { return nil }
+        let content = String(line[contentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return nil }
+        let pieces = content.components(separatedBy: "  ")
+        let label = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = pieces.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return CodexQuestionOption(
+            digit: digit,
+            label: label,
+            description: description.isEmpty ? nil : description,
+            isSelected: match.range(at: 1).location != NSNotFound
+        )
     }
 }
 
