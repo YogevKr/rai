@@ -1,3 +1,13 @@
+Rai 0.1.93 fixes update shutdown and the Machines dialog layout.
+
+- Rai permits final app termination when asynchronous cleanup finishes or reaches its deadline.
+- Rai gives asynchronous bridge cleanup five seconds before closing.
+- Repeated Quit requests start one cleanup operation.
+- Herdr sessions and their running processes remain on the server.
+- The Machines dialog uses compact row menus and plain selection buttons.
+- Search and footer controls stay visible. Search now filters machine names and addresses.
+- Machine rows omit repeated address labels.
+
 Rai 0.1.92 groups spaces by machine and stabilizes remote tab switching.
 
 - Local and SSH spaces use the same tabs, panes, menus, and close actions.

@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var microRetryObserver: AnyCancellable?
     private var hookBeaconReceiver: HookBeaconReceiver?
     private var appUpdateWindow: AppUpdateWindow?
+    private let termination = AppTerminationCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appUpdateWindow = AppUpdateWindow(model: AppUpdateController.shared)
@@ -102,11 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Task {
-            await model?.shutdown()
-            sender.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        termination.request(shutdown: { [weak self] in
+            await self?.model?.shutdown()
+        }, reply: { sender.reply(toApplicationShouldTerminate: true) })
     }
 
     func applicationWillTerminate(_ notification: Notification) {

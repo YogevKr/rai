@@ -624,10 +624,32 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 `rai-updater` runs outside Rai's app process. It verifies the candidate before reporting readiness and again after Rai exits.
 It waits up to two minutes for normal shutdown. It never stops the Herdr server.
 Rai schedules update shutdown on the main run loop, after the update task returns.
-This lets the delegate's cleanup task run inside AppKit's termination loop. Normal Quit and system shutdown keep their existing behavior.
-`AppTerminationTests` checks that the shutdown callback runs on the main thread, outside the calling task.
+The delegate returns `terminateLater` while asynchronous cleanup runs.
+Cleanup completion or its five-second deadline schedules the reply that permits AppKit to finish termination.
+This preserves system logout and shutdown requests.
+Repeated requests do not restart cleanup. The deadline cancels cleanup without waiting for an unresponsive task.
+`AppTerminationTests` checks callback scheduling, repeated requests, and a cleanup operation that never completes.
+`AppTerminationProcessTests` launches owned AppKit processes for normal Quit, update Quit, and stalled update cleanup.
+Those processes use no Herdr server, network listener, window, or user preferences.
+The installed 0.1.91 failure left the verified candidate staged while the old app remained in AppKit termination.
+A process sample showed a cleanup worker waiting in `TailscaleServeController.waitForExit`.
+The updater's two-minute wait expired before Rai exited.
 The installer retains the previous app and reports errors instead of deleting the backup.
 `scripts/bundle.sh` includes and signs the helper before signing the outer app.
+
+### Machines dialog layout
+
+The Mac dialog keeps search above the list and Refresh, Add Machine, and Done below it.
+Machine selection uses plain row buttons. Each compact menu stays beside its connection status.
+Rows omit an address when it equals the machine label.
+Search filters machine names and addresses. Agent search retains its status filter when available.
+Selecting an online machine closes the dialog. Opening its menu keeps the dialog open.
+Verify search, empty results, selection, menus, Add Machine, Cancel, Refresh, and Done in the isolated app.
+Check the shared view with an iOS simulator build before release.
+
+The October 8 hotfix passed 1,078 Mac tests, with 17 skips and no failures.
+The iOS simulator build passed for both supported simulator architectures.
+Logs: `/private/tmp/rai-update-layout-full.log` and `/private/tmp/rai-update-ios-build.log`.
 
 Release metadata and archive hashes come from the [GitHub Releases API](https://docs.github.com/en/rest/releases/releases).
 Signature checks use Apple's [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services).
