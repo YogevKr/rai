@@ -92,7 +92,6 @@ public struct AppUpdateInstallation: Codable, Sendable {
               staging.deletingLastPathComponent().standardizedFileURL == parent,
               staging.lastPathComponent.hasPrefix(".rai-update-"),
               manager.isWritableFile(atPath: parent.path),
-              manager.isWritableFile(atPath: target.path),
               !manager.fileExists(atPath: backup.path)
         else { throw AppUpdateError.cannotInstall }
     }

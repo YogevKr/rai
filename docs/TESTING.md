@@ -663,6 +663,7 @@ Its repeated-render fixture reduced median CPU work by 73 percent with the same 
 This measures sidebar computation, not complete tab-switch latency.
 The socket line check covers fragmented, coalesced, bounded, buffered, and closed responses.
 The 2 MiB unterminated response passed in 0.133 seconds after incremental scanning.
+The updater checks the Applications directory for write access. It does not require write access inside the signed app bundle.
 
 ## Cached terminal streams
 

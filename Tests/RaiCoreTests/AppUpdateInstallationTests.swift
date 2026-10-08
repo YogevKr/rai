@@ -43,6 +43,16 @@ final class AppUpdateInstallationTests: XCTestCase {
         XCTAssertEqual(try marker(in: installation.target), "old")
     }
 
+    func testReplacementDoesNotRequireTheAppBundleDirectoryToBeWritable() throws {
+        let (root, installation) = try fixture()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: installation.target.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: installation.target.path)
+        XCTAssertNoThrow(try installation.validatePaths())
+    }
+
     func testSymlinkedCandidateIsRejected() throws {
         let (root, installation) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

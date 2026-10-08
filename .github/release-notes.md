@@ -1,5 +1,6 @@
-Rai 0.1.93 reduces sidebar work and fixes update shutdown and the Machines dialog layout.
+Rai 0.1.94 fixes update installation and reduces sidebar work.
 
+- Updates work when the existing app bundle has normal signed bundle permissions.
 - Sidebar rendering no longer checks local filesystem paths for every row.
 - Background Git checks preserve status and grouping for paths that use symbolic links.
 - Socket response parsing scans each received byte once, reducing delays during large output.
