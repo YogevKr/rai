@@ -69,6 +69,11 @@ final class MachineDirectory: ObservableObject {
         return resolve(endpoint, connectionID: identity.connectionID) != nil
     }
 
+    func localSocketPath(for endpoint: MachineEndpoint) -> String? {
+        guard endpoint.profileID == nil else { return nil }
+        return paths[endpoint]
+    }
+
     @discardableResult
     func createWorkspace(on endpoint: MachineEndpoint) async throws -> String {
         guard !stopped, let entry = state.entry(for: endpoint), entry.health != .disabled else {

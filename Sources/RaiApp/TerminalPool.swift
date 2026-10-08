@@ -11,7 +11,7 @@ struct TerminalAttachCommand {
 /// Owns attached terminal views independently of SwiftUI's view lifecycle.
 ///
 /// A terminal can move between lightweight host views without losing scrollback.
-/// Hidden views suspend their display clients; Herdr keeps their agents running.
+/// Cached views keep their display clients attached across tab and machine switches.
 /// Closed terminals are reaped from snapshots, and cached views use LRU eviction.
 @MainActor
 final class TerminalPool {
@@ -25,7 +25,6 @@ final class TerminalPool {
     private var socketPath: String
     private let attachExecutable: String?
     private let requiresRuntimeExecutable: Bool
-    private let redrawOnAttach: Bool
     private var takeoverOnAttach: Bool
     private var attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     var runtimeExecutable: String? {
@@ -60,7 +59,6 @@ final class TerminalPool {
         socketPath: String = HerdrClient.defaultSocketPath(),
         attachExecutable: String? = nil,
         requiresRuntimeExecutable: Bool = false,
-        redrawOnAttach: Bool = false,
         takeoverOnAttach: Bool = true,
         attachCommandBuilder: ((String) -> TerminalAttachCommand?)? = nil
     ) {
@@ -68,7 +66,6 @@ final class TerminalPool {
         self.socketPath = socketPath
         self.attachExecutable = attachExecutable
         self.requiresRuntimeExecutable = requiresRuntimeExecutable
-        self.redrawOnAttach = redrawOnAttach
         self.takeoverOnAttach = takeoverOnAttach
         self.attachCommandBuilder = attachCommandBuilder
         // Re-theme + repaint every live terminal the instant the palette changes
@@ -160,7 +157,6 @@ final class TerminalPool {
             terminalID: terminalID,
             socketPath: socketPath,
             executable: executable,
-            redrawOnAttach: redrawOnAttach,
             takeoverOnAttach: takeoverOnAttach,
             attachCommandBuilder: attachCommandBuilder
         )
@@ -300,14 +296,11 @@ private final class TerminalProcessCoordinator:
     private let terminalID: String
     private let socketPath: String
     var executable: String
-    private let redrawOnAttach: Bool
     private let takeoverOnAttach: Bool
     private let attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     private var state = State.suspended
     private var hasLaunched = false
     private var pendingLaunch: DispatchWorkItem?
-    private var pendingSuspension: DispatchWorkItem?
-    private var pendingInitialRedraw: DispatchWorkItem?
     private var retries = 0
     private let maxRetries = 5
 
@@ -315,14 +308,12 @@ private final class TerminalProcessCoordinator:
         terminalID: String,
         socketPath: String,
         executable: String,
-        redrawOnAttach: Bool,
         takeoverOnAttach: Bool,
         attachCommandBuilder: ((String) -> TerminalAttachCommand?)?
     ) {
         self.terminalID = terminalID
         self.socketPath = socketPath
         self.executable = executable
-        self.redrawOnAttach = redrawOnAttach
         self.takeoverOnAttach = takeoverOnAttach
         self.attachCommandBuilder = attachCommandBuilder
     }
@@ -337,30 +328,19 @@ private final class TerminalProcessCoordinator:
         guard state != .stopped, let view else { return }
         guard view.isTerminalVisible else {
             cancelPendingLaunch()
-            if state == .attached {
-                // SwiftUI briefly removes a view while transferring it between
-                // hosts. Keep that client's connection during a short transfer.
-                guard pendingSuspension == nil else { return }
-                let suspension = DispatchWorkItem { [weak self] in
-                    guard let self, self.view?.isTerminalVisible == false else { return }
-                    self.suspend()
-                }
-                pendingSuspension = suspension
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: suspension)
-            } else {
-                suspend()
-            }
+            // Visibility is presentation state, not a connection lifetime.
+            // Keep a healthy client and its grid while the tab is cached.
+            // Unstarted or failed clients wait until they become visible.
+            if state != .attached { suspend() }
             return
         }
 
-        pendingSuspension?.cancel()
-        pendingSuspension = nil
         guard state == .suspended else { return }
         retries = 0
         state = .waitingForLayout
         if hasLaunched {
             // A cached view already has a terminal grid. Reconnect immediately
-            // so input after a tab switch cannot fall into the fallback delay.
+            // after an actual client exit; ordinary tab switches keep the client.
             launch()
             return
         }
@@ -379,17 +359,18 @@ private final class TerminalProcessCoordinator:
         pendingLaunch = nil
     }
 
-    private func cancelPendingInitialRedraw() {
-        pendingInitialRedraw?.cancel()
-        pendingInitialRedraw = nil
+    func prepareForInput(source: TerminalProcessView) {
+        guard state == .waitingForLayout, source.isTerminalVisible else { return }
+        // User input can precede the first resize or fallback timer. Start
+        // the client now, using the available grid, before sending that input.
+        // Do not queue or replay keys after a failed connection.
+        source.layoutSubtreeIfNeeded()
+        launch()
     }
 
     private func suspend() {
         guard state != .stopped else { return }
         cancelPendingLaunch()
-        cancelPendingInitialRedraw()
-        pendingSuspension?.cancel()
-        pendingSuspension = nil
         state = .suspended
         // This process is only `herdr terminal attach`. The server owns the
         // agent. Keep the cached terminal buffer intact for the next attach.
@@ -399,9 +380,6 @@ private final class TerminalProcessCoordinator:
     func stop(_ view: FocusAwareTerminalView) {
         state = .stopped
         cancelPendingLaunch()
-        cancelPendingInitialRedraw()
-        pendingSuspension?.cancel()
-        pendingSuspension = nil
         view.terminate()
     }
 
@@ -443,25 +421,6 @@ private final class TerminalProcessCoordinator:
             environment: env.map { "\($0.key)=\($0.value)" },
             rawInput: true
         )
-        scheduleInitialRedraw(for: view)
-    }
-
-    /// A mixed card can be much smaller than the server's current grid. Herdr
-    /// sends the old screen before the shell redraws at the new size, which
-    /// leaves a duplicate prompt in the card. Ask the shell to redraw once the
-    /// attach handshake has settled.
-    private func scheduleInitialRedraw(for view: FocusAwareTerminalView) {
-        guard redrawOnAttach else { return }
-        cancelPendingInitialRedraw()
-        let redraw = DispatchWorkItem { [weak self, weak view] in
-            guard let self, self.state == .attached,
-                  let view, view.process?.running == true else { return }
-            let formFeed: [UInt8] = [0x0c]
-            view.send(source: view, data: formFeed[...])
-            self.pendingInitialRedraw = nil
-        }
-        pendingInitialRedraw = redraw
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: redraw)
     }
 
     // Retry unexpected exits only while visible. Both suspension and eviction

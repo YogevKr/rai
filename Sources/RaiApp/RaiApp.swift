@@ -6,19 +6,10 @@ private struct PrimaryRaiWindowFocusKey: FocusedValueKey {
     typealias Value = Bool
 }
 
-private struct MixedRaiWindowFocusKey: FocusedValueKey {
-    typealias Value = RaiMixedController
-}
-
 extension FocusedValues {
     var primaryRaiWindow: Bool? {
         get { self[PrimaryRaiWindowFocusKey.self] }
         set { self[PrimaryRaiWindowFocusKey.self] = newValue }
-    }
-
-    var mixedRaiWindow: RaiMixedController? {
-        get { self[MixedRaiWindowFocusKey.self] }
-        set { self[MixedRaiWindowFocusKey.self] = newValue }
     }
 }
 
@@ -40,21 +31,22 @@ struct RaiApp: App {
     @MainActor static let sharedModel = RaiModel()
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = RaiApp.sharedModel
+    @StateObject private var primaryModel = RaiApp.sharedModel
+    private var model: RaiModel { navigation?.activeModel ?? primaryModel }
     @StateObject private var settings = SettingsStore.shared
     @StateObject private var appUpdates = AppUpdateController.shared
     @FocusedValue(\.primaryRaiWindow) private var primaryWindow
-    @FocusedValue(\.mixedRaiWindow) private var mixedWindow
+    @FocusedObject private var navigation: MachineNavigationController?
 
     var body: some Scene {
             WindowGroup {
-                RaiRootView(model: model)
+                RaiRootView(model: primaryModel)
                     .focusedSceneValue(\.primaryRaiWindow, true)
                 .frame(minWidth: 920, minHeight: 600)
                 .preferredColorScheme(settings.appearanceMode.preferredColorScheme)
                 .task {
-                    model.bridgeServer.apnsSettings.migrateLegacyKeyIfNeeded()
-                    model.start()
+                    primaryModel.bridgeServer.apnsSettings.migrateLegacyKeyIfNeeded()
+                    primaryModel.start()
                 }
         }
         .defaultSize(width: 1240, height: 820)
@@ -81,52 +73,33 @@ struct RaiApp: App {
             CommandMenu("Tab") {
               Group {
                 Button("New Tab") {
-                    if let mixedWindow, mixedWindow.isMixedSelected {
-                        mixedWindow.newTab()
-                    } else {
-                        model.newTab()
-                    }
+                    model.newTab()
                 }
                     .keyboardShortcut("t", modifiers: .command)
                 Button("Reopen Closed Tab") { model.reopenClosedTab() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
-                    .disabled(mixedWindow?.isMixedSelected == true || !model.canReopenClosedTab)
+                    .disabled(!model.canReopenClosedTab)
                 Button("Close Tab") {
                     guard !appUpdates.isPresented else { return }
-                    if let mixedWindow, mixedWindow.canCloseSelectedTab {
-                        mixedWindow.closeSelectedTab()
-                    } else if primaryWindow == true {
+                    if primaryWindow == true {
                         model.closeTab()
                     }
                 }
                     .keyboardShortcut("w", modifiers: .command)
-                    .disabled(appUpdates.isPresented
-                        || (mixedWindow?.isMixedSelected == true && mixedWindow?.canCloseSelectedTab != true))
+                    .disabled(appUpdates.isPresented || !model.isConnected)
                 Divider()
                 Button("Next Tab") {
-                    if let mixedWindow, mixedWindow.isMixedSelected {
-                        mixedWindow.cycleTab(by: 1)
-                    } else {
-                        model.nextTab()
-                    }
+                    model.nextTab()
                 }
                     .keyboardShortcut(.tab, modifiers: .control)
                 Button("Previous Tab") {
-                    if let mixedWindow, mixedWindow.isMixedSelected {
-                        mixedWindow.cycleTab(by: -1)
-                    } else {
-                        model.prevTab()
-                    }
+                    model.prevTab()
                 }
                     .keyboardShortcut(.tab, modifiers: [.control, .shift])
                 Divider()
                 ForEach(1...9, id: \.self) { n in
                     Button("Select Tab \(n)") {
-                        if let mixedWindow, mixedWindow.isMixedSelected {
-                            mixedWindow.selectTab(index: n - 1)
-                        } else {
-                            model.selectTab(index: n - 1)
-                        }
+                        model.selectTab(index: n - 1)
                     }
                         .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
@@ -181,7 +154,7 @@ struct RaiApp: App {
                 Button("Focus Down") { model.focusPane("down") }
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
               }
-              .disabled(mixedWindow?.isMixedSelected == true)
+              .disabled(!model.isConnected)
             }
 
             CommandMenu("Agent") {
@@ -200,31 +173,30 @@ struct RaiApp: App {
                     )
                     .disabled(model.agentPanelEntries.count < n)
                 }
-                .disabled(mixedWindow?.isMixedSelected == true)
+                .disabled(!model.isConnected)
             }
 
             CommandMenu("Space") {
               Group {
-                Button("New Space") { model.requestNewWorkspace() }
+                Button("New Space") { navigation?.newSpace() }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("Next Space") { model.nextWorkspace() }
+                Button("Next Space") { navigation?.cycleSpace(by: 1) }
                     .keyboardShortcut("]", modifiers: [.command, .shift])
-                Button("Previous Space") { model.prevWorkspace() }
+                Button("Previous Space") { navigation?.cycleSpace(by: -1) }
                     .keyboardShortcut("[", modifiers: [.command, .shift])
               }
-              .disabled(mixedWindow?.isMixedSelected == true)
             }
 
             CommandGroup(after: .toolbar) {
                 Button("Command Palette…") { model.toggleCommandPalette() }
                     .keyboardShortcut("k", modifiers: .command)
-                    .disabled(mixedWindow?.isMixedSelected == true)
+                    .disabled(!model.isConnected)
                 Divider()
                 Button("Refresh") {
                     model.refreshNow()
                 }
                     .keyboardShortcut("r", modifiers: .command)
-                    .disabled(mixedWindow?.isMixedSelected == true)
+                    .disabled(!model.isConnected)
             }
 
             // Scrollback search: route the standard Find actions to whichever

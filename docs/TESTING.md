@@ -106,11 +106,56 @@ Keep UI evidence for both platforms. Unit tests alone do not complete this scena
 
 Run regression tests with `swift test --filter HerdrInstallationTests` using the Xcode developer directory.
 
+## Machine groups
+
+Use separate local and SSH Herdr servers under one owned app lab.
+Keep both servers separate from daily sessions.
+
+Verify these actions through the Mac app:
+
+- Create two spaces on the selected machine. Each action must create one tab and one pane.
+- Rename spaces and move tabs between spaces on the same machine.
+- Split a remote tab, enter text, and close it with Command-W.
+- Close the last space through its context menu. The server must remain empty.
+- Use Next Space and Previous Space across machine groups.
+- Collapse a machine without changing selection. Keyboard navigation must reveal its destination.
+- Interrupt only the owned SSH transport while Local remains selected.
+- Confirm automatic recovery preserves selection and terminal identities.
+- Quit and restart Rai. Both servers must retain their resources.
+
+Use API snapshots after each action. Check both servers to detect incorrect routing.
+Run `swift test --filter MachineNavigation` for navigation regressions.
+Set `RAI_NAVIGATION_E2E_TARGET` to the owned SSH alias for the live transport test.
+Supply the lab manifest environment. The remote fixture must start empty.
+The test covers repeated creation, reviewed closure, Command-W closure, and recreation.
+
+The October 8, 2026 lab uses `/private/tmp/rai09-abbpf77s` and Herdr 0.9.3.
+The SSH fixture uses loopback. This check does not measure cloud network latency.
+The final Mac suite passed 1,073 tests, with 16 skipped and no failures.
+An earlier run had two deadline failures. The full retry passed without code changes after compilation finished.
+Evidence: `mac-final-tests.log` and `mac-final-retry.log` in the lab directory.
+UI checks passed creation, rename, tab movement, split input, keyboard navigation, collapse, SSH recovery, and app restart.
+The reviewed closure check found a replacement-shell defect.
+Rai now prepares closure before it publishes the first space and closes through the API with boot identity checks.
+The SSH regression passed after the fix. It covered both closure paths and recreation in 9.243 seconds.
+Evidence: `native-ssh-reviewed-close-final.log` in the lab directory.
+The final signed app also passed context-menu closure. Its remote server remained empty, and Local stayed unchanged.
+Evidence: `final-ui-create.json`, `final-ui-reviewed-close.json`, and `final-app-build.json` in the lab directory.
+
+The isolated iOS app built and displayed Local Code through the Mac bridge.
+Phone input produced `RAI_IOS_MACHINE_OK` in the correct server pane.
+After the final Mac restart, phone input produced `RAI_IOS_RECOVERY_OK` only in Local.
+The Mac kept Remote Tests selected. Evidence: `ios-final-input.json` in the lab directory.
+Seventeen iOS machine and management tests passed with no failures.
+Evidence: `ios-local-input.json` and `ios-machine-tests.log` in the lab directory.
+This check covers bridge compatibility. It does not establish physical-device or remote-phone navigation coverage.
+The machine-group interface changes macOS only.
+
 ## Creating spaces on an empty instance
 
 Use an owned SSH fixture with no workspaces, tabs, or panes.
 Read its API snapshot before opening any endpoint connection.
-Click New Space in Rai and select that instance once.
+Select that machine in Rai, then invoke New Space once.
 The API and sidebar must each show one space with one shell tab.
 Repeat the action. Both must show two spaces, with one tab in each space.
 The first terminal ID must stay unchanged.
@@ -588,34 +633,55 @@ Release metadata and archive hashes come from the [GitHub Releases API](https://
 Signature checks use Apple's [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services).
 Current release archives contain no symbolic links. The installer rejects archives with symbolic links before extraction.
 
-## Hidden terminal streams
+## Cached terminal streams
 
-Rai disconnects a display client after its view stays outside a window or hidden for one second.
-It keeps the cached view and reconnects when the view becomes visible.
-Cached views reconnect immediately, so the first keys after a tab switch reach the client.
-Rai enables raw PTY input before accepting keys. Control keys then survive the client's connection handshake.
-The Herdr server keeps the pane process running. Brief view transfers retain the existing client.
+Rai keeps cached terminal clients attached across tab and machine switches.
+Visibility changes do not send keys, stop clients, or rebuild SSH tunnels.
+Herdr supplies the initial screen. Rai does not send Ctrl-L to request a redraw.
+An action rejection does not mark a responding machine offline.
+
+Unvisited panes wait until their first visible layout before attaching.
+An early user keystroke starts that attach immediately, without waiting for the layout timer.
+Rai sends that keystroke once. It does not queue keys for failed connections.
+Closed panes, removed machines, and cache eviction still stop their display clients.
+The cache holds between eight and 32 views per machine.
+Hidden clients continue receiving terminal frames within the existing output buffer limit.
+This costs background traffic; Herdr's native surface-interest protocol avoids that traffic.
+Rai's direct terminal clients do not yet support surface-interest control.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift test --filter TerminalVisibilityTests
+  swift test -j 4 --filter 'TerminalVisibilityTests|TerminalPool'
 ```
 
-These tests use local PTYs. They check visibility, cached scrollback, input after reconnect, retries, eviction, and child process cleanup.
-The control-key test delays client setup and checks that Ctrl-C, Backspace, Ctrl-V, text, and Return arrive unchanged.
+The PTY tests check stable client identity, cached scrollback, raw input, retries, and eviction.
+A byte recorder checks that attachment and tab switches send only supplied input.
 
-An isolated Herdr 0.8.0 test on 2026-09-06 used eight shell processes with a 100 ms output interval.
-Each CPU sample lasted ten seconds. Percentages refer to one CPU core.
+The SSH regression requires the owned loopback lab environment and `RAI_NAVIGATION_E2E_TARGET`.
+Run `MachineNavigationTransportTests.testSSHNavigationKeepsConnectionsAndDoesNotInjectInput`.
+It creates two temporary spaces and records input while another thread produces output.
+It checks client identity, terminal identity, connection state, output, and rejected focus requests.
+It closes only its own spaces. Existing lab spaces remain unchanged.
+This test does not establish authenticated Codex or cloud coverage.
 
-| Display clients | Server CPU |
-| --- | ---: |
-| Eight connected | 5.2% |
-| One connected, seven hidden | 2.7% |
-| Eight reconnected | 8.2% |
+The October 8 check used Herdr 0.9.3 in two isolated servers and a private loopback SSH fixture.
+The full Mac suite completed 1,075 tests with 17 skips and no failures.
+The separate SSH regression passed, including the first keystroke before the attach timer.
+All 16 build-script tests passed. The signed lab bundle built successfully.
 
-All eight process IDs stayed unchanged, and output continued while seven views were hidden.
-The hidden views kept their buffers. Their clients exited without leaving child processes, and reconnected views received current output.
-These samples verify this workload. They do not predict CPU use in a live herd.
+Evidence remains in `/private/tmp/rai09-abbpf77s`:
+
+- `lifecycle-before.log` records the reproduced input and disconnect failures.
+- `first-key-before.log` records the reproduced first-keystroke failure.
+- `remote-final-suite.log` records the full Mac gate.
+- `ssh-initial-input.log` records the final SSH regression.
+- `ui-stream-after-switch.json` records unchanged display clients and exact input bytes.
+- `ui-stream-recovery.json` records source-process survival across the intentional SSH interruption.
+- `ui-first-key-final.json` confirms immediate typing reached the remote shell in the final app.
+- `remote-ui-final-created.json` and `remote-ui-final-closed.json` confirm one tab opened and closed at its source.
+- `remote-fix-build.json` records the app identity and executable hash.
+
+The isolated Codex profile was signed out. No authenticated Codex task was tested.
 
 ## Surface validation and event limits
 

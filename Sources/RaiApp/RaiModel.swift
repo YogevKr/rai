@@ -443,11 +443,17 @@ final class RaiModel: ObservableObject {
     private(set) var selectionRevision = UUID()
     private var applyingSnapshotSelection = false
     private var pendingFocusRequest: UUID?
-    @Published var draggedPaneID: String?
+    @Published var draggedPaneID: String? {
+        didSet { if draggedPaneID != nil { claimDrag() } }
+    }
     // Sidebar reorder drag state (mirrors draggedPaneID) — read synchronously by
     // the drop delegates rather than round-tripping through NSItemProvider.
-    @Published var draggedTabID: String?
-    @Published var draggedWorkspaceID: String?
+    @Published var draggedTabID: String? {
+        didSet { if draggedTabID != nil { claimDrag() } }
+    }
+    @Published var draggedWorkspaceID: String? {
+        didSet { if draggedWorkspaceID != nil { claimDrag() } }
+    }
     @Published var onlyNeedsYou = false
     // Spaces the user has collapsed in the sidebar. A collapsed space hides its
     // tabs except the ones that need attention (and the selected one).
@@ -579,6 +585,7 @@ final class RaiModel: ObservableObject {
     /// A double click must not create two spaces before the first snapshot
     /// reaches the sidebar. The token resets when that request finishes.
     private var workspaceCreationAttempt: UUID?
+    var isCreatingWorkspace: Bool { workspaceCreationAttempt != nil }
     /// Each saved remote endpoint has its own guard, so two different machines
     /// can still receive concurrent space creation requests.
     private var remoteWorkspaceCreationEndpoints: Set<MachineEndpoint> = []
@@ -631,11 +638,12 @@ final class RaiModel: ObservableObject {
     private var pluginActionsGeneration: UUID?
     private var lastObservedPaneStatuses: [String: AgentStatus]?
     private var workspaceCloseEndpoint: HerdrEndpointConnection?
+    private var workspaceClosePreparation: Task<HerdrEndpointConnection?, Never>?
     private var connectionGeneration = UUID() {
-        didSet { statusExplanation = nil; workspaceCloseEndpoint?.disconnect(); workspaceCloseEndpoint = nil }
+        didSet { statusExplanation = nil; resetWorkspaceCloseEndpoint() }
     }
     private var resourceGeneration = UUID() {
-        didSet { statusExplanation = nil; workspaceCloseEndpoint?.disconnect(); workspaceCloseEndpoint = nil }
+        didSet { statusExplanation = nil; resetWorkspaceCloseEndpoint() }
     }
     var runtimeHerdrBinaryPath: String? {
         if let version = serverInfo?.protocol ?? snapshot?.protocol,
@@ -654,6 +662,23 @@ final class RaiModel: ObservableObject {
     private let pluginInstallRunner: (([String], [String: String]) async -> HerdrCommandResult)?
     private let pluginBootReader: ((String) async throws -> String)?
     private let pluginPreviewRunner: ((String, [String]) async -> HerdrCommandResult)?
+    private var machineEntry: MachineEntry?
+    private var machineReconnectPaneID: String?
+    private static weak var dragOwner: RaiModel?
+    var ownsDrag: Bool { Self.dragOwner === self }
+
+    private func claimDrag() {
+        if let previous = Self.dragOwner, previous !== self {
+            previous.draggedPaneID = nil
+            previous.draggedTabID = nil
+            previous.draggedWorkspaceID = nil
+        }
+        Self.dragOwner = self
+    }
+    var isConnected: Bool {
+        if case .connected = connectionState { return true }
+        return false
+    }
 
     init(
         client: HerdrClient = HerdrClient(),
@@ -664,7 +689,8 @@ final class RaiModel: ObservableObject {
         resolveHerdrBinary: @escaping () -> String? = { HerdrCLI.resolvedBinaryPath },
         pluginPreviewRunner: ((String, [String]) async -> HerdrCommandResult)? = nil,
         pluginInstallRunner: (([String], [String: String]) async -> HerdrCommandResult)? = nil,
-        pluginBootReader: ((String) async throws -> String)? = nil
+        pluginBootReader: ((String) async throws -> String)? = nil,
+        machineEntry: MachineEntry? = nil
     ) {
         self.client = client
         self.closeCommandRunner = closeCommandRunner
@@ -672,8 +698,10 @@ final class RaiModel: ObservableObject {
         self.pluginPreviewRunner = pluginPreviewRunner
         self.pluginInstallRunner = pluginInstallRunner
         self.pluginBootReader = pluginBootReader
+        self.machineEntry = machineEntry
         activeSocketPath = client.socketPath
-        currentSessionName = Self.inferredSessionName(for: client.socketPath)
+        currentSessionName = machineEntry?.endpoint.session ?? Self.inferredSessionName(for: client.socketPath)
+        remoteTarget = machineEntry?.target
         terminalPool = TerminalPool(
             socketPath: client.socketPath,
             requiresRuntimeExecutable: true
@@ -719,6 +747,7 @@ final class RaiModel: ObservableObject {
     }
 
     deinit {
+        workspaceClosePreparation?.cancel()
         workspaceCloseEndpoint?.disconnect()
         eventTask?.cancel()
         eventSubscription?.close()
@@ -877,7 +906,7 @@ final class RaiModel: ObservableObject {
             agentBeacons.removeValue(forKey: paneID)
         }
         if let snapshot {
-            bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+            if machineEntry == nil { bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge)) }
         }
         if let heldDecision {
             scheduleDecisionDeadline(heldDecision)
@@ -1006,7 +1035,7 @@ final class RaiModel: ObservableObject {
             ]
         )
         if relaySnapshot, let snapshot {
-            bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+            if machineEntry == nil { bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge)) }
         }
         if pendingDecisions.isEmpty {
             phoneReachabilityGrace.reset()
@@ -1346,6 +1375,19 @@ final class RaiModel: ObservableObject {
         tearDownCurrentConnection(stopRemote: true)
     }
 
+    func updateMachineEntry(_ entry: MachineEntry) {
+        guard machineEntry != nil else { return }
+        machineEntry = entry
+    }
+
+    /// Machine models own their clients, but never the shared directory or bridge.
+    func stopMachineConnection() {
+        guard machineEntry != nil else { return }
+        connectionAttemptID = UUID()
+        tearDownCurrentConnection(stopRemote: true)
+        connectionState = .disconnected("Connection stopped.")
+    }
+
     @discardableResult
     func checkHerdrInstallation() -> Bool {
         guard resolveHerdrBinary() != nil else {
@@ -1495,6 +1537,7 @@ final class RaiModel: ObservableObject {
         remoteHerdRequest = nil
         let attemptID = UUID()
         connectionAttemptID = attemptID
+        connectionState = .connecting
         Task {
             do {
                 let discovered = try await RemoteConnection.discoverSocket(
@@ -1525,9 +1568,11 @@ final class RaiModel: ObservableObject {
                     remote: tunnel
                 )
             } catch {
-                if snapshot == nil {
+                guard attemptID == connectionAttemptID else { return }
+                if snapshot == nil || machineEntry != nil {
                     connectionState = .disconnected(error.localizedDescription)
                 }
+                guard machineEntry == nil else { return }
                 sessionAlert = SessionAlert(
                     kind: .error(
                         title: "Couldn’t Connect to Remote Herd",
@@ -1550,6 +1595,7 @@ final class RaiModel: ObservableObject {
         remote: RemoteConnection?
     ) async {
         let socketPath = NSString(string: rawSocketPath).expandingTildeInPath
+        let previousPaneID = machineEntry == nil ? nil : (machineReconnectPaneID ?? selectedPaneID)
         tearDownCurrentConnection(stopRemote: true)
         needsHerdrInstallation = false
 
@@ -1579,25 +1625,33 @@ final class RaiModel: ObservableObject {
 
         await startEventLoop(client: client, generation: generation, keepSelection: false)
         guard generation == connectionGeneration else { return }
+        if let previousPaneID, snapshot?.panes.contains(where: { $0.paneID == previousPaneID }) == true {
+            select(paneID: previousPaneID, focusInHerdr: false)
+        }
+        machineReconnectPaneID = nil
         refreshRepoIndex()
-        await reloadSessions()
-        try? await MachineDirectory.shared.refreshCatalogOnly()
+        if machineEntry == nil {
+            await reloadSessions()
+            try? await MachineDirectory.shared.refreshCatalogOnly()
+        }
     }
 
     private func disconnectCurrentHerd(message: String) {
+        let cachedSnapshot = machineEntry == nil ? nil : snapshot
+        machineReconnectPaneID = machineEntry == nil ? nil : selectedPaneID
         connectionAttemptID = UUID()
         tearDownCurrentConnection(stopRemote: true)
         connectionGeneration = UUID()
-        snapshot = nil
+        snapshot = cachedSnapshot
         serverInfo = nil
-        selectedPaneID = nil
+        selectedPaneID = machineReconnectPaneID
         lastObservedPaneStatuses = nil
         connectionState = .disconnected(message)
     }
 
     private func tearDownCurrentConnection(stopRemote: Bool) {
         connectionGeneration = UUID()
-        MachineDirectory.shared.resetForHerdChange()
+        if machineEntry == nil { MachineDirectory.shared.resetForHerdChange() }
         finishAllPendingDecisions()
         // Their closes can never land now, and a stale ID would hide a row of
         // the same name in the next herd.
@@ -1626,7 +1680,7 @@ final class RaiModel: ObservableObject {
         if stopRemote {
             remoteConnection?.stop()
             remoteConnection = nil
-            remoteTarget = nil
+            remoteTarget = machineEntry?.target
         }
         snapshot = nil
         serverInfo = nil
@@ -1808,6 +1862,7 @@ final class RaiModel: ObservableObject {
             remoteConnection = nil
             let label = currentSessionDisplayName
             disconnectCurrentHerd(message: "SSH tunnel closed: \(message)")
+            guard machineEntry == nil else { return }
             sessionAlert = SessionAlert(
                 kind: .error(
                     title: "Remote Herd Disconnected",
@@ -1904,6 +1959,7 @@ final class RaiModel: ObservableObject {
     }
 
     func select(paneID: String, focusInHerdr: Bool) {
+        let previousPaneID = selectedPaneID
         selectedPaneID = paneID
         // Every selection funnels through here — palette, sidebar, keyboard —
         // so this is the one place recency has to be recorded.
@@ -1925,7 +1981,14 @@ final class RaiModel: ObservableObject {
             do {
                 try await client.focusPane(paneID)
             } catch {
-                if generation == connectionGeneration {
+                guard generation == connectionGeneration, pendingFocusRequest == focusRequest else { return }
+                if case HerdrClientError.remote = error {
+                    // A rejected action proves that the server replied. It does
+                    // not make the machine offline or require new terminals.
+                    selectedPaneID = previousPaneID
+                    sessionAlert = SessionAlert(kind: .error(
+                        title: "Couldn’t Select Pane", message: error.localizedDescription))
+                } else {
                     connectionState = .disconnected(error.localizedDescription)
                 }
             }
@@ -2342,8 +2405,9 @@ final class RaiModel: ObservableObject {
 
     /// Test seam: stages a snapshot without a live herd so snapshot-derived
     /// bookkeeping (e.g. close(tab:)'s reopen record) is testable in isolation.
-    func adoptSnapshotForTesting(_ newSnapshot: SessionSnapshot) {
+    func adoptSnapshotForTesting(_ newSnapshot: SessionSnapshot, connected: Bool = false) {
         snapshot = newSnapshot
+        connectionState = connected ? .connected(version: newSnapshot.version, protocolVersion: newSnapshot.protocol) : .connecting
     }
 
     /// Test seam: simulates a herd replacement before an async close starts.
@@ -3155,8 +3219,35 @@ final class RaiModel: ObservableObject {
             throw HerdrEndpointError.incompatible("The reviewed server connection is unavailable. Reconnect and review closure again.")
         }
         do {
-            if let endpoint = workspaceCloseEndpoint {
-                _ = try await endpoint.closeReviewedWorkspaces(request)
+            if let initial = await workspaceCloseEndpoint?.snapshot {
+                guard let captured = WorkspaceClosePreview(workspaces: request.workspaces,
+                    workspaceID: request.workspaceID, closeGroup: request.closeGroup, connectionID: initial.bootID) else {
+                    throw HerdrEndpointError.staleIdentity
+                }
+                let validation = try EndpointLayoutRequest(snapshot: initial, owningViewID: UUID(), action: .closeWorkspace(captured))
+                var closed: [String] = []
+                do {
+                    for id in try request.closureOrder() {
+                        guard generation == connectionGeneration, resourceID == resourceGeneration.uuidString else {
+                            throw HerdrEndpointError.staleIdentity
+                        }
+                        let completed = closed
+                        // An active native surface seeds a replacement shell after
+                        // its final workspace closes. Keep validation inactive and
+                        // send each close over a pinned API socket instead.
+                        let result = try await HerdrPinnedRPC().request(
+                            socketPath: capturedClient.socketPath,
+                            endpointSocketPath: RemoteConnection.clientSocketPath(for: capturedClient.socketPath),
+                            bootID: initial.bootID, method: "workspace.close",
+                            params: ["workspace_id": .string(id), "close_group": .bool(false)],
+                            validate: { try validation.validateClosureProgress(in: $0, closed: completed) })
+                        guard result.objectValue?["type"]?.stringValue == "ok" else { throw HerdrEndpointError.malformed }
+                        closed.append(id)
+                    }
+                } catch {
+                    throw HerdrClientError.remote(code: "workspace_close_incomplete",
+                        message: "Closed \(closed.count) reviewed workspaces. Inspect the remaining workspaces. \(error.localizedDescription)")
+                }
             } else if let version = serverInfo?.protocol ?? snapshot?.protocol, version > 0, version < 22 {
                 let transport = HerdrPinnedRPC()
                 try await transport.closeReviewedLegacyWorkspace(socketPath: capturedClient.socketPath,
@@ -3173,6 +3264,36 @@ final class RaiModel: ObservableObject {
             throw error
         }
         await refreshSnapshot(keepSelection: true, client: capturedClient, generation: generation)
+    }
+
+    private func resetWorkspaceCloseEndpoint() {
+        workspaceClosePreparation?.cancel()
+        workspaceClosePreparation = nil
+        workspaceCloseEndpoint?.disconnect()
+        workspaceCloseEndpoint = nil
+    }
+
+    private func prepareWorkspaceCloseEndpoint(client: HerdrClient, generation: UUID) async {
+        guard workspaceCloseEndpoint == nil, serverInfo?.capabilities?.endpointProtocolGeneration == 1 else { return }
+        let resourceID = resourceGeneration
+        if workspaceClosePreparation == nil {
+            let path = RemoteConnection.clientSocketPath(for: client.socketPath)
+            workspaceClosePreparation = Task {
+                let endpoint = HerdrEndpointConnection()
+                do {
+                    _ = try await endpoint.connect(socketPath: path)
+                    try Task.checkCancellation()
+                    return endpoint
+                } catch { endpoint.disconnect(); return nil }
+            }
+        }
+        let endpoint = await workspaceClosePreparation?.value
+        guard generation == connectionGeneration, resourceID == resourceGeneration else {
+            endpoint?.disconnect()
+            return
+        }
+        workspaceCloseEndpoint = endpoint
+        workspaceClosePreparation = nil
     }
 
     private func preferredPane(in tab: HerdrTab, snapshot: SessionSnapshot) -> Pane? {
@@ -3266,22 +3387,12 @@ final class RaiModel: ObservableObject {
                                 let info = try await client.serverInfo()
                                 guard generation == connectionGeneration else { throw CancellationError() }
                                 serverInfo = info
-                                var preparedCloseEndpoint: HerdrEndpointConnection?
-                                if info.capabilities?.endpointProtocolGeneration == 1, workspaceCloseEndpoint == nil {
-                                    let endpoint = HerdrEndpointConnection()
-                                    do {
-                                        _ = try await endpoint.connect(socketPath: RemoteConnection.clientSocketPath(for: client.socketPath))
-                                        guard generation == connectionGeneration else { endpoint.disconnect(); throw CancellationError() }
-                                        preparedCloseEndpoint = endpoint
-                                    } catch { endpoint.disconnect() }
-                                }
                                 terminalPool.runtimeExecutable = runtimeHerdrBinaryPath
                                 guard await refreshSnapshot(
                                     keepSelection: preserveSelection, client: client, generation: generation
-                                ) else { preparedCloseEndpoint?.disconnect(); throw HerdrClientError.disconnected }
-                                if let preparedCloseEndpoint { workspaceCloseEndpoint = preparedCloseEndpoint }
+                                ) else { throw HerdrClientError.disconnected }
                                 if let snapshot {
-                                    bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge))
+                                    if machineEntry == nil { bridgeServer.relay(snapshot: snapshot.addingBeacons(beaconsForBridge)) }
                                 }
                                 preserveSelection = true
                                 resyncWithoutFilters = false
@@ -3356,7 +3467,7 @@ final class RaiModel: ObservableObject {
             flushTask = nil
             return
         }
-        bridgeServer.relay(events: events)
+        if machineEntry == nil { bridgeServer.relay(events: events) }
 
         // The terminal content itself is rendered by each pane's attach process,
         // so we only need to re-snapshot on structural changes (create/close/move/
@@ -3408,6 +3519,10 @@ final class RaiModel: ObservableObject {
         do {
             let newSnapshot = try await client.snapshot()
             guard generation == connectionGeneration else { return false }
+            if !newSnapshot.workspaces.isEmpty {
+                await prepareWorkspaceCloseEndpoint(client: client, generation: generation)
+                guard generation == connectionGeneration else { return false }
+            }
             let previousSnapshot = snapshot
             let connectedState = ConnectionState.connected(
                 version: newSnapshot.version,
@@ -3533,7 +3648,7 @@ final class RaiModel: ObservableObject {
                     bridgeBeacons[pane.paneID] = completion
                 }
             }
-            bridgeServer.relay(snapshot: newSnapshot.addingBeacons(bridgeBeacons))
+            if machineEntry == nil { bridgeServer.relay(snapshot: newSnapshot.addingBeacons(bridgeBeacons)) }
             return true
         } catch {
             if generation == connectionGeneration {
@@ -3722,29 +3837,7 @@ final class RaiModel: ObservableObject {
     }
 
     func requestNewWorkspace() {
-        // The mixed controller loads the machine directory in the background.
-        // Keep the chooser visible while that first refresh is still pending.
-        if MachineDirectory.shared.state.entries.isEmpty {
-            newWorkspaceRequest = NewWorkspaceRequest()
-            Task {
-                let directory = MachineDirectory.shared
-                do {
-                    try await directory.refreshCatalogOnly()
-                } catch {
-                    self.sessionAlert = SessionAlert(kind: .error(
-                        title: "Couldn’t Read Instances",
-                        message: error.localizedDescription
-                    ))
-                }
-            }
-            return
-        }
-        let instances = workspaceCreationEntries
-        if instances.count > 1 {
-            newWorkspaceRequest = NewWorkspaceRequest()
-        } else {
-            newWorkspace()
-        }
+        newWorkspace()
     }
 
     func newWorkspace() {
@@ -3817,6 +3910,7 @@ final class RaiModel: ObservableObject {
     }
 
     private var currentMachineEndpoint: MachineEndpoint? {
+        if let machineEntry { return machineEntry.endpoint }
         if let remoteTarget {
             return MachineDirectory.shared.state.entries.first {
                 $0.target == remoteTarget && $0.endpoint.session == currentSessionName
@@ -3829,6 +3923,7 @@ final class RaiModel: ObservableObject {
     }
 
     var currentMachineEntry: MachineEntry? {
+        if let machineEntry { return machineEntry }
         guard let endpoint = currentMachineEndpoint else { return nil }
         if let entry = MachineDirectory.shared.state.entry(for: endpoint) {
             return entry
@@ -4416,7 +4511,7 @@ final class RaiModel: ObservableObject {
             // sidebar (and re-broadcasting to phones) every cycle is pure churn.
             if backgroundWork != result {
                 backgroundWork = result
-                bridgeServer.relay(backgroundWork: result)
+                if machineEntry == nil { bridgeServer.relay(backgroundWork: result) }
             }
         }
     }

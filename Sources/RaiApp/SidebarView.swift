@@ -14,14 +14,8 @@ private enum SidebarSpaceLayout {
 
 struct SidebarView: View {
     @ObservedObject var model: RaiModel
-    let onPrimarySelection: () -> Void
-    let remoteWorkspaces: [InstanceWorkspace]
-    let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
-    let selectedRemoteWorkspace: RaiWorkspaceReference?
-    let selectedRemoteTabID: String?
-    let onRemoteSelection: (RaiWorkspaceReference, String?) -> Void
-    let onRemoteClose: (InstanceWorkspace, String) -> Void
-    let onRemoteRemove: (InstanceWorkspace, String?) -> Void
+    @ObservedObject var navigation: MachineNavigationController
+    private var onPrimarySelection: () -> Void { { } }
     @State private var broadcastPresented = false
     @State private var machinesPresented = false
 
@@ -32,18 +26,10 @@ struct SidebarView: View {
         return model.worktreeContext(for: workspace) != nil
     }
 
-    /// The primary remote connection and its saved machine mirror can report
-    /// the same source space. Keep one row per target, session, and workspace.
-    private var visibleRemoteWorkspaces: [InstanceWorkspace] {
-        InstanceWorkspace.deduplicated(
-            remoteWorkspaces.filter { !$0.belongs(to: model.currentMachineEntry) }
-        )
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
-            if model.snapshot != nil {
+            if !navigation.entries.isEmpty {
                 // Spaces on top, agents below, a divider between them the user
                 // drags. The agents panel keeps its header when collapsed.
                 GeometryReader { geometry in
@@ -96,7 +82,7 @@ struct SidebarView: View {
         .modifier(
             SidebarPresentations(
                 model: model,
-                onWorkspaceCreated: onWorkspaceCreated,
+                navigation: navigation,
                 machinesPresented: $machinesPresented
             )
         )
@@ -133,17 +119,104 @@ struct SidebarView: View {
         return (min(height, list + header), list)
     }
 
-    @ViewBuilder
     private var spacesList: some View {
-        if model.snapshot != nil {
-            ScrollView {
-                // This list is small enough for eager layout. On macOS 26,
-                // LazyVStack can enter a permanent placement loop when these
-                // conditional sections change during the first snapshot.
-                // The loop keeps the main thread at 100% CPU and blocks input.
-                // This intentionally removes pinned headers. Do not restore
-                // lazy pinning without a macOS 26 CPU regression test.
-                VStack(alignment: .leading, spacing: SidebarSpaceLayout.rowSpacing) {
+        ScrollView {
+            // Eager layout avoids the macOS 26 lazy-section placement loop.
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(navigation.entries) { entry in
+                    if let spaceModel = navigation.models[entry.endpoint] {
+                        machineHeader(entry, model: spaceModel)
+                        if !navigation.collapsedMachines.contains(entry.endpoint) {
+                            MachineSpacesView(
+                                model: spaceModel,
+                                isSelected: navigation.selectedEndpoint == entry.endpoint,
+                                onPrimarySelection: { navigation.selectMachine(entry.endpoint) },
+                                onSelectSpace: { workspace in
+                                    navigation.selectSpace(.init(endpoint: entry.endpoint, workspaceID: workspace.workspaceID))
+                                },
+                                onBroadcast: { navigation.selectMachine(entry.endpoint); broadcastPresented = true }
+                            )
+                            .disabled(!spaceModel.isConnected)
+                            .opacity(spaceModel.isConnected ? 1 : 0.5)
+                            if spaceModel.snapshot?.workspaces.isEmpty != false {
+                                Text(machineStatus(spaceModel))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.textTertiary)
+                                    .padding(.leading, 28)
+                                    .padding(.vertical, 8)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 16)
+        }
+        .scrollIndicators(.hidden)
+        .contextMenu {
+            Button("New Tab") { model.newTab() }.disabled(!model.isConnected)
+            Button("New Space") { navigation.newSpace() }.disabled(!model.isConnected)
+        }
+    }
+
+    private func machineHeader(_ entry: MachineEntry, model: RaiModel) -> some View {
+        HStack(spacing: 6) {
+            Button { navigation.toggleCollapsed(entry.endpoint) } label: {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(navigation.collapsedMachines.contains(entry.endpoint) ? 0 : 90))
+                    .frame(width: 18, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(navigation.collapsedMachines.contains(entry.endpoint) ? "Expand machine" : "Collapse machine")
+            Button { navigation.selectMachine(entry.endpoint) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: entry.target == nil ? "desktopcomputer" : "network")
+                    Text(machineLabel(entry)).lineLimit(1)
+                    Spacer(minLength: 2)
+                    if !model.isConnected {
+                        Image(systemName: "network.slash").help("Connection unavailable")
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(navigation.selectedEndpoint == entry.endpoint ? Theme.textPrimary : Theme.textSecondary)
+        .padding(.horizontal, 6)
+        .padding(.top, 12)
+        .help(entry.addressLabel)
+        .contextMenu {
+            Button("New Space") { navigation.newSpace(on: entry.endpoint) }
+                .disabled(!model.isConnected)
+            Button("Machines…") { machinesPresented = true }
+        }
+    }
+
+    private func machineStatus(_ model: RaiModel) -> String {
+        switch model.connectionState {
+        case .connected: "No spaces"
+        case .connecting: "Connecting…"
+        case .disconnected: "Connection unavailable"
+        }
+    }
+
+    private func machineLabel(_ entry: MachineEntry) -> String {
+        if entry.target == nil {
+            return entry.endpoint.session == "default" ? "This Mac" : "This Mac / \(entry.endpoint.session)"
+        }
+        return entry.label
+    }
+
+    private struct MachineSpacesView: View {
+        @ObservedObject var model: RaiModel
+        let isSelected: Bool
+        let onPrimarySelection: () -> Void
+        let onSelectSpace: (Workspace) -> Void
+        let onBroadcast: () -> Void
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: SidebarSpaceLayout.rowSpacing) {
                     if let snapshot = model.snapshot {
                         let entries = model.workspaceListEntries
                         let visibleWorkspaceIDs = Set(snapshot.tabs.compactMap { tab in
@@ -170,7 +243,7 @@ struct SidebarView: View {
                         )
                         ForEach(entries) { entry in
                             let workspace = entry.workspace
-                            let allTabs = tabs(in: snapshot, of: workspace)
+                            let allTabs = snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
                                 .filter { !model.closingTabIDs.contains($0.tabID) }
                             // A collapsed space hides everything but its
                             // attention-needing tabs (and the selected one) —
@@ -198,7 +271,7 @@ struct SidebarView: View {
                                             model: model,
                                             tab: tab,
                                             label: snapshot.displayLabel(for: tab),
-                                            selected: selectedRemoteWorkspace == nil
+                                            selected: isSelected
                                                 && model.selectedTabID == tab.tabID,
                                             onSelect: {
                                                 onPrimarySelection()
@@ -210,7 +283,7 @@ struct SidebarView: View {
                                             onPaneDragHover: {
                                                 model.previewTabDuringPaneDrag(tab)
                                             },
-                                            onBroadcast: { broadcastPresented = true },
+                                            onBroadcast: onBroadcast,
                                             gitStatus: model.gitStatus(forTab: tab),
                                             indent: entry.indented ? 32 : 14
                                         )
@@ -223,6 +296,7 @@ struct SidebarView: View {
                                         displayStatus: entry.displayStatus,
                                         focusedInHerdr: focused,
                                         onPrimarySelection: onPrimarySelection,
+                                        onSelectSpace: { onSelectSpace(workspace) },
                                         hasWorkspaceGroup: closeGroupWorkspaceIDs.contains(
                                             workspace.workspaceID
                                         ),
@@ -249,151 +323,16 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                        ForEach(visibleRemoteWorkspaces) { workspace in
-                            RemoteWorkspaceSection(
-                                workspace: workspace,
-                                selectedWorkspace: selectedRemoteWorkspace,
-                                selectedTabID: selectedRemoteTabID,
-                                onSelect: onRemoteSelection,
-                                onClose: onRemoteClose,
-                                onRemove: onRemoteRemove
-                            )
-                        }
                     }
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 16)
-            }
-            .scrollIndicators(.hidden)
-            // Right-click on empty sidebar space: the create actions.
-            .contextMenu {
-                Button("New Tab") { model.newTab() }
-                Button("New Space") { model.requestNewWorkspace() }
-            }
-    }
-}
-
-private struct RemoteWorkspaceSection: View {
-    let workspace: InstanceWorkspace
-    let selectedWorkspace: RaiWorkspaceReference?
-    let selectedTabID: String?
-    let onSelect: (RaiWorkspaceReference, String?) -> Void
-    let onClose: (InstanceWorkspace, String) -> Void
-    let onRemove: (InstanceWorkspace, String?) -> Void
-    @State private var collapsed = false
-
-    private var activeStatus: AgentStatus {
-        workspace.tabs.first { $0.id == workspace.activeTabID }?.status
-            ?? workspace.tabs.first?.status
-            ?? .unknown
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SidebarSpaceLayout.rowSpacing) {
-            SidebarSpaceHeader(
-                status: activeStatus,
-                tabCount: workspace.tabs.count,
-                collapsed: collapsed,
-                hiddenCount: workspace.tabs.count,
-                instanceLabel: workspace.instanceLabel,
-                instanceAddress: workspace.instanceLabel,
-                remote: workspace.id.endpoint.profileID != nil,
-                onToggleCollapse: { collapsed.toggle() }
-            ) {
-                Text(workspace.label.uppercased())
-                    .font(.system(size: 10.5, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-            } details: {
-                EmptyView()
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                onSelect(workspace.id, workspace.activeTabID ?? workspace.tabs.first?.id)
-            }
-            .contextMenu {
-                if let tabID = workspace.activeTabID ?? workspace.tabs.first?.id {
-                    Button("Close Active Tab", role: .destructive) { onClose(workspace, tabID) }
-                }
-                Button("Remove from Rai view") { onRemove(workspace, nil) }
-            }
-
-            if !collapsed {
-                ForEach(workspace.tabs) { tab in
-                    RemoteTabRow(
-                        tab: tab,
-                        closesSpace: workspace.tabs.count == 1,
-                        selected: selectedWorkspace == tab.workspace && selectedTabID == tab.id,
-                        onSelect: { onSelect(tab.workspace, tab.id) },
-                        onClose: {
-                            onClose(workspace, tab.id)
-                        },
-                        onRemove: {
-                            onRemove(workspace, tab.id)
-                        }
-                    )
-                }
-                // Match the trailing tab-drop area of a local space.
-                Color.clear
-                    .frame(height: SidebarSpaceLayout.trailingDropHeight)
-                    .accessibilityHidden(true)
             }
         }
-    }
-
-}
-
-private struct RemoteTabRow: View {
-    let tab: InstanceTab
-    let closesSpace: Bool
-    let selected: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-    let onRemove: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onSelect) {
-            SidebarRowLabel(
-                status: tab.status,
-                title: tab.label,
-                subtitle: tab.context,
-                selected: selected,
-                focusedInHerdr: false
-            ) {
-                if tab.panes.count > 1 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "rectangle.split.2x1")
-                        Text("\(tab.panes.count)")
-                    }
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(Theme.textTertiary)
-                }
-            }
-            .modifier(SidebarRowChrome(selected: selected, hovering: hovering, indent: 14))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .contextMenu {
-            Button("Close Tab", role: .destructive, action: onClose)
-            Button(closesSpace ? "Remove from Rai view" : "Remove tab from Rai view", action: onRemove)
-        }
-    }
-}
-
-// herdr's canonical tab order is the snapshot array order (tab.move reorders
-    // the array, not the `number` field) — preserve it, don't re-sort by number.
-    private func tabs(in snapshot: SessionSnapshot, of workspace: Workspace) -> [HerdrTab] {
-        snapshot.tabs.filter { $0.workspaceID == workspace.workspaceID }
     }
 
     /// Every sheet and alert the sidebar owns, lifted off the body so the split
     /// layout above stays readable.
     private struct SidebarPresentations: ViewModifier {
         @ObservedObject var model: RaiModel
-        let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
+        @ObservedObject var navigation: MachineNavigationController
         @Binding var machinesPresented: Bool
 
         func body(content: Content) -> some View {
@@ -415,27 +354,15 @@ private struct RemoteTabRow: View {
                 .sheet(item: $model.newSessionRequest) { _ in
                     NewSessionSheet(model: model)
                 }
-                .sheet(item: $model.newWorkspaceRequest) { _ in
-                    NewWorkspaceInstanceSheet(
-                        model: model,
-                        onWorkspaceCreated: onWorkspaceCreated
-                    )
-                }
                 .sheet(item: $model.remoteHerdRequest) { _ in
                     RemoteHerdSheet(model: model)
                 }
                 .sheet(isPresented: $machinesPresented) {
                     MachinePickerSheet(
-                        select: nil,
+                        state: navigation.machineState,
+                        select: { navigation.selectMachine($0.endpoint) },
                         openAgent: nil,
-                        perform: { operation in
-                            Task {
-                                let directory = MachineDirectory.shared
-                                await directory.perform(
-                                    .init(revision: directory.state.revision, operation: operation)
-                                )
-                            }
-                        }
+                        perform: navigation.perform
                     )
                 }
                 .alert(item: $model.workspacePendingClose) { request in
@@ -462,7 +389,7 @@ private struct RemoteTabRow: View {
                     Label("New Tab", systemImage: "plus.rectangle")
                 }
                 Button {
-                    model.requestNewWorkspace()
+                    navigation.newSpace()
                 } label: {
                     Label("New Space", systemImage: "square.stack.3d.up")
                 }
@@ -529,109 +456,15 @@ private struct RemoteTabRow: View {
     }
 
     private var sessionMenu: some View {
-        Menu {
-            if let target = model.remoteTarget {
-                Section("Remote Sessions — \(target)") {
-                    ForEach(model.remoteSessions) { session in
-                        Button {
-                            model.switchRemoteSession(session)
-                        } label: {
-                            Label(
-                                session.name,
-                                systemImage: model.isCurrentRemoteSession(session)
-                                    ? "checkmark.circle.fill"
-                                    : (session.isRunning ? "circle.fill" : "circle")
-                            )
-                        }
-                        // Attaching needs a running server on the remote end;
-                        // rai has no way to start one over there yet.
-                        .disabled(
-                            !session.isRunning || model.isCurrentRemoteSession(session)
-                        )
-                    }
-                }
-            }
-
-            Section("Local Sessions") {
-                ForEach(model.sessions) { session in
-                    Button {
-                        model.switchSession(session)
-                    } label: {
-                        Label(
-                            session.name,
-                            systemImage: model.isCurrentSession(session)
-                                ? "checkmark.circle.fill"
-                                : (session.isRunning ? "circle.fill" : "circle")
-                        )
-                    }
-                    .disabled(
-                        model.isCurrentSession(session) && session.isRunning
-                    )
-                }
-            }
-
-            if model.sessions.contains(where: \.isRunning) {
-                Menu("Stop Session") {
-                    ForEach(model.sessions.filter(\.isRunning)) { session in
-                        Button(session.name, role: .destructive) {
-                            model.requestStopSession(session)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-            Button {
-                model.beginCreateSession()
-            } label: {
-                Label("New Session…", systemImage: "plus")
-            }
-            Button {
-                model.beginRemoteConnection()
-            } label: {
-                Label("Connect to Remote…", systemImage: "network")
-            }
-            if model.remoteTarget != nil {
-                Button(role: .destructive) {
-                    model.disconnectRemote()
-                } label: {
-                    Label("Disconnect Remote", systemImage: "xmark.circle")
-                }
-            }
-            Divider()
-            Button {
-                machinesPresented = true
-                Task {
-                    let directory = MachineDirectory.shared
-                    await directory.perform(
-                        .init(revision: directory.state.revision, operation: .refresh)
-                    )
-                }
-            } label: {
-                Label("Machines…", systemImage: "server.rack")
-            }
-            Divider()
-            Button {
-                model.refreshSessions()
-            } label: {
-                Label("Refresh Sessions", systemImage: "arrow.clockwise")
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: model.remoteTarget == nil ? "externaldrive" : "network")
-                    .font(.system(size: 9.5, weight: .medium))
-                Text(model.currentSessionDisplayName)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-            }
-            .foregroundStyle(Theme.textSecondary)
+        Button { machinesPresented = true } label: {
+            Image(systemName: "server.rack")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 24, height: 26)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Switch Herdr session")
+        .buttonStyle(.plain)
+        .help("Machines")
+        .accessibilityLabel("Machines")
     }
 
     private var attentionFooter: some View {
@@ -1014,9 +847,6 @@ private struct SidebarSpaceHeader<Title: View, Details: View>: View {
     var hiddenCount = 0
     var indented = false
     var groupCollapsed: Bool?
-    let instanceLabel: String
-    let instanceAddress: String
-    let remote: Bool
     let onToggleCollapse: () -> Void
     var onToggleGroup: () -> Void = {}
     @ViewBuilder var title: () -> Title
@@ -1069,16 +899,6 @@ private struct SidebarSpaceHeader<Title: View, Details: View>: View {
                         .foregroundStyle(Theme.textTertiary)
                 }
             }
-            HStack(spacing: 4) {
-                Image(systemName: remote ? "network" : "externaldrive")
-                    .font(.system(size: 8, weight: .medium))
-                Text(instanceLabel).lineLimit(1)
-            }
-            .font(.system(size: 9.5, weight: .medium))
-            .foregroundStyle(Theme.textTertiary)
-            .padding(.leading, groupCollapsed == nil ? 43 : 58)
-            .padding(.trailing, 6)
-            .help(instanceAddress)
             details()
                 .padding(.leading, groupCollapsed == nil ? 43 : 58)
                 .padding(.trailing, 6)
@@ -1105,6 +925,7 @@ private struct WorkspaceHeader: View {
     let displayStatus: AgentStatus
     let focusedInHerdr: Bool
     let onPrimarySelection: () -> Void
+    var onSelectSpace: (() -> Void)?
     let hasWorkspaceGroup: Bool
     var indented = false
     var collapsed: Bool = false
@@ -1115,15 +936,6 @@ private struct WorkspaceHeader: View {
     var onToggleGroup: () -> Void = {}
 
     @State private var dropTargeted = false
-
-    private var instanceLabel: String {
-        model.currentMachineEntry?.label
-            ?? (model.remoteTarget == nil ? "This Mac" : model.currentSessionDisplayName)
-    }
-
-    private var instanceAddress: String {
-        model.currentMachineEntry?.addressLabel ?? model.currentSessionDisplayName
-    }
 
     private var showWorktreeFallback: Bool {
         guard let worktree = workspace.worktree else { return false }
@@ -1139,9 +951,6 @@ private struct WorkspaceHeader: View {
             hiddenCount: hiddenCount,
             indented: indented,
             groupCollapsed: groupKey == nil ? nil : groupCollapsed,
-            instanceLabel: instanceLabel,
-            instanceAddress: instanceAddress,
-            remote: model.remoteTarget != nil,
             onToggleCollapse: onToggleCollapse,
             onToggleGroup: onToggleGroup
         ) {
@@ -1177,7 +986,7 @@ private struct WorkspaceHeader: View {
         .contentShape(Rectangle())
         .onTapGesture {
             onPrimarySelection()
-            model.select(workspace: workspace)
+            if let onSelectSpace { onSelectSpace() } else { model.select(workspace: workspace) }
         }
         .onDrag {
             model.draggedWorkspaceID = workspace.workspaceID
@@ -1195,20 +1004,20 @@ private struct WorkspaceHeader: View {
             )
         )
         .contextMenu {
-            Button("New Tab in Space") { model.newTab(inWorkspace: workspace.workspaceID) }
-            Button("New Space") { model.requestNewWorkspace() }
+            Button("New Tab in Space") { onPrimarySelection(); model.newTab(inWorkspace: workspace.workspaceID) }
+            Button("New Space") { onPrimarySelection(); model.requestNewWorkspace() }
             Divider()
             Button("Focus") {
                 onPrimarySelection()
                 model.select(workspace: workspace)
             }
-            Button("Rename") { model.beginRename(workspace: workspace) }
+            Button("Rename") { onPrimarySelection(); model.beginRename(workspace: workspace) }
             Button("Close", role: .destructive) {
-                model.requestClose(workspace: workspace)
+                onPrimarySelection(); model.requestClose(workspace: workspace)
             }
             if hasWorkspaceGroup {
                 Button("Close Group…", role: .destructive) {
-                    model.requestCloseGroup(workspace: workspace)
+                    onPrimarySelection(); model.requestCloseGroup(workspace: workspace)
                 }
                 .disabled((model.serverInfo?.protocol ?? 0) < 22)
                 .help("Group closure requires Herdr 0.9 or later.")
@@ -1226,20 +1035,20 @@ private struct WorkspaceHeader: View {
             }
             Divider()
             Button("New Worktree…") {
-                model.beginCreateWorktree(from: workspace)
+                onPrimarySelection(); model.beginCreateWorktree(from: workspace)
             }
             .disabled(workspace.worktree == nil)
             Button("Open Worktree…") {
-                model.beginOpenWorktree(from: workspace)
+                onPrimarySelection(); model.beginOpenWorktree(from: workspace)
             }
             .disabled(workspace.worktree == nil)
             if workspace.worktree?.isLinkedWorktree == true {
                 Button("Remove Worktree…", role: .destructive) {
-                    model.requestRemoveWorktree(workspace)
+                    onPrimarySelection(); model.requestRemoveWorktree(workspace)
                 }
             }
             Divider()
-            Button("Explain Status") { model.explainStatus(workspace: workspace) }
+            Button("Explain Status") { onPrimarySelection(); model.explainStatus(workspace: workspace) }
         }
         .help(workspace.worktree?.checkoutPath ?? workspace.label)
     }
@@ -1339,11 +1148,11 @@ private struct AgentRow: View {
         )
         .contextMenu {
             Button("New Tab") {
-                model.newTab(inWorkspace: tab.workspaceID, afterTabID: tab.tabID)
+                onSelect(); model.newTab(inWorkspace: tab.workspaceID, afterTabID: tab.tabID)
             }
             Divider()
             Button("Focus", action: onSelect)
-            Button("Rename") { model.beginRename(tab: tab) }
+            Button("Rename") { onSelect(); model.beginRename(tab: tab) }
             Button("Broadcast…", action: onBroadcast)
             Menu("Move to Space") {
                 let others = (model.snapshot?.workspaces ?? [])
@@ -1353,22 +1162,22 @@ private struct AgentRow: View {
                         workspace.label.isEmpty
                             ? "Space \(workspace.number)" : workspace.label
                     ) {
-                        model.moveTab(tab.tabID, toWorkspaceID: workspace.workspaceID)
+                        onSelect(); model.moveTab(tab.tabID, toWorkspaceID: workspace.workspaceID)
                     }
                 }
                 if !others.isEmpty { Divider() }
-                Button("New Space") { model.moveTabToNewWorkspace(tab.tabID) }
+                Button("New Space") { onSelect(); model.moveTabToNewWorkspace(tab.tabID) }
             }
             Button(
                 closesWorkspaceGroup ? "Close Group…" : "Close",
                 role: .destructive
-            ) { model.close(tab: tab) }
+            ) { onSelect(); model.close(tab: tab) }
             let actions = model.pluginActions(for: .tab)
             if !actions.isEmpty {
                 Menu("Plugin Actions") {
                     ForEach(actions) { action in
                         Button(action.title) {
-                            model.invokePluginAction(action, forTab: tab)
+                            onSelect(); model.invokePluginAction(action, forTab: tab)
                         }
                         .help(action.description ?? action.title)
                     }
@@ -1376,9 +1185,9 @@ private struct AgentRow: View {
             }
             Divider()
             if !model.backgroundWork(forTab: tab.tabID).isEmpty {
-                Button("Show Background Work…") { model.showBackgroundWork(forTab: tab) }
+                Button("Show Background Work…") { onSelect(); model.showBackgroundWork(forTab: tab) }
             }
-            Button("Explain Status") { model.explainStatus(tab: tab) }
+            Button("Explain Status") { onSelect(); model.explainStatus(tab: tab) }
         }
         // Hovering the row surfaces the session's own background-work
         // summaries (falls back to the full title for truncated labels).
@@ -1679,78 +1488,6 @@ private struct NewSessionSheet: View {
     }
 }
 
-private struct NewWorkspaceInstanceSheet: View {
-    @ObservedObject var model: RaiModel
-    @ObservedObject private var machines = MachineDirectory.shared
-    let onWorkspaceCreated: (RaiWorkspaceReference) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    private var entries: [MachineEntry] {
-        model.workspaceCreationEntries(from: machines.state.entries)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Choose Instance")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-            Text("Choose where Rai should create the new space.")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.textTertiary)
-
-            if entries.isEmpty {
-                Text("No Herdr instances are available.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(entries) { entry in
-                            Button {
-                                model.newWorkspace(on: entry, onCreated: onWorkspaceCreated)
-                                dismiss()
-                            } label: {
-                                HStack(spacing: 10) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.label)
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundStyle(Theme.textPrimary)
-                                        Text(entry.addressLabel)
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(Theme.textTertiary)
-                                    }
-                                    Spacer()
-                                    Text(entry.health.rawValue.capitalized)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Theme.textTertiary)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.sidebar)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(entry.health == .disabled)
-                        }
-                    }
-                }
-                .frame(maxHeight: 260)
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-        }
-        .padding(22)
-        .frame(width: 440)
-        .background(Theme.raised)
-    }
-}
-
 private struct RemoteHerdSheet: View {
     @ObservedObject var model: RaiModel
     @State private var target = ""
@@ -2026,6 +1763,7 @@ private struct SidebarReorderDropDelegate: DropDelegate {
     }
 
     private func action(_ info: DropInfo) -> SidebarDropRules.Action? {
+        guard model.ownsDrag else { return nil }
         if isPaneDrag(info) {
             return SidebarDropRules.paneAction(
                 draggedPaneID: model.draggedPaneID,

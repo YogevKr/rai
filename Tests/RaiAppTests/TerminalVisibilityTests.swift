@@ -77,7 +77,7 @@ final class TerminalVisibilityTests: XCTestCase {
         try await waitUntil { view.process?.running == true }
     }
 
-    func testRemovalSuspendsClientAndResumeKeepsViewScrollbackAndInput() async throws {
+    func testTabSwitchKeepsClientScrollbackAndInput() async throws {
         let pool = pool()
         let view = try XCTUnwrap(pool.view(for: "term-resume"))
         let host = host()
@@ -88,9 +88,9 @@ final class TerminalVisibilityTests: XCTestCase {
         let savedBuffer = view.getTerminal().getBufferAsData()
 
         view.removeFromSuperview()
-        try await waitUntil { view.process == nil }
-        XCTAssertFalse(originalProcess.running)
-        try await waitUntil { kill(originalProcess.shellPid, 0) == -1 && errno == ESRCH }
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertTrue(view.process === originalProcess)
+        XCTAssertTrue(originalProcess.running)
         XCTAssertTrue(pool.view(for: "term-resume") === view)
         XCTAssertEqual(view.getTerminal().getBufferAsData(), savedBuffer)
 
@@ -102,7 +102,41 @@ final class TerminalVisibilityTests: XCTestCase {
         try await waitUntil {
             String(decoding: view.getTerminal().getBufferAsData(), as: UTF8.self).contains("input after resume")
         }
-        XCTAssertFalse(view.process === originalProcess)
+        XCTAssertTrue(view.process === originalProcess)
+    }
+
+    func testRemoteAttachAndTabSwitchSendOnlyUserInput() async throws {
+        let received = directory.appendingPathComponent("input.bin")
+        let ready = directory.appendingPathComponent("ready")
+        let script = """
+        import os, sys, tty
+        tty.setraw(0)
+        output = open(sys.argv[1], 'ab', buffering=0)
+        open(sys.argv[2], 'w').close()
+        while True:
+            output.write(os.read(0, 1024))
+        """
+        let pool = TerminalPool(socketPath: "/nonexistent/rai-input.sock",
+            takeoverOnAttach: false, attachCommandBuilder: { _ in
+                TerminalAttachCommand(executable: "/usr/bin/python3",
+                    arguments: ["-c", script, received.path, ready.path])
+            })
+        pools.append(pool)
+        let view = try XCTUnwrap(pool.view(for: "term-input"))
+        let host = host()
+        show(view, in: host)
+        try await waitUntil { FileManager.default.fileExists(atPath: ready.path) }
+        let process = try XCTUnwrap(view.process)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(try Data(contentsOf: received), Data(), "Attach must not inject Ctrl-L or other keys")
+        view.send(txt: "before")
+        view.removeFromSuperview()
+        try await Task.sleep(for: .milliseconds(1_200))
+        show(view, in: host)
+        view.send(txt: "after")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(view.process === process)
+        XCTAssertEqual(try Data(contentsOf: received), Data("beforeafter".utf8))
     }
 
     func testBriefContainerTransferKeepsTheExistingClient() async throws {
@@ -130,18 +164,13 @@ final class TerminalVisibilityTests: XCTestCase {
         XCTAssertTrue(process.running)
     }
 
-    func testImmediateControlKeysSurviveReconnectBeforeClientSetup() async throws {
+    func testImmediateControlKeysSurviveInitialAttachBeforeClientSetup() async throws {
         // Herdr completes its socket handshake before it enables raw input.
         // Delay that setup and report the exact control bytes received.
         try "#!/bin/sh\n/bin/sleep 0.25\n/bin/stty raw -echo\nexec /usr/bin/od -An -v -tx1 -N 5\n"
             .write(to: executable, atomically: false, encoding: .utf8)
         let view = try XCTUnwrap(pool().view(for: "term-control-keys"))
         let host = host()
-        show(view, in: host)
-        try await waitUntil { view.process?.running == true }
-        view.removeFromSuperview()
-        try await waitUntil { view.process == nil }
-
         show(view, in: host)
         let controls: [UInt8] = [0x03, 0x7f, 0x16, 0x41, 0x0d]
         view.send(source: view, data: controls[...])
@@ -152,7 +181,7 @@ final class TerminalVisibilityTests: XCTestCase {
         }
     }
 
-    func testHidingAncestorSuspendsAndUnhidingResumesClient() async throws {
+    func testHidingAncestorKeepsClientAttached() async throws {
         let view = try XCTUnwrap(pool().view(for: "term-hide"))
         let host = host()
         show(view, in: host)
@@ -160,11 +189,11 @@ final class TerminalVisibilityTests: XCTestCase {
         let process = try XCTUnwrap(view.process)
 
         host.isHidden = true
-        try await waitUntil { view.process == nil }
-        XCTAssertFalse(process.running)
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertTrue(view.process === process)
+        XCTAssertTrue(process.running)
         host.isHidden = false
-        try await waitUntil { view.process?.running == true }
-        XCTAssertFalse(view.process === process)
+        XCTAssertTrue(view.process === process)
     }
 
     func testHideCancelsLaunchBeforeFirstLayout() async throws {

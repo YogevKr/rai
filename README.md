@@ -116,6 +116,24 @@ poc/herdr_client.py read <pane_id>
 poc/herdr_client.py send <pane_id> "echo hi\n"
 ```
 
+## Machines and spaces
+
+The sidebar groups spaces by machine. Local and SSH spaces use the same menus, tabs, and panes.
+Each saved machine targets one Herdr session. Named local sessions appear as separate machine groups.
+
+- Select a machine, then use **Space → New Space** or **Command-N**.
+- Right-click a machine to create a space on that machine.
+- Use **Next Space** and **Previous Space** to follow sidebar order across connected machines.
+- Collapse a machine without changing the selected space.
+- Use **Move to Space** to move tabs between spaces on the same machine.
+- Use **Machines** in the sidebar toolbar to add or manage SSH connections.
+
+Rai remembers the selected tab in each space during navigation.
+Connection recovery does not select another machine.
+Tab switches keep cached terminal clients attached. Rai does not send automatic redraw keys.
+Closing a tab closes its Herdr tab. Closing the Rai window leaves server processes running.
+Agents continue to use Herdr's CLI; this design adds no Rai CLI or server objects.
+
 ## Test and contribute
 
 Run the focused Swift tests:

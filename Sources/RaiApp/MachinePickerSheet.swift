@@ -33,7 +33,7 @@ struct MachinePickerSheet: View {
 
     private var state: MachineDirectoryState {
 #if os(macOS)
-        machines.state
+        injectedState ?? machines.state
 #else
         injectedState!
 #endif

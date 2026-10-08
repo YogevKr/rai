@@ -5,6 +5,7 @@ import SwiftTerm
 @MainActor
 protocol TerminalProcessViewDelegate: AnyObject {
     func visibilityChanged(source: TerminalProcessView)
+    func prepareForInput(source: TerminalProcessView)
     func sizeChanged(source: TerminalProcessView, newCols: Int, newRows: Int)
     func setTerminalTitle(source: TerminalProcessView, title: String)
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?)
@@ -134,6 +135,9 @@ class TerminalProcessView: TerminalView, TerminalViewDelegate {
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if process?.running != true {
+            processDelegate?.prepareForInput(source: self)
+        }
         process?.send(data: data)
     }
 

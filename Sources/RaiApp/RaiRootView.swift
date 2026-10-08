@@ -2,66 +2,46 @@ import RaiCore
 import SwiftUI
 
 struct RaiRootView: View {
-    @ObservedObject var model: RaiModel
-    @ObservedObject private var settings = SettingsStore.shared
-    @Environment(\.colorScheme) private var colorScheme
-    @StateObject private var mixedController: RaiMixedController
-    // Keep the sidebar shown by default (collapsing it would slide the panes under
-    // the traffic lights / toggle).
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @StateObject private var navigation: MachineNavigationController
 
     init(model: RaiModel) {
-        self.model = model
-        _mixedController = StateObject(wrappedValue: RaiMixedController(primaryModel: model))
+        _navigation = StateObject(wrappedValue: MachineNavigationController(primaryModel: model))
     }
+
+    var body: some View {
+        MachineRootContent(model: navigation.activeModel, navigation: navigation)
+            .task { navigation.start() }
+            .onDisappear { navigation.stop() }
+    }
+}
+
+private struct MachineRootContent: View {
+    @ObservedObject var model: RaiModel
+    @ObservedObject var navigation: MachineNavigationController
+    @ObservedObject private var settings = SettingsStore.shared
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         ZStack {
             NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView(
-                    model: model,
-                    onPrimarySelection: mixedController.selectPrimary,
-                    remoteWorkspaces: mixedController.remoteWorkspaces,
-                    onWorkspaceCreated: { source in
-                        mixedController.openRemoteWorkspace(
-                            endpoint: source.endpoint,
-                            workspaceID: source.workspaceID
-                        )
-                    },
-                    selectedRemoteWorkspace: mixedController.selectedSourceWorkspace,
-                    selectedRemoteTabID: mixedController.selectedSourceTabID,
-                    onRemoteSelection: { source, tabID in
-                        mixedController.openRemoteWorkspace(
-                            endpoint: source.endpoint,
-                            workspaceID: source.workspaceID,
-                            tabID: tabID
-                        )
-                    },
-                    onRemoteClose: { workspace, tabID in
-                        mixedController.closeSourceTab(in: workspace, tabID: tabID)
-                    },
-                    onRemoteRemove: mixedController.removeFromRai
-                )
+                SidebarView(model: model, navigation: navigation)
                     .navigationSplitViewColumnWidth(min: 232, ideal: 276, max: 360)
             } detail: {
-                if let selectedTabID = mixedController.selectedTabID {
-                    RaiMixedTabView(
-                        model: mixedController.model,
-                        tabID: selectedTabID,
-                        endpoints: mixedController.sessions
-                    )
-                    .background(Theme.base)
-                    .ignoresSafeArea(.container, edges: .top)
-                    .transaction { $0.animation = nil }
-                } else {
+                if model.isConnected || model.needsHerdrInstallation {
                     // No header — the panes fill the whole screen. The selected agent's
                     // details (status · space · cwd) live in the sidebar tab row.
                     PaneLayoutView(model: model)
+                        .id(navigation.selectedEndpoint)
                         .background(Theme.base)
                         .ignoresSafeArea(.container, edges: .top)
                         // Never animate the detail's own layout — otherwise toggling the
                         // sidebar makes its top briefly jump (and the terminals flicker).
                         .transaction { $0.animation = nil }
+                } else {
+                    ContentUnavailableView("Connection unavailable", systemImage: "network.slash",
+                        description: Text("Select another machine while this connection recovers."))
+                        .background(Theme.base)
                 }
             }
             // Collapse/expand the sidebar instantly.
@@ -82,12 +62,11 @@ struct RaiRootView: View {
         }
         .background(WindowConfigurator())
         .animation(.easeOut(duration: 0.12), value: model.isCommandPalettePresented)
-        .task { mixedController.start() }
         .onAppear { settings.updateSystemColorScheme(colorScheme) }
         .onChange(of: colorScheme) { _, value in
             settings.updateSystemColorScheme(value)
         }
-        .focusedSceneValue(\.mixedRaiWindow, mixedController)
+        .focusedSceneObject(navigation)
     }
 }
 

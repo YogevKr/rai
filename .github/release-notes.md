@@ -1,3 +1,15 @@
+Rai 0.1.92 groups spaces by machine and stabilizes remote tab switching.
+
+- Local and SSH spaces use the same tabs, panes, menus, and close actions.
+- Create multiple spaces on each machine. Move tabs between spaces on the same machine.
+- Rai remembers the selected tab in each space.
+- Tab and machine switches keep cached terminal clients connected.
+- Rai no longer sends automatic Ctrl-L redraw input to running applications.
+- The first keystroke starts a pending terminal attachment and reaches the terminal once.
+- Rejected focus requests do not mark a responding machine offline.
+- Connection recovery preserves the selected machine.
+- Closing a tab closes it in Herdr. Closing the Rai window leaves server processes running.
+
 Rai 0.1.91 fixes extra shells on empty remote instances.
 
 - New Space creates the requested space before connecting its display.

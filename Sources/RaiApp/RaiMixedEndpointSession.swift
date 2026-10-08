@@ -51,7 +51,6 @@ final class RaiMixedEndpointSession: ObservableObject {
             requiresRuntimeExecutable: true,
             // A remote Herdr client may already own a Codex terminal. A Rai
             // view must not displace that client when it first renders.
-            redrawOnAttach: true,
             takeoverOnAttach: target == nil
         )
         pool.predictiveEchoHerdLocation = target == nil ? .local : .remote
