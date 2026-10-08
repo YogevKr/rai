@@ -446,6 +446,10 @@ Codex queued follow-up inputs show a native question bar.
 The bar shows the number of queued questions.
 Tap **Answer** to send Option-Arrow-Up.
 
+Codex `request_user_input` questions show their question and options in a native
+bar when Codex runs with `default_mode_request_user_input` enabled. Tap an option
+to send its number to Codex. Free-text questions stay in the terminal composer.
+
 ## Simulator e2e (for development)
 
 The simulator shares the Mac's network, so it reaches the bridge at `localhost`.
