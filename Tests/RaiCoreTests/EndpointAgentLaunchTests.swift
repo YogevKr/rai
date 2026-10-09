@@ -13,7 +13,7 @@ final class EndpointAgentLaunchTests: XCTestCase {
         try request.validate(in: snapshot)
         XCTAssertEqual(request.params["pane_id"], .string("w1:p1"))
         XCTAssertEqual(request.params["kind"], .string("codex"))
-        XCTAssertEqual(request.params["args"], .array([.string("--no-alt-screen")]))
+        XCTAssertEqual(request.params["args"], .array([]))
         XCTAssertThrowsError(try EndpointAgentLaunchRequest(bootID: "old", owningViewID: UUID(), paneID: "w1:p1", name: "codex", kind: .codex).validate(in: snapshot))
         XCTAssertThrowsError(try EndpointAgentLaunchRequest(bootID: "boot", owningViewID: UUID(), paneID: "other", name: "codex", kind: .codex).validate(in: snapshot))
         XCTAssertThrowsError(try request.validateResult(.object(["agent": .object(["pane_id": .string("other")])])))
