@@ -1,3 +1,9 @@
+Rai 0.1.99 aligns Codex sessions with Herdr terminal mode.
+
+- Rai no longer adds `--no-alt-screen` to Codex launches.
+- Herdr remains the source for recent and recent-unwrapped pane history.
+- New and existing Codex sessions now use one terminal mode.
+
 Rai 0.1.98 restores remote connections when SSH tunnel sockets disappear.
 
 - Rai detects missing tunnel sockets even when the SSH connection remains active.
