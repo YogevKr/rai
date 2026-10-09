@@ -1,3 +1,11 @@
+Rai 0.1.98 restores remote connections when SSH tunnel sockets disappear.
+
+- Rai detects missing tunnel sockets even when the SSH connection remains active.
+- Rai reconnects the affected instance and rejects its old connection identity.
+- Remote Herdr sessions keep running during recovery.
+- Source tab closure works after the connection recovers.
+- Remove from Rai view keeps the source tab running.
+
 Rai 0.1.96 improves remote sessions and Codex scrolling.
 
 - Mixed Rai spaces can use local and remote Herdr endpoints in one view.

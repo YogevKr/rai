@@ -69,6 +69,37 @@ final class MachineTransportTests: XCTestCase {
         try await waitForMachines(directory)
         XCTAssertNotEqual(directory.state.entry(for: first.endpoint)?.connectionID, firstID)
         XCTAssertEqual(directory.state.entry(for: second.endpoint)?.connectionID, secondID)
+        let recoveredID = try XCTUnwrap(directory.state.entry(for: first.endpoint)?.connectionID)
+        let recoveredPath = try XCTUnwrap(directory.resolve(first.endpoint, connectionID: recoveredID))
+        // A removed listener must retire the old identity even if SSH remains alive.
+        try FileManager.default.removeItem(atPath: recoveredPath)
+        for _ in 0..<200 {
+            if let entry = directory.state.entry(for: first.endpoint),
+               entry.health == .online, entry.connectionID != recoveredID { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertNil(directory.resolve(first.endpoint, connectionID: recoveredID))
+        try await waitForMachines(directory)
+        let restoredID = try XCTUnwrap(directory.state.entry(for: first.endpoint)?.connectionID)
+        XCTAssertNotEqual(restoredID, recoveredID)
+        let restoredPath = try XCTUnwrap(directory.resolve(first.endpoint, connectionID: restoredID))
+        let restoredAPI = HerdrClient(socketPath: restoredPath)
+        defer { restoredAPI.disconnect() }
+        let restoredSnapshot = try await restoredAPI.snapshot()
+        XCTAssertEqual(restoredSnapshot.workspaces, firstAfterSelection.workspaces)
+        XCTAssertEqual(directory.snapshots[first.endpoint]?.bootID, firstSnapshot.bootID)
+        XCTAssertEqual(directory.state.entry(for: second.endpoint)?.connectionID, secondID)
+        let workspaceReference = RaiWorkspaceReference(endpoint: first.endpoint, workspaceID: "w1")
+        let createdTab = try await directory.createTab(in: workspaceReference, connectionID: restoredID)
+        for _ in 0..<100 {
+            if directory.workspaces.first(where: { $0.id == workspaceReference })?.tabs.contains(where: { $0.id == createdTab }) == true { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let reviewedWorkspace = try XCTUnwrap(directory.workspaces.first { $0.id == workspaceReference })
+        try await directory.close(InstanceCloseRequest(workspace: reviewedWorkspace, tabID: createdTab))
+        let afterClose = try await restoredAPI.snapshot()
+        XCTAssertFalse(afterClose.tabs.contains { $0.tabID == createdTab })
+        XCTAssertEqual(afterClose.panes, firstAfterSelection.panes)
         let data = try JSONEncoder().encode(directory.state)
         try data.write(to: URL(fileURLWithPath: root).appendingPathComponent("machines-transport-state.json"), options: .atomic)
     }
@@ -259,7 +290,7 @@ final class MachineTransportTests: XCTestCase {
             if remote.count == 2, remote.allSatisfy({ $0.health == .online }) { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTFail("Remote machines did not connect: \(directory.state.entries)")
+        XCTFail("Remote machines did not connect: \(directory.state.entries); catalog error: \(directory.state.error ?? "none")")
         throw MachineCatalogError.invalid("The disposable SSH machines did not connect.")
     }
 }
