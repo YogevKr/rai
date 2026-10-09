@@ -121,14 +121,14 @@ final class PaneActionPlannerTests: XCTestCase {
         )
     }
 
-    func testCodexLaunchPreservesTerminalScrollback() {
+    func testCodexLaunchLeavesTerminalModeToHerdr() {
         XCTAssertEqual(
             PaneActionPlanner.agentStartArguments(name: "codex-test", kind: "codex", paneID: "w1:p2"),
-            ["agent", "start", "codex-test", "--kind", "codex", "--pane", "w1:p2", "--", "--no-alt-screen"]
+            ["agent", "start", "codex-test", "--kind", "codex", "--pane", "w1:p2"]
         )
         XCTAssertEqual(
-            PaneActionPlanner.interactiveArguments(kind: "codex", arguments: ["--no-alt-screen", "resume", "--last"]),
-            ["--no-alt-screen", "resume", "--last"]
+            PaneActionPlanner.interactiveArguments(kind: "codex", arguments: ["resume", "--last"]),
+            ["resume", "--last"]
         )
     }
 }

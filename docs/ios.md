@@ -439,8 +439,8 @@ It only parses panes that the herd snapshot identifies as agents.
 Each pane uses only the grammar for its detected agent kind.
 The strip can show mode, model, effort, agent count, directory, and branch.
 The terminal keeps its original rows.
-Rai starts and resumes Codex with `--no-alt-screen` so terminal scrolling can reach earlier messages.
-For an existing alternate-screen session, quit Codex and run `codex --no-alt-screen resume` to select the same conversation.
+Rai keeps Codex's terminal mode unchanged. Herdr provides older output through
+its recent and recent-unwrapped pane reads when Rai or iOS needs history.
 
 Codex queued follow-up inputs show a native question bar.
 The bar shows the number of queued questions.

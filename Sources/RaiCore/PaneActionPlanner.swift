@@ -74,10 +74,9 @@ public enum PaneActionPlanner {
             + (options.isEmpty ? [] : ["--"] + options)
     }
 
-    /// Codex's alternate screen retains only the current viewport in Herdr.
-    /// Inline mode keeps prior turns available to Mac and phone scrollback.
+    /// Keep agent arguments unchanged. Herdr owns terminal mode and history.
     public static func interactiveArguments(kind: String, arguments: [String] = []) -> [String] {
-        guard kind == "codex", !arguments.contains("--no-alt-screen") else { return arguments }
-        return ["--no-alt-screen"] + arguments
+        _ = kind
+        return arguments
     }
 }
