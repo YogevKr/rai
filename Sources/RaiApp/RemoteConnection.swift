@@ -40,6 +40,11 @@ final class RemoteConnection {
     var context: Context { .init(target: target, sessionName: sessionName, remoteSocketPath: remoteSocketPath) }
     var isRunning: Bool { ready && !intentionalStop && !registeredForwardSpecs.isEmpty }
 
+    var hasLocalSockets: Bool {
+        FileManager.default.fileExists(atPath: localSocketPath)
+            && FileManager.default.fileExists(atPath: localClientSocketPath)
+    }
+
     let id = UUID()
     let target: String
     let sessionName: String
@@ -173,6 +178,10 @@ final class RemoteConnection {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 guard let self, !self.intentionalStop else { return }
+                guard self.hasLocalSockets else {
+                    self.controlMasterDidExit(message: "The SSH tunnel sockets disappeared.")
+                    return
+                }
                 guard await Self.controlMasterIsAlive(target: self.target) else {
                     self.controlMasterDidExit()
                     return
@@ -196,12 +205,11 @@ final class RemoteConnection {
         return result.status == 0
     }
 
-    private func controlMasterDidExit() {
+    private func controlMasterDidExit(message: String = "The SSH control connection exited.") {
         guard ready, !intentionalStop else { return }
         ready = false
-        registeredForwardSpecs.removeAll()
-        removeLocalSockets()
-        onUnexpectedExit?(id, "The SSH control connection exited.")
+        stop()
+        onUnexpectedExit?(id, message)
     }
 
     /// Keep one private SSH master per target. Discovery normally creates it,
