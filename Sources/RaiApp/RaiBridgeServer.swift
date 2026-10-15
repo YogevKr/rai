@@ -885,7 +885,12 @@ final class RaiBridgeServer: ObservableObject {
                 guard self.clients[ObjectIdentifier(client.connection)] != nil else { return }
                 if let error {
                     self.removeClient(ObjectIdentifier(client.connection))
-                    self.statusMessage = error.localizedDescription
+                    // Network.framework reports a normal WebSocket close as
+                    // ENODATA ("No message available on STREAM"). It is a
+                    // client lifecycle event, not a bridge failure.
+                    if !Self.isExpectedClientDisconnect(error) {
+                        self.statusMessage = error.localizedDescription
+                    }
                     return
                 }
                 let metadata = context?.protocolMetadata(
@@ -911,6 +916,15 @@ final class RaiBridgeServer: ObservableObject {
                 }
             }
         }
+    }
+
+    static func isExpectedClientDisconnect(_ error: NWError) -> Bool {
+        guard case let .posix(code) = error else { return false }
+        return code == .ENODATA
+            || code == .ECONNRESET
+            || code == .ECONNABORTED
+            || code == .EPIPE
+            || code == .ENOTCONN
     }
 
     private func handle(_ data: Data, from client: BridgeClient) async {

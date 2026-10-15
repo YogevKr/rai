@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import RaiCore
 import Security
 import XCTest
@@ -8,6 +9,13 @@ import XCTest
 
 @MainActor
 final class RaiBridgeServerHistoryTests: XCTestCase {
+    func testExpectedClientDisconnectErrorsDoNotBecomeBridgeFailures() {
+        XCTAssertTrue(RaiBridgeServer.isExpectedClientDisconnect(.posix(.ENODATA)))
+        XCTAssertTrue(RaiBridgeServer.isExpectedClientDisconnect(.posix(.ECONNRESET)))
+        XCTAssertFalse(RaiBridgeServer.isExpectedClientDisconnect(.posix(.EACCES)))
+        XCTAssertFalse(RaiBridgeServer.isExpectedClientDisconnect(.dns(-1)))
+    }
+
     func testScrollbackUsesRPCSourceAndPreservesHistoryBeforeTheVisibleGrid() async throws {
         _ = NSApplication.shared
         let root = URL(fileURLWithPath: "/tmp/rai-scrollback-\(UUID().uuidString.prefix(8))")
