@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install verified App Store Connect CLI
         run: |
           set -euo pipefail
@@ -47,10 +49,7 @@ jobs:
           : "${ASC_ISSUER_ID:?Missing Apple issuer ID}"
           : "${ASC_PRIVATE_KEY_B64:?Missing Apple API key}"
 
-          "$RUNNER_TEMP/asc" builds info \
-            --app com.whetstone.rai.ios --build-number "$BUILD_NUMBER" \
-            --version "$MARKETING_VERSION" --platform IOS --output json \
-            > "$RUNNER_TEMP/build.json"
+          bash scripts/wait-ios-build.sh "$RUNNER_TEMP/asc"
           BUILD_ID=$(jq -er '.data.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/build.json")
           jq -e --arg number "$BUILD_NUMBER" '.data.attributes.version == $number' \
             "$RUNNER_TEMP/build.json" > /dev/null

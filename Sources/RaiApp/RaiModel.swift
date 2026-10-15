@@ -432,6 +432,8 @@ final class RaiModel: ObservableObject {
     private var latestBeaconWorkTimestamps: [String: TimeInterval] = [:]
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published private(set) var needsHerdrInstallation = false
+    @Published private(set) var isInstallingHerdr = false
+    @Published private(set) var herdrInstallationError: String?
     var herdrInstallationGuidance: String {
         HerdrCLI.installationGuidance(environment: ProcessInfo.processInfo.environment)
     }
@@ -1353,9 +1355,29 @@ final class RaiModel: ObservableObject {
     }
 
     func retryHerdrStartup() {
-        guard needsHerdrInstallation else { return }
+        guard needsHerdrInstallation, !isInstallingHerdr else { return }
         started = false
         start()
+    }
+
+    func installHerdr() async {
+        guard needsHerdrInstallation, !isInstallingHerdr else { return }
+        isInstallingHerdr = true
+        herdrInstallationError = nil
+        do {
+            let environment = ProcessInfo.processInfo.environment
+            let destination = try HerdrInstaller.destination(environment: environment, homeDirectory: NSHomeDirectory())
+            let labRoot = environment["RAI_DATA_ROOT"].map { URL(fileURLWithPath: $0) }
+            // Another installation may have completed since the setup screen appeared.
+            if resolveHerdrBinary() == nil {
+                try await HerdrInstaller().install(to: destination, labRoot: labRoot)
+            }
+            isInstallingHerdr = false
+            retryHerdrStartup()
+        } catch {
+            isInstallingHerdr = false
+            herdrInstallationError = error.localizedDescription
+        }
     }
 
     // MARK: - Herd sessions

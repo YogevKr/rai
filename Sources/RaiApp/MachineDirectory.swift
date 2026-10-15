@@ -361,6 +361,10 @@ final class MachineDirectory: ObservableObject {
         try Task.checkCancellation()
         let tunnel = RemoteConnection(target: remote.target, sessionName: remote.sessionName, remoteSocketPath: remote.socketPath)
         tunnels[endpoint] = tunnel
+        tunnel.onUnexpectedExit = { [weak self] id, _ in
+            guard let self, !self.stopped, self.tunnels[endpoint]?.id == id else { return }
+            self.reconnect(endpoint)
+        }
         try await tunnel.start()
         try Task.checkCancellation()
         paths[endpoint] = tunnel.localSocketPath

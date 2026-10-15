@@ -73,7 +73,13 @@ Lab hook previews and writes reject settings or script paths outside the lab, in
 The lab blocks SSH discovery, session listing, and tunnels until a disposable SSH account and configuration are available.
 An owned `.rai-lab-ssh.json` fixture enables only its declared SSH aliases and loopback endpoint.
 Set `RAI_MACHINE_E2E_ROOT` to that lab root when running `MachineTransportTests`.
+Use the complete environment from `lab.json`, including `HERDR_BIN_PATH` and the XDG paths.
+`RAI_DATA_ROOT` alone deliberately disables discovery of the normal Herdr executable.
 These tests require live detached Herdr sessions and validate distinct machines with duplicate pane identifiers.
+The transport regression removes one forwarded socket while the SSH control connection remains alive.
+Rai must reconnect that machine, reject its old connection identity, and preserve the remote server boot identity.
+The regression then creates and closes a source tab through the restored tunnel.
+The second machine must keep its connection identity and resources.
 Keep physical notification tests separate, using dedicated test credentials and registrations.
 
 The launcher refuses existing process records. Inspect recorded processes before reusing a run.

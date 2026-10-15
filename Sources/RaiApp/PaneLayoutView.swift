@@ -78,14 +78,23 @@ private struct HerdrInstallationView: View {
                 .font(.system(size: 40, weight: .light))
             Text("Set up Herdr to start")
                 .font(.headline)
-            Text("Rai needs Herdr on this Mac to open local and remote terminals.")
-            Text(model.herdrInstallationGuidance)
-                .textSelection(.enabled)
+            Text("Herdr keeps your terminals running. Rai will install it for your account and start it.")
+            if model.isInstallingHerdr {
+                ProgressView("Installing Herdr…")
+            }
+            if let error = model.herdrInstallationError {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                Text(model.herdrInstallationGuidance).textSelection(.enabled)
+            }
             HStack {
-                Link("Herdr Installation Guide", destination: URL(string: "https://herdr.dev")!)
+                Button("Install Herdr") { Task { await model.installHerdr() } }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("herdr.setup.install")
                 Button("Retry") { model.retryHerdrStartup() }
                     .accessibilityIdentifier("herdr.setup.retry")
+                Link("Installation Guide", destination: URL(string: "https://herdr.dev/docs/install/")!)
             }
+            .disabled(model.isInstallingHerdr)
         }
         .foregroundStyle(Theme.textSecondary)
         .padding(24)

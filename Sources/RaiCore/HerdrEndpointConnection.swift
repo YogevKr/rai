@@ -25,6 +25,16 @@ public actor HerdrEndpointConnection {
     private var failure: Error?
     private var inputSelectionRevision: UInt64 = 0
     private var inputWrites: [UUID: (CheckedContinuation<Void, Error>, Task<Void, Never>)] = [:]
+    private var lastQueuedTheme: EndpointHostTheme?
+    private let healthQuietInterval: Duration
+    private let healthTimeout: Duration
+    private var healthIdleTask: Task<Void, Never>?
+    private var healthDeadlineTask: Task<Void, Never>?
+    private var healthIdleID: UUID?
+    private var healthProbeID: UUID?
+    private var healthWaiters: [UUID: (CheckedContinuation<Void, Error>, Task<Void, Never>)] = [:]
+
+    public var supportsHealthChecks: Bool { welcome?.capabilities.contains(HerdrEndpointWire.healthCapability) == true }
 
     private struct PendingRequest {
         let id: String
@@ -33,7 +43,10 @@ public actor HerdrEndpointConnection {
         var bytes = Data()
     }
 
-    public init() {
+    public init(healthQuietInterval: Duration = .seconds(5), healthTimeout: Duration = .seconds(10)) {
+        precondition(healthQuietInterval > .zero && healthTimeout > .zero)
+        self.healthQuietInterval = healthQuietInterval
+        self.healthTimeout = healthTimeout
         let channel = AsyncThrowingStream<HerdrEndpointSnapshot, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
         snapshots = channel.stream
         updates = channel.continuation
@@ -52,6 +65,8 @@ public actor HerdrEndpointConnection {
         worker.stop()
         readerTask?.cancel()
         deadlineTask?.cancel()
+        healthIdleTask?.cancel()
+        healthDeadlineTask?.cancel()
         updates.finish()
         surfaceUpdates.finish()
         notificationUpdates.finish()
@@ -61,6 +76,40 @@ public actor HerdrEndpointConnection {
     public nonisolated func disconnect() {
         worker.stop()
         Task { await fail(HerdrClientError.disconnected) }
+    }
+
+    /// Probe this daemon connection. Complete valid messages also prove transport health.
+    /// A caller joins any current probe. Its deadline cannot extend that probe.
+    public func checkHealth(timeout: Duration = .seconds(10)) async throws {
+        try Task.checkCancellation()
+        if let failure { throw failure }
+        guard snapshot != nil, socket != nil, !worker.isStopped else { throw HerdrClientError.disconnected }
+        guard supportsHealthChecks else { throw HerdrEndpointError.incompatible("Missing health_check capability.") }
+        guard healthWaiters.count < 64 else { throw HerdrEndpointError.limitExceeded }
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let id = UUID()
+                let deadline = Task { [weak self] in
+                    do { try await Task.sleep(for: timeout) } catch { return }
+                    await self?.expireHealthWaiter(id)
+                }
+                healthWaiters[id] = (continuation, deadline)
+                beginHealthProbe()
+            }
+        } onCancel: { self.disconnect() }
+    }
+
+    /// Send native generation-one host colors. Completion confirms writes, not daemon application.
+    public func setHostTheme(_ theme: EndpointHostTheme, expectedBootID: String,
+                             timeout: Duration = .seconds(10)) async throws {
+        try Task.checkCancellation()
+        if let failure { throw failure }
+        guard let snapshot, socket != nil, !worker.isStopped else { throw HerdrClientError.disconnected }
+        guard snapshot.bootID == expectedBootID else { throw HerdrEndpointError.staleIdentity }
+        let frames = theme.frames(previous: lastQueuedTheme)
+        guard !frames.isEmpty else { return }
+        try await writeInputFrames(frames, timeout: timeout, queuedTheme: theme)
     }
 
     public func resize(columns: UInt16, rows: UInt16, timeout: Duration = .seconds(10)) async throws {
@@ -95,9 +144,13 @@ public actor HerdrEndpointConnection {
     }
 
     private func writeInputFrame(_ frame: Data, timeout: Duration) async throws {
+        try await writeInputFrames([frame], timeout: timeout)
+    }
+
+    private func writeInputFrames(_ frames: [Data], timeout: Duration, queuedTheme: EndpointHostTheme? = nil) async throws {
         try Task.checkCancellation()
         if let failure { throw failure }
-        guard frame.count <= HerdrEndpointWire.maximumFrameBytes, inputWrites.count < 64 else {
+        guard frames.allSatisfy({ $0.count <= HerdrEndpointWire.maximumFrameBytes }), inputWrites.count < 64 else {
             throw HerdrEndpointError.limitExceeded
         }
         guard let socket, welcome != nil, !worker.isStopped else { throw HerdrClientError.disconnected }
@@ -111,7 +164,8 @@ public actor HerdrEndpointConnection {
                         await self?.fail(HerdrEndpointError.timedOut)
                     }
                     inputWrites[id] = (continuation, deadline)
-                    enqueue(frame, socket: socket) { [weak self] error in
+                    if let queuedTheme { lastQueuedTheme = queuedTheme }
+                    enqueue(frames, socket: socket) { [weak self] error in
                         Task { await self?.finishInput(id, error: error) }
                     }
                 }
@@ -225,9 +279,16 @@ public actor HerdrEndpointConnection {
     }
 
     private func enqueue(_ frame: Data, socket: UnixSocket, completion: @escaping @Sendable (Error?) -> Void) {
+        enqueue([frame], socket: socket, completion: completion)
+    }
+
+    private func enqueue(_ frames: [Data], socket: UnixSocket, completion: @escaping @Sendable (Error?) -> Void) {
         // One queue preserves frame boundaries while the actor remains available for deadlines and cancellation.
         writer.async {
-            do { try socket.writeFrame(frame); completion(nil) }
+            do {
+                for frame in frames { try socket.writeFrame(frame) }
+                completion(nil)
+            }
             catch { completion(error) }
         }
     }
@@ -279,6 +340,61 @@ public actor HerdrEndpointConnection {
                 if let surface { surfaceUpdates.yield(surface) }
             }
         }
+        // Only a complete decoded and accepted message resets health. Frame fragments never reach here.
+        receivedHealthMessage()
+    }
+
+    private func receivedHealthMessage() {
+        guard supportsHealthChecks, failure == nil else { return }
+        healthProbeID = nil
+        healthDeadlineTask?.cancel()
+        for (completion, deadline) in healthWaiters.values {
+            deadline.cancel()
+            completion.resume()
+        }
+        healthWaiters.removeAll()
+        armHealthIdle()
+    }
+
+    private func armHealthIdle() {
+        healthIdleTask?.cancel()
+        let id = UUID()
+        healthIdleID = id
+        healthIdleTask = Task { [weak self, healthQuietInterval] in
+            do { try await Task.sleep(for: healthQuietInterval) } catch { return }
+            await self?.healthBecameIdle(id)
+        }
+    }
+
+    private func healthBecameIdle(_ id: UUID) {
+        guard healthIdleID == id else { return }
+        beginHealthProbe()
+    }
+
+    private func beginHealthProbe() {
+        guard failure == nil, healthProbeID == nil, supportsHealthChecks,
+              let socket, !worker.isStopped else { return }
+        healthIdleTask?.cancel()
+        healthIdleID = nil
+        let id = UUID()
+        healthProbeID = id
+        healthDeadlineTask = Task { [weak self, healthTimeout] in
+            do { try await Task.sleep(for: healthTimeout) } catch { return }
+            await self?.expireHealthProbe(id)
+        }
+        enqueue(HerdrEndpointWire.control(kind: HerdrEndpointWire.healthPing, data: ""), socket: socket) { [weak self] error in
+            if let error { Task { await self?.fail(error) } }
+        }
+    }
+
+    private func expireHealthProbe(_ id: UUID) {
+        guard healthProbeID == id else { return }
+        fail(HerdrEndpointError.timedOut)
+    }
+
+    private func expireHealthWaiter(_ id: UUID) {
+        guard healthWaiters[id] != nil else { return }
+        fail(HerdrEndpointError.timedOut)
     }
 
     private func receiveSurface(_ data: Data) throws {
@@ -347,6 +463,16 @@ public actor HerdrEndpointConnection {
         worker.stop()
         socket = nil
         deadlineTask?.cancel()
+        healthIdleTask?.cancel()
+        healthDeadlineTask?.cancel()
+        healthProbeID = nil
+        healthIdleID = nil
+        lastQueuedTheme = nil
+        for (completion, deadline) in healthWaiters.values {
+            deadline.cancel()
+            completion.resume(throwing: error)
+        }
+        healthWaiters.removeAll()
         startup?.resume(throwing: error)
         startup = nil
         pending?.completion.resume(throwing: error)

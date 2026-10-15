@@ -1,3 +1,25 @@
+Rai 0.1.99 aligns Codex sessions with Herdr terminal mode.
+
+- Rai no longer adds `--no-alt-screen` to Codex launches.
+- Herdr remains the source for recent and recent-unwrapped pane history.
+- New and existing Codex sessions now use one terminal mode.
+
+Rai 0.1.98 restores remote connections when SSH tunnel sockets disappear.
+
+- Rai detects missing tunnel sockets even when the SSH connection remains active.
+- Rai reconnects the affected instance and rejects its old connection identity.
+- Remote Herdr sessions keep running during recovery.
+- Source tab closure works after the connection recovers.
+- Remove from Rai view keeps the source tab running.
+
+Rai 0.1.96 improves remote sessions and Codex scrolling.
+
+- Mixed Rai spaces can use local and remote Herdr endpoints in one view.
+- Remote tab titles and close actions stay linked to their source instance.
+- Endpoint health and host theme reports use the Herdr endpoint protocol.
+- Codex starts with inline scrollback support on Mac and iPhone.
+- iPhone Codex question controls keep prompts actionable during remote work.
+
 Rai 0.1.87 adds structured program status from Herdr.
 
 - Rai reads idle, working, blocked, done, and error records from Herdr.
